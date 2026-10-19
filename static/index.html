@@ -10,6 +10,10 @@
   --bg:#0a0e1a; --panel:rgba(255,255,255,.055); --panel2:rgba(255,255,255,.09);
   --border:rgba(255,255,255,.12); --text:#e8ecf5; --muted:#8b93a7;
   --accent:#6c8cff; --accent2:#a06cff; --ok:#4ade80; --warn:#fbbf24; --err:#f87171;
+  /* v0.6 E：统一玻璃拟态令牌 */
+  --card:rgba(18,24,46,.5); --card-hi:rgba(30,40,74,.66);
+  --glass-shadow:0 10px 34px rgba(0,0,0,.4); --glass-blur:blur(10px);
+  --grad-accent:linear-gradient(135deg,#6c8cff,#a06cff);
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%}
@@ -19,7 +23,9 @@ body{
              radial-gradient(1000px 700px at 110% 110%,#2a1a4a 0%,transparent 60%),var(--bg);
   color:var(--text);overflow:hidden;
 }
-#app{display:flex;height:100vh}
+#app{display:flex;height:100vh;position:relative}
+/* v0.6 E：顶部品牌渐变线 */
+#app::before{content:'';position:fixed;top:0;left:0;right:0;height:3px;background:var(--grad-accent);z-index:99;opacity:.85}
 /* 聊天区 */
 #chat{flex:1;display:flex;flex-direction:column;min-width:0}
 /* ── v0.3 三栏：左·会话=书 ── */
@@ -70,12 +76,15 @@ body{
 #viewsw button.on{background:linear-gradient(135deg,rgba(108,140,255,.22),rgba(160,108,255,.22));border-color:var(--accent);color:var(--text)}
 #viewsw #msprog{font:10.5px var(--muted);margin-left:auto}
 #manuscript{flex:1;overflow-y:auto;padding:16px 26px 26px}
-#manuscript #msline{position:sticky;top:0;z-index:2;padding:9px 12px;margin-bottom:10px;font:12px/1.7 var(--sans);color:var(--muted);background:rgba(10,14,26,.94);border:1px solid var(--border);border-radius:10px;backdrop-filter:blur(6px)}
+#manuscript #msline{position:sticky;top:0;z-index:2;padding:9px 12px;margin-bottom:10px;font:12px/1.7 var(--sans);color:var(--muted);background:var(--card-hi);border:1px solid var(--border);border-radius:12px;backdrop-filter:var(--glass-blur);box-shadow:var(--glass-shadow),inset 0 2px 0 0 var(--grad-accent)}
 #manuscript #msline b{color:var(--text)}
 #manuscript #msline .tk{color:var(--accent);font-weight:600}
 #msbody{font:15px/1.95 var(--sans);color:var(--text);white-space:pre-wrap;word-break:break-word}
 #msrw{margin:2px 0 6px}   /* v0.6 D：稿件区重写结果卡（按书隔离，切书清空）*/
 #msrw:empty{display:none}
+/* v0.6 E：逐章评分条 + 重写卡 玻璃深度 */
+#manuscript #mschart>div,#manuscript #msrw .rwcard{backdrop-filter:var(--glass-blur);box-shadow:0 6px 20px rgba(0,0,0,.32)}
+#manuscript #mschart>div{background:var(--card-hi)}
 #msbody .mschap{font-weight:700;color:var(--accent);margin:18px 0 8px;font-size:16px}
 .msg{display:flex;margin-bottom:16px;gap:10px;animation:fade .3s ease}
 @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -180,8 +189,8 @@ input,select,textarea{color-scheme:dark}
 #picker select:disabled{opacity:.5;cursor:not-allowed}
 #pvhint{font-size:10.5px;color:var(--accent);white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis}
 /* 作品操作按钮 */
-.pb{display:inline-block;margin-top:8px;margin-right:6px;font-size:11px;color:var(--accent);text-decoration:none;border:1px solid rgba(108,140,255,.4);padding:3px 11px;border-radius:18px;background:var(--panel2);cursor:pointer}
-.pb:hover{border-color:var(--accent)}
+.pb{display:inline-block;margin-top:8px;margin-right:6px;font-size:11px;color:var(--accent);text-decoration:none;border:1px solid rgba(108,140,255,.4);padding:3px 11px;border-radius:18px;background:var(--panel2);cursor:pointer;transition:.15s}
+.pb:hover{border-color:var(--accent);background:var(--card-hi);transform:translateY(-1px);box-shadow:0 4px 14px rgba(108,140,255,.22)}
 .pb.prev{color:var(--text)}
 .pb.run{color:var(--warn);border-color:rgba(251,191,36,.4)}
 /* 预览模态 */
