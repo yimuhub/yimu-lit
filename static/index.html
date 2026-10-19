@@ -1563,19 +1563,21 @@ function renderMsChart(key, pv){
   if(!pcs.length && !done.length){ el.innerHTML=''; return; }
   const scored=pcs.length;
   const below=pcs.filter(x=>x.score!=null&&x.score<pl).length;
-  let h='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px 10px;margin:2px 0 8px;background:var(--card);border:1px solid var(--border);border-radius:10px">';
-  h+='<span style="font:11px var(--muted)">📊 逐章评分（线 '+pl+'）'+(scored?' · 已评 '+scored+' 章':' · 尚未逐章评分（完成写作/审稿后自动评分）')+(below?' · <b style="color:#f59e0b">'+below+' 章未达标</b>':'')+'</span>';
+  let h='<div style="display:flex;gap:8px;align-items:center;padding:5px 10px;margin:2px 0 8px;background:var(--card);border:1px solid var(--border);border-radius:10px;min-height:34px">';
+  h+='<span style="font:11px var(--muted);white-space:nowrap;flex:0 0 auto">📊 逐章评分（线 '+pl+'）'+(scored?' · 已评 '+scored+' 章':' · 尚未评分')+(below?' · <b style="color:#f59e0b">'+below+' 章未达标</b>':'')+'</span>';
+  h+='<div style="flex:1 1 auto;overflow-x:auto;overflow-y:hidden;display:flex;gap:5px;align-items:center;white-space:nowrap">';
   const items=(pcs.length?pcs:done.map(c=>({ch:c.n,score:null,status:'unscored',weak:[]})));
   h+=items.map(x=>{
     const s=x.score, bad=(s!=null&&s<pl);
     const bg= s==null? 'transparent': (bad? 'rgba(245,158,11,.15)':'rgba(58,210,155,.12)');
     const bd= bad? '#f59e0b':'var(--border)';
-    return '<span data-ch="'+x.ch+'" class="msscore" style="cursor:pointer;background:'+bg+';border:1px solid '+bd+';border-radius:8px;padding:2px 7px;font:11px;'+(bad?'color:#f59e0b;font-weight:700':'color:var(--text)')+'">'+
+    return '<span data-ch="'+x.ch+'" class="msscore" style="flex:0 0 auto;cursor:pointer;background:'+bg+';border:1px solid '+bd+';border-radius:8px;padding:2px 7px;font:11px;'+(bad?'color:#f59e0b;font-weight:700':'color:var(--text)')+'">'+
       '第'+x.ch+'章 '+(s!=null? s : (x.status==='unscored'?'—':'未评')) +
       (bad?' ⚠️':'')+(x.weak&&x.weak.length?' <i style="opacity:.7">('+x.weak.slice(0,2).join('/')+')</i>':'')+'</span>';
   }).join('');
+  h+='</div>';
   if(scored && below){
-    h+='<span style="margin-left:auto"><button class="msrwb" id="msrwb" style="background:var(--accent);color:#0b1020;border:0;border-radius:8px;padding:3px 10px;font:12px;font-weight:700;cursor:pointer">🔁 重写全部未达标（'+below+' 章）</button></span>';
+    h+='<button class="msrwb" id="msrwb" style="flex:0 0 auto;background:var(--accent);color:#0b1020;border:0;border-radius:8px;padding:4px 10px;font:12px;font-weight:700;cursor:pointer;white-space:nowrap">🔁 重写全部未达标（'+below+' 章）</button>';
   }
   h+='</div>';
   el.innerHTML=h;
