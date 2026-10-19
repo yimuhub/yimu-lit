@@ -1,0 +1,25 @@
+# novel-bot .gitignore（v0.0.3，遵循 git 式：配置/密钥/数据本地生成，不入库）
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 本机配置（含密钥 / 绝对路径）—— 每台电脑首次运行由 run.py 生成
+config.json
+
+# 密钥（本地 secrets 目录 / 任意 key 文件）
+secrets/
+*.key
+!secrets/.gitkeep
+
+# 运行期数据（作品、供应商、偏好）—— 每台电脑各自生成
+providers.json
+user-preferences.json
+projects/
+
+# 日志 / 系统噪音
+*.log
+.DS_Store
+交付截图/

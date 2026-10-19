@@ -1,0 +1,36 @@
+{
+  "version": "0.1.0",
+  "port": 46821,
+  "skill_path": "skill",
+  "llm": {
+    "base_url": "https://api.agnes-ai.cn/v1",
+    "api_key": "",
+    "model": "agnes-2.5-flash",
+    "temperature": 0.85,
+    "max_tokens": 12000,
+    "timeout": 900
+  },
+  "defaults": {
+    "chapters": 10,
+    "min_words": 3000,
+    "max_expand_retries": 3,
+    "v3_pipeline": true,
+    "validation": {
+      "enabled": true,
+      "mode": "report",
+      "max_fix_rounds": 2,
+      "pass_line": 90
+    },
+    "stage_models": {
+      "planning": {},
+      "writing": {},
+      "review": {}
+    },
+    "use_prefix_cache": true,
+    "p5_pipeline": true,
+    "reader_panel": false,
+    "call_gap": 2,
+    "llm_timeout": 900,
+    "planning_timeout": 1200
+  }
+}
