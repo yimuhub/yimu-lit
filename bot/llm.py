@@ -81,15 +81,23 @@ def _trace_prov(prov, model):
     print(f"[llm] provider={prov.get('id')} model={model} base={prov.get('base_url')}",
           file=sys.stderr, flush=True)
 
-def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None):
+def _max_global():
+    """v0.5 M4：全局并发上限（config.json defaults.max_global_agents，缺省 4）。"""
+    try:
+        return int(json.load(open(os.path.join(providers.ROOT, "config.json"), encoding="utf-8"))
+                      .get("defaults", {}).get("max_global_agents", 4))
+    except Exception:
+        return 4
+
+def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None, agent=None):
     """一次性 chat 调用，返回文本。带简单重试。cfg 决定用哪个供应商/模型；
     stage（planning/writing/review）若配置了 stage_models 则按环节选模型（P4）。
-    v0.3 P4：按模型规则引擎套 上下文/max_tokens/RPM/429退避/extra_body。"""
+    agent（v0.5 M4）：子 Agent 岗位（planner/writer/reviewer/rewriter/title）——优先 agent_models 绑定。
+    v0.3 P4：按模型规则引擎套 上下文/max_tokens/RPM/429退避/extra_body。v0.5：跨线程 ConcurrencyGuard 限并发。"""
     from . import model_rules
-    if stage:
-        prov, model = providers.stage_resolve(cfg, stage)
-    else:
-        prov, model = providers.resolve(cfg)
+    if agent is None and stage:          # v0.5 M4：未显式指定 agent 时按 stage 推导岗位，agent_models 绑定即生效
+        agent = {"planning": "planner", "writing": "writer", "review": "reviewer"}.get(stage, stage)
+    prov, model = providers.agent_resolve(cfg, agent, stage)
     _trace_prov(prov, model)
     key = providers.key_of(prov)
     base = prov["base_url"].rstrip("/")
@@ -118,23 +126,25 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     model_rules.pace_rpm(rules)         # v0.3 P4：按模型规则的 RPM 限流
     timeout = _llm_timeout(cfg, stage, prov)
     _backoff = int(rules.get("backoff_base", 3))
+    _guard = providers.ConcurrencyGuard(_max_global())   # v0.5 M4：跨线程全局并发 + provider 限流
     for i in range(retries):
         try:
-            with httpx.Client(timeout=timeout) as client:
-                r = client.post(base + "/chat/completions",
-                                json=body, headers=headers)
-                if r.status_code == 429:
-                    time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值
-                    last_err = LLMError(f"429 限流: {r.text[:200]}")
-                    continue
-                r.raise_for_status()
-                data = r.json()
-                _last_call["ts"] = time.time()
-                _u = data.get("usage") or {}
-                _bk = getattr(_TL, "book", None)
-                if _bk and _u:                     # v0.3.x：回读 usage，归集到该书 token 账本
-                    _record_usage(_bk, getattr(_TL, "stage", "writing") or "writing", _u)
-                return data["choices"][0]["message"]["content"]
+            with _guard.acquire(prov):
+                with httpx.Client(timeout=timeout) as client:
+                    r = client.post(base + "/chat/completions",
+                                    json=body, headers=headers)
+            if r.status_code == 429:
+                time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值（在 guard 外 sleep，不占名额）
+                last_err = LLMError(f"429 限流: {r.text[:200]}")
+                continue
+            r.raise_for_status()
+            data = r.json()
+            _last_call["ts"] = time.time()
+            _u = data.get("usage") or {}
+            _bk = getattr(_TL, "book", None)
+            if _bk and _u:                     # v0.3.x：回读 usage，归集到该书 token 账本
+                _record_usage(_bk, getattr(_TL, "stage", "writing") or "writing", _u)
+            return data["choices"][0]["message"]["content"]
         except LLMError as e:
             last_err = e
         except Exception as e:
@@ -142,9 +152,9 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
             time.sleep(3)
     raise last_err
 
-def chat_json(messages, temperature=None, cfg=None, stage=None):
-    """调用并解析 JSON（容忍模型夹带 markdown 代码块）。cfg 决定供应商/模型；stage 按环节选模型。"""
-    raw = chat(messages, json_mode=True, temperature=temperature, cfg=cfg, stage=stage)
+def chat_json(messages, temperature=None, cfg=None, stage=None, agent=None):
+    """调用并解析 JSON（容忍模型夹带 markdown 代码块）。cfg 决定供应商/模型；stage 按环节选模型；agent（v0.5）子 Agent 岗位。"""
+    raw = chat(messages, json_mode=True, temperature=temperature, cfg=cfg, stage=stage, agent=agent)
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.strip("`")

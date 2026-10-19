@@ -1,0 +1,1607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>神笔 · 小说创作机器人</title>
+<style>
+:root{
+  color-scheme:dark;   /* v0.3.x：原生 select/输入框 弹层走深色底+浅色字，修复「下拉选项看不见没法选」 */
+  --bg:#0a0e1a; --panel:rgba(255,255,255,.055); --panel2:rgba(255,255,255,.09);
+  --border:rgba(255,255,255,.12); --text:#e8ecf5; --muted:#8b93a7;
+  --accent:#6c8cff; --accent2:#a06cff; --ok:#4ade80; --warn:#fbbf24; --err:#f87171;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:radial-gradient(1200px 800px at 20% -10%,#1a2246 0%,var(--bg) 55%),
+             radial-gradient(1000px 700px at 110% 110%,#2a1a4a 0%,transparent 60%),var(--bg);
+  color:var(--text);overflow:hidden;
+}
+#app{display:flex;height:100vh}
+/* 聊天区 */
+#chat{flex:1;display:flex;flex-direction:column;min-width:0}
+/* ── v0.3 三栏：左·会话=书 ── */
+#sessions{width:250px;min-width:52px;border-right:1px solid var(--border);background:rgba(8,11,22,.55);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow:hidden;transition:width .18s}
+#sessions.collapsed{width:54px}
+#sessions.collapsed .shead .stx,#sessions.collapsed .slist .ss-name,#sessions.collapsed .slist .ss-meta,#sessions.collapsed .snew .txt{display:none}
+#sessions.collapsed .ss-item{justify-content:center}
+#sessions.collapsed .snew{margin:4px 6px;text-align:center;padding:8px 4px}
+.shead{padding:12px 12px 8px;display:flex;align-items:center;gap:8px}
+.shead .stx{flex:1;font:700 14px var(--sans);letter-spacing:.3px;line-height:1.25;color:var(--text)}
+.sbtn{width:24px;height:24px;border-radius:7px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--muted);cursor:pointer;font-size:13px;flex:none;display:flex;align-items:center;justify-content:center}
+.sbtn:hover{color:var(--text);border-color:var(--accent)}
+.snew{margin:4px 10px 10px;padding:9px 10px;border-radius:10px;border:1px dashed var(--accent);background:rgba(124,92,255,.1);color:#c9b8ff;font-size:12.5px;cursor:pointer;text-align:center}
+.snew:hover{background:rgba(124,92,255,.2)}
+.sgrp{padding:4px 12px;font:600 10.5px var(--sans);color:var(--muted);letter-spacing:.6px}
+.slist{flex:1;overflow-y:auto;padding:0 6px 12px}
+.ss-item{display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:10px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
+.ss-item:hover{background:rgba(255,255,255,.04)}
+.ss-item.on{background:rgba(124,92,255,.14);border-color:rgba(124,92,255,.45)}
+.ss-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.ss-dot.in_progress{background:#38bdf8;animation:sspulse 1.4s ease-in-out infinite}.ss-dot.completed{background:#34d399}.ss-dot.awaiting_title{background:#f59e0b}.ss-dot.released{background:#34d399;box-shadow:0 0 6px #34d399}.ss-dot.other{background:var(--muted)}
+@keyframes sspulse{0%,100%{box-shadow:0 0 0 0 rgba(56,189,248,.5)}50%{box-shadow:0 0 0 4px rgba(56,189,248,0)}}
+.ss-main{flex:1;min-width:0}
+.ss-name{font:600 13px var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ss-meta{font:11px var(--sans);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.ss-act{font-size:13px;color:var(--muted);opacity:.55;flex:none}
+.ss-item:hover .ss-act{opacity:1}
+.dragh{width:6px;cursor:col-resize;background:transparent;flex:none}
+.dragh:hover,.dragh.hot{background:rgba(124,92,255,.4)}
+/* 右栏 3 tab */
+#side{width:380px;min-width:260px;border-left:1px solid var(--border);background:rgba(10,14,26,.6);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow:hidden}
+.side-tabs{display:flex;gap:4px;padding:10px 12px 0;flex:none}
+.side-tabs button{flex:1;padding:8px 4px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--muted);font:600 12px var(--sans);cursor:pointer}
+.side-tabs button.on{background:rgba(124,92,255,.16);border-color:var(--accent);color:var(--text)}
+.side-pane{flex:1;overflow-y:auto}
+.side-pane h2{font-size:13px;color:var(--muted);padding:14px 18px 6px;font-weight:500;letter-spacing:.5px}
+#midctx{padding:8px 16px;font:11px var(--sans);color:var(--muted);border-bottom:1px solid var(--border);flex:none}
+#midctx b{color:var(--text)}
+#quickacts{display:flex;gap:6px;flex-wrap:wrap;padding:8px 16px 0;flex:none}
+#quickacts .pb{padding:5px 9px;font-size:11.5px;border-radius:7px}
+#head{padding:18px 26px;border-bottom:1px solid var(--border);background:var(--panel);backdrop-filter:blur(14px);display:flex;align-items:center;gap:12px}
+#head .logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:20px}
+#head h1{font-size:17px;font-weight:600}
+#head p{font-size:11.5px;color:var(--muted);margin-top:2px}
+#msgs{flex:1;overflow-y:auto;padding:26px;scroll-behavior:smooth}
+#viewsw{display:flex;align-items:center;gap:4px;padding:7px 16px;border-bottom:1px solid var(--border);flex:none;background:var(--panel)}
+#viewsw button{border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--muted);border-radius:8px;padding:5px 12px;font-size:11.5px;font-weight:600;cursor:pointer}
+#viewsw button.on{background:linear-gradient(135deg,rgba(108,140,255,.22),rgba(160,108,255,.22));border-color:var(--accent);color:var(--text)}
+#viewsw #msprog{font:10.5px var(--muted);margin-left:auto}
+#manuscript{flex:1;overflow-y:auto;padding:16px 26px 26px}
+#manuscript #msline{position:sticky;top:0;z-index:2;padding:9px 12px;margin-bottom:10px;font:12px/1.7 var(--sans);color:var(--muted);background:rgba(10,14,26,.94);border:1px solid var(--border);border-radius:10px;backdrop-filter:blur(6px)}
+#manuscript #msline b{color:var(--text)}
+#manuscript #msline .tk{color:var(--accent);font-weight:600}
+#msbody{font:15px/1.95 var(--sans);color:var(--text);white-space:pre-wrap;word-break:break-word}
+#msbody .mschap{font-weight:700;color:var(--accent);margin:18px 0 8px;font-size:16px}
+.msg{display:flex;margin-bottom:16px;gap:10px;animation:fade .3s ease}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.msg.user{flex-direction:row-reverse}
+.ava{width:34px;height:34px;border-radius:11px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px}
+.msg.bot .ava{background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.msg.user .ava{background:var(--panel2);border:1px solid var(--border)}
+.bubble{max-width:640px;padding:13px 16px;border-radius:14px;font-size:14.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word}
+.msg.bot .bubble{background:var(--panel);border:1px solid var(--border);backdrop-filter:blur(10px)}
+.msg.user .bubble{background:linear-gradient(135deg,rgba(108,140,255,.25),rgba(160,108,255,.25));border:1px solid rgba(108,140,255,.35)}
+.thinking{color:var(--muted);font-size:13px;padding:4px 0}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-right:5px;animation:blink 1s infinite}
+.dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+#inputbar{padding:16px 26px 20px;border-top:1px solid var(--border);background:var(--panel);backdrop-filter:blur(14px)}
+#inputrow{display:flex;gap:10px;max-width:760px;margin:0 auto}
+#inp{flex:1;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:13px;padding:12px 15px;color:var(--text);font-size:14.5px;outline:none;resize:none;height:52px;font-family:inherit;transition:border .2s}
+#inp:focus{border-color:var(--accent)}
+#send{width:52px;flex:0 0 52px;height:52px;border:none;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:18px;cursor:pointer;transition:transform .15s,background .15s}
+#send:hover{transform:scale(1.06)}
+#send.stop{background:linear-gradient(135deg,#ff5470,#ff9f43);font-weight:800;transform:none}
+#send.qsend{background:linear-gradient(135deg,#3ad29b,#4dd4ff);font-weight:800;font-size:13px}
+#stage{flex:0 0 auto;height:52px;padding:0 13px;border:1px solid var(--border);background:var(--panel2);color:var(--text);border-radius:13px;font:600 12px var(--sans);cursor:pointer;display:none;transition:.15s}
+#stage:hover{border-color:var(--accent)}
+#qbar{display:flex;flex-direction:column;gap:5px}
+#qbar:empty{display:none}
+.qitem{display:flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid var(--border);border-radius:10px;background:var(--panel2);font:11.5px var(--sans);color:var(--text)}
+.qitem .qt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qitem.imm{border-color:rgba(58,210,155,.45);background:rgba(58,210,155,.08)}
+.qitem .qa{border:0;background:transparent;color:var(--muted);font:600 11px var(--sans);cursor:pointer;padding:2px 6px;border-radius:6px}
+.qitem .qa:hover{color:var(--text);background:var(--panel3)}
+/* 侧栏 */
+#side{width:380px;min-width:260px;border-left:1px solid var(--border);background:rgba(10,14,26,.6);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow:hidden}
+#side h2{font-size:13px;color:var(--muted);padding:16px 18px 8px;font-weight:500;letter-spacing:.5px}
+#prog{margin:0 14px 10px;border-radius:14px;padding:14px;background:var(--panel);border:1px solid var(--border);display:none}
+#prog .bar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin:10px 0 8px}
+#prog .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .6s;border-radius:3px}
+#prog .prow{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted)}
+#evts{margin:6px 14px;font-size:11.5px;color:var(--muted);max-height:150px;overflow-y:auto;line-height:1.7}
+.pitem{margin:0 14px 8px;border-radius:13px;background:var(--panel);border:1px solid var(--border);padding:12px 14px;cursor:pointer;transition:background .2s}
+.pitem:hover{background:var(--panel2)}
+.pitem .t{font-size:13.5px;font-weight:600;margin-bottom:5px}
+.pitem .s{font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between}
+.tag{display:inline-block;font-size:10.5px;padding:2px 8px;border-radius:20px;margin-left:6px;vertical-align:1px}
+.tag.done{background:rgba(74,222,128,.15);color:var(--ok)}
+.tag.run{background:rgba(251,191,36,.15);color:var(--warn)}
+.tag.wait{background:rgba(139,147,167,.15);color:var(--muted)}
+#dow{display:inline-block;margin-top:9px;font-size:11.5px;color:var(--accent);text-decoration:none;border:1px solid rgba(108,140,255,.4);padding:4px 12px;border-radius:20px}
+.empty{padding:14px;color:var(--muted);font-size:12.5px;text-align:center}
+#read{width:100%;margin-top:6px}
+/* 供应商面板 */
+#side .secrow{display:flex;align-items:center;justify-content:space-between;padding:0 2px}
+#side .secrow h2{padding:16px 14px 8px}
+#addprov{font-size:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;padding:5px 11px;border-radius:8px;cursor:pointer}
+#addprov:hover{transform:scale(1.03)}
+.vitem{margin:0 14px 9px;border-radius:13px;background:var(--panel);border:1px solid var(--border);padding:11px 13px}
+.vitem.off{opacity:.62}
+.vitem .vh{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+.vitem .vh .vname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vitem .vdot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex-shrink:0}
+.vitem.off .vdot{background:var(--muted)}
+.vitem .vdef{font-size:10.5px;color:var(--warn);flex-shrink:0}
+.vitem .vrow{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+.vitem .vstat{font-size:11px;color:var(--muted)}
+.vitem .vbtn{font-size:11px;background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:3px 8px;border-radius:7px;cursor:pointer}
+.vitem .vbtn:hover{border-color:var(--accent)}
+.vitem .vbtn.danger{color:var(--err)}
+.vitem .vbtn.def{color:var(--warn)}
+.vitem .vbtn.busy{color:var(--accent);pointer-events:none}
+.vitem .vmodels{margin-top:8px;font-size:11px;color:var(--muted);line-height:1.6}
+.vitem .vmodels .mtag{display:inline-block;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:1px 7px;margin:2px 4px 0 0}
+.vitem .vmodels .mtag.cur{border-color:var(--accent);color:var(--accent)}
+.vitem .vkey{margin-top:5px;font-size:10.5px;color:var(--muted)}
+/* 模态 */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:50}
+.modal.show{display:flex}
+.modal .mbox{width:460px;max-width:92vw;max-height:88vh;overflow-y:auto;background:rgba(16,20,38,.97);border:1px solid var(--border);border-radius:18px;padding:20px 22px}
+.modal h3{font-size:15px;margin-bottom:4px}
+.modal .mhint{font-size:11.5px;color:var(--muted);margin-bottom:14px;line-height:1.6}
+.mfield{margin-bottom:11px}
+.mfield label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.mfield input,.mfield select,.mfield textarea{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:8px 10px;color:var(--text);font-size:13px;font-family:inherit;outline:none;resize:vertical}
+.mfield input:focus,.mfield select:focus,.mfield textarea:focus{border-color:var(--accent)}
+select{cursor:pointer}
+select option{background:#101426;color:var(--text)}   /* v0.3.x：原生下拉选项强制深底浅字，防「浅字浅底看不见」 */
+input,select,textarea{color-scheme:dark}
+.mrow{display:flex;gap:10px}
+.mrow .mfield{flex:1}
+.mtoggle{display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:11px}
+.mtoggle input{width:auto}
+.madv summary{font-size:12px;color:var(--muted);cursor:pointer}
+.madv .mfields{margin-top:9px}
+.mactions{display:flex;gap:10px;margin-top:14px}
+.mactions button{flex:1;padding:9px;border-radius:10px;font-size:13px;cursor:pointer;border:1px solid var(--border)}
+.mactions .mok{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff}
+.mactions .mcancel{background:var(--panel2);color:var(--text)}
+.merr{font-size:11.5px;color:var(--err);margin-top:6px;min-height:14px;line-height:1.5}
+/* 供应商+模型 选择器 */
+#picker{display:flex;gap:8px;max-width:760px;margin:0 auto 9px;align-items:center}
+#picker select{flex:1;min-width:0;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:10px;padding:7px 10px;color:var(--text);font-size:12.5px;outline:none;cursor:pointer}
+#picker select:focus{border-color:var(--accent)}
+#picker select:disabled{opacity:.5;cursor:not-allowed}
+#pvhint{font-size:10.5px;color:var(--accent);white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis}
+/* 作品操作按钮 */
+.pb{display:inline-block;margin-top:8px;margin-right:6px;font-size:11px;color:var(--accent);text-decoration:none;border:1px solid rgba(108,140,255,.4);padding:3px 11px;border-radius:18px;background:var(--panel2);cursor:pointer}
+.pb:hover{border-color:var(--accent)}
+.pb.prev{color:var(--text)}
+.pb.run{color:var(--warn);border-color:rgba(251,191,36,.4)}
+/* 预览模态 */
+#pvbody{margin-top:14px;max-height:56vh;overflow-y:auto;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:12px;padding:16px 18px;font-size:14px;line-height:1.9;color:var(--text)}
+#pvbody .pv-h{font-weight:700;color:#fff;font-size:16px;margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+#pvbody .pv-h:first-child{margin-top:0}
+#pvbody .pv-q{color:var(--muted);border-left:3px solid var(--accent);padding:2px 12px;margin:10px 0;font-size:13.5px}
+#pvbody .pv-li{color:var(--text);margin:2px 0;padding-left:6px}
+#pvbody .pv-hr{border-top:1px solid var(--border);margin:16px 0}
+#pvbody b{color:#fff}
+#pvch{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;padding:5px 8px;color:var(--text);font-size:12px;cursor:pointer}
+.pvclose{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:13px}
+/* 供应商组折叠 + 卡片体可折叠 + 模型可点选默认 */
+#provsum{margin:2px 14px 8px;padding:9px 13px;border-radius:11px;background:var(--panel);border:1px solid var(--border);cursor:pointer;font-size:12.5px;display:flex;align-items:center;gap:8px;user-select:none}
+#provsum:hover{background:var(--panel2)}
+#provsum .arr{color:var(--accent);font-size:11px;transition:transform .2s}
+#provsum.open .arr{transform:rotate(90deg)}
+#provsum .sumn{margin-left:auto;font-size:11px;color:var(--muted)}
+.vitem .vh{cursor:pointer}
+.vitem .vchev{color:var(--muted);font-size:10px;transition:transform .15s}
+.vitem.collapsed .vbody{display:none}
+.vitem.collapsed .vchev{transform:rotate(-90deg)}
+.vitem .vmodels .mtag{cursor:pointer}
+.vitem .vmodels .mtag:hover{border-color:var(--accent);color:var(--text)}
+.vitem .vmodels .mtag.cur{border-color:var(--accent);color:var(--accent);background:rgba(108,140,255,.16)}
+.vmodels-hint{font-size:10px;color:var(--muted);margin-top:5px}
+/* ============ v0.2 作品库管理 ============ */
+#libtool{padding:2px 14px 8px}
+#libq{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:7px 10px;color:var(--text);font-size:12.5px;outline:none;margin-bottom:8px}
+#libq:focus{border-color:var(--accent)}
+.librow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:7px}
+.librow label{font-size:10.5px;color:var(--muted);flex-shrink:0}
+#libsort{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;padding:5px 8px;color:var(--text);font-size:12px;outline:none;flex:1;min-width:0}
+#liborder{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px}
+.libchip{font-size:10.5px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);border-radius:20px;padding:3px 9px;cursor:pointer;transition:.15s;white-space:nowrap}
+.libchip.on{color:var(--text);border-color:var(--accent);background:rgba(108,140,255,.16)}
+#libstats{padding:0 14px;margin:0 0 8px;font-size:10.5px;color:var(--muted);line-height:1.7;border-bottom:1px dashed var(--border);padding-bottom:8px}
+#libstats b{color:var(--text)}
+#libstats .qok{color:var(--ok)}#libstats .qbad{color:var(--err)}
+.qbadge{display:inline-block;font-size:10px;padding:1px 7px;border-radius:20px;margin-left:5px;vertical-align:1px;font-weight:600}
+.qbadge.pass{background:rgba(74,222,128,.18);color:var(--ok)}
+.qbadge.fail{background:rgba(248,113,113,.18);color:var(--err)}
+.qbadge.na{background:rgba(139,147,167,.15);color:var(--muted)}
+.pitem .fav{cursor:pointer;font-size:13px;float:right;padding:0 2px;opacity:.4}
+.pitem .fav.on{opacity:1;color:var(--warn)}
+.pitem .gchip{display:inline-block;font-size:10px;color:var(--accent2);background:rgba(160,108,255,.14);border-radius:6px;padding:1px 6px;margin-left:5px}
+.pitem .tbar{height:3px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden;margin:6px 0}
+.pitem .tbar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.pitem .bchk{width:13px;height:13px;accent-color:var(--accent);cursor:pointer}
+#libbatch{display:none;gap:6px;flex-wrap:wrap;padding:0 14px 8px}
+#libbatch .pb{margin:0}
+/* 重写方向卡片（预览模态内） */
+.rwcard{margin-top:14px;background:rgba(74,222,128,.07);border:1px solid rgba(74,222,128,.25);border-radius:12px;padding:13px 15px;font-size:13px}
+.rwcard h4{font-size:13px;margin-bottom:8px;color:var(--text)}
+.rwcard .rwdir{font-size:12px;color:var(--muted);line-height:1.7;margin:4px 0}
+.rwcard .rwsum{font-size:14px;font-weight:700;margin:6px 0}
+.rwcard .rwsum .up{color:var(--ok)}.rwcard .rwsum .dn{color:var(--err)}
+.rwcard .rwnote{font-size:11px;color:var(--muted);line-height:1.6}
+.rwbtn{margin-top:9px;font-size:12px;background:linear-gradient(135deg,var(--ok),#34d399);border:none;color:#04121f;font-weight:600;padding:6px 14px;border-radius:9px;cursor:pointer}
+.rwbtn:disabled{opacity:.5;cursor:not-allowed}
+.rwchips{display:flex;gap:5px;flex-wrap:wrap;margin:6px 0}
+.rwchips label{font-size:11px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:3px 8px;cursor:pointer;color:var(--muted)}
+/* v0.2.1 大厂 UX：toast 轻提示 / 骨架 / 门禁取消 */
+#toasts{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{pointer-events:auto;background:rgba(16,20,38,.96);border:1px solid var(--border);border-radius:11px;padding:9px 15px;font-size:12.5px;min-width:200px;max-width:70vw;box-shadow:0 8px 30px rgba(0,0,0,.4);animation:toastin .25s ease}
+.toast.ok{border-color:rgba(74,222,128,.4)}
+.toast.err{border-color:rgba(248,113,113,.4)}
+.toast b{color:#fff}
+@keyframes toastin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+.skel{height:64px;border-radius:13px;background:linear-gradient(90deg,var(--panel) 25%,var(--panel2) 50%,var(--panel) 75%);background-size:200% 100%;animation:skel 1.2s infinite;margin:0 14px 8px}
+@keyframes skel{0%{background-position:0 0}100%{background-position:200% 0}}
+.gcancel{margin-top:8px;font-size:11px;background:var(--panel2);border:1px solid var(--border);color:var(--err);border-radius:8px;padding:4px 10px;cursor:pointer}
+.pb.spin::after{content:'…';opacity:.7}
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+<div id="app">
+  <div id="sessions">
+    <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔小说工作台</span></span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
+    <div class="snew" id="snew" onclick="openOnb()"><span class="txt">＋ 新建一本书</span></div>
+    <div class="slist" id="slist"></div>
+  </div>
+  <div class="dragh" id="dragL"></div>
+  <div id="chat">
+    <div id="head">
+      <div class="logo">🖋</div>
+      <div style="flex:1">
+        <h1>神笔 · 小说创作机器人</h1>
+        <p>「一幕·神笔 · ShenBi NovelCraft」原创创作系统 —— 说个主题，它把整部小说写完（对标网文排行前列）</p>
+      </div>
+      <button id="onbbtn" onclick="openOnb()" style="border:none;border-radius:11px;padding:9px 16px;font-size:13px;font-weight:600;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer;white-space:nowrap">✍ 开书向导</button>
+    </div>
+    <div id="midctx">📖 未选中书 · 直接对话开新书，或从左侧选一本书</div>
+    <div id="quickacts"></div>
+    <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="msprog" style="margin-left:auto"></span></div>
+    <div id="msgs"></div>
+    <div id="manuscript" style="display:none"><div id="msline"></div><div id="msbody"></div></div>
+    <div id="inputbar">
+      <div id="picker">
+        <select id="pselect" title="选择模型供应商"></select>
+        <select id="mselect" title="选择大模型"></select>
+        <span id="pvhint"></span>
+      </div>
+      <div id="qbar"></div>
+      <div id="inputrow">
+        <textarea id="inp" placeholder="告诉我要写什么小说… 例如：写一部悬疑小说，退休刑警被诬陷杀人，10章"></textarea>
+        <button id="stage" title="暂存为「待发送」（写作中可随时加指令，下一条自动用上）">＋待发送</button>
+        <button id="send">➤</button>
+      </div>
+    </div>
+  </div>
+  <div class="dragh" id="dragR"></div>
+  <div id="side">
+    <div class="side-tabs">
+      <button data-tab="art" class="on" onclick="sideTab('art')">📚 产物</button>
+      <button data-tab="set" onclick="sideTab('set')">⚙ 设置</button>
+      <button data-tab="lib" onclick="sideTab('lib')">🗂 作品库</button>
+    </div>
+    <div class="side-pane" id="pane-art">
+      <h2>该书产物</h2>
+      <div id="artbody" style="padding:0 14px 8px"></div>
+      <h2>进度 &amp; 事件</h2>
+      <div id="prog" style="margin:0 14px 10px">
+        <div class="t" id="pname" style="font-size:14px;font-weight:600"></div>
+        <div class="bar"><div class="fill" id="pfill" style="width:0%"></div></div>
+        <div class="prow"><span id="pinfo">0/0 章</span><span id="pwords">0 字</span></div>
+      </div>
+      <div id="evts"></div>
+      <h2>🔢 Token 账本</h2>
+      <div id="tkcard" style="margin:0 14px 10px"></div>
+    </div>
+    <div class="side-pane" id="pane-set" style="display:none">
+      <h2>该书设置</h2>
+      <div id="setbody" style="padding:0 14px 8px"></div>
+      <div id="mrcard" style="margin:0 14px 10px"></div>
+      <div class="secrow"><h2>📈 学习进化（自我进化引擎）</h2></div>
+      <div id="learnreport" style="padding:0 14px 8px"><div class="empty">加载中…</div></div>
+      <div class="secrow"><h2>✨ 风格库（蒸馏）</h2><button id="btn-distill">＋ 蒸馏新风格</button></div>
+      <div id="stylelib" style="padding:0 14px 8px"><div class="empty">加载中…</div></div>
+      <div class="secrow"><h2>模型供应商</h2><button id="addprov">＋ 绑定</button></div>
+      <div id="provsum" style="display:none"></div>
+      <div id="provlist"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="side-pane" id="pane-lib" style="display:none">
+      <h2>作品库（全局 · 按状态/题材）</h2>
+      <div id="libtk" style="margin:0 14px 8px;font:11.5px var(--sans);color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 11px">🔢 加载中…</div>
+      <div id="libtool">
+        <input id="libq" placeholder="🔍 搜索书名 / 题材…">
+      <div class="librow">
+        <label>排序</label>
+        <select id="libsort">
+          <option value="updated">最近更新</option>
+          <option value="created">创建时间</option>
+          <option value="quality">质量分</option>
+          <option value="progress">完成度</option>
+          <option value="words">字数</option>
+          <option value="chapters">章节数</option>
+          <option value="genre">题材</option>
+          <option value="status">状态</option>
+        </select>
+        <button id="liborder" title="升/降序">↓</button>
+      </div>
+      <div class="librow" id="libstatus"><span class="libchip on" data-st="">全部</span>
+        <span class="libchip" data-st="in_progress">创作中</span>
+        <span class="libchip" data-st="completed">已出书</span>
+        <span class="libchip" data-st="passing">已达标</span>
+        <span class="libchip" data-st="unrated">未审稿</span>
+        <span class="libchip" data-st="archived" title="回收站">🗑 回收站</span></div>
+      <div class="librow" id="libgenre"></div>
+    </div>
+    <div id="libstats"></div>
+    <div id="libbatch">
+      <span style="font-size:11px;color:var(--muted);align-self:center" id="libn"></span>
+      <button class="pb" data-batch="review">📝 批量审稿</button>
+      <button class="pb" data-batch="compare">⇄ 对比(2)</button>
+      <button class="pb" data-batch="favorite">★ 收藏</button>
+      <button class="pb run" data-batch="delete">🗑 归档</button>
+      <button class="pb" data-batch="restore">♻ 恢复</button>
+      <button class="pb prev" data-batch="clear">✕</button>
+    </div>
+    <div id="plist"><div class="empty">暂无作品</div></div>
+    <div id="cmpbox" style="padding:0 14px 8px"></div>
+    </div><!-- /pane-lib -->
+  </div>
+</div>
+<!-- 绑定供应商 模态 -->
+<div id="provmodal" class="modal">
+  <div class="mbox">
+    <h3>绑定模型供应商</h3>
+    <div class="mhint">支持 OpenAI 兼容 <code>/chat/completions</code> 接口。选预设一键绑定，或填 base_url + key 完全自定义。可同时绑定多个并存，创作时按需选择。</div>
+    <div class="mfield">
+      <label>预设供应商</label>
+      <select id="mpreset"></select>
+    </div>
+    <div class="mfield">
+      <label>名称</label>
+      <input id="mname" placeholder="例如：我的 Agnes">
+    </div>
+    <div class="mfield">
+      <label>Base URL（root，不含 /chat/completions）</label>
+      <input id="murl" placeholder="https://…/v1 或 http://127.0.0.1:11434/v1">
+    </div>
+    <div class="mrow">
+      <div class="mfield"><label>API Key（可选）</label><input id="mkey" placeholder="Bearer 密钥"></div>
+      <div class="mfield"><label>或 Key 文件路径</label><input id="mkeyfile" placeholder="/path/to/key"></div>
+    </div>
+    <div class="mfield">
+      <label>模型清单（逗号分隔；绑定时可点「拉取」自动获取）</label>
+      <textarea id="mmodels" rows="2" placeholder="model-a, model-b"></textarea>
+    </div>
+    <details class="madv">
+      <summary>高级（温度 / 上限 / 超时）</summary>
+      <div class="mfields">
+        <div class="mrow">
+          <div class="mfield"><label>temperature</label><input id="mtemp" type="number" step="0.05" value="0.85"></div>
+          <div class="mfield"><label>max_tokens</label><input id="mtoken" type="number" step="100" value="12000"></div>
+          <div class="mfield"><label>超时(秒)</label><input id="mtimeout" type="number" step="30" value="900"></div>
+        </div>
+      </div>
+    </details>
+    <label class="mtoggle"><input type="checkbox" id="mactive" checked> 立即设为可用（active）</label>
+    <div class="merr" id="merr"></div>
+    <div class="mactions">
+      <button class="mcancel" onclick="closeProvModal()">取消</button>
+      <button class="mok" id="mbind">绑定</button>
+    </div>
+  </div>
+</div>
+<!-- 作品预览 模态 -->
+<div id="pvmodal" class="modal">
+  <div class="mbox" style="width:700px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <h3 id="pvtitle" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></h3>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="pvch"></select>
+        <button id="pvval" class="pb prev" onclick="runValidate()" title="对全书跑 确定性引擎 + 五角色审校 + 百分制达标判定">📝 审稿</button>
+        <button id="pvrw" class="pb run" onclick="runRewritePlan()" title="未达标时按审查结论+重写方向定向重写">🔁 重写</button>
+        <button id="pvgate" class="pb run" onclick="runReleaseGate()" title="未达标时自动带要求重写到 ≥90 才放行">🔓 放行门禁</button>
+        <a id="pvdow" class="pb prev" href="#" target="_blank">⬇ 下载</a>
+        <button class="pvclose" onclick="closePvModal()">✕ 关闭</button>
+      </div>
+    </div>
+    <div id="pvbody">加载中…</div>
+    <div id="rwbox"></div>
+    <div id="gatebox"></div>
+  </div>
+</div>
+<!-- 开书向导 -->
+<div id="onbmodal" class="modal"><div class="mbox" style="width:560px">
+  <h3>✍ 开书向导</h3>
+  <div class="mhint">几乎全可选，留空用默认。定完题材/卖点/基调后，书名可留空（下一步 ABC 弹框选）。</div>
+  <div class="mrow"><div class="mfield"><label>题材</label><select id="ob_genre"></select></div>
+    <div class="mfield"><label>主角视角</label><select id="ob_persp"></select></div></div>
+  <div class="mrow"><div class="mfield"><label>基调</label><select id="ob_tone"></select></div>
+    <div class="mfield"><label>章节数</label><select id="ob_chap"></select><input id="ob_chap_custom" type="number" min="1" max="200" style="display:none;margin-top:6px;width:100%;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:7px 10px;color:var(--text);font-size:13px;font-family:inherit" placeholder="自定义章节数（1-200）"></div></div>
+  <div class="mrow"><div class="mfield"><label>🧩 金手指</label><select id="ob_hand"></select></div>
+    <div class="mfield"><label>节奏</label><select id="ob_pace"></select></div>
+    <div class="mfield"><label>语言</label><select id="ob_lang"></select></div></div>
+  <div id="obprefnote" class="mhint" style="display:none;margin:-6px 0 8px;font-size:11px"></div>
+  <div class="mfield"><label>✨ 风格（可选·蒸馏风格库）</label><select id="ob_style"></select></div>
+  <div class="mfield"><label>核心卖点（可多选）</label><div id="ob_sells" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
+  <div class="mfield"><label>一句话设定（可选）</label><input id="ob_idea" placeholder="例如：退休刑警被诬陷杀人"></div>
+  <div class="mfield"><label>书名（留空=下一步 ABC 弹框选）</label><input id="ob_title" placeholder="留空则自动出候选"></div>
+  <details class="madv"><summary>高级（供应商 / 模型 / 门禁）</summary>
+    <div class="mfields">
+      <div class="mrow"><div class="mfield"><label>供应商</label><select id="ob_prov"></select></div>
+        <div class="mfield"><label>模型</label><select id="ob_model"></select></div></div>
+      <div class="mtoggle"><input type="checkbox" id="ob_gate" checked> 放行门禁（≥90 自动带要求重写）</div>
+      <div class="mtoggle"><input type="checkbox" id="ob_p5" checked> P5 故事图谱 + 语义检索</div>
+    </div>
+  </details>
+  <div class="merr" id="oberr"></div>
+  <div class="mactions"><button class="mcancel" onclick="closeOnb()">取消</button>
+    <button class="mok" id="obgo">规划（出候选）</button></div>
+</div></div>
+<!-- 风格蒸馏 弹框 -->
+<div id="distillmodal" class="modal"><div class="mbox" style="width:560px">
+  <h3>✨ 蒸馏写作风格</h3>
+  <div class="mhint">给「一段小说文本」或「小说网址」，蒸馏出作者的写作风格/技法（7 维：句式·指纹词·节奏·对话·视角·情绪·反AI），存成<b>可命名的专属风格</b>，之后开书可直接按它创作。只提技法、不搬运原文。</div>
+  <div class="mfield"><label>风格名（自定义，开书时选它用）</label><input id="dl_name" placeholder="例如：都市爽文速读体 / 冷硬悬疑腔"></div>
+  <div class="mfield"><label>参考题材（可选）</label><input id="dl_genre" placeholder="例如：都市 / 悬疑"></div>
+  <div class="mfield"><label>① 粘贴文本（推荐，≥500 字）</label><textarea id="dl_text" rows="5" placeholder="把那部小说的几段内容复制到这里…"></textarea></div>
+  <div class="mfield"><label>② 或 小说网址（每行一个，抓取节选）</label><textarea id="dl_urls" rows="2" placeholder="https://…（JS 渲染站可能抓不到，改粘贴文本）"></textarea></div>
+  <div class="merr" id="dlerr"></div>
+  <div class="mactions"><button class="mcancel" onclick="closeDistill()">取消</button>
+    <button class="mok" id="dlgo">✨ 蒸馏（约 10-30 秒）</button></div>
+</div></div>
+<!-- v0.4 放行弹窗（待放行 → 直接解决，不留死路）-->
+<div id="releasemodal" class="modal"><div class="mbox" style="width:520px">
+  <h3>🔓 放行成书</h3>
+  <div id="rlbody" style="font:13px/1.8 var(--sans);color:var(--text)"><div class="rwnote">加载…</div></div>
+  <div class="merr" id="rlerr"></div>
+  <div class="mactions">
+    <button class="mcancel" onclick="closeRelease()">取消</button>
+    <button class="pb" id="rl_again">🔁 再校验一轮</button>
+    <button class="pb" id="rl_beta">保持 beta</button>
+    <button class="mok" id="rl_go">🔓 放行成书</button>
+  </div>
+</div></div>
+<!-- 书名 ABC 弹框 -->
+<div id="titlemodal" class="modal"><div class="mbox" style="width:560px">
+  <h3 id="tmtitle">✍ 选书名（点一张卡 / 或填自定义）</h3>
+  <div class="mhint">A/B/C… 点选其一，或在下方输入自定义书名。</div>
+  <div id="tmcards" style="display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow:auto"></div>
+  <div class="mfield" style="margin-top:10px"><label>自定义书名（填了就用它）</label><input id="tmcustom" placeholder=""></div>
+  <div class="mactions"><button class="mcancel" onclick="closeTitle()">取消</button>
+    <button class="mok" id="tmgoto">确认开写</button></div>
+</div></div>
+<script>
+const $=id=>document.getElementById(id);
+const sid=(localStorage.nbot_sid||(localStorage.nbot_sid=crypto.randomUUID()));
+let curKey=null, timer=null, polling=false;
+const msgBox=$('msgs');
+
+function bubble(who,html,cls,plain){
+  const d=document.createElement('div');
+  d.className='msg '+who+(cls?' '+cls:'');
+  d.innerHTML=`<div class="ava">${who==='bot'?'🖋':'🙂'}</div><div class="bubble">${html}</div>`;
+  msgBox.appendChild(d); msgBox.scrollTop=msgBox.scrollHeight;
+  // v0.4.1：per-book 对话隔离 —— 传了纯文本 plain 且当前有绑定书，就写进这本书自己的对话记录
+  if(typeof plain==='string' && _chatKey()) pushBkChat(_chatKey(), who, plain);
+  return d;
+}
+// ===== v0.4.1：每本书独立的对话（点哪本书，中间只看到它自己的聊天）=====
+function _chatKey(){ return curSession||curKey||''; }
+function pushBkChat(key,who,text){
+  if(!text||!text.trim())return;
+  fetch('/api/bkchat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,who,text:text.trim().slice(0,2000)})}).catch(()=>{});
+}
+async function loadBkChat(key){
+  msgBox.innerHTML='';
+  if(!key)return;
+  let d={messages:[]};
+  try{ d=await (await fetch('/api/bkchat?key='+encodeURIComponent(key))).json(); }catch(e){}
+  const ms=d.messages||[];
+  if(!ms.length){
+    const it=(window._libCache||[]).find(x=>x.key===key);
+    bubble('bot','💬 已切换到 <b>'+esc(it?it.name:key)+'</b> 的专属对话（只属于这本书）。直接告诉我要做什么：改剧情 / ⏸暂停 / ▶续写 / 🔓放行 / 加修正指令……','');
+    return;
+  }
+  ms.slice(-80).forEach(m=>{ bubble(m.who||'bot', fmt(m.text||''), '', null); });
+}
+function esc(s){s=(s==null)?'':String(s);return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+// v0.2.1 UX：轻提示 / 骨架 / 模态统一关闭
+function toast(msg,type){
+  const t=document.createElement('div'); t.className='toast '+(type||''); t.innerHTML=msg;
+  $('toasts').appendChild(t); setTimeout(()=>{t.style.transition='opacity .4s';t.style.opacity='0';setTimeout(()=>t.remove(),400);},3200);
+}
+function skel(n){ let h=''; for(let i=0;i<(n||3);i++)h+='<div class="skel"></div>'; return h; }
+function bindModalClose(){
+  document.querySelectorAll('.modal').forEach(m=>{
+    m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('show'); });
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.querySelectorAll('.modal.show').forEach(m=>m.classList.remove('show')); });
+}
+function fmt(s){
+  return esc(s)
+    .replace(/(【\d+】|✅|⚠️|📐|📚|✍️|🔁|💥)/g,'<b>$1</b>')
+    .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+    .replace(/(^|\n)(📖|🧑|💥|🌍|👁|🎨|💡|📚|📊|✅|⚠️)([^\n]*)/g,'$1<b>$2</b><span style="color:var(--text)">$3</span>');
+}
+function thinking(){
+  const d=document.createElement('div');
+  d.className='msg bot'; d.id='think';
+  d.innerHTML='<div class="ava">🖋</div><div class="bubble thinking"><span class="dot"></span><span class="dot"></span><span class="dot"></span> 构思中…</div>';
+  msgBox.appendChild(d); msgBox.scrollTop=msgBox.scrollHeight;
+}
+function killThinking(){const t=$('think'); if(t)t.remove();}
+
+async function send(){
+  const v=$('inp').value.trim(); if(!v)return;
+  $('inp').value='';
+  bubble('user',fmt(v),'',v);
+  thinking();
+  const pid=$('pselect')?$('pselect').value:'', mid=$('mselect')?$('mselect').value:'';
+  const payload={session_id:sid,message:v};
+  if(pid)payload.provider_id=pid;
+  if(mid)payload.model=mid;
+  try{
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)});
+    const j=await r.json();
+    killThinking();
+    const bb=bubble('bot',fmt(j.reply||'(空回复)'),'', j.reply||null);
+    attachTitleCards(bb, j.reply||'');
+    if(j.project){curKey=j.project; curSession=j.project;
+      // v0.4.1：把开书这条对话记进新书自己的记录（开书=这本书的第一条专属对话）
+      pushBkChat(j.project,'user',v); pushBkChat(j.project,'bot', j.reply||'');
+    }
+    refreshProjects();
+  }catch(e){killThinking();bubble('bot','⚠️ 服务异常：'+e,'',null);}
+}
+// 聊天里 bot 报"请选书名【1】..【N】" → 渲染成可点卡片（点一下=发送编号）
+function attachTitleCards(d, text){
+  if(!/【1】《/.test(text)) return;
+  const ms=[...text.matchAll(/【(\d+)】《([^》]+)》/g)].slice(0,8);
+  if(!ms.length || !d) return;
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center';
+  row.innerHTML='<span style="font-size:11px;color:var(--muted)">🎯 点选书名：</span>'+
+    ms.map(m=>'<span class="libchip" data-n="'+m[1]+'" style="cursor:pointer">'+esc(m[2])+'</span>').join('');
+  row.querySelectorAll('.libchip').forEach(c=>c.onclick=()=>{ c.style.opacity=.5; $('inp').value=c.dataset.n; send(); });
+  d.querySelector('.bubble').appendChild(row);
+}
+// ===== v0.4：Agent 式随时控（箭头随状态变换：➤发送 / ■停止 / ▶继续 / ⚡发指令）=====
+function _libItem(k){ if(!k)return null; return (window._libCache||[]).find(x=>x.key===k)||null; }
+function _curKey(){ return curSession||curKey||null; }
+function dispatchSend(){
+  const it=_libItem(_curKey());
+  const running=it&&it.state==='in_progress'&&!it.paused;
+  const paused=it&&it.paused;
+  const hasText=$('inp').value.trim().length>0;
+  if(running&&!hasText){ pauseBook(); return; }            // ■ 停止
+  if(paused&&!hasText){ resumeBook(); return; }             // ▶ 继续
+  if((running||paused)&&hasText){ queueInstruction(true); return; } // ⚡立即发这条修正指令
+  send();                                                    // ➤ 正常聊天 / 开新指令
+}
+$('send').onclick=dispatchSend;
+$('stage').onclick=()=>queueInstruction(false);            // ＋待发送（暂存）
+$('inp').addEventListener('input',updateSendBtn);
+$('inp').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();dispatchSend();}
+});
+function updateSendBtn(){
+  const it=_libItem(_curKey());
+  const running=it&&it.state==='in_progress'&&!it.paused;
+  const paused=it&&it.paused;
+  const hasText=$('inp').value.trim().length>0;
+  const sendEl=$('send'), stageEl=$('stage');
+  sendEl.classList.remove('stop','qsend');
+  if(running||paused){
+    stageEl.style.display='';
+    if(hasText){ sendEl.textContent='⚡发'; sendEl.classList.add('qsend'); sendEl.title='立即发送这条修正指令（下一章立刻用上）'; }
+    else if(running){ sendEl.textContent='■'; sendEl.classList.add('stop'); sendEl.title='停止（暂停当前写作）'; }
+    else { sendEl.textContent='▶'; sendEl.title='继续写作（恢复）'; }
+  } else { stageEl.style.display='none'; sendEl.textContent='➤'; sendEl.title='发送'; }
+  updateQbar();
+}
+function pauseBook(){ const k=_curKey(); if(!k)return toast('先选一本书','err');
+  fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})}).then(x=>x.json()).then(j=>{toast(j.msg||'已暂停','ok');renderSessions();startPolling();updateSendBtn();}).catch(()=>{}); }
+function resumeBook(){ const k=_curKey(); if(!k)return toast('先选一本书','err');
+  fetch('/api/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})}).then(x=>x.json()).then(j=>{toast(j.msg||'继续中','ok');curSession=k;renderSessions();startPolling();switchView('ms');updateSendBtn();}).catch(()=>{}); }
+function queueInstruction(imm){ const k=_curKey(), t=$('inp').value.trim(); if(!k)return toast('先选一本书','err'); if(!t)return;
+  fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,text:t,immediate:!!imm})}).then(x=>x.json()).then(j=>{
+    if(j.ok){ $('inp').value=''; updateQbar(); updateSendBtn(); toast(imm?'⚡ 指令已立即生效（下一章立刻用上）':'＋ 已暂存为「待发送」（下一条自动用上）','ok'); }
+    else toast(j.error||'加入失败','err');
+  }).catch(()=>{}); }
+async function updateQbar(){
+  const k=_curKey(), bar=$('qbar'); if(!k){bar.innerHTML='';return;}
+  try{
+    const d=await (await fetch('/api/queue?key='+encodeURIComponent(k))).json();
+    const items=d.items||[];
+    if(!items.length){bar.innerHTML='';return;}
+    bar.innerHTML=items.map(q=>'<div class="qitem'+(q.immediate?' imm':'')+'" data-i="'+q.i+'"><span>'+(q.immediate?'⚡':'⏳')+'</span><span class="qt">'+esc(q.text)+'</span>'+(q.immediate?'':'<button class="qa" data-a="imm">▶立即</button>')+'<button class="qa" data-a="rm">✕</button></div>').join('');
+    bar.querySelectorAll('.qa').forEach(b=>b.onclick=async()=>{
+      const i=+b.parentElement.dataset.i, a=b.dataset.a;
+      await fetch('/api/queue/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,index:i,action:a==='rm'?'remove':'imm'})});
+      updateQbar();
+    });
+  }catch(e){}
+}
+
+function startPolling(){
+  if(polling)return; polling=true;
+  timer=setInterval(async()=>{
+    if(!curKey)return;
+    try{
+      const j=await (await fetch('/api/status?key='+encodeURIComponent(curKey))).json();
+      if(j.error)return;
+      $('prog').style.display='block';
+      $('pname').textContent='《'+(j.name||curKey)+'》';
+      const pct=j.total?Math.round(j.done/j.total*100):0;
+      $('pfill').style.width=pct+'%';
+      $('pinfo').textContent=j.done+'/'+j.total+' 章 · '+(j.state==='completed'?'✅ 完成':j.state==='in_progress'?'✍️ 创作中':j.state==='validating'?'🔁 校验中':j.state);
+      $('pwords').textContent=j.words+' 字';
+      $('evts').innerHTML=(j.events||[]).slice(-8).map(e=>'<div>'+esc(e)+'</div>').join('');
+      // v0.3.5：中间「稿件」实时刷新 —— 正在写/校验时，小说正文随进度逐章出现（事件仍留右侧）
+      if($('manuscript').style.display==='block'){ loadManuscript(curKey); }
+      // v0.3.5：左侧书行「正在写第X章/校验第N轮」实时刷新
+      if(j.state==='in_progress'||j.state==='validating'||j.state==='releasing'){ if(window.renderSessions)renderSessions(); }
+      if(j.state==='completed'){refreshProjects();}
+      if(window.updateSendBtn)updateSendBtn();
+    }catch(e){}
+  },4000);
+}
+
+function refreshProjects(){ loadLibrary(); if(window.renderSessions)renderSessions(); }
+
+// ===== 作品库管理（v0.2）=====
+const L={sort:'updated',order:'desc',genre:'',status:'',q:'',sel:new Set()};
+function libQuery(){
+  const p=new URLSearchParams();
+  p.set('sort',L.sort); p.set('order',L.order);
+  if(L.genre)p.set('genre',L.genre);
+  if(L.status)p.set('status',L.status);
+  if(L.q)p.set('q',L.q);
+  return p.toString();
+}
+async function loadLibrary(){
+  if(!loadLibrary._loaded){ $('plist').innerHTML=skel(4); loadLibrary._loaded=true; }
+  let d; try{ d=await (await fetch('/api/library?'+libQuery())).json(); }catch(e){return;}
+  if(!d.items)return;
+  const s=d.stats;
+  $('libstats').innerHTML = (L.status==='archived'?'🗑 回收站 · '+s.count+' 本':
+    '共 <b>'+s.count+'</b> 本 · 达标 <span class="qok">'+s.passing+'</span> / 未评 '+s.unrated+
+    ' · 均分 <b>'+(s.avg_quality==null?'—':s.avg_quality)+'</b> · 总字数 <b>'+(s.total_words||0)+'</b>');
+  const gs=(d.facets&&d.facets.genres)||[];
+  $('libgenre').innerHTML='<label>题材</label>'+gs.map(g=>
+    '<span class="libchip'+(L.genre===g?' on':'')+'" data-g="'+esc(g)+'">'+esc(g)+'</span>').join('');
+  $('libgenre').querySelectorAll('[data-g]').forEach(c=>c.onclick=()=>{L.genre=(L.genre===c.dataset.g?'':c.dataset.g);L.status='';syncChips();loadLibrary();});
+  const el=$('plist');
+  if(!d.items.length){el.innerHTML='<div class="empty">'+(L.status==='archived'?'回收站为空':'暂无作品')+'</div>';}
+  else el.innerHTML=d.items.map(i=>{
+    const qb=i.quality==null?'<span class="qbadge na">未审</span>':(i.passing?'<span class="qbadge pass">'+i.quality+'</span>':'<span class="qbadge fail">'+i.quality+'</span>');
+    const rel=(i.released===true)?'<span class="qbadge pass" style="margin-left:5px">放行✅</span>':(i.released===false?'<span class="qbadge fail" style="margin-left:5px">未放行 ⚠️'+(i.final_quality!=null?('/'+(i.pass_line||90)):'')+'</span>':'');
+    const tag=i.state==='completed'?'<span class="tag done">完成</span>'
+      :(i.running?'<span class="tag run">创作中</span>':'<span class="tag wait">'+esc(i.status_label||i.state)+'</span>');
+    const sel=L.sel.has(i.key);
+    let act='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
+    if(L.status==='archived'){ act+='<button class="pb" data-key="'+i.key+'" data-op="restore">♻ 恢复</button>'; }
+    else{
+      act+='<button class="pb prev" data-key="'+i.key+'" data-op="prev">👁 预览</button>';
+      if(i.awaiting_title && !i.running){ act+='<button class="pb run" data-key="'+i.key+'" data-op="picktitle">✍ 选书名</button>'; }
+      else if(i.state==='completed'){ act+='<a class="pb" href="/api/download?key='+encodeURIComponent(i.key)+'" target="_blank" onclick="event.stopPropagation()">⬇ 成书</a><button class="pb run" data-key="'+i.key+'" data-op="cx">▶ 续写</button>'; }
+      else if(i.running){ act+='<button class="pb" disabled style="opacity:.5">创作中…</button>'; }
+      else{ act+='<button class="pb" data-key="'+i.key+'" data-op="cont">▶ 继续写</button>'; }
+    }
+    act+='</div>';
+    return '<div class="pitem" data-key="'+i.key+'" onclick="pick(\''+i.key+'\')">'+
+      '<span class="fav'+(i.favorite?' on':'')+'" data-key="'+i.key+'" onclick="toggleFav(event,this)" title="收藏">'+(i.favorite?'★':'☆')+'</span>'+
+      '<input type="checkbox" class="bchk" style="float:right" data-key="'+i.key+'" '+(sel?'checked':'')+' onclick="toggleSel(event,this)"> '+
+      '<div class="t">'+esc(i.name)+tag+'<span class="gchip">'+esc(i.genre)+'</span>'+qb+rel+'</div>'+
+      '<div class="tbar"><i style="width:'+i.progress+'%"></i></div>'+
+      '<div class="s"><span>'+i.done+'/'+i.total+' 章 · '+i.total_words+' 字</span></div>'+act+'</div>';
+  }).join('');
+  syncBatch();
+  el.querySelectorAll('[data-op]').forEach(b=>b.onclick=e=>{
+    e.stopPropagation(); const k=b.dataset.key,op=b.dataset.op;
+    if(op==='prev')openPreview(k);
+    else if(op==='cx')contExtra(k);
+    else if(op==='cont')cont(k);
+    else if(op==='picktitle')openTitle(k);
+    else if(op==='restore')batchOp([k],'restore');
+  });
+}
+function toggleSel(e,chk){e.stopPropagation(); if(chk.checked)L.sel.add(chk.dataset.key);else L.sel.delete(chk.dataset.key); syncBatch();}
+function syncBatch(){ const n=L.sel.size; $('libbatch').style.display=n?'flex':'none'; $('libn').textContent='已选 '+n+' 本：'; }
+function toggleFav(e,el){e.stopPropagation();
+  fetch('/api/library/'+encodeURIComponent(el.dataset.key)+'/favorite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!el.classList.contains('on')})}).then(()=>loadLibrary());
+}
+function batchOp(keys,action){
+  const label={delete:'🗑 归档',restore:'♻ 恢复',favorite:'★ 收藏'}[action]||action;
+  fetch('/api/library/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys,action})})
+   .then(r=>r.json()).then(j=>{ toast(label+' <b>'+keys.length+'</b> 本成功','ok'); L.sel.clear(); loadLibrary(); });
+}
+function batchReview(keys){ keys.forEach(k=>fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,mode:'report'})})); L.sel.clear(); loadLibrary(); toast('📝 已对 <b>'+keys.length+'</b> 本后台审稿（见事件流）','ok'); }
+function showCompare(a,b){
+  fetch('/api/compare?keys='+encodeURIComponent(a)+','+encodeURIComponent(b)).then(r=>r.json()).then(d=>{
+    if(!d.items||d.items.length<2)return;
+    const row=i=>'<div style="flex:1;min-width:130px"><b>'+esc(i.name)+'</b><br>'+
+      '<span class="qbadge '+(i.quality==null?'na':i.passing?'pass':'fail')+'">'+(i.quality==null?'未审':i.quality)+'</span> '+esc(i.genre)+
+      '<br>'+i.done+'/'+i.total+' 章 · '+i.total_words+' 字 · '+(i.status_label||'')+'</div>';
+    $('cmpbox').innerHTML='<div style="border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--panel);display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'+
+      row(d.items[0])+'<div style="font-size:16px;color:var(--accent)">⇄</div>'+row(d.items[1])+
+      '<button class="libchip" onclick="$(\'cmpbox\').innerHTML=\'\'">✕ 关闭</button></div>';
+  });
+}
+function syncChips(){ $('libstatus').querySelectorAll('.libchip').forEach(c=>c.classList.toggle('on',c.dataset.st===(L.status||''))); }
+
+// ===== 审查后重写 =====
+let RWBRIEF=null, _rwT=0;
+async function runRewritePlan(){
+  if(!PV_KEY)return;
+  $('rwbox').innerHTML='<div class="rwcard"><h4>🔁 生成重写方向</h4><div class="rwnote">正在分析 13/14/L1 与最低维度（约 30-90 秒）…</div></div>';
+  let b; try{ b=await (await fetch('/api/rewrite-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:PV_KEY})})).json(); }catch(e){$('rwbox').innerHTML='';return;}
+  if(!b||b.before_total==null){$('rwbox').innerHTML='';return;}
+  RWBRIEF=b;
+  const chaps=(b.chapters||[]).map(c=>c.chapter);
+  $('rwbox').innerHTML='<div class="rwcard"><h4>🔁 审查后重写 · 当前 '+b.before_total+' / 达标线 '+b.pass_line+'（'+(b.pass?'✅ 已达标':'未达标，建议重写')+'）</h4>'+
+    '<div class="rwdir"><b>主攻方向：</b>'+(b.global_directions||[]).map(g=>esc((g.split('：')[0]))).join(' / ')+'</div>'+
+    '<div class="rwdir"><b>逐章待修：</b>'+(chaps.length?'第 '+chaps.join('、')+' 章':'（无定位到章的高严重度项）')+'</div>'+
+    (chaps.length?'<div class="rwchips">'+chaps.map(c=>'<label><input type="checkbox" class="rwchk" value="'+c+'" checked> 第'+c+'章</label>').join('')+'</div>':'')+
+    '<button class="rwbtn" id="rwgo">开始定向重写（逐条带入要求）</button></div>';
+  $('rwgo').onclick=()=>{ const sel=[...document.querySelectorAll('.rwchk')].filter(c=>c.checked).map(c=>+c.value); doRewrite(sel.length?sel:null); };
+}
+function doRewrite(chapters){
+  const g=$('rwgo'); if(g){g.disabled=true;g.textContent='重写中…';}
+  _rwT=Date.now();
+  fetch('/api/rewrite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:PV_KEY,chapters})})
+   .then(r=>r.json()).then(()=>pollRewrite());
+}
+function pollRewrite(){
+  const t=setInterval(async()=>{
+    try{
+      const d=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(PV_KEY))).json();
+      if(!d.running){
+        clearInterval(t);
+        if(d.result&&d.result.error){ $('rwbox').innerHTML='<div class="rwcard"><h4>⚠️ 重写失败</h4><div class="rwnote">'+esc(d.result.error)+'</div></div>'; }
+        else if(d.result){ showRewriteResult(d.result); loadLibrary(); }
+        else { $('rwbox').innerHTML='<div class="rwcard"><div class="rwnote">重写完成（无返回结果，见 16-重写记录）。<button class="rwbtn" onclick="showPv(\'quality\')">查看质量报告</button></div></div>'; }
+        const g=$('rwgo'); if(g){g.disabled=false;g.textContent='开始定向重写';}
+      }
+      else if(Date.now()-_rwT>360000){ clearInterval(t); $('rwbox').innerHTML+='<div class="rwnote">重写进行中（>6 分钟，仍在后台跑，可稍后查看 16-重写记录）</div>'; }
+    }catch(e){}
+  },6000);
+}
+function showRewriteResult(res){
+  const delta=res.after-res.before, up=delta>=0;
+  $('rwbox').innerHTML='<div class="rwcard"><h4>🔁 重写完成</h4>'+
+    '<div class="rwsum">百分制 '+res.before+' → '+res.after+'（<span class="'+(up?'up':'dn')+'">'+(up?'+':'')+delta+'</span>）· '+(res.pass?'✅ 已达标':'未达标')+' · 改写 '+res.changed.length+' 章</div>'+
+    '<div class="rwdir"><b>仍弱维度：</b>'+(res.weak_after||[]).join(' / ')||'（无明显短板）'+'</div>'+
+    '<div class="rwnote">各章注入的要求 + 前后字数见 <b>16-重写记录.md</b>（作品目录内）。分数为 LLM 五角色重评，可能有波动。</div>'+
+    '<div style="margin-top:8px;display:flex;gap:8px"><button class="rwbtn" onclick="showPv(\'quality\')">查看新质量报告</button></div></div>';
+}
+window.pick=k=>{curKey=k;startPolling();refreshProjects();};
+window.cont=k=>{
+  fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})})
+    .then(r=>r.json()).then(j=>{bubble('bot',fmt(j.msg||'继续中…'));curKey=k;startPolling();refreshProjects();});
+};
+window.contExtra=k=>{
+  const r=prompt('续写：在现有章节之后继续写几章？','3'); if(r===null)return;
+  const extra=Math.max(0,parseInt(r)||0); if(!extra)return;
+  fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,extra:extra})})
+    .then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=k;startPolling();refreshProjects();});
+};
+// ============ 模型供应商（多供应商绑定 / 创作选模型） ============
+let provOpts=[], provPresets=[], provOpen={}, provGroupOpen=null;
+const $p=id=>document.getElementById(id);
+
+async function loadProviderPicker(){
+  try{
+    const j=await (await fetch('/api/model_options')).json();
+    provOpts=j.options||[];
+    const ps=$p('pselect'), ms=$p('mselect');
+    if(!provOpts.length){ps.disabled=ms.disabled=true; ms.innerHTML=''; $p('pvhint').textContent='无可用供应商'; return;}
+    ps.disabled=ms.disabled=false;
+    ps.innerHTML=provOpts.map(o=>'<option value="'+o.id+'">'+esc(o.name)+'</option>').join('');
+    const saved=localStorage.getItem('nbot_prov')||'';
+    let defId=(saved&&provOpts.find(x=>x.id===saved))?saved:(j.default_provider||provOpts[0].id);
+    ps.value=defId;
+    fillModelSel(ps.value);
+    ps.onchange=()=>{fillModelSel(ps.value); localStorage.setItem('nbot_prov',ps.value); updateHint();};
+    ms.onchange=()=>{localStorage.setItem('nbot_prov',ps.value); updateHint();};
+    updateHint();
+  }catch(e){}
+}
+function fillModelSel(pid){
+  const o=provOpts.find(x=>x.id===pid), ms=$p('mselect');
+  const models=(o&&o.models&&o.models.length)?o.models:[];
+  ms.disabled=!models.length;
+  ms.innerHTML=models.map(m=>'<option value="'+esc(m)+'">'+esc(m)+'</option>').join('');
+  if(o&&o.default_model&&models.includes(o.default_model))ms.value=o.default_model;
+  else if(ms.value&&!models.includes(ms.value))ms.value=models[0]||'';
+}
+function updateHint(){
+  const pid=$p('pselect').value, m=$p('mselect').value, o=provOpts.find(x=>x.id===pid);
+  $p('pvhint').textContent=(pid&&m)?('当前：'+(o?o.name:pid)+' · '+m):(pid?'当前：'+(o?o.name:pid)+'（默认模型）':'默认供应商');
+}
+
+async function loadProviders(){
+  try{
+    const j=await (await fetch('/api/providers')).json();
+    provPresets=j.presets||[];
+    const list=j.providers||[], defId=j.default_provider, el=$p('provlist'), sum=$p('provsum');
+    if(!list.length){
+      sum.style.display='none';
+      el.style.display='block';
+      el.innerHTML='<div class="empty">尚未绑定供应商<br><button class="vbtn" style="margin-top:8px" onclick="openProvModal()">＋ 绑定一个</button></div>';
+      return;
+    }
+    // 组级折叠：多个自动收起（重叠），单个自动展开；用户可点击切换
+    if(provGroupOpen===null) provGroupOpen=(list.length>1)?false:true;
+    const defName=(list.find(x=>x.id===defId)||{}).name||'（无）';
+    sum.style.display='flex';
+    sum.innerHTML='<span class="arr">▶</span><span class="vdot"></span><b>模型供应商</b><span class="sumn">'+list.length+' 个 · 默认 '+esc(defName)+'</span>';
+    sum.classList.toggle('open', provGroupOpen);
+    sum.onclick=toggleProvGroup;
+    el.style.display=provGroupOpen?'block':'none';
+    el.innerHTML=list.map(p=>{
+      const isDef=p.id===defId, curm=p.default_model;
+      const bodyOpen=(provOpen[p.id]!==undefined)?provOpen[p.id]:(!isDef); // 默认供应商收起，其它展开
+      const mlist=(p.models&&p.models.length)
+        ? '<div class="vmodels">'+p.models.map(m=>'<span class="mtag'+(m===curm?' cur':'')+'" data-m="'+esc(m)+'" data-pid="'+p.id+'" title="点我设为该供应商默认">'+esc(m)+(m===curm?' ✓':'')+'</span>').join('')+'</div>'+
+          '<div class="vmodels-hint">点任一模型 → 设为该供应商的默认模型</div>'
+        : '<div class="vmodels">（无模型清单 · 点「拉取模型」或绑定表单填写）</div>';
+      return '<div class="vitem'+(p.active?'':' off')+(bodyOpen?'':' collapsed')+'" data-id="'+p.id+'">'+
+        '<div class="vh" data-toggle="'+p.id+'"><span class="vchev">▾</span><span class="vdot"></span>'+
+        '<span class="vname">'+esc(p.name)+(isDef?' <span class="vdef">★ 默认</span>':'')+'</span>'+
+        '<span class="vstat">'+(p.active?'可用':'停用')+'</span></div>'+
+        '<div class="vbody">'+
+          '<div class="vrow">'+
+            '<button class="vbtn" data-act="toggle" data-id="'+p.id+'">'+(p.active?'停用':'启用')+'</button>'+
+            '<button class="vbtn def" data-act="def" data-id="'+p.id+'"'+(isDef?' disabled':'')+'>'+(isDef?'默认':'设默认')+'</button>'+
+            '<button class="vbtn" data-act="test" data-id="'+p.id+'">测试</button>'+
+            '<button class="vbtn" data-act="fetch" data-id="'+p.id+'">拉取模型</button>'+
+            '<button class="vbtn danger" data-act="del" data-id="'+p.id+'">删除</button>'+
+          '</div>'+
+          mlist+
+          '<div class="vkey">key：'+esc(p.key_display||'未设置')+'</div>'+
+          '<div class="vstat vtest" style="margin-top:5px"></div>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+    el.querySelectorAll('[data-toggle]').forEach(h=>h.onclick=e=>{e.stopPropagation();toggleVitem(h.dataset.toggle);});
+    el.querySelectorAll('.mtag[data-m]').forEach(t=>t.onclick=e=>{e.stopPropagation();setProvDefaultModel(t.dataset.pid,t.dataset.m);});
+    el.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>provAction(b.dataset.act,b.dataset.id,b));
+  }catch(e){}
+}
+function toggleProvGroup(){ provGroupOpen=!provGroupOpen; const s=$p('provsum'); s.classList.toggle('open',provGroupOpen); $p('provlist').style.display=provGroupOpen?'block':'none'; }
+function toggleVitem(pid){ const el=document.querySelector('.vitem[data-id="'+pid+'"]'); if(!el)return; const c=el.classList.toggle('collapsed'); provOpen[pid]=!c; }
+async function setProvDefaultModel(pid, model){
+  const r=await fetch('/api/providers/'+encodeURIComponent(pid),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({default_model:model})});
+  const j=await r.json(); if(j.error){bubble('bot','⚠️ 设置默认模型失败：'+j.error);return;}
+  await loadProviders(); await loadProviderPicker();
+  bubble('bot','✅ 「'+(j.provider.name)+'」的默认模型已设为 <b>'+esc(model)+'</b>。');
+}
+async function provAction(act, pid, btn){
+  try{
+    if(act==='del'){
+      if(!confirm('删除供应商「'+pid+'」？（其数据与模型清单将一并移除）'))return;
+      const j=await (await fetch('/api/providers/'+encodeURIComponent(pid),{method:'DELETE'})).json();
+      if(j.error)throw new Error(j.error);
+    }else if(act==='def'){
+      await fetch('/api/providers/'+encodeURIComponent(pid)+'/default',{method:'POST'});
+    }else if(act==='toggle'){
+      const wantActive=btn.textContent.trim()==='启用';
+      await fetch('/api/providers/'+encodeURIComponent(pid)+'/active',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({active:wantActive})});
+    }else if(act==='test'){
+      if(btn){btn.classList.add('busy');btn.textContent='测试中…';}
+      const j=await (await fetch('/api/providers/'+encodeURIComponent(pid)+'/test',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:'{}'})).json();
+      const box=document.querySelector('.vitem[data-id="'+pid+'"] .vtest');
+      if(box)box.textContent=(j.ok?'✅ ':'⚠️ ')+(j.detail||'');
+      if(btn){btn.classList.remove('busy');btn.textContent='测试';}
+      if(j.models&&j.models.length)return loadProviders();
+      return;
+    }else if(act==='fetch'){
+      if(btn){btn.classList.add('busy');btn.textContent='拉取中…';}
+      const j=await (await fetch('/api/providers/'+encodeURIComponent(pid)+'/models',{method:'POST'})).json();
+      const box=document.querySelector('.vitem[data-id="'+pid+'"] .vtest');
+      if(box)box.textContent=j.from_api?('✅ 已拉取 '+j.models.length+' 个模型'):('⚠️ '+(j.msg||'拉取失败'));
+      if(btn){btn.classList.remove('busy');btn.textContent='拉取模型';}
+    }
+    await loadProviders(); await loadProviderPicker();
+  }catch(e){bubble('bot','⚠️ 供应商操作失败：'+e);}
+}
+
+function openProvModal(){
+  $p('merr').textContent='';
+  const ps=$p('mpreset');
+  ps.innerHTML='<option value="">自定义</option>'+provPresets.map(p=>'<option value="'+p.slug+'">'+esc(p.name)+'</option>').join('');
+  ps.onchange=presetChg();
+  $p('mname').value='';$p('murl').value='';$p('mkey').value='';$p('mkeyfile').value='';$p('mmodels').value='';
+  $p('mtemp').value='0.85';$p('mtoken').value='12000';$p('mtimeout').value='900';$p('mactive').checked=true;
+  $p('provmodal').classList.add('show');
+}
+function presetChg(){
+  return function(){
+    const s=$p('mpreset').value, p=provPresets.find(x=>x.slug===s); $p('merr').textContent='';
+    if(p){$p('mname').value=p.name;$p('murl').value=p.base_url;$p('mkeyfile').value='';
+      $p('mmodels').value=(p.models||[]).join(', ');}
+  };
+}
+function closeProvModal(){$p('provmodal').classList.remove('show');}
+async function bindProv(){
+  $p('merr').textContent='';
+  const preset=$p('mpreset').value;
+  const payload={name:$p('mname').value.trim(), base_url:$p('murl').value.trim(),
+    api_key:$p('mkey').value.trim(), api_key_file:$p('mkeyfile').value.trim(),
+    models:$p('mmodels').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean),
+    temperature:parseFloat($p('mtemp').value)||0.85,
+    max_tokens:parseInt($p('mtoken').value)||12000,
+    timeout:parseInt($p('mtimeout').value)||900,
+    active:$p('mactive').checked};
+  if(preset)payload.preset=preset;
+  if(!payload.base_url&&!preset){$p('merr').textContent='请选择预设或填写 Base URL';return;}
+  if(!preset&&!payload.models.length){$p('merr').textContent='请填写至少一个模型（逗号分隔），或选预设自动填充';return;}
+  const j=await (await fetch('/api/providers',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+  if(j.error){$p('merr').textContent=j.error;return;}
+  closeProvModal();
+  await loadProviders(); await loadProviderPicker();
+  bubble('bot','✅ 已绑定供应商「'+(j.provider.name)+'」（'+(j.provider.models.length||0)+' 个模型）。创作时可在输入框上方选择供应商与模型。');
+}
+window.openProvModal=openProvModal;
+window.closeProvModal=closeProvModal;
+
+// ============ 作品预览（点开即看内容） ============
+let PV_KEY=null, PV_TEXT='';
+function mdLite(s){
+  let t=esc(s||'');
+  t=t.replace(/^#{1,6}\s+(.+)$/gm,(m,x)=>'<div class="pv-h">'+x+'</div>');
+  t=t.replace(/^>\s?(.+)$/gm,(m,x)=>'<div class="pv-q">'+x+'</div>');
+  t=t.replace(/^[ \t]*[-*]\s+(.+)$/gm,(m,x)=>'<div class="pv-li">• '+x+'</div>');
+  t=t.replace(/^[ \t]*[-=]{3,}[ \t]*$/gm,'<div class="pv-hr"></div>');
+  t=t.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+  t=t.replace(/\n{3,}/g,'\n\n').replace(/\n/g,'<br>');
+  t=t.replace(/<\/div><br>/g,'</div>').replace(/<br><div/g,'<div').replace(/<br><br>/g,'<br><br>');
+  return t;
+}
+async function openPreview(key){
+  PV_KEY=key; PV_TEXT='';
+  $('pvmodal').classList.add('show');
+  $('pvtitle').textContent='加载中…'; $('pvbody').textContent='加载中…'; $('pvch').innerHTML='';
+  const j=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();
+  if(j.error){$('pvbody').textContent='⚠️ '+j.error;return;}
+  PV_TEXT=j.text||'';
+  const done=(j.chapters||[]).filter(c=>c.status==='completed').length;
+  $('pvtitle').textContent='《'+(j.name||key)+'》 '+(j.has_book?'· 成书':'· 已写 '+done+' 章')
+    +(j.total_words?(' · 约 '+j.total_words+' 字'):'');
+  $('pvdow').href='/api/download?key='+encodeURIComponent(key);
+  const haveCh=(j.chapters||[]).filter(c=>(c.words||0)>0||c.status==='completed');
+  const sel=$('pvch');
+  sel.innerHTML='<option value="all">'+(j.has_book?'全文（成书）':'全部已写')+'</option>'+
+    haveCh.map(c=>'<option value="'+c.n+'">第'+c.n+'章'+(c.continuation?'（续写）':(c.title&&c.title!=='续写'?' '+esc(c.title):''))+'</option>').join('')
+    +(j.has_book?'<option value="quality">📊 质量报告（五角色+达标判定）</option><option value="review">📋 修订记录（五角色审校）</option>':'');
+  sel.onchange=()=>showPv(sel.value);
+  showPv('all');
+}
+async function showPv(sel){
+  const body=$('pvbody');
+  if(sel==='all'){ body.innerHTML=mdLite(PV_TEXT)||'<span style="color:var(--muted)">（暂无内容）</span>'; }
+  else if(sel==='quality'){
+    const j=await (await fetch('/api/quality?key='+encodeURIComponent(PV_KEY))).json();
+    body.innerHTML=(j&&j.text)?mdLite(j.text):'<span style="color:var(--muted)">尚未质检。点右上「📝 审稿」跑 确定性引擎+五角色 并出百分制达标判定。</span>';
+  }
+  else if(sel==='review'){
+    const j=await (await fetch('/api/review?key='+encodeURIComponent(PV_KEY))).json();
+    body.innerHTML=(j&&j.text)?mdLite(j.text):'<span style="color:var(--muted)">尚未审稿。点右上「📝 审稿」跑一次五角色分层编辑。</span>';
+  }
+  else{
+    const j=await (await fetch('/api/chapter?key='+encodeURIComponent(PV_KEY)+'&n='+sel)).json();
+    body.innerHTML=mdLite(j.text||'（该章尚未生成）');
+  }
+  body.scrollTop=0;
+}
+async function runValidate(){
+  if(!PV_KEY) return;
+  const b=$('pvval'); b.disabled=true; b.textContent='⏳ 审稿中';
+  $('pvbody').textContent='📝 正在跑 确定性引擎 + 五角色审校 + 百分制（对标达标线 90），约 30-90 秒…';
+  await fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:PV_KEY,mode:'report'})});
+  const t0=Date.now();
+  const poll=async()=>{
+    try{
+      const s=await (await fetch('/api/status?key='+encodeURIComponent(PV_KEY))).json();
+      if(s.state==='completed'||s.state==='failed'||s.state==='idle'){
+        await showPv('quality'); $('pvch').value='quality'; b.disabled=false; b.textContent='📝 审稿'; return;
+      }
+      if(Date.now()-t0<180000) setTimeout(poll,4000);
+      else {b.disabled=false;b.textContent='📝 审稿';}
+    }catch(e){b.disabled=false;b.textContent='📝 审稿';}
+  };
+  setTimeout(poll,3000);
+}
+window.openPreview=openPreview;
+window.closePvModal=()=>$('pvmodal').classList.remove('show');
+window.runValidate=runValidate;
+
+// ===== 开书向导 + 书名 ABC + 放行门禁 =====
+let ONB=null, TMKEY=null, TMCANDS=[];
+async function openOnb(){
+  $('onbmodal').classList.add('show');
+  if(!ONB){ try{ ONB=await (await fetch('/api/onboarding')).json(); }catch(e){ ONB={genres:['都市爽文'],tones:['爽文'],sells:['打脸','逆袭'],perspectives:['男主','女主','不限'],chapter_options:[10],defaults:{release_gate:true,p5_pipeline:true}}; } }
+  const sel=(id,vals,def)=>{const el=$(id);el.innerHTML=vals.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');if(def)el.value=def;};
+  sel('ob_genre',ONB.genres,ONB.genres[0]); sel('ob_persp',ONB.perspectives,'男主');
+  sel('ob_tone',ONB.tones,'爽文'); sel('ob_chap',(ONB.chapter_options||[3,5,10,20,50]).concat('自定义'),10);
+  $('ob_chap').onchange=()=>{$('ob_chap_custom').style.display=($('ob_chap').value==='自定义')?'block':'none';};
+  $('ob_chap_custom').value='';
+  // v0.3 P2 风格技能（金手指/节奏/语言，按题材 preset 自动填，可改）
+  const _sty=ONB.style||{}, _prev=($('ob_genre').value)||ONB.genres[0], _pre=( _sty.preset||{})[_prev]||{};
+  sel('ob_hand',_sty['金手指']||[],_pre['金手指']||(_sty['金手指']||[])[0]);
+  sel('ob_pace',_sty['节奏']||[],_pre['节奏']||(_sty['节奏']||[])[0]);
+  sel('ob_lang',_sty['语言']||[],_pre['语言']||(_sty['语言']||[])[0]);
+  $('ob_genre').onchange=()=>{const p=(_sty.preset||{})[$('ob_genre').value]||{};
+    if(p['金手指'])$('ob_hand').value=p['金手指']; if(p['节奏'])$('ob_pace').value=p['节奏']; if(p['语言'])$('ob_lang').value=p['语言'];
+    const pn=$('obprefnote');if(pn)pn.style.display='none';};
+  fillOnbStyle(); prefillFromLearn();
+  $('ob_sells').innerHTML=ONB.sells.map(s=>'<label class="libchip" style="cursor:pointer"><input type="checkbox" value="'+esc(s)+'" style="display:none"> '+esc(s)+'</label>').join('');
+  $('ob_sells').querySelectorAll('label').forEach(l=>l.onclick=()=>{l.classList.toggle('on');l.querySelector('input').checked=l.classList.contains('on');});
+  try{
+    const mo=await (await fetch('/api/model_options')).json();
+    $('ob_prov').innerHTML=(mo.options||[]).map(o=>'<option value="'+o.id+'">'+esc(o.name)+'</option>').join('');
+    fillOnbModel(); $('ob_prov').onchange=fillOnbModel;
+  }catch(e){ $('ob_prov').innerHTML='<option value="">默认</option>'; }
+  $('ob_gate').checked=ONB.defaults?.release_gate!==false;
+  $('ob_p5').checked=ONB.defaults?.p5_pipeline!==false;
+}
+function fillOnbModel(){
+  const pid=$('ob_prov').value;
+  fetch('/api/model_options').then(r=>r.json()).then(mo=>{
+    const o=(mo.options||[]).find(x=>x.id===pid); const ms=o?o.models||[]:[];
+    $('ob_model').innerHTML=ms.map(m=>'<option value="'+esc(m)+'">'+esc(m)+'</option>').join('')||'<option value="">默认</option>';
+    if(o?.default_model) $('ob_model').value=o.default_model;
+  }).catch(()=>{});
+}
+window.closeOnb=()=>$('onbmodal').classList.remove('show');
+async function submitOnb(){
+  const sells=[...$('ob_sells').querySelectorAll('input:checked')].map(i=>i.value);
+  let _chap=+$('ob_chap').value;
+  if($('ob_chap').value==='自定义'){ _chap=+$('ob_chap_custom').value; if(!(_chap>=1&&_chap<=200)){$('oberr').textContent='⚠️ 自定义章节数需在 1-200 之间';return;} }
+  const payload={genre:$('ob_genre').value, tone:$('ob_tone').value, perspective:$('ob_persp').value,
+    style:{金手指:$('ob_hand').value, 节奏:$('ob_pace').value, 语言:$('ob_lang').value, 卷:(_chap<=10?'单卷(10章)':'多卷(3卷各10)')},
+    sells, idea:$('ob_idea').value.trim(), total_chapters:_chap,
+    provider_id:$('ob_prov').value, model:$('ob_model').value,
+    style_id:($('ob_style').value==='__none'?'':$('ob_style').value)||'',
+    cfg_overrides:{defaults:{release_gate:$('ob_gate').checked, p5_pipeline:$('ob_p5').checked}}};
+  if($('ob_title').value.trim()) payload.title=$('ob_title').value.trim();
+  $('oberr').textContent='📐 规划中（生成候选，约 30-90 秒）…';
+  let r; try{ r=await (await fetch('/api/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
+  catch(e){ $('oberr').textContent='⚠️ '+e; return; }
+  if(r.error){ $('oberr').textContent='⚠️ '+r.error; return; }
+  closeOnb(); refreshProjects();
+  if(r.awaiting_title){ openTitle(r.key); }
+  else { curKey=r.key; curSession=r.key; startPolling(); bubble('bot','📐 《'+payload.title+'》开写中（放行门禁 '+(payload.cfg_overrides.defaults.release_gate?'开':'关')+'）…'); switchView('ms'); loadManuscript(r.key); }
+}
+$('obgo').onclick=submitOnb;
+window.openOnb=openOnb;
+// ===== v0.3.4 学习进化：报告 + 按偏好预填 =====
+async function loadLearn(){
+  const el=$('learnreport');if(!el)return;
+  let p;try{p=await (await fetch('/api/learn')).json();}catch(e){el.innerHTML='<div class="empty">加载失败</div>';return;}
+  const g=p.genres||[];
+  el.innerHTML=(p.total?'<div class="rwnote" style="margin-bottom:8px;font-size:11px">'+esc(p.insight||('已学习 '+p.total+' 本'))+'</div>':'')
+    +(g.length?'<div style="display:flex;flex-direction:column;gap:7px">'+g.slice(0,6).map(x=>{
+      const bar='<div style="display:flex;align-items:center;gap:8px;font:11px var(--sans)"><span style="width:56px;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">'+esc(x.genre)+'</span>'
+        +'<span style="flex:1;height:6px;background:var(--panel2);border-radius:4px;overflow:hidden"><span style="display:block;height:100%;width:'+(x.share||0)+'%;background:linear-gradient(90deg,#7c5cff,#3ad29b)"></span></span>'
+        +'<span style="color:var(--muted);width:30px;text-align:right">'+x.count+'本</span></div>';
+      const pf=[];if(x.top_hand&&x.top_hand[0])pf.push(x.top_hand[0]);if(x.top_pace&&x.top_pace[0])pf.push(x.top_pace[0]);if(x.top_lang&&x.top_lang[0])pf.push(x.top_lang[0]);
+      return '<div>'+bar+(pf.length?'<div style="font:10px var(--muted);margin:2px 0 0 56px">偏好：'+esc(pf.join(' · '))+'</div>':'')+'</div>';
+    }).join('')+'</div>':'<div class="empty">还没写过小说。写几本后，系统会自动学习你的题材与偏好，下次开书按偏好预填。</div>');
+}
+window.loadLearn=loadLearn;
+async function prefillFromLearn(){
+  let p;try{p=await (await fetch('/api/learn')).json();}catch(e){return;}
+  const g=(p.genres||[]).find(x=>x.genre===$('ob_genre').value);
+  if(!g)return;
+  let changed=false;
+  if(g.top_hand&&g.top_hand[0]){ $('ob_hand').value=g.top_hand[0]; changed=true; }
+  if(g.top_pace&&g.top_pace[0]){ $('ob_pace').value=g.top_pace[0]; changed=true; }
+  if(g.top_lang&&g.top_lang[0]){ $('ob_lang').value=g.top_lang[0]; changed=true; }
+  const n=$('obprefnote'); if(n){ n.style.display=changed?'block':'none'; n.textContent='📈 已按你「'+g.genre+'」的偏好预填（金手指/节奏/语言）'; }
+  if(changed&&window.cxApplyAll)cxApplyAll();
+}
+window.prefillFromLearn=prefillFromLearn;
+async function fillOnbStyle(){
+  const names=[];try{names=(await (await fetch('/api/styles')).json()).items.map(x=>x.name);}catch(e){}
+  const el=$('ob_style');
+  el.innerHTML='<option value="__none">（不用蒸馏风格）</option>'+names.map(n=>'<option value="'+esc(n)+'">✨ '+esc(n)+'</option>').join('');
+  el.value='__none';
+}
+window.fillOnbStyle=fillOnbStyle;
+async function loadStyleLib(){
+  const el=$('stylelib');if(!el)return;
+  let items=[];try{items=(await (await fetch('/api/styles')).json()).items;}catch(e){el.innerHTML='<div class="empty">加载失败</div>';return;}
+  el.innerHTML=items.length?(''):'<div class="empty">暂无蒸馏风格。点「＋ 蒸馏新风格」把一段小说/网址蒸馏成可复用的专属风格。</div>';
+  items.forEach(s=>{
+    const c=document.createElement('div');
+    c.style.cssText='border:1px solid var(--border);background:var(--panel2);border-radius:11px;padding:9px 11px;margin-bottom:8px';
+    c.innerHTML='<div style="font:600 13px var(--sans);color:var(--text)">✨ '+esc(s.name)+(s.genre?' <span style="font:10px var(--muted);font-weight:400">· '+esc(s.genre)+'</span>':'')+'</div>'
+      +'<div style="font:11px var(--muted);line-height:1.5;margin-top:3px">'+esc(s.summary||'')+'</div>'
+      +(s.fingerprint_words&&s.fingerprint_words.length?'<div style="font:10.5px var(--muted);margin-top:4px">指纹词：'+esc(s.fingerprint_words.slice(0,6).join(' · '))+'</div>':'')
+      +'<div style="margin-top:7px"><button class="pb" style="font-size:10.5px;padding:3px 8px" onclick="delStyle(\''+esc(s.name)+'\')">🗑 删除</button></div>';
+    el.append(c);
+  });
+}
+window.loadStyleLib=loadStyleLib;
+function delStyle(name){ if(!confirm('删除风格「'+name+'」？（开过的新书不受影响）'))return; fetch('/api/styles/'+encodeURIComponent(name),{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.ok?'已删除风格':'删除失败','ok');loadStyleLib();}); }
+window.delStyle=delStyle;
+function openDistill(){ ['dl_name','dl_genre','dl_text','dl_urls'].forEach(id=>{const e=$(id);if(e)e.value='';}); $('dlerr').textContent=''; $('distillmodal').classList.add('show'); }
+window.openDistill=openDistill;
+window.closeDistill=()=>$('distillmodal').classList.remove('show');
+// ===== v0.4 放行弹窗：待放行书 → 直接解决 =====
+var _rlKey=null;
+async function openReleaseModal(key){
+  _rlKey=key; const b=$('rlbody'); b.innerHTML='<div class="rwnote">加载放行信息…</div>'; $('rlerr').textContent='';
+  $('releasemodal').classList.add('show');
+  let lib={}; try{ const d=await (await fetch('/api/library')).json(); lib=d.items.find(x=>x.key===key)||{}; }catch(e){}
+  let log={}; try{ log=await (await fetch('/api/release-log?key='+encodeURIComponent(key))).json(); }catch(e){}
+  const q=(lib.final_quality!=null?lib.final_quality:(lib.quality!=null?lib.quality:null));
+  const pl=lib.pass_line||90;
+  let rows=''; ((log.result&&log.result.gate_results)||[]).slice(0,6).forEach(g=>{ rows+='<div style="font:11px var(--muted)">第'+(g.round||'')+'轮：'+(g.before||0)+' → '+(g.after||0)+(g.stopped?'（达标停）':'')+'</div>'; });
+  b.innerHTML='📖 <b>'+esc(lib.name||key)+'</b><br>'
+    +'当前成书质量：<b style="color:'+(q!=null&&q>=pl?'#3ad29b':'#f59e0b')+'">'+(q!=null?q:'未评分')+'</b> / 放行线 '+pl
+    +(q!=null?(q>=pl?'（已达标，可放行 ✅）':'（未达线，放行将标 beta）'):'')
+    +'<br>'+(lib.gate_rounds?('已跑 '+lib.gate_rounds+' 轮门禁'):'')+(rows?('<div style="margin-top:4px">'+rows+'</div>'):'')
+    +'<br><span style="font:11px var(--muted)">🔓放行=定稿成书 · 再校验=重跑门禁试图提分到线 · 保持beta=先留着不改</span>';
+  $('rl_go').onclick=()=>{ fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{ toast('🔓 '+(j.msg||'放行中')+'（完成会弹通知）','ok'); closeRelease(); renderSessions(); startPolling(); }); };
+  $('rl_again').onclick=()=>{ fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,mode:'report'})}).then(x=>x.json()).then(j=>{ toast('🔁 再校验中（' + (j.msg||'') + '）','ok'); closeRelease(); startPolling(); }); };
+  $('rl_beta').onclick=()=>{ toast('保持 beta（先留着不改）','ok'); closeRelease(); };
+}
+window.openReleaseModal=openReleaseModal;
+window.closeRelease=()=>$('releasemodal').classList.remove('show');
+async function submitDistill(){
+  const name=$('dl_name').value.trim(), genre=$('dl_genre').value.trim();
+  const text=$('dl_text').value.trim(), urls=$('dl_urls').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!name){ $('dlerr').textContent='⚠️ 请给风格起个名字'; return; }
+  if(!text && !urls.length){ $('dlerr').textContent='⚠️ 请粘贴文本或填网址（至少一样）'; return; }
+  $('dlerr').textContent='✨ 蒸馏中（约 10-30 秒）…';
+  let j; try{ j=await (await fetch('/api/distill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,genre,text,urls})})).json(); }catch(e){ $('dlerr').textContent='⚠️ '+e; return; }
+  if(!j.ok){ $('dlerr').textContent='⚠️ '+(j.note||j.error||'蒸馏失败'); return; }
+  $('dlerr').textContent=''; closeDistill(); toast('✨ 已蒸馏风格「'+name+'」（'+(j.style?.fingerprint_words?.length||0)+' 指纹词）','ok');
+  loadStyleLib(); fillOnbStyle();
+}
+window.submitDistill=submitDistill;
+(function(){ const b=$('btn-distill'); if(b)b.onclick=openDistill; const g=$('dlgo'); if(g)g.onclick=submitDistill; })();
+
+async function openTitle(key){
+  TMKEY=key; $('titlemodal').classList.add('show'); $('tmcards').innerHTML='<div class="rwnote">加载候选…</div>';
+  let d; try{ d=await (await fetch('/api/titles?key='+encodeURIComponent(key))).json(); }catch(e){ $('tmcards').innerHTML='⚠️ 加载失败'; return; }
+  TMCANDS=d.candidates||[]; $('tmcustom').value='';
+  const L='ABCDEFGHIJ';
+  $('tmcards').innerHTML=(TMCANDS.length?TMCANDS:[{title:'未命名'}]).map((c,i)=>
+    '<label class="tmcard" data-t="'+esc(c.title||'')+'" style="display:flex;gap:10px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:9px 12px;cursor:pointer;background:var(--panel)">'+
+      '<span style="font-size:15px;font-weight:700;color:var(--accent);width:18px">'+L[i]+'</span>'+
+      '<div style="flex:1"><b>'+esc(c.title||'（未命名）')+'</b><div style="font-size:11px;color:var(--muted)">'+esc((c.technique||'')+' · '+(c.why||''))+'</div></div></label>').join('');
+  $('tmcards').querySelectorAll('.tmcard').forEach(l=>l.onclick=()=>{
+    $('tmcards').querySelectorAll('.tmcard').forEach(x=>{x.style.borderColor='var(--border)';x.style.background='var(--panel)';});
+    l.style.borderColor='var(--accent)'; l.style.background='rgba(108,140,255,.12)'; $('tmcustom').value=l.dataset.t;
+  });
+  $('tmgoto').onclick=()=>{ const t=$('tmcustom').value.trim(); if(!t)return; doPickTitle(TMKEY,t); };
+}
+async function doPickTitle(key,title){
+  closeTitle();
+  let r; try{ r=await (await fetch('/api/pick-title',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,title})})).json(); }
+  catch(e){ toast('⚠️ 选名失败：'+e,'err'); return; }
+  if(r.ok){ curKey=r.key; curSession=r.key; startPolling(); loadLibrary(); toast('📐 《<b>'+esc(title)+'</b>》开写中…','ok'); switchView('ms'); loadManuscript(r.key); }
+  else toast('⚠️ 选名失败：'+(r.error||''),'err');
+}
+window.openTitle=openTitle; window.closeTitle=()=>$('titlemodal').classList.remove('show');
+
+async function runReleaseGate(){
+  if(!PV_KEY)return;
+  $('gatebox').innerHTML='<div class="rwcard"><h4>🔓 放行门禁</h4><div class="rwnote">自动带要求重写到 ≥90（约 2-6 分钟）…</div>'+
+    '<button class="gcancel" onclick="cancelGate()">✕ 取消门禁</button></div>';
+  await fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:PV_KEY})});
+  const t=setInterval(async()=>{
+    try{
+      const d=await (await fetch('/api/release-log?key='+encodeURIComponent(PV_KEY))).json();
+      if(!d.running){ clearInterval(t); showGate(d); loadLibrary(); }
+    }catch(e){}
+  },6000);
+}
+function cancelGate(){
+  if(!PV_KEY)return;
+  fetch('/api/release-cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:PV_KEY})})
+   .then(()=>toast('⏹️ 已请求取消放行门禁','err'));
+}
+function showGate(d){
+  const r=d.result||{};
+  $('gatebox').innerHTML='<div class="rwcard"><h4>🔓 放行门禁结果</h4>'+
+    '<div class="rwsum">'+(r.before??'—')+' → '+(r.after??'—')+' · 达标线 '+(r.pass_line||90)+' · '+(r.released?'✅ 已放行（可出书）':'⚠️ 未放行（beta）')+'</div>'+
+    '<div class="rwnote" style="white-space:pre-wrap">'+esc((d.gate||'').replace(/##\s/g,''))+'</div></div>';
+}
+window.runReleaseGate=runReleaseGate;
+
+// ===== 作品库工具条 绑定 =====
+(function(){
+  const sort=$('libsort'), ord=$('liborder');
+  sort.onchange=()=>{ L.sort=sort.value; L.order=(L.sort==='quality'||L.sort==='genre')?'asc':'desc'; ord.textContent=L.order==='desc'?'↓':'↑'; loadLibrary(); };
+  ord.onclick=()=>{ L.order=L.order==='desc'?'asc':'desc'; ord.textContent=L.order==='desc'?'↓':'↑'; loadLibrary(); };
+  let qT=null; $('libq').oninput=e=>{ L.q=e.target.value; clearTimeout(qT); qT=setTimeout(loadLibrary,250); };
+  $('libstatus').querySelectorAll('.libchip').forEach(c=>c.onclick=()=>{ L.status=c.dataset.st; L.genre=''; syncChips(); loadLibrary(); });
+  $('libbatch').querySelectorAll('[data-batch]').forEach(b=>b.onclick=()=>{
+    const act=b.dataset.batch, keys=[...L.sel];
+    if(act==='clear'){ L.sel.clear(); loadLibrary(); }
+    else if(act==='review'){ batchReview(keys); }
+    else if(act==='compare'){ if(keys.length>=2) showCompare(keys[0], keys[1]); }
+    else { batchOp(keys, act); }
+  });
+})();
+bindModalClose();
+
+// ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
+const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
+let curSession=null; let _LIB_ITEMS=[];   // v0.3.3：左侧「⋯」菜单 用（缓存当前书列表）
+function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'){if(window.loadModelRules)loadModelRules();if(window.loadStyleLib)loadStyleLib();if(window.loadLearn)loadLearn();}if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
+window.sideTab=sideTab;
+function _sessRow(i){
+  const st=i.state==='completed'?(i.released===true?'released':'completed'):(i.awaiting_title?'awaiting_title':(i.running?'in_progress':'other'));
+  const qm=i.quality!=null?(' · '+i.quality+(i.released===false?'未放行':'')):'';
+  const live=sessLive(i);
+  return '<div class="ss-item'+(curSession===i.key?' on':'')+'" data-key="'+i.key+'">'
+    +'<span class="ss-dot '+st+'"></span>'
+    +'<div class="ss-main"><div class="ss-name">'+(S_pins.includes(i.key)?'📌 ':'')+esc(i.name)+'</div>'
+    +'<div class="ss-meta">'+esc(i.genre||'—')+' · '+i.done+'/'+i.total+' 章'+(live?' · <span style="color:var(--accent);font-weight:600">'+live+'</span>':'')+qm+(i.schedule?' · ⏱':'')+'</div></div>'
+    +'<span class="ss-act" data-menu="'+i.key+'" title="操作">⋯</span></div>';
+}
+// v0.3.5：左侧书行实时状态（正在写第X章 / 校验第N轮 / 待选书名 …）
+function sessLive(i){
+  if(i.awaiting_title)return '⏸ 待选书名';
+  if(i.paused)return '⏸ 已暂停 · 第 '+(i.total?Math.min(i.done+1,i.total):((i.done||0)+1))+' 章';
+  if(i.halted)return '⚠ 已中断 · 可续写（点行/⋯）';
+  if(i.state==='in_progress')return '✍️ 正在写第 '+(i.total?Math.min(i.done+1,i.total):(i.done||0)+1)+' 章';
+  if(i.state==='validating'||i.state==='releasing')return '🔁 校验/放行'+(i.gate_rounds?' 第 '+i.gate_rounds+' 轮':'中');
+  if(i.state==='completed')return i.released===false?('⏳ 待放行 · 点行放行'+(i.gate_rounds?'（'+i.gate_rounds+'轮）':'')):'✅ 已成书';
+  if(i.state==='failed')return '⚠ 失败 · 可重试';
+  return '✍ 创作中';
+}
+window.sessLive=sessLive;
+function renderSessions(){
+  fetch('/api/library?sort=updated&order=desc').then(r=>r.json()).then(d=>{
+    if(!d.items)return;
+    _LIB_ITEMS=d.items; window._libCache=d.items; updateSendBtn();
+    const autoArch=localStorage.nbot_autoarch!=='0';
+    const active=d.items.filter(i=>!i.archived&&i.state!=='archived');
+    const isDone=i=>autoArch&&i.state==='completed'&&i.released===true;
+    const pinned=active.filter(i=>S_pins.includes(i.key)).sort((a,b)=>S_pins.indexOf(a.key)-S_pins.indexOf(b.key));
+    const doing=active.filter(i=>!isDone(i)&&!S_pins.includes(i.key));
+    const done=active.filter(isDone);
+    let h='';
+    if(pinned.length)h+='<div class="sgrp">📌 置顶</div>'+pinned.map(_sessRow).join('');
+    h+='<div class="sgrp">进行中</div>'+(doing.length?doing.map(_sessRow).join(''):'<div class="snew" style="border:none;background:none;color:var(--muted);cursor:default"><span class="txt">暂无 · 点上方「＋新建」</span></div>');
+    if(done.length)h+='<div class="sgrp">✅ 已归档（完结）</div>'+done.map(_sessRow).join('');
+    $('slist').innerHTML=h;
+    $('slist').querySelectorAll('.ss-item').forEach(el=>{
+      el.onclick=()=>{ const it=_LIB_ITEMS.find(x=>x.key===el.dataset.key);
+        if(it&&it.state==='completed'&&it.released===false&&!it.archived){ openReleaseModal(el.dataset.key); }  // 待放行→弹窗直接放行
+        selectBook(el.dataset.key); };
+      const m=el.querySelector('[data-menu]');if(m)m.onclick=e=>{e.stopPropagation();openBookMenu(el.dataset.key,m);};
+    });
+  }).catch(()=>{});
+}
+window.renderSessions=renderSessions;
+function togglePin(key){const i=S_pins.indexOf(key);if(i>=0)S_pins.splice(i,1);else S_pins.unshift(key);localStorage.nbot_pins=JSON.stringify(S_pins);renderSessions();}
+window.togglePin=togglePin;
+// v0.3.3：左侧「⋯」小菜单（仿 Hermes 会话三点）——置顶/归档/改名/下载/续写/彻底删除，按书状态动态
+let _bkPanel=null,_bkAnchor=null;
+function _bkClose(){ if(_bkPanel)_bkPanel.style.display='none'; }
+function openBookMenu(key, anchor){
+  const it=_LIB_ITEMS.find(x=>x.key===key)||{key,state:'other',archived:false,name:'?'};
+  if(!_bkPanel){
+    _bkPanel=document.createElement('div');
+    _bkPanel.style.cssText='display:none;position:fixed;z-index:999;background:#141830;border:1px solid var(--border);border-radius:11px;box-shadow:0 12px 34px rgba(0,0,0,.55);min-width:178px;padding:5px';
+    document.body.append(_bkPanel);
+    document.addEventListener('click',e=>{ if(_bkPanel&&_bkAnchor&&_bkAnchor.contains(e.target))return; if(_bkPanel.contains(e.target))return; _bkClose(); });
+    document.addEventListener('keydown',e=>{ if(e.key==='Escape')_bkClose(); });
+  }
+  _bkAnchor=anchor;
+  const pinned=S_pins.includes(key), st=it.state||'other';
+  const canBook=['completed','released','validating'].includes(st);
+  const canCont=['completed','in_progress','validating'].includes(st);
+  const items=[];
+  items.push(['📌 '+(pinned?'取消置顶':'置顶'),()=>{togglePin(key);_bkClose();renderSessions();}]);
+  items.push([(it.archived?'♻️ 恢复归档':'🗄 归档'),()=>{fetch('/api/library/'+encodeURIComponent(key)+'/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!it.archived})}).then(r=>r.json()).then(()=>{toast(it.archived?'已恢复':'已移入回收站','ok');_bkClose();renderSessions();});}]);
+  // v0.4：随时控（像 Agent 聊天）：暂停/继续/续写剩余/放行/即时指令 —— 不留死路
+  if(it.state==='in_progress'&&!it.paused)items.push(['⏸ 暂停（停在当前进度）',()=>{fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'已暂停','ok');_bkClose();renderSessions();startPolling();});}]);
+  if(it.paused)items.push(['▶ 继续写作',()=>{fetch('/api/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'继续中','ok');_bkClose();renderSessions();curSession=key;startPolling();switchView('ms');});}]);
+  if(it.state==='in_progress')items.push(['▶ 续写剩余全部',()=>{fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'续写中','ok');_bkClose();renderSessions();curSession=key;startPolling();switchView('ms');});}]);
+  if(it.state==='completed'&&it.released===false)items.push(['🔓 放行成书（解决待放行）',()=>{openReleaseModal(key);_bkClose();}]);
+  items.push(['📝 加即时修正指令',()=>{const t=prompt('给这本书加一条创作指令（写作中可随时改剧情/细节）：');if(t&&t.trim()){const imm=confirm('点「确定」=立即生效（下一章立刻用）；「取消」=排队到下一条。');fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,text:t.trim(),immediate:imm})}).then(x=>x.json()).then(j=>{toast(j.ok?('指令已加入，'+(j.items.length||0)+' 条待处理'):'加入失败','ok');renderSessions();})}_bkClose();}]);
+  items.push(['✏️ 重命名',()=>{const nn=prompt('新书名：',it.name||'');if(nn&&nn.trim()){fetch('/api/library/'+encodeURIComponent(key)+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn.trim()})}).then(r=>r.json()).then(j=>{toast(j.ok?'已改名':(j.note||'改名失败'),j.ok?'ok':'err');renderSessions();});}_bkClose();}]);
+  if(canBook)items.push(['⬇ 下载成书',()=>{window.open('/api/download?key='+encodeURIComponent(key),'_blank');_bkClose();}]);
+  if(canCont)items.push(['▶ 续写',()=>{const r=prompt('续写：在现有章节后继续写几章？','3');if(r!==null){const n=Math.max(1,+r||1);fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,n})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=key;curSession=key;startPolling();switchView('ms');renderSessions();});}_bkClose();}]);
+  items.push(['🗑 彻底删除（不可恢复）',()=>{ if(confirm('彻底删除《'+(it.name||key)+'》？将删除作品目录，不可恢复！')){fetch('/api/library/'+encodeURIComponent(key)+'?hard=true',{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.note||'已删除',j.ok?'ok':'err');renderSessions();});} _bkClose(); }]);
+  _bkPanel.innerHTML='';
+  items.forEach(([label,fn],idx)=>{
+    if(label.startsWith('🗑')){const sep=document.createElement('div');sep.style.cssText='height:1px;background:var(--border);margin:4px 6px';_bkPanel.append(sep);}
+    const d=document.createElement('div'); d.textContent=label;
+    d.style.cssText='padding:8px 11px;font:12.5px var(--sans);color:'+(label.startsWith('🗑')?'var(--err)':'var(--text)')+';cursor:pointer;border-radius:8px;white-space:nowrap';
+    d.onmouseenter=()=>d.style.background='rgba(255,255,255,.07)'; d.onmouseleave=()=>d.style.background='';
+    d.onclick=e=>{e.stopPropagation();fn();}; _bkPanel.append(d);
+  });
+  _bkPanel.style.display='block';
+  const r=anchor.getBoundingClientRect(), pw=Math.max(178,_bkPanel.offsetWidth);
+  _bkPanel.style.width=pw+'px'; _bkPanel.style.left=r.left+'px'; _bkPanel.style.transform='';
+  const below=(r.bottom+2+_bkPanel.offsetHeight)<=innerHeight;
+  if(below)_bkPanel.style.top=(r.bottom+2)+'px';
+  else{ _bkPanel.style.top=(r.top-2)+'px'; _bkPanel.style.transform='translateY(-100%)'; }
+}
+window.openBookMenu=openBookMenu;
+async function selectBook(key){
+  curSession=key;curKey=key;sideTab('art');renderSessions();updateSendBtn();
+  switchView('chat'); loadBkChat(key);   // v0.4.1：点书 → 中间=对话页，只加载这本书自己的聊天
+  let st={state:'',done:0,total:0};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
+  let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
+  const name=pv.name||st.name||key;
+  const stt=st.awaiting_title?'待选书名':(st.state==='completed'?'已成书':(st.state==='in_progress'?'创作中':(st.state||'')));
+  let u={};try{u=(await (await fetch('/api/usage?key='+encodeURIComponent(key))).json()).usage||{};}catch(e){}
+  $('midctx').innerHTML='📖 当前书：<b>'+esc(name)+'</b> · '+esc(stt)+' · <span style="color:var(--accent)">🔢 '+((u.total_tokens||0).toLocaleString())+' token</span> · 对话/操作都针对这本书';
+  let qa='<button class="pb run" onclick="actCont()">▶ 续写</button>'
+    +'<button class="pb" onclick="actValidate()">📝 审稿</button>'
+    +'<button class="pb" onclick="actGate()">🔓 门禁</button>'
+    +'<a class="pb prev" href="/api/download?key='+encodeURIComponent(key)+'" target="_blank">⬇ 下载</a>';
+  if(st.awaiting_title)qa='<button class="pb run" onclick="openTitle(\''+key+'\')">✍ 选书名</button>'+qa;
+  if(st.state==='completed')qa+='<button class="pb" onclick="openPreview(\''+key+'\')">👁 预览</button>';
+  $('quickacts').innerHTML=qa;
+  const rel=pv.released===true?'已放行✅':(pv.released===false?'beta·未放行⚠️':'');
+  $('artbody').innerHTML='<div style="font:600 14px var(--sans)">'+esc(name)+'</div>'
+    +'<div style="font:11.5px var(--muted);margin:5px 0 9px">'+(pv.total||st.total||0)+' 章 · '+(pv.words||0)+' 字 · '+esc(rel||stt)+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="pb prev" onclick="openPreview(\''+key+'\')">👁 预览成书</button><button class="pb" onclick="actValidate()">📊 质量报告</button></div>';
+  $('setbody').innerHTML='<div style="font:12px/2.1 var(--sans);color:var(--muted)">'
+    +'🎚 <b style="color:var(--text)">门禁</b>：达标线 90 · 每轮 top-3 改写 · 未达标标 beta<br>'
+    +'⏱ <b style="color:var(--text)">定时任务</b>（默认关，可设总章/节奏）：<div id="booksched" style="margin-top:4px"></div><br>'
+    +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div></div>';
+  loadBookSkill(key); loadBookSched(key); loadTokenLedger(key);
+  startPolling(); refreshProjects();
+  switchView('chat');   // v0.4.1：选中书后默认显示「对话」（只属于这本书的专属聊天）；想看小说正文点「📄稿件」
+}
+window.selectBook=selectBook;
+function actCont(){if(!curSession)return;cont(curSession);startPolling();switchView('ms');}
+window.actCont=actCont;
+function actValidate(){if(!curSession)return;fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession,mode:'report'})}).then(async r=>{const j=await r.json();toast('📝 审稿'+(r.ok?'完成':'失败：'+(j.msg||'')),r.ok?'ok':'err');if(r.ok)selectBook(curSession);});}
+window.actValidate=actValidate;
+function actGate(){if(!curSession)return;fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession})}).then(r=>r.json()).then(j=>toast('🔓 门禁：'+(j.msg||''),'ok'));}
+window.actGate=actGate;
+async function loadBookSkill(key){
+  const el=$('bookskill');if(!el)return;
+  let sty=null;try{sty=(await (await fetch('/api/style?key='+encodeURIComponent(key))).json()).style;}catch(e){}
+  const cur=(sty&&sty.style)||{}, genre=sty?.genre||'';
+  let cat=ONB?.style;if(!cat){try{cat=(await (await fetch('/api/onboarding')).json()).style;}catch(e){cat=null;}}
+  if(!cat){el.innerHTML='<span style="font:11px var(--muted)">未绑定技能</span>';return;}
+  const dims=['金手指','节奏','语言','卷'];
+  el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:4px 0">'
+    +dims.map(d=>'<div><div style="font:10px var(--muted)">'+d+'</div><select id="bs_'+d+'" style="width:100%;margin-top:2px;padding:5px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">'+(cat[d]||[]).map(v=>'<option value="'+esc(v)+'"'+(cur[d]===v?' selected':'')+'>'+esc(v)+'</option>').join('')+'</select></div>').join('')
+    +'</div><button class="pb run" style="width:100%" onclick="saveBookSkill(\''+key+'\')">💾 保存技能（后续章节按此书写）</button>';
+  dims.forEach(d=>{ const b=$('bs_'+d); if(b) cxSelect(b); });
+}
+window.loadBookSkill=loadBookSkill;
+function saveBookSkill(key){
+  const dims={};['金手指','节奏','语言','卷'].forEach(d=>{const e=$('bs_'+d);if(e)dims[d]=e.value;});
+  fetch('/api/style',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,style:dims})}).then(r=>r.json()).then(j=>{toast('🧩 技能已保存','ok');loadBookSkill(key);});
+}
+window.saveBookSkill=saveBookSkill;
+async function loadBookSched(key){
+  const el=$('booksched');if(!el)return;
+  let d=null;try{d=(await (await fetch('/api/schedule')).json()).schedules;}catch(e){}
+  const s=(d&&d[key])||{};
+  el.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font:11.5px var(--sans)">'
+    +'<label class="libchip'+(s.enabled?' on':'')+'" id="bsch_en" style="cursor:pointer">'+(s.enabled?'⏱ 定时开':'⏱ 定时关')+'</label>'
+    +'<span>每 <input id="bsch_iv" value="'+(s.interval_days||7)+'" style="width:36px;text-align:center;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text)"> 天</span>'
+    +'<span>每次写 <input id="bsch_pr" value="'+(s.per_run||10)+'" style="width:40px;text-align:center;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text)"> 章</span>'
+    +'<button class="pb" onclick="saveBookSched(\''+key+'\')">💾 保存</button></div>'
+    +(s.last_note?'<div style="font:10.5px var(--muted);margin-top:3px">最近：'+esc(s.last_note)+'</div>':'');
+  $('bsch_en').onclick=()=>$('bsch_en').classList.toggle('on');
+}
+window.loadBookSched=loadBookSched;
+function saveBookSched(key){
+  const en=$('bsch_en').classList.contains('on');
+  fetch('/api/schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,enabled:en,interval_days:+($('bsch_iv').value||7),per_run:+($('bsch_pr').value||10)})}).then(r=>r.json()).then(j=>{toast(en?'⏱ 定时任务已开启（每 N 天写一批）':'⏱ 定时任务已关','ok');loadBookSched(key);});
+}
+window.saveBookSched=saveBookSched;
+async function loadModelRules(){
+  const el=$('mrcard');if(!el)return;
+  let d=null;try{d=await (await fetch('/api/model_rules')).json();}catch(e){el.innerHTML='';return;}
+  const r=d.rules||{}, ov=d.overrides||{};
+  const _lbl={context:'上下文窗口',max_tokens:'max_tokens',rpm:'RPM(次/分)',tpm:'TPM(字/分)',backoff_base:'429退避(s)',call_gap:'调用间隔(s)'};
+  const inp=n=>'<div><div style="font:10px var(--muted);margin-bottom:2px">'+_lbl[n]+'</div><input id="mr_'+n+'" value="'+(ov[n]!==undefined?ov[n]:(r[n]?r[n]:''))+'" style="width:100%;box-sizing:border-box;padding:5px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)"></div>';
+  el.innerHTML='<div style="border:1px solid var(--border);background:var(--panel2);border-radius:12px;padding:10px">'
+    +'<div style="font:600 12px var(--sans)">'+esc(d.provider?.name||'当前模型')+' · '+esc(d.provider?.model||'')+'</div>'
+    +'<div style="font:11px var(--muted);margin:3px 0 8px">检测到 <b style="color:var(--text)">'+esc(d.vendor||'generic')+'</b> · '+esc(r.note||'')+' · '+(r.generic?'可自由配置':'按该厂规则自动套')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+    +['context','max_tokens','rpm','tpm','backoff_base','call_gap'].map(inp).join('')
+    +'</div>'
+    +'<button class="pb run" style="width:100%;margin-top:8px" onclick="saveModelRules()">💾 保存模型规则</button></div>';
+}
+window.loadModelRules=loadModelRules;
+function saveModelRules(){
+  const o={};['context','max_tokens','rpm','tpm','backoff_base','call_gap'].forEach(k=>{const e=$('mr_'+k);if(e&&e.value!=='')o[k]=/^[0-9.]+$/.test(e.value)?+e.value:e.value;});
+  fetch('/api/model_rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)}).then(r=>r.json()).then(j=>toast('🤖 模型规则已保存','ok'));
+}
+window.saveModelRules=saveModelRules;
+function switchView(v){
+  const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar');
+  document.querySelectorAll('#viewsw button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  if(v==='ms'){ms.style.display='block';msgs.style.display='none';loadManuscript(curSession||curKey);}   // 保留输入框（读稿同时可下令）
+  else{ms.style.display='none';msgs.style.display='';ib.style.display='';stopMs();}
+}
+window.switchView=switchView;
+document.querySelectorAll('#viewsw button').forEach(b=>b.onclick=()=>switchView(b.dataset.v));
+async function loadManuscript(key){
+  if(!key){$('msbody').innerHTML='<span style="color:var(--muted)">未选中书。先在左侧选一本书，或点「＋新建」。</span>';$('msline').textContent='';$('msprog').textContent='';return;}
+  let st={};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
+  let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
+  let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){}
+  const u=us.usage||{};
+  const done=(pv.chapters||[]).filter(c=>c.status==='completed').length, tot=(pv.chapters||[]).length;
+  const _state = st.awaiting_title?'⏸ 待选书名':(st.state==='in_progress'?'✍️ 创作中':st.state==='validating'?'🔁 校验中':st.state==='completed'?'✅ 已成书':(st.state||'—'));
+  const _curCh=(st.state==='in_progress')?(' · 正在写第 '+Math.min((st.done!=null?st.done:done)+1,(st.total!=null?st.total:tot))+' 章'):'';
+  $('msprog').innerHTML='第 '+(st.done!=null?st.done:done)+'/'+(st.total!=null?st.total:tot)+' 章 · '+((u.total_tokens||0).toLocaleString())+' token';
+  $('msline').innerHTML='📄 稿件 · <b>'+esc(pv.name||key)+'</b> · <span style="color:var(--accent);font-weight:600">'+_state+'</span>'+_curCh
+    +' · 写到第 <b>'+(st.done!=null?st.done:done)+'</b>/'+(st.total!=null?st.total:tot)+' 章 · 共 <b>'+((st.words||pv.total_words||0))+'</b> 字 · 累计 <span class="tk">'+((u.total_tokens||0).toLocaleString())+' token</span>（'+(u.calls||0)+' 次调用）'
+    +'<br><span style="font-size:10.5px">'+(st.events?('· '+esc((st.events||[]).slice(-1)[0]||'')):(u.by_stage?Object.entries(u.by_stage).map(([k,v])=>k+' '+(v.total||0)).join(' · '):''))+(u.last?' · 最近 '+u.last.stage+' '+ (u.last.total||0):'')+'</span>';
+  let txt=(pv.text||'').trim();
+  const isW=(st.state==='in_progress'||st.state==='validating'||st.state==='releasing');
+  // v0.3.5 打字机：换书重置；写作中逐字揭示新增正文，已完成的书整段显示
+  if(_msKey!==key){ _msKey=key; _msRevealed=isW?Math.min((txt||'').length,500):(txt||'').length; stopMs(); }
+  _msFull=(pv.text||'').trim(); _msWriting=isW;
+  _msRevealed=Math.min(_msRevealed,_msFull.length);
+  if(!txt && !isW){ _msFull=''; _msRevealed=0; $('msbody').innerHTML='<span style="color:var(--muted)">（尚未生成正文。切到「💬 对话」直接开写，或点上方快捷操作「▶ 续写」。）</span>'; return; }
+  if(!isW){ _msRevealed=_msFull.length; renderMsBody(_msFull,false); }
+  else { if(_msRevealed<_msFull.length)startMs(); else renderMsBody(_msFull,true); }
+  scrollMsBottom();
+}
+window.loadManuscript=loadManuscript;
+// ===== v0.3.5 打字机逐字显示（正在写/校验时，新增正文逐字出现）=====
+let _msFull='', _msKey='', _msRevealed=0, _msWriting=false, _msTick=null;
+function renderMsBody(txt,typing){
+  const el=$('msbody'); if(!el)return;
+  const html=txt.split(/(\n+#[^\n]+)/g).map(seg=>{
+    if(/^#[\s]/.test(seg))return '<div class="mschap">'+esc(seg.replace(/^#+\s*/,'').trim())+'</div>';
+    return esc(seg);
+  }).join('');
+  el.innerHTML=html+(typing?'<span style="color:var(--accent);font-weight:700">▍</span>':'');
+}
+function scrollMsBottom(){ const m=$('manuscript'); if(m)m.scrollTop=m.scrollHeight; }
+function stopMs(){ if(_msTick){clearInterval(_msTick);_msTick=null;} }
+function startMs(){
+  stopMs();
+  _msTick=setInterval(()=>{
+    if(_msRevealed>=_msFull.length){ stopMs(); renderMsBody(_msFull,_msWriting); return; }
+    _msRevealed=Math.min(_msFull.length,_msRevealed+22);   // 每 tick 揭示 22 字 ≈ 700+ 字/秒
+    renderMsBody(_msFull.slice(0,_msRevealed),true);
+    scrollMsBottom();
+  },28);
+}
+window.renderMsBody=renderMsBody; window.startMs=startMs; window.stopMs=stopMs;
+async function loadTokenLedger(key){
+  const el=$('tkcard');if(!el||!key)return;
+  let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){el.innerHTML='';return;}
+  const u=us.usage||{},g=us.global||{},bs=u.by_stage||{};
+  el.innerHTML='<div style="border:1px solid var(--border);background:var(--panel2);border-radius:10px;padding:10px 12px;font:11.5px/1.7 var(--sans);color:var(--muted)">'
+    +'<div style="font:600 13px var(--sans);color:var(--text)">全书累计 <span style="color:var(--accent)">'+((u.total_tokens||0).toLocaleString())+'</span> token · '+(u.calls||0)+' 次调用</div>'
+    +'<div style="margin:4px 0">输入 '+((u.total_prompt||0).toLocaleString())+' · 输出 '+((u.total_completion||0).toLocaleString())+'</div>'
+    +(Object.keys(bs).length?('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">'+Object.entries(bs).map(([k,v])=>'<span class="libchip" style="cursor:default">'+k+' <b style="color:var(--text)">'+(v.total||0).toLocaleString()+'</b></span>').join('')+'</div>'):'')
+    +'<div style="margin-top:7px;font-size:10.5px;border-top:1px solid var(--border);padding-top:6px">全部作品累计：'+((g.total_tokens||0).toLocaleString())+' token · '+(g.calls||0)+' 次调用</div></div>';
+}
+window.loadTokenLedger=loadTokenLedger;
+async function loadGlobalToken(){
+  const el=$('libtk');if(!el)return;
+  let g={};try{g=(await (await fetch('/api/usage')).json()).global||{};}catch(e){}
+  el.innerHTML='🔢 全部作品累计消耗 <b style="color:var(--accent)">'+((g.total_tokens||0).toLocaleString())+'</b> token · '+(g.calls||0)+' 次调用';
+}
+window.loadGlobalToken=loadGlobalToken;
+/* ===== v0.3.3：自定义深色下拉（替代原生 <select> 弹层，彻底修复「下拉箭头不好使/看不清」）=====
+   原生 <select> 的弹层由操作系统渲染，在深色玻璃拟态 UI 下不可控（macOS/WebKit 尤甚）。
+   方案：把原生 select 隐藏但保留（.value/.onchange/.options 全部继续可用，提交逻辑零改动），
+   在其后插入一个自定义深色下拉面板；点选后写回原生 value 并派发 change。MutationObserver
+   监听 options 变化（向导 sel() 填值、供应商/模型切换、按题材 preset 联动）自动重建面板。 */
+function cxSelect(idOrEl){
+  const sel=(typeof idOrEl==='string')?$(idOrEl):idOrEl;
+  if(!sel||sel._cxd)return sel;
+  sel._cxd=true; sel.style.display='none';
+  const wrap=document.createElement('div'); wrap.style.cssText='position:relative;display:block;min-width:0';
+  sel.insertAdjacentElement('afterend',wrap);
+  const btn=document.createElement('button'); btn.type='button';
+  btn.style.cssText='width:100%;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:8px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:8px 11px;color:var(--text);font-size:13px;font-family:inherit;cursor:pointer;text-align:left';
+  const val=document.createElement('span'); val.style.cssText='flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  const arr=document.createElement('span'); arr.textContent='▾'; arr.style.cssText='color:var(--muted);font-size:12px;flex:none';
+  btn.append(val,arr); wrap.append(btn);
+  const panel=document.createElement('div');
+  panel.style.cssText='display:none;position:fixed;z-index:99;background:#101426;border:1px solid var(--border);border-radius:9px;max-height:240px;overflow:auto;box-shadow:0 12px 32px rgba(0,0,0,.55)';
+  document.body.append(panel);
+  const isSel=(o)=>o===sel.options[sel.selectedIndex];
+  function sync(){ const i=sel.selectedIndex; val.textContent=(i>=0&&sel.options[i])?sel.options[i].textContent:'(未选)'; }
+  function build(){
+    panel.innerHTML='';
+    Array.from(sel.options).forEach(o=>{
+      const it=document.createElement('div'); it.textContent=o.textContent||o.value;
+      it.style.cssText='padding:8px 12px;font-size:13px;color:var(--text);cursor:pointer;'+(isSel(o)?'background:rgba(108,140,255,.22);':'');
+      it.onmouseenter=()=>{ if(!isSel(o)) it.style.background='rgba(255,255,255,.08)'; };
+      it.onmouseleave=()=>{ it.style.background=isSel(o)?'rgba(108,140,255,.22)':''; };
+      it.onclick=()=>{ sel.value=o.value; sel.dispatchEvent(new Event('change',{bubbles:true})); sync(); close(); };
+      panel.append(it);
+    });
+  }
+  function open(){
+    build(); sync(); panel.style.display='block'; panel.style.transform='';
+    const r=btn.getBoundingClientRect();
+    const pw=Math.max(r.width,150);
+    panel.style.width=pw+'px'; panel.style.left=r.left+'px';
+    const below=(r.bottom+2+Math.min(240,panel.scrollHeight))<=innerHeight;
+    if(below){ panel.style.top=(r.bottom+2)+'px'; }
+    else{ panel.style.top=(r.top-2)+'px'; panel.style.transform='translateY(-100%)'; }
+  }
+  function close(){ panel.style.display='none'; }
+  btn.onclick=(e)=>{ e.stopPropagation(); _cxCtx.forEach(c=>{if(c.panel!==panel)c.close();}); (panel.style.display==='block')?close():open(); };
+  const ctx={sel,wrap,panel,close}; sel._cxpanel=panel; sel._cxbtn=btn;
+  ctx.mo=new MutationObserver(()=>{ build(); sync(); }); ctx.mo.observe(sel,{childList:true,subtree:true});
+  _cxCtx.push(ctx); _cxBindDoc(); sync();
+  return sel;
+}
+let _cxCtx=[],_cxDocBound=false;
+function _cxBindDoc(){
+  if(_cxDocBound)return; _cxDocBound=true;
+  document.addEventListener('click',e=>{
+    _cxCtx=_cxCtx.filter(c=>{ if(!c.wrap.isConnected){ c.mo.disconnect(); c.close(); return false; } return true; });
+    _cxCtx.forEach(c=>{ if(!c.wrap.contains(e.target)&&!c.panel.contains(e.target)) c.close(); });
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') _cxCtx.forEach(c=>c.close()); });
+}
+window.cxSelect=cxSelect;
+function cxApplyAll(){
+  ['pselect','mselect','libsort','mpreset','pvch','ob_genre','ob_persp','ob_tone','ob_chap','ob_hand','ob_pace','ob_lang','ob_prov','ob_model','ob_style']
+    .forEach(id=>cxSelect(id));
+}
+window.cxApplyAll=cxApplyAll;
+function toggleSess(){const c=$('sessions');c.classList.toggle('collapsed');$('sestog').textContent=c.classList.contains('collapsed')?'»':'«';}
+window.toggleSess=toggleSess;
+function initDrag(){
+  [['dragL','sessions'],['dragR','side']].forEach(([id,col])=>{
+    const h=$(id),el=$(col);let sx=0,sw=0;
+    h.onmousedown=e=>{sx=e.clientX;sw=el.offsetWidth;document.body.style.userSelect='none';h.classList.add('hot');
+      const mv=ev=>{let w=sw+((col==='side')?(sx-ev.clientX):(ev.clientX-sx));w=Math.max(col==='sessions'?52:260,Math.min(col==='sessions'?440:680,w));el.style.width=w+'px';};
+      const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);h.classList.remove('hot');document.body.style.userSelect='';localStorage['nbot_w_'+col]=el.style.width;};
+      document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);};
+  });
+  [['sessions',250],['side',380]].forEach(([col,dft])=>{const v=localStorage['nbot_w_'+col];if(v)$(col).style.width=v;});
+}
+window.initDrag=initDrag;
+
+refreshProjects();
+renderSessions(); initDrag();
+(function(){cxApplyAll();var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500); if(q.get('onb'))setTimeout(()=>openOnb(),250); if(q.get('bkt'))setTimeout(()=>{const m=document.querySelector('[data-menu]');if(m){m.click();setTimeout(()=>{document.title='BKT items='+(_bkPanel?_bkPanel.querySelectorAll('div').length:0);},250);}else document.title='BKT no-anchor';},900); if(q.get('cxt'))setTimeout(async()=>{try{await openOnb();await new Promise(r=>setTimeout(r,250));const out={};['ob_chap','ob_hand','ob_prov'].forEach(id=>{const cs=$(id);out[id]={hidden:cs.style.display==='none',wrapped:!!cs._cxd,btn:!!cs._cxbtn};if(cs._cxbtn){cs._cxbtn.click();out[id].panelOpen=cs._cxpanel.style.display==='block';out[id].opts=cs._cxpanel.querySelectorAll('div').length;const op=cs._cxpanel.querySelectorAll('div');if(op[1]){op[1].click();out[id].valAfter=cs.value;}}});document.title='CXT '+JSON.stringify(out);}catch(e){document.title='CXT_ERR '+e;}}),50;})();
+loadProviders();
+loadProviderPicker();
+document.getElementById('addprov').onclick=openProvModal;
+document.getElementById('mbind').onclick=bindProv;
+document.getElementById('provmodal').addEventListener('click',e=>{if(e.target.id==='provmodal')closeProvModal();});
+document.getElementById('pvmodal').addEventListener('click',e=>{if(e.target.id==='pvmodal')closePvModal();});
+bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.3 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.3。');
+</script>
+</body>
+</html>

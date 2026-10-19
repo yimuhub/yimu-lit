@@ -277,7 +277,7 @@ input,select,textarea{color-scheme:dark}
     <div id="quickacts"></div>
     <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="msprog" style="margin-left:auto"></span></div>
     <div id="msgs"></div>
-    <div id="manuscript" style="display:none"><div id="msline"></div><div id="msbody"></div></div>
+    <div id="manuscript" style="display:none"><div id="msline"></div><div id="mschart"></div><div id="msbody"></div></div>
     <div id="inputbar">
       <div id="picker">
         <select id="pselect" title="选择模型供应商"></select>
@@ -316,6 +316,8 @@ input,select,textarea{color-scheme:dark}
       <h2>该书设置</h2>
       <div id="setbody" style="padding:0 14px 8px"></div>
       <div id="mrcard" style="margin:0 14px 10px"></div>
+      <div class="secrow"><h2>🤖 多Agent宇宙（子Agent独立配模型 · 并发限流）</h2></div>
+      <div id="agcard" style="margin:0 14px 10px"><div class="empty">加载中…</div></div>
       <div class="secrow"><h2>📈 学习进化（自我进化引擎）</h2></div>
       <div id="learnreport" style="padding:0 14px 8px"><div class="empty">加载中…</div></div>
       <div class="secrow"><h2>✨ 风格库（蒸馏）</h2><button id="btn-distill">＋ 蒸馏新风格</button></div>
@@ -475,6 +477,7 @@ input,select,textarea{color-scheme:dark}
   <div class="merr" id="rlerr"></div>
   <div class="mactions">
     <button class="mcancel" onclick="closeRelease()">取消</button>
+    <button class="pb" id="rl_rw" title="带要求重写全书弱章，并直接进入该书工作台稿件视图实时看书写内容">🔁 重写并看稿件</button>
     <button class="pb" id="rl_again">🔁 再校验一轮</button>
     <button class="pb" id="rl_beta">保持 beta</button>
     <button class="mok" id="rl_go">🔓 放行成书</button>
@@ -555,6 +558,16 @@ async function send(){
   $('inp').value='';
   bubble('user',fmt(v),'',v);
   thinking();
+  // v0.5 M3：中间台自然语言指令 → 结构化动作（改写某段/某章/全书/看评分）；非指令才走聊天
+  {
+    const k=_curKey();
+    if(k){
+      try{
+        const cr=await (await fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,text:v})})).json();
+        if(cr&&cr.action&&cr.action!=='chat'){ killThinking(); execCmd(cr,v); return; }
+      }catch(e){}
+    }
+  }
   const pid=$('pselect')?$('pselect').value:'', mid=$('mselect')?$('mselect').value:'';
   const payload={session_id:sid,message:v};
   if(pid)payload.provider_id=pid;
@@ -1163,12 +1176,31 @@ async function openReleaseModal(key){
   const q=(lib.final_quality!=null?lib.final_quality:(lib.quality!=null?lib.quality:null));
   const pl=lib.pass_line||90;
   let rows=''; ((log.result&&log.result.gate_results)||[]).slice(0,6).forEach(g=>{ rows+='<div style="font:11px var(--muted)">第'+(g.round||'')+'轮：'+(g.before||0)+' → '+(g.after||0)+(g.stopped?'（达标停）':'')+'</div>'; });
+  // v0.5 M1/M2：逐章评分表（<90 高亮，可点章重写）
+  let pv={}; try{ pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json(); }catch(e){}
+  const pcs=pv.per_chapter||[], pl2=pv.pass_line||pl;
+  const belowCh=pcs.filter(x=>x.score!=null&&x.score<pl2);
+  let chart='';
+  if(pcs.length){
+    chart='<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">'+
+      '<div style="font:11px var(--muted);margin-bottom:5px">📊 逐章评分（线 '+pl2+'）'+(belowCh.length?' · <b style="color:#f59e0b">'+belowCh.length+' 章未达标</b>':' · 全部达标 ✅')+'</div>'+
+      '<div style="display:flex;gap:5px;flex-wrap:wrap">'+pcs.map(x=>{
+        const bad=x.score!=null&&x.score<pl2;
+        return '<span data-rlch="'+x.ch+'" style="cursor:pointer;padding:2px 7px;border-radius:8px;font:11px;border:1px solid '+(bad?'#f59e0b':'var(--border)')+';background:'+(bad?'rgba(245,158,11,.15)':'transparent')+';color:'+(bad?'#f59e0b':'var(--text)')+';font-weight:'+(bad?'700':'400')+'">第'+x.ch+'章 '+(x.score!=null?x.score:'—')+(bad?' ⚠️':'')+'</span>';
+      }).join('')+'</div>'+
+      (belowCh.length?'<div style="margin-top:5px;font:11px var(--muted)">点章节 = 单章重写 · 下方「重写未达标」= 多选重写 '+belowCh.length+' 章</div>':'')+'</div>';
+  }
   b.innerHTML='📖 <b>'+esc(lib.name||key)+'</b><br>'
     +'当前成书质量：<b style="color:'+(q!=null&&q>=pl?'#3ad29b':'#f59e0b')+'">'+(q!=null?q:'未评分')+'</b> / 放行线 '+pl
     +(q!=null?(q>=pl?'（已达标，可放行 ✅）':'（未达线，放行将标 beta）'):'')
     +'<br>'+(lib.gate_rounds?('已跑 '+lib.gate_rounds+' 轮门禁'):'')+(rows?('<div style="margin-top:4px">'+rows+'</div>'):'')
-    +'<br><span style="font:11px var(--muted)">🔓放行=定稿成书 · 再校验=重跑门禁试图提分到线 · 保持beta=先留着不改</span>';
+    +chart
+    +'<br><span style="font:11px var(--muted)">🔓放行=定稿成书 · 🔁重写并看稿件=带要求重写并进工作台看书写 · 再校验=重跑门禁提分</span>';
+  // 逐章点击=单章重写
+  [...document.querySelectorAll('[data-rlch]')].forEach(el=>{ el.onclick=()=>{ releaseRewrite(key,[+el.dataset.rlch]); }; });
   $('rl_go').onclick=()=>{ fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{ toast('🔓 '+(j.msg||'放行中')+'（完成会弹通知）','ok'); closeRelease(); renderSessions(); startPolling(); }); };
+  // v0.5 M2：重写并看稿件（延续预览里的重写功能，直接进入该书工作台）
+  $('rl_rw').onclick=()=>{ releaseRewrite(key, belowCh.length?belowCh.map(x=>x.ch):null); };
   $('rl_again').onclick=()=>{ fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,mode:'report'})}).then(x=>x.json()).then(j=>{ toast('🔁 再校验中（' + (j.msg||'') + '）','ok'); closeRelease(); startPolling(); }); };
   $('rl_beta').onclick=()=>{ toast('保持 beta（先留着不改）','ok'); closeRelease(); };
 }
@@ -1257,7 +1289,7 @@ bindModalClose();
 // ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
 const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
 let curSession=null; let _LIB_ITEMS=[];   // v0.3.3：左侧「⋯」菜单 用（缓存当前书列表）
-function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'){if(window.loadModelRules)loadModelRules();if(window.loadStyleLib)loadStyleLib();if(window.loadLearn)loadLearn();}if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
+function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'){if(window.loadModelRules)loadModelRules();if(window.loadStyleLib)loadStyleLib();if(window.loadLearn)loadLearn();if(window.renderAgentCard)renderAgentCard();}if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
 window.sideTab=sideTab;
 function _sessRow(i){
   const st=i.state==='completed'?(i.released===true?'released':'completed'):(i.awaiting_title?'awaiting_title':(i.running?'in_progress':'other'));
@@ -1443,6 +1475,52 @@ function saveModelRules(){
   fetch('/api/model_rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)}).then(r=>r.json()).then(j=>toast('🤖 模型规则已保存','ok'));
 }
 window.saveModelRules=saveModelRules;
+// ===== v0.5 M4：多Agent宇宙 —— 子Agent独立配模型 + 全局并发上限 + 批量并发创作 =====
+async function renderAgentCard(){
+  const el=$('agcard'); if(!el)return;
+  let d=null; try{ d=await (await fetch('/api/agents')).json(); }catch(e){ el.innerHTML='<div class="empty">加载失败</div>'; return; }
+  const provs=(d.options||[]).map(o=>({id:o.id,name:o.name,models:o.models||[]}));
+  const provOpt=p=>provs.map(o=>'<option value="'+o.id+'"'+(o.id===p?' selected':'')+'>'+esc(o.name)+'</option>').join('');
+  const modelOpts=(p,m)=>{ const o=provs.find(x=>x.id===p); const ms=(o&&o.models)||[];
+    return ms.map(x=>'<option value="'+esc(x)+'"'+(x===m?' selected':'')+'>'+esc(x)+'</option>').join('')+'<option value="">（回落 stage/默认）</option>'; };
+  let h='<div style="border:1px solid var(--border);background:var(--panel2);border-radius:12px;padding:10px">';
+  h+='<div style="font:11px var(--muted);margin-bottom:6px">🤖 每个子Agent可挂独立供应商/模型，把创作/审稿/重写负载摊开，避免单一API并发过高（全局并发上限 <b>'+d.max_global_agents+'</b>）：</div>';
+  (d.agents||[]).forEach(a=>{
+    h+='<div style="margin-bottom:8px;padding:7px;background:var(--bg);border:1px solid var(--border);border-radius:9px">'+
+      '<div style="font:600 12px">'+a.label+' <span style="font:10px var(--muted);font-weight:400">'+a.desc+' · '+a.effective+'</span></div>'+
+      '<div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap">'+
+      '<select id="ag_p_'+a.agent+'" style="flex:1;min-width:110px;padding:4px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">'+(a.provider_id?'<option value="'+esc(a.provider_id)+'" selected>'+esc(a.provider_id)+'</option>':'')+'<option value="">默认供应商</option>'+provOpt(a.provider_id)+'</select>'+
+      '<select id="ag_m_'+a.agent+'" style="flex:1;min-width:110px;padding:4px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">'+modelOpts(a.provider_id,a.model)+'</select>'+
+      '<button class="pb" style="white-space:nowrap" onclick="saveAgentBinding(\''+a.agent+'\')">💾 保存</button></div></div>';
+  });
+  h+='<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><span style="font:11px var(--muted)">全局并发上限</span>'+
+     '<input id="ag_g" type="number" min="1" max="16" value="'+d.max_global_agents+'" style="width:56px;padding:4px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">'+
+     '<button class="pb" onclick="saveMaxGlobal()">应用</button></div>';
+  h+='<div style="font:10.5px var(--muted);margin-top:8px;line-height:1.5">🚀 多书并发创作：选多本书点「并发创作」，每书一个Agent线程，LLM并发受上方上限限流排队（防429）。</div>'+
+     '<button class="pb" style="width:100%;margin-top:6px" onclick="dispatchBooks()">🚀 并发创作选中书（最多8本）</button></div>';
+  el.innerHTML=h;
+}
+window.renderAgentCard=renderAgentCard;
+function saveAgentBinding(agent){
+  const p=$('ag_p_'+agent), m=$('ag_m_'+agent);
+  fetch('/api/agents-set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent,provider_id:p?p.value:'',model:m?m.value:''})})
+   .then(r=>r.json()).then(()=>toast('🤖 「'+agent+'」模型已保存','ok'));
+}
+window.saveAgentBinding=saveAgentBinding;
+function saveMaxGlobal(){
+  const g=$('ag_g'); const n=g?+g.value:4;
+  fetch('/api/agents-maxglobal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({n})})
+   .then(r=>r.json()).then(j=>toast('全局并发上限 → '+(j.max_global_agents||n),'ok'));
+}
+window.saveMaxGlobal=saveMaxGlobal;
+function dispatchBooks(){
+  const sel=(window._libCache||[]).filter(x=>(x.state==='in_progress'||x.state==='completed')&&!x.archived).map(x=>x.key);
+  if(!sel.length) return toast('没有可创作的书（先在左侧选书/新建）','err');
+  if(!confirm('并发创作这 '+(sel.length>8?8:sel.length)+' 本书？（每书一个Agent，LLM受全局上限限流）')) return;
+  fetch('/api/agents-dispatch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:sel.slice(0,8)})})
+   .then(r=>r.json()).then(j=>toast('🚀 已启动 '+(sel.length>8?8:sel.length)+' 本书并发创作（完成弹通知）','ok')).catch(()=>toast('并发创作失败','err'));
+}
+window.dispatchBooks=dispatchBooks;
 function switchView(v){
   const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar');
   document.querySelectorAll('#viewsw button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
@@ -1464,6 +1542,7 @@ async function loadManuscript(key){
   $('msline').innerHTML='📄 稿件 · <b>'+esc(pv.name||key)+'</b> · <span style="color:var(--accent);font-weight:600">'+_state+'</span>'+_curCh
     +' · 写到第 <b>'+(st.done!=null?st.done:done)+'</b>/'+(st.total!=null?st.total:tot)+' 章 · 共 <b>'+((st.words||pv.total_words||0))+'</b> 字 · 累计 <span class="tk">'+((u.total_tokens||0).toLocaleString())+' token</span>（'+(u.calls||0)+' 次调用）'
     +'<br><span style="font-size:10.5px">'+(st.events?('· '+esc((st.events||[]).slice(-1)[0]||'')):(u.by_stage?Object.entries(u.by_stage).map(([k,v])=>k+' '+(v.total||0)).join(' · '):''))+(u.last?' · 最近 '+u.last.stage+' '+ (u.last.total||0):'')+'</span>';
+  renderMsChart(key, pv);   // v0.5 M1：逐章评分条
   let txt=(pv.text||'').trim();
   const isW=(st.state==='in_progress'||st.state==='validating'||st.state==='releasing');
   // v0.3.5 打字机：换书重置；写作中逐字揭示新增正文，已完成的书整段显示
@@ -1476,6 +1555,108 @@ async function loadManuscript(key){
   scrollMsBottom();
 }
 window.loadManuscript=loadManuscript;
+// ===== v0.5 M1：逐章评分条（<90 高亮，可逐章/多选重写）=====
+function renderMsChart(key, pv){
+  const el=$('mschart'); if(!el)return;
+  const pcs=(pv&&pv.per_chapter)||[], pl=pv?.pass_line||90;
+  const done=(pv&&pv.chapters)||[];
+  if(!pcs.length && !done.length){ el.innerHTML=''; return; }
+  const scored=pcs.length;
+  const below=pcs.filter(x=>x.score!=null&&x.score<pl).length;
+  let h='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px 10px;margin:2px 0 8px;background:var(--card);border:1px solid var(--border);border-radius:10px">';
+  h+='<span style="font:11px var(--muted)">📊 逐章评分（线 '+pl+'）'+(scored?' · 已评 '+scored+' 章':' · 尚未逐章评分（完成写作/审稿后自动评分）')+(below?' · <b style="color:#f59e0b">'+below+' 章未达标</b>':'')+'</span>';
+  const items=(pcs.length?pcs:done.map(c=>({ch:c.n,score:null,status:'unscored',weak:[]})));
+  h+=items.map(x=>{
+    const s=x.score, bad=(s!=null&&s<pl);
+    const bg= s==null? 'transparent': (bad? 'rgba(245,158,11,.15)':'rgba(58,210,155,.12)');
+    const bd= bad? '#f59e0b':'var(--border)';
+    return '<span data-ch="'+x.ch+'" class="msscore" style="cursor:pointer;background:'+bg+';border:1px solid '+bd+';border-radius:8px;padding:2px 7px;font:11px;'+(bad?'color:#f59e0b;font-weight:700':'color:var(--text)')+'">'+
+      '第'+x.ch+'章 '+(s!=null? s : (x.status==='unscored'?'—':'未评')) +
+      (bad?' ⚠️':'')+(x.weak&&x.weak.length?' <i style="opacity:.7">('+x.weak.slice(0,2).join('/')+')</i>':'')+'</span>';
+  }).join('');
+  if(scored && below){
+    h+='<span style="margin-left:auto"><button class="msrwb" id="msrwb" style="background:var(--accent);color:#0b1020;border:0;border-radius:8px;padding:3px 10px;font:12px;font-weight:700;cursor:pointer">🔁 重写全部未达标（'+below+' 章）</button></span>';
+  }
+  h+='</div>';
+  el.innerHTML=h;
+  // 逐章点击=重写该章
+  el.querySelectorAll('.msscore').forEach(ch=>{
+    ch.onclick=()=>{ triggerRewrite(key,[+ch.dataset.ch]); };
+    ch.onmouseenter=()=>ch.style.filter='brightness(1.15)';
+    ch.onmouseleave=()=>ch.style.filter='';
+  });
+  const rw=$('msrwb');
+  if(rw) rw.onclick=()=>{
+    const sel=pcs.filter(x=>x.score!=null&&x.score<pl).map(x=>x.ch);
+    if(!sel.length) return toast('没有未达标章节可重写','err');
+    triggerRewrite(key, sel);
+  };
+}
+window.renderMsChart=renderMsChart;
+// ===== v0.5 M3：中间台自然语言指令 → 结构化动作 =====
+function triggerRewrite(key, chapters){
+  switchView('ms'); loadManuscript(key);
+  bubble('bot','🔁 正在定向重写'+(chapters&&chapters.length?'第 '+chapters.join('、')+' 章':' 全书弱章')+'（把要求逐条带入，约 1-6 分钟，稿件区会实时刷新）…','');
+  fetch('/api/rewrite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,chapters})})
+   .then(r=>r.json()).then(()=>pollRewriteKey(key));
+}
+window.triggerRewrite=triggerRewrite;
+let _rwPoll={};
+function pollRewriteKey(key){
+  if(_rwPoll[key])clearInterval(_rwPoll[key]);
+  const t0=Date.now();
+  _rwPoll[key]=setInterval(async()=>{
+    try{
+      const d=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json();
+      if(!d.running){
+        clearInterval(_rwPoll[key]);
+        if(d.result&&d.result.error){ bubble('bot','⚠️ 重写失败：'+esc(d.result.error),''); }
+        else if(d.result){ bubble('bot','✅ 重写完成：'+d.before+' → '+d.after+'（'+(d.pass?'达标':'未达标')+'）· 改写 '+d.changed.length+' 章。稿件已刷新。',''); }
+        else bubble('bot','✅ 重写完成（见 16-重写记录）。','');
+        loadManuscript(key); loadLibrary();
+      } else if(Date.now()-t0>420000){ clearInterval(_rwPoll[key]); }
+    }catch(e){}
+  },6000);
+}
+async function showScoreTable(key){
+  const j=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();
+  const pcs=j.per_chapter||[], pl=j.pass_line||90;
+  let b='📊 <b>《'+esc(j.name||key)+'》逐章评分</b>（达标线 '+pl+'）：'+
+    (pcs.length?'<br><table style="font:12px;margin:6px 0;width:100%;border-collapse:collapse"><tr style="color:var(--muted)"><th style="text-align:left">章</th><th>分</th><th style="text-align:left">薄弱维度</th><th>达标</th></tr>'+
+    pcs.map(x=>{const bad=x.score!=null&&x.score<pl;return '<tr><td style="text-align:left;padding:2px 6px">第'+x.ch+'章</td><td style="color:'+(bad?'#f59e0b':'#3ad29b')+';font-weight:700">'+(x.score!=null?x.score:'—')+'</td><td style="text-align:left;opacity:.85">'+(x.weak||[]).join('、')+'</td><td>'+(bad?'⚠️ 未达标':'✅')+'</td></tr>';}).join('')+
+    '</table>':'（尚未逐章评分——完成写作或跑一次审稿后自动评分）')+(pcs.length?'<br>👉 直接告诉我「重写第N章」「重写第N章那段」「全书改写」即可。':'');
+  bubble('bot',b,'');
+}
+async function doRewriteSection(key, chap, text){
+  // 从指令里抓一段定位文字（去掉动词/章号，剩下的当片段）
+  const match=(text.replace(/(改写|重写|把|将|第\d+章|那段|那段话|一小段|一段)/g,' ').trim()).slice(0,30);
+  const j=await (await fetch('/api/rewrite-section',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key,chapter:chap,match,instruction:'把这一段写得更抓人，去掉 AI 腔，加细节与张力'})})).json();
+  if(j.error) bubble('bot','⚠️ '+esc(j.error)+'（可以再说清楚一点是哪一句/哪段）','');
+  else bubble('bot','✒️ 第 '+chap+' 章该段已改写。<br><b style="opacity:.8">原：</b>'+esc((j.orig||'').slice(0,120))+'<br><b style="opacity:.8">新：</b>'+esc((j.new||'').slice(0,120)),'');
+}
+async function execCmd(cr, text){
+  const k=cr.key;
+  switch(cr.action){
+    case 'rewrite_chapter': bubble('bot','🔁 收到：重写第 '+cr.chapter+' 章…',''); triggerRewrite(k,[cr.chapter]); break;
+    case 'rewrite_section': bubble('bot','✒️ 收到：改写第 '+cr.chapter+' 章里的一小段…',''); await doRewriteSection(k,cr.chapter,text); break;
+    case 'rewrite_all': bubble('bot','🔁 收到：全书改写（逐章带要求重写，约 3-8 分钟）…',''); triggerRewrite(k,null); break;
+    case 'scores': bubble('bot','📊 正在拉取逐章评分…',''); await showScoreTable(k); break;
+    default: break;
+  }
+  if(cr.action!=='scores'){ switchView('ms'); }
+}
+window.execCmd=execCmd;
+// ===== v0.5 M2：放行弹窗「重写并看稿件」——进入该书会话工作台，实时看书写 =====
+function releaseRewrite(key, chapters){
+  closeRelease();
+  curKey=key; curSession=key; loadLibrary(); startPolling();
+  // 改变重写状态：侧栏该书显示「重写中」，中间切到稿件视图并实时刷新
+  triggerRewrite(key, chapters);   // 内部 switchView('ms')+loadManuscript+轮询
+  if(window._libItem(key)){ const it=_libItem(key); it.state='validating'; it.status_note='重写中'; }
+  bubble('bot','🔁 已进入《'+esc(_libItem(key)?_libItem(key).name:key)+'》的重写：带要求逐章重写'+(chapters&&chapters.length?'（第 '+chapters.join('、')+' 章）':'（全书弱章）')+'，稿件区实时刷新书写内容。完成会弹通知。','');
+}
+window.releaseRewrite=releaseRewrite;
 // ===== v0.3.5 打字机逐字显示（正在写/校验时，新增正文逐字出现）=====
 let _msFull='', _msKey='', _msRevealed=0, _msWriting=false, _msTick=null;
 function renderMsBody(txt,typing){

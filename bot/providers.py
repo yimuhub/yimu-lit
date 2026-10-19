@@ -499,6 +499,70 @@ def stage_resolve(cfg, stage):
             pass
     return resolve(cfg)
 
+# ---------- v0.5 M4：子 Agent 独立配模型 + 并发/限流守卫 ----------
+AGENT_MODELS_FALLBACK = {}   # 全局兜底 agent→{provider_id,model}（config.json defaults.agent_models 也可）
+
+def agent_resolve(cfg, agent=None, stage=None):
+    """v0.5 M4：子 Agent 模型绑定优先级 —— agent_models[agent] > stage_models[stage] > 默认 resolve。
+    让不同岗位（创作/审稿/重写/规划）挂不同供应商/模型，把负载摊开。"""
+    if agent:
+        pick = (((cfg or {}).get("meta") or {}).get("agent_models") or {}).get(agent) or {}
+        if not pick:
+            import json as _json, os as _os
+            try:
+                pick = (_json.load(open(_os.path.join(ROOT, "config.json"), encoding="utf-8"))
+                        .get("defaults", {}).get("agent_models", {})).get(agent) or {}
+            except Exception:
+                pick = {}
+        if pick.get("model") or pick.get("provider_id"):
+            c2 = dict(cfg or {})
+            c2["_provider_id"] = pick.get("provider_id") or c2.get("_provider_id")
+            c2["_model"] = pick.get("model") or c2.get("_model")
+            try:
+                return resolve(c2)
+            except ProviderError:
+                pass
+    if stage:
+        return stage_resolve(cfg, stage)
+    return resolve(cfg)
+
+class ConcurrencyGuard:
+    """v0.5 M4：全局并发上限 + 每 provider 限流。多 Agent/多书并发创作改写时先排队，避免打爆单一 API（429）。"""
+    import threading as _t
+    _lock = _t.Lock()
+    _prov = {}          # pid -> Semaphore
+    _global = None
+    _gmax = None
+    def __init__(self, global_max=4):
+        self._global_max = max(1, int(global_max))
+    @classmethod
+    def _g(cls, n):
+        with cls._lock:
+            if cls._global is None or cls._gmax != n:
+                cls._global = cls._t.Semaphore(n); cls._gmax = n
+            return cls._global
+    @classmethod
+    def _p(cls, provider):
+        pid = (provider or {}).get("id") or "_default"
+        with cls._lock:
+            s = cls._prov.get(pid)
+            if s is None:
+                rpm = int((provider or {}).get("rpm") or 20)
+                s = cls._prov[pid] = cls._t.Semaphore(max(1, rpm // 4))   # 在飞并发 ≈ rpm/4（保守防 429）
+            return s
+    def acquire(self, provider):
+        g, p = self._g(self._global_max), self._p(provider)
+        return _Guard(g, p)
+
+class _Guard:
+    def __init__(self, g, p): self._g, self._p = g, p
+    def __enter__(self):
+        self._g.acquire(timeout=600); self._p.acquire(timeout=600); return self
+    def __exit__(self, *a):
+        try: self._p.release()
+        finally: self._g.release()
+
+
 def active_model_options():
     """给前端的 供应商->模型 选择树。"""
     data = load_data()

@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from bot import llm, workflow, writer, providers, version, distill, learn
+from bot import llm, workflow, writer, providers, version, distill, learn, agents
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="novel-bot")
@@ -558,6 +558,64 @@ def api_rewrite(payload: dict):
     threading.Thread(target=_job, daemon=True).start()
     return {"ok": True, "running": True, "msg": "🔁 审查后定向重写中…（约 2-5 分钟，把要求书逐条带进目标章）"}
 
+@app.post("/api/cmd")
+def api_cmd(payload: dict):
+    """v0.5 M3：把中间台自然语言指令解析成结构化动作，前端照做（改写某段/某章/全书/看评分/聊天）。"""
+    key = payload.get("key"); text = (payload.get("text") or "").strip()
+    out = {"key": key, "text": text}
+    if not text:
+        out["action"] = "chat"; return out
+    mch = re.search(r"第\s*(\d+)\s*章", text)
+    chap = int(mch.group(1)) if mch else 0
+    if re.search(r"全书|整本|全部.{0,4}重写|重写全书|重写整本", text):
+        out["action"] = "rewrite_all"
+    elif re.search(r"看评分|评分表|各章评分|每章.{0,3}分|评分怎么样", text):
+        out["action"] = "scores"
+    elif re.search(r"段", text) and chap:
+        out["action"] = "rewrite_section"; out["chapter"] = chap
+    elif chap:
+        out["action"] = "rewrite_chapter"; out["chapter"] = chap
+    elif re.search(r"重写|改写", text):
+        out["action"] = "rewrite_default"
+    else:
+        out["action"] = "chat"
+    return out
+
+@app.post("/api/rewrite-section")
+def api_rewrite_section(payload: dict):
+    """v0.5 M3：改写某一段（正文里的一个自然段）。match=定位文本片段 或 para=第N段；instruction=改写要求。"""
+    key = payload.get("key")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    ch_no = int(payload.get("chapter") or 0)
+    match = (payload.get("match") or "").strip()
+    para = int(payload.get("para") or 0)
+    instr = payload.get("instruction") or "把这一段写得更抓人，去掉 AI 腔，加细节与张力"
+    plan = proj.plan()
+    ch = next((c for c in plan.get("chapters", []) if c.get("chapterNumber") == ch_no), None)
+    if not ch:
+        return JSONResponse({"error": f"第{ch_no}章不存在"}, status_code=404)
+    fp = os.path.join(proj.path, ch["filePath"])
+    body = open(fp, encoding="utf-8").read()
+    mm = re.search(r"(##\s*正文[^\n]*\n)(.*?)(\n##|\Z)", body, re.S)
+    sec = mm.group(2) if mm else body
+    paras = [p for p in re.split(r"\n\s*\n", sec) if p.strip()]
+    target = None
+    if match:
+        target = next((p for p in paras if match in p), None)
+    elif 1 <= para <= len(paras):
+        target = paras[para - 1]
+    if not target:
+        return JSONResponse({"error": "未定位到该段（试试给更多定位文字或段落序号）"}, status_code=404)
+    cfg = plan.get("config") or {}
+    new = workflow.guided_rewrite(target, instr, "全书约束：保持人物/设定一致，只改这一段", cfg)
+    new = (new or "").strip()
+    if new:
+        open(fp, "w", encoding="utf-8").write(body.replace(target, new, 1))
+        proj.log(f"✒️ 第{ch_no}章改写一段（{instr[:24]}…）")
+    return {"ok": True, "chapter": ch_no, "orig": target, "new": new}
+
 @app.get("/api/rewrite-log")
 def api_rewrite_log(key: str):
     p = os.path.join(writer.PROJECTS_DIR, key, "16-重写记录.md")
@@ -931,6 +989,40 @@ def api_download(key: str):
     return Response(text.encode("utf-8"), media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": disp})
 
+@app.get("/api/agents")
+def api_agents():
+    """v0.5 M4：多 Agent 宇宙 —— 各岗位当前模型绑定 + 可选模型树 + 全局并发上限。"""
+    return agents.view()
+
+@app.post("/api/agents-set")
+def api_agents_set(payload: dict):
+    """v0.5 M4：给某子 Agent 单独配 provider/model（留空=回落 stage/默认）。"""
+    am = agents.set_binding(payload.get("agent"), payload.get("provider_id"), payload.get("model"))
+    return {"ok": True, "agent_models": am}
+
+@app.post("/api/agents-maxglobal")
+def api_agents_maxglobal(payload: dict):
+    """v0.5 M4：设全局并发上限（多 Agent/多书同时创作时的在飞上限）。"""
+    return {"ok": True, "max_global_agents": agents.set_max_global(int(payload.get("n", 4)))}
+
+@app.post("/api/agents-dispatch")
+def api_agents_dispatch(payload: dict):
+    """v0.5 M4：批量并发创作多本书（每书一线程同步跑完，LLM 并发受 ConcurrencyGuard 限流排队）。"""
+    d = payload
+    keys = d.get("keys") or []
+    if not keys:
+        return JSONResponse({"ok": False, "error": "请至少选一本书"}, status_code=400)
+    def _get(k):
+        try:
+            p = writer.Project(writer._project_dir(k), k)
+        except Exception:
+            p = None
+        if not p or not p.plan():
+            raise Exception(f"《{k}》不存在或未创建")
+        return p
+    res = agents.dispatch_write(keys[:8], _get, lambda p: writer._write_loop(p))
+    return {"ok": True, "results": res}
+
 @app.get("/api/chapter")
 def api_chapter(key: str, n: int):
     proj = _get_project(key)
@@ -944,9 +1036,15 @@ def api_chapter(key: str, n: int):
         return {"chapter": n, "text": ""}
     return {"chapter": n, "text": open(fp, encoding="utf-8").read()}
 
+def _preview_pass_line(plan):
+    try:
+        return int(((plan.get("config") or {}).get("defaults") or {}).get("validation", {}).get("pass_line", 90))
+    except (ValueError, TypeError):
+        return 90
+
 @app.get("/api/preview")
 def api_preview(key: str):
-    """预览：返回成书（或已写章节拼接）+ 章节清单。点开作品即可看内容。"""
+    """预览：返回成书（或已写章节拼接）+ 章节清单 + 逐章评分。点开作品即可看内容。"""
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
@@ -966,8 +1064,18 @@ def api_preview(key: str):
                  "status": c.get("status"), "words": c.get("wordCount"),
                  "continuation": bool(c.get("continuation"))}
                 for c in plan.get("chapters", [])]
+    # v0.5 M1：逐章评分（meta.chapter_scores）挂到每章 + 单独字段
+    cs = (plan.get("meta") or {}).get("chapter_scores", {}) or {}
+    pl = _preview_pass_line(plan)
+    for c in chapters:
+        rec = cs.get(str(c["n"])) or {}
+        c["score"] = rec.get("score"); c["weak"] = rec.get("weak", []); c["ch_status"] = rec.get("status", "unscored")
+    per_chapter = [{"ch": int(k), "score": v.get("score"), "weak": v.get("weak", []),
+                    "status": v.get("status", "unscored"), "verdict": v.get("verdict", "")}
+                   for k, v in sorted(cs.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 9999)]
     return {"key": key, "name": plan.get("novelName", key), "has_book": has_book,
-            "total_words": plan.get("totalWords", 0), "text": text, "chapters": chapters}
+            "total_words": plan.get("totalWords", 0), "text": text, "chapters": chapters,
+            "per_chapter": per_chapter, "pass_line": pl}
 
 # ---------- 分层审稿（五角色 + 百分制）/ 版本 ----------
 @app.post("/api/validate")

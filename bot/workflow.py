@@ -302,6 +302,35 @@ def score_dimensions(scores):
             weight += w
     return round(total, 1) if weight else 0
 
+def chapter_review(ch_body, cfg, context=""):
+    """v0.5 M1：对**单章**做 5 角色百分制评分（评这一章而非整书）。
+    返回 {"scores":{6维0-10}, "weak":[维度名×3], "verdict":"一句话"}；失败返回 {}。
+    评的是"这一章在本书里是否达标"，吃 context（文风/人物/前后章）做参照。"""
+    try:
+        genre_txt = skill.genre(cfg.get("genre", ""))
+        sys_p = ("你是「一幕·神笔」五角色审校团。现在只审**下面这一章**（在整本书语境下），"
+                 "按 6 维打分（0-10）：结构/因果可信/人物/连续性/语言/读者体验。"
+                 f"【题材craft】{genre_txt[:600]}\n【反AI腔(供语言维)】{skill.anti_slop()[:600]}\n"
+                 + (f"【参照上下文(文风/人物/前后章)】\n{context[:4000]}\n" if context else "")
+                 + "评分纪律：就事论事、按证据打分；找出最弱的 3 个维度。"
+                 '输出 JSON：{"scores":{"结构":0-10,"因果可信":0-10,"人物":0-10,"连续性":0-10,"语言":0-10,"读者体验":0-10},'
+                 '"weak":["最弱维度名1","最弱维度名2","最弱维度名3"],"verdict":"一句话本章质量判断与最该修的点"}。只输出 JSON。')
+        user_p = f"待审章节（第 ? 章，只评它）：\n{ch_body[:9000]}"
+        out = llm.chat_json([{"role": "system", "content": sys_p},
+                             {"role": "user", "content": user_p}], cfg=cfg, stage="review")
+        if not isinstance(out, dict) or not out.get("scores"):
+            return {}
+        scores = out.get("scores")
+        # weak：没给就按最低 3 维补齐
+        weak = out.get("weak") or []
+        if not isinstance(weak, list) or not weak:
+            weak = [k for k, _ in sorted(((k, scores.get(k)) for k in SCORE_WEIGHTS),
+                                          key=lambda kv: (kv[1] if isinstance(kv[1], (int, float)) else 99))[:3]]
+        return {"scores": scores, "weak": [w for w in weak if w in SCORE_WEIGHTS][:3] or weak[:3],
+                "verdict": (out.get("verdict") or "").strip()[:200]}
+    except Exception:
+        return {}
+
 def five_role_review(book_md, cfg, l1_findings=None):
     """五角色审校团（Architect/Scribe/Editor/Guardian/Curator）单次 LLM 覆盖，
     吃 L1 确定性结果作为证据；返回 6 维(0-10)评分 + findings + fix_actions。"""

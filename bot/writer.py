@@ -338,6 +338,111 @@ def _build_ctx(proj, ch):
             ctx["graph_ctx"], ctx["retrieval_ctx"] = {}, []
     return ctx
 
+def _ch_review_ctx(proj, ch_no):
+    """给 chapter_review 的参照上下文（文风基准节选 + 人物档案节选 + 上一章尾）。"""
+    def _rf(f):
+        p = os.path.join(proj.path, f)
+        return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+    style = _rf("03-文风基准.md")[:1500]
+    chars = _rf("00-人物档案.md")[:1500]
+    chs = proj.plan().get("chapters", [])
+    prev = ""
+    if ch_no > 1 and ch_no - 1 < len(chs):
+        pp = chs[ch_no - 2].get("filePath", "")
+        if pp and os.path.exists(os.path.join(proj.path, pp)):
+            prev = open(os.path.join(proj.path, pp), encoding="utf-8").read()[-800:]
+    return (f"【文风基准节选】\n{style or '（无）'}\n【人物档案节选】\n{chars or '（无）'}\n"
+            f"【上一章尾】\n{prev or '（第1章，无）'}")
+
+def score_chapter(proj, ch_no):
+    """评单章 0-100，写 meta.chapter_scores，返回 total（None=无法评）。"""
+    chs = proj.plan().get("chapters", [])
+    ch = next((c for c in chs if c.get("chapterNumber") == ch_no), None)
+    if not ch:
+        return None
+    fp = os.path.join(proj.path, ch.get("filePath", ""))
+    if not os.path.exists(fp):
+        return None
+    body = open(fp, encoding="utf-8").read()
+    cfg = proj.plan().get("config") or {}
+    llm.book(os.path.basename(proj.path), "review")           # 评分 token 归集
+    r = workflow.chapter_review(body, cfg, _ch_review_ctx(proj, ch_no))
+    total = workflow.score_dimensions(r.get("scores")) if r else None
+    plan = proj.plan()
+    if not isinstance(plan.get("meta"), dict):
+        plan["meta"] = {}
+    cs = plan["meta"].setdefault("chapter_scores", {})
+    pl = _pass_line()
+    cs[str(ch_no)] = {"score": total, "dims": r.get("scores", {}) if r else {},
+                      "weak": (r.get("weak", []) if r else []), "verdict": (r.get("verdict", "") if r else ""),
+                      "status": "unscored" if total is None else ("pass" if total >= pl else "below"),
+                      "ts": int(datetime.datetime.now().timestamp())}
+    proj.save_plan(plan)
+    return total
+
+def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
+    """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。"""
+    plan = proj.plan()
+    d = _cfg_defaults()
+    if max_rounds is None:
+        max_rounds = int(d.get("max_ch_rounds", 2))
+    if pass_line is None:
+        pass_line = _pass_line()
+    chs = plan.get("chapters", [])
+    ch = next((c for c in chs if c.get("chapterNumber") == ch_no), None)
+    if not ch:
+        return None
+    fp = os.path.join(proj.path, ch.get("filePath", ""))
+    # 先记一个基线分（原章），重写只保留「真的更高分」，避免 LLM 评分波动把章节改坏
+    base_score = score_chapter(proj, ch_no)
+    orig_body = open(fp, encoding="utf-8").read()
+    rounds = 0
+    while rounds < max_rounds:
+        sc = score_chapter(proj, ch_no)
+        if sc is None or sc >= pass_line:
+            break
+        weak = ((proj.plan().get("meta") or {}).get("chapter_scores", {}).get(str(ch_no), {}).get("weak", []))
+        body = open(fp, encoding="utf-8").read()
+        if not weak:
+            break
+        fix = "\n".join(f"【第{ch_no}章·主攻】提升【{w}】维度" for w in weak[:3])
+        try:
+            ctx = _build_ctx(proj, ch)
+        except Exception:
+            ctx = {}
+        cons = (f"人物：{ctx.get('characters_text','')[:2000]}\n文风：{ctx.get('style_text','')[:1000]}\n"
+                f"大纲要点：{ctx.get('outline_text','')[:1500]}\n上一章结尾：{(ctx.get('prev_tail') or '')[-400:]}")
+        cfg = plan.get("config") or {}
+        new = workflow.guided_rewrite(body, fix, cons, cfg)
+        new = _clean_chapter_text(new or "")
+        if new and new.strip():
+            open(fp, "w", encoding="utf-8").write(new)
+            sc2 = score_chapter(proj, ch_no)
+            if (sc2 is not None and sc is not None and sc2 > sc):
+                proj.log(f"🔁 第{ch_no}章 {sc}→{sc2}（提分，保留），按[{','.join(weak[:3])}]局部重写（第{rounds+1}/{max_rounds}轮）")
+            else:
+                open(fp, "w", encoding="utf-8").write(body)   # 没提分 → 还原原章，防改坏
+                sc2 = sc
+                proj.log(f"↩️ 第{ch_no}章重写未提分（{sc2}），已还原原章（防 LLM 波动改坏）")
+        rounds += 1
+    final = score_chapter(proj, ch_no)
+    # 若最终分低于最初基线，还原到原章基线（保守：只进不退）
+    if (final or 0) < (base_score or 0):
+        open(fp, "w", encoding="utf-8").write(orig_body)
+        final = base_score
+    return final
+
+def per_chapter_scores(proj):
+    """[{ch, score, weak, status, verdict}]（来自 meta.chapter_scores，按章号排序）。"""
+    cs = (proj.plan().get("meta") or {}).get("chapter_scores", {}) or {}
+    out = []
+    for k in sorted(cs, key=lambda x: int(x) if str(x).isdigit() else 9999):
+        v = cs[k]
+        out.append({"ch": int(k) if str(k).isdigit() else k, "score": v.get("score"),
+                    "weak": v.get("weak", []), "status": v.get("status", "unscored"),
+                    "verdict": v.get("verdict", "")})
+    return out
+
 def _write_chapter(proj, ch, min_words, max_retries):
     no = ch["chapterNumber"]
     proj.log(f"✍️ 开始第{no}章「{ch['title']}」")
@@ -407,6 +512,17 @@ def _write_chapter(proj, ch, min_words, max_retries):
     proj.save_plan(plan)
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
              if ok else f"❌ 第{no}章未达标（{words}字）")
+    # v0.5 M1：逐章评分 + 低于 90 自动局部重写（可配关，失败不阻断主流程）
+    if ok:
+        try:
+            _d = _cfg_defaults()
+            if _d.get("chapter_quality", True):
+                proj.log(f"📊 第{no}章逐章评分（<90 自动局部重写，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
+                fin = _auto_rewrite_chapter(proj, no)
+                _st = ((proj.plan().get("meta") or {}).get("chapter_scores", {}).get(str(no), {}).get("status"))
+                proj.log(f"📊 第{no}章 {fin if fin is not None else '?'} 分（{_st}）")
+        except Exception as e:
+            proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
 
 def _validate_and_finish(proj):
     llm.book(os.path.basename(proj.path), "review")   # v0.3.x：五角色审校 token 归集
@@ -538,6 +654,16 @@ def _write_quality_report(proj, l1, review, total, mode, fixed, pass_line, reade
             f"| **合计（百分制）** | 100 | **{total}** |\n\n"
             f"- 达标线：**{pass_line}** · 达标：**{ok}** · 修订：{'autofix ' + str(fixed) + ' 处' if fixed else '无（report）'}\n"
             f"- 是否可出书：**{ok}**\n")
+    # v0.5 M1：逐章评分表（<90 标红 ⚠️，可据此单独重写）
+    pcs = per_chapter_scores(proj)
+    if pcs:
+        _rows = "\n".join(
+            f"| 第{c['ch']}章 | **{c['score'] if c['score'] is not None else '—'}** | {'、'.join(c['weak'] or []) or '—'} "
+            f"| {'⚠️ 未达标' if (c['status'] == 'below') else ('✅ 达标' if c['status']=='pass' else '未评')} |"
+            + (f" {c['verdict'][:30]}" if c.get('verdict') else "") + " |"
+            for c in pcs)
+        body += (f"\n## 4) 逐章评分（M1 · <{pass_line} 自动/手动重写）\n"
+                 f"| 章节 | 百分制 | 薄弱维度 | 达标 | 判定 |\n|---|---|---|---|---|\n{_rows}\n")
     if reader_data:
         body += ("\n## P5 读者人格 beta 读（3 类读者试读）\n"
                  + "".join(f"- **{r.get('persona','读者')}**：追读「{str(r.get('追读点',''))[:50]}」｜弃书「{str(r.get('弃书点',''))[:50]}」｜建议「{str(r.get('建议',''))[:70]}」\n"
@@ -911,10 +1037,17 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     rec += [f"- **{d}**：{_DIM_ADVICE.get(d, '')}" for d in weak2] or ["- （无明显短板）"]
     with open(os.path.join(proj.path, "16-重写记录.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(rec))
+    # v0.5 M1：改写后逐章重评（刷新 meta.chapter_scores）
+    for c in changed:
+        try:
+            score_chapter(proj, c["chapter"])
+        except Exception:
+            pass
     proj.log(f"🔁 定向重写 {len(changed)} 章：{brief['before_total']} → {after}（{delta:+.1f}）")
     return {"before": brief["before_total"], "after": after, "delta": delta,
             "changed": changed, "pass": after >= brief["pass_line"],
-            "weak_after": weak2, "brief": brief}
+            "weak_after": weak2, "brief": brief,
+            "per_chapter": per_chapter_scores(proj)}
 
 # ---------- v0.2.1：放行门禁（未达标自动带要求重写直到 ≥pass_line） ----------
 _GATE_CANCEL = set()   # 请求取消的门禁 key（下一轮检查点生效）
@@ -955,9 +1088,15 @@ def run_release_gate(key, cfg_over=None):
         cur = brief["before_total"]
         if before is None:
             before = cur
-        if cur >= pl:
+        # v0.5 M1：优先重写「逐章<90 的章」，没有逐章分则回落到整书 top-3
+        below = [x["ch"] for x in per_chapter_scores(proj)
+                 if x.get("score") is not None and x["score"] < pl]
+        if cur >= pl and not below:
             released = True; final = cur; break
-        res = run_guided_rewrite(key, chapters=_top_targets(brief, rwp), cfg_over=cfg_over)
+        targets = (below or _top_targets(brief, rwp))[:rwp]
+        if not targets:
+            released = bool(cur >= pl); final = cur; break
+        res = run_guided_rewrite(key, chapters=targets, cfg_over=cfg_over)
         after = res.get("after", cur)
         step = {"round": r + 1, "before": cur, "after": after}
         if res.get("pass"):
