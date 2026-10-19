@@ -180,8 +180,12 @@ def write_chapter(ctx):
     # v0.4：读者即时修正指令（运行中随时插一条，标 immediate 立即生效 / 否则下一条生效）
     qnote = (ctx.get("queue_note") or "").strip()
     qblock = ("\n【读者即时指令（本章必须优先满足，不破坏既有剧情设定）】\n" + qnote) if qnote else ""
+    # v0.6 B：总架构蓝图（并行写作时写任何一章前必读，放最前对齐全局）
+    bp = (ctx.get("blueprint") or "").strip()
+    bblock = (bp + "\n") if bp else ""
     if ctx.get("continuation"):
         user_p = (
+            f"{bblock}"
             f"【本书文风基准】\n{ctx['style_text']}\n"
             f"【人物档案】\n{ctx['characters_text']}\n"
             f"【全书大纲要点】\n{ctx.get('outline_text','')[:3000]}\n"
@@ -196,6 +200,7 @@ def write_chapter(ctx):
         return llm.chat([{"role": "system", "content": _writing_system(ctx)},
                          {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
     user_p = (
+        f"{bblock}"
         f"【本书文风基准】\n{ctx['style_text']}\n"
         f"【人物档案】\n{ctx['characters_text']}\n"
         f"【大纲】\n{ctx['outline_text']}\n"
@@ -210,7 +215,9 @@ def write_chapter(ctx):
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
 
 def expand_chapter(body, ctx):
-    user_p = (f"下面这章字数不足 3000，请按 content-expansion.md 的扩充技巧（增加对话场景/人物内心/细节描写）"
+    bp = (ctx.get("blueprint") or "").strip()
+    bblock = (bp + "\n") if bp else ""
+    user_p = (f"{bblock}下面这章字数不足 3000，请按 content-expansion.md 的扩充技巧（增加对话场景/人物内心/细节描写）"
               f"扩写到 3000-5000 字，保持情节与钩子不变，不要注水。\n\n{body}")
     return llm.chat([{"role": "system", "content": _writing_system(ctx)},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")

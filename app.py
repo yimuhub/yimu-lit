@@ -1030,6 +1030,59 @@ def api_agents_dispatch(payload: dict):
     res = agents.dispatch_write(keys[:8], _get, lambda p: writer._write_loop(p))
     return {"ok": True, "results": res}
 
+# ---------- v0.6 B：并行章节创作（单本书内 N 个 Agent 分章齐写 + 总架构对齐） ----------
+_PARALLEL_RUNNING = {}
+
+@app.post("/api/parallel-write")
+def api_parallel_write(payload: dict):
+    """v0.6 B：单本书内 N 个 worker 分章齐写（先熔炼总架构，写完一个立即取下一章）。后台线程跑，立即返回。"""
+    key = payload.get("key")
+    nworkers = max(1, min(8, int(payload.get("workers") or 5)))
+    proj = _get_project(key)
+    if not proj or not proj.plan():
+        return JSONResponse({"ok": False, "error": "项目不存在或未创建"}, status_code=404)
+    if _PARALLEL_RUNNING.get(key, {}).get("running"):
+        return {"ok": True, "running": True, "msg": "该书并行创作进行中…"}
+    _PARALLEL_RUNNING[key] = {"running": True, "result": None, "workers": nworkers}
+    def _job():
+        try:
+            writer._write_loop_parallel(proj, n_workers=nworkers)
+            _PARALLEL_RUNNING[key] = {"running": False, "result": "ok", "workers": nworkers}
+        except Exception as e:
+            _PARALLEL_RUNNING[key] = {"running": False, "result": {"error": str(e)}, "workers": nworkers}
+    threading.Thread(target=_job, daemon=True).start()
+    return {"ok": True, "running": True, "workers": nworkers,
+            "msg": f"⚡ 并行创作中：先熔炼总架构，{nworkers} 个 Agent 分章齐写（写完一个立即取下一章）"}
+
+@app.get("/api/parallel-log")
+def api_parallel_log(key: str):
+    """v0.6 B：该书并行创作进度（是否仍在跑 + 结果）。"""
+    return {"running": bool(_PARALLEL_RUNNING.get(key, {}).get("running")),
+            "result": _PARALLEL_RUNNING.get(key, {}).get("result")}
+
+@app.get("/api/blueprint")
+def api_blueprint(key: str):
+    """v0.6 B：取某书『总架构』（02b-总架构）；未生成则给规则式即时预览（不落盘）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    jpath = os.path.join(proj.path, "02b-总架构.json")
+    mdpath = os.path.join(proj.path, "02b-总架构.md")
+    bp = None
+    if os.path.exists(jpath):
+        try:
+            bp = json.load(open(jpath, encoding="utf-8"))
+        except Exception:
+            bp = None
+    out = {"key": key, "exists": bool(bp), "blueprint": bp,
+           "md": open(mdpath, encoding="utf-8").read() if os.path.exists(mdpath) else ""}
+    if not bp:
+        try:
+            out["blueprint"] = writer._rule_blueprint(proj, proj.plan() or {})
+        except Exception:
+            out["blueprint"] = None
+    return out
+
 @app.get("/api/chapter")
 def api_chapter(key: str, n: int):
     proj = _get_project(key)

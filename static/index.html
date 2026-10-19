@@ -494,6 +494,12 @@ input,select,textarea{color-scheme:dark}
   <div class="mactions"><button class="mcancel" onclick="closeTitle()">取消</button>
     <button class="mok" id="tmgoto">确认开写</button></div>
 </div></div>
+<div id="bpmodal" class="modal"><div class="mbox" style="width:640px">
+  <h3 id="bpname">🧩 总架构</h3>
+  <div class="mhint">写任何一章前，所有 Agent 都先读这份唯一蓝图（世界观/人物/全章节拍/文风/连续性），并行写章才又快又一致。</div>
+  <div id="bpbody" style="margin:4px 0 8px"></div>
+  <div class="mactions"><button class="mok" onclick="showBlueprint()">刷新</button><button class="mcancel" onclick="document.getElementById('bpmodal').classList.remove('show')">关闭</button></div>
+</div></div>
 <script>
 const $=id=>document.getElementById(id);
 const sid=(localStorage.nbot_sid||(localStorage.nbot_sid=crypto.randomUUID()));
@@ -1416,6 +1422,8 @@ async function selectBook(key){
     +'<a class="pb prev" href="/api/download?key='+encodeURIComponent(key)+'" target="_blank">⬇ 下载</a>';
   if(st.awaiting_title)qa='<button class="pb run" onclick="openTitle(\''+key+'\')">✍ 选书名</button>'+qa;
   if(st.state==='completed')qa+='<button class="pb" onclick="openPreview(\''+key+'\')">👁 预览</button>';
+  qa+='<button class="pb" onclick="parallelWrite()" title="先熔炼总架构，N 个 Agent 分章齐写（写完一个立即取下一章）">⚡ 并行创作</button>'
+    +'<button class="pb" onclick="showBlueprint()" title="写前统一的总架构蓝图（世界观/人物/全章节拍/文风/连续性）">🧩 总架构</button>';
   $('quickacts').innerHTML=qa;
   const rel=pv.released===true?'已放行✅':(pv.released===false?'beta·未放行⚠️':'');
   $('artbody').innerHTML='<div style="font:600 14px var(--sans)">'+esc(name)+'</div>'
@@ -1436,6 +1444,56 @@ function actValidate(){if(!curSession)return;fetch('/api/validate',{method:'POST
 window.actValidate=actValidate;
 function actGate(){if(!curSession)return;fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession})}).then(r=>r.json()).then(j=>toast('🔓 门禁：'+(j.msg||''),'ok'));}
 window.actGate=actGate;
+// ===== v0.6 B：并行创作 + 总架构查看 =====
+function parallelWrite(){
+  if(!curSession)return;
+  const key=curSession;
+  if(!confirm('⚡ 并行创作这本书？\n先熔炼『总架构』，5 个 Agent 分章齐写（写完一个立即取下一章）。\n会续写/重写尚未完成的章节，全程走并发限流防 429。'))return;
+  switchView('ms'); loadManuscript(key);
+  $('msrw').innerHTML='<div class="rwcard" style="border-color:var(--accent)"><h4>⚡ 并行创作中</h4><div class="rwnote">先熔炼『总架构』，5 个 Agent 分章齐写（写完一个立即取下一章）… 完成后此处刷新。</div></div>';
+  fetch('/api/parallel-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,workers:5})})
+   .then(r=>r.json()).then(j=>{bubble('bot','⚡ '+esc(j.msg||'并行创作已启动')+'（稿件区实时刷新）','');pollParallel(key);});
+}
+window.parallelWrite=parallelWrite;
+let _ppPoll={};
+function pollParallel(key){
+  if(_ppPoll[key])clearInterval(_ppPoll[key]);
+  const t0=Date.now();
+  _ppPoll[key]=setInterval(async()=>{
+    try{
+      const lg=await (await fetch('/api/parallel-log?key='+encodeURIComponent(key))).json();
+      const st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();
+      const isCur=(key===(curSession||curKey));   // v0.6 A：只刷当前书
+      if(!lg.running){
+        clearInterval(_ppPoll[key]);
+        if(isCur){
+          const done=(st.done||0),tot=(st.total||0);
+          const ev=(st.events||[]).slice(-6).map(e=>esc(e)).join('<br>')||'完成';
+          $('msrw').innerHTML='<div class="rwcard" style="border-color:#3ad29b"><h4>⚡ 并行创作完成（总架构对齐）· '+done+'/'+tot+' 章</h4><div class="rwnote" style="max-height:180px;overflow:auto">'+ev+'</div><div style="margin-top:8px"><button class="rwbtn" onclick="loadManuscript(\''+esc(key)+'\');showPv(\'quality\')">刷新 + 看质量报告</button></div></div>';
+          loadManuscript(key);
+        }
+        loadLibrary();
+      } else if(Date.now()-t0>600000){ clearInterval(_ppPoll[key]); }
+    }catch(e){}
+  },5000);
+}
+window.pollParallel=pollParallel;
+async function showBlueprint(){
+  if(!curSession)return;
+  const key=curSession;
+  const j=await (await fetch('/api/blueprint?key='+encodeURIComponent(key))).json();
+  const bp=j.blueprint||{};
+  let bodyHtml;
+  if(j.md){ bodyHtml='<div style="white-space:pre-wrap;font:12.5px/1.8 var(--sans);color:var(--text);max-height:62vh;overflow:auto">'+esc(j.md)+'</div>'; }
+  else{ bodyHtml='<div style="font:11px var(--muted);margin-bottom:8px">（尚未熔炼，以下为规则式即时预览）</div>'
+    +'<div style="white-space:pre-wrap;font:12px/1.8 var(--sans);max-height:62vh;overflow:auto">'+esc(JSON.stringify({
+        world:bp.world,characters:(bp.characters||[]).map(c=>c.name+(c.role?'（'+c.role+'）':'')),
+        style:bp.style,beats:(bp.beats||[]).length,continuity:bp.continuity_rules},null,1))+'</div>'; }
+  $('bpbody').innerHTML=bodyHtml;
+  $('bpname').textContent='《'+(j.name||key)+'》总架构';
+  $('bpmodal').classList.add('show');
+}
+window.showBlueprint=showBlueprint;
 async function loadBookSkill(key){
   const el=$('bookskill');if(!el)return;
   let sty=null;try{sty=(await (await fetch('/api/style?key='+encodeURIComponent(key))).json()).style;}catch(e){}

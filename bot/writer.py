@@ -1,6 +1,6 @@
-"""串行写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）"""
-import json, os, re, datetime, threading
-from . import workflow, skill, continuity, llm
+"""写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
+import json, os, re, datetime, threading, queue
+from . import workflow, skill, continuity, llm, providers
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECTS_DIR = os.path.join(ROOT, "projects")
@@ -11,7 +11,7 @@ class Project:
         self.name = name
         self.events = []
         self.running = False
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()   # v0.6 B：并行写作下保护 02-写作计划.json 读改写
 
     def log(self, msg):
         with self.lock:
@@ -25,8 +25,9 @@ class Project:
 
     def save_plan(self, plan):
         plan["updatedAt"] = datetime.datetime.now().isoformat()
-        with open(os.path.join(self.path, "02-写作计划.json"), "w", encoding="utf-8") as f:
-            json.dump(plan, f, ensure_ascii=False, indent=2)
+        with self.lock:   # v0.6 B：并行写作串行化 02-写作计划.json 写盘（RLock，可被读改写临界区复用）
+            with open(os.path.join(self.path, "02-写作计划.json"), "w", encoding="utf-8") as f:
+                json.dump(plan, f, ensure_ascii=False, indent=2)
 
     def status(self):
         plan = self.plan()
@@ -336,7 +337,197 @@ def _build_ctx(proj, ch):
             ctx["retrieval_ctx"] = _retr.retrieve(q, proj.path, k=3, exclude_ch=(ch["chapterNumber"] - 1))
         except Exception as e:
             ctx["graph_ctx"], ctx["retrieval_ctx"] = {}, []
+    # v0.6 B：总架构蓝图注入（写任何一章前先对齐全局设定/人物/文风/连续性）
+    try:
+        ctx["blueprint"] = blueprint_block(proj, ch["chapterNumber"])
+    except Exception:
+        ctx["blueprint"] = ""
     return ctx
+
+# ---------- v0.6 B：总架构（蓝图）+ 并行章节创作 ----------
+BLUEPRINT_JSON = "02b-总架构.json"
+BLUEPRINT_MD = "02b-总架构.md"
+
+def _rule_blueprint(proj, plan):
+    """无 LLM 熔炼时的规则式兜底蓝图（从散件提取，保证并行写作始终有『总架构』可读）。"""
+    def _rf(f):
+        p = os.path.join(proj.path, f)
+        return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+    from .workflow import outline_chapter_row
+    outline = _rf("01-大纲.md")
+    beats = []
+    for c in (plan.get("chapters") or []):
+        no = c.get("chapterNumber")
+        row = (outline_chapter_row(outline, no) or "").strip() if outline else ""
+        beats.append({"no": no, "title": c.get("title", f"第{no}章"), "goal": row[:160],
+                     "events": "", "hook": "", "continuity": ""})
+    chars = []
+    for m in re.finditer(r'(?:^|\n)\s*[-#*]?\s*\**([^：:*\n]{1,16})\**\s*[：:]\s*(.+)', _rf("00-人物档案.md")):
+        chars.append({"name": m.group(1).strip(), "role": m.group(2).strip()[:60], "arc": "", "quirk": ""})
+        if len(chars) >= 24:
+            break
+    return {"world": _rf("09-故事圣经.md")[:800], "characters": chars,
+            "style": _rf("03-文风基准.md")[:500], "beats": beats,
+            "continuity_rules": _rf("12-时间线与连续性.md")[:600]}
+
+def ensure_blueprint(proj):
+    """生成/复用『总架构』单一事实源（02b-总架构）：先熔炼成单一蓝图，失败则规则式兜底。
+    所有并行写作的 Agent 写任何一章前都先读它，保证又快又一致。"""
+    jpath = os.path.join(proj.path, BLUEPRINT_JSON)
+    if os.path.exists(jpath):
+        try:
+            cached = json.load(open(jpath, encoding="utf-8"))
+            # v0.6 B：缓存命中但 .md 缺失/为空（旧 bug 遗留）→ 从 .json 重生成，保证查看器有内容
+            mdpath = os.path.join(proj.path, BLUEPRINT_MD)
+            if (not os.path.exists(mdpath) or os.path.getsize(mdpath) == 0):
+                try:
+                    open(mdpath, "w", encoding="utf-8").write(_blueprint_md(cached))
+                except Exception:
+                    pass
+            return cached
+        except Exception:
+            pass
+    plan = proj.plan() or {}
+    cfg = plan.get("config") or {}
+    bp = None
+    if _cfg_defaults().get("blueprint", True):
+        try:
+            proj.log("🧩 熔炼『总架构』全局蓝图（写任何一章前统一对齐）…")
+            def _f(n):
+                p = os.path.join(proj.path, n)
+                return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+            ch_list = "\n".join(f"第{c.get('chapterNumber')}章 {c.get('title','')}" for c in (plan.get("chapters") or []))
+            src = (f"【大纲】\n{_f('01-大纲.md')[:4000]}\n\n【人物】\n{_f('00-人物档案.md')[:2500]}\n\n"
+                   f"【文风】\n{_f('03-文风基准.md')[:1500]}\n\n【故事圣经】\n{_f('09-故事圣经.md')[:2000]}\n\n"
+                   f"【时间线/连续性】\n{_f('12-时间线与连续性.md')[:1500]}\n\n【章节列表】\n{ch_list}")
+            bp = llm.chat_json([
+                {"role": "system", "content": "你是『总架构熔炼师』。把散落的小说设定熔炼成一份唯一、紧凑、机器可读的全局蓝图 JSON，供多个写作 Agent 并行写章时严格对齐。只抽取设定/技法，不复制他人文字。严格输出 JSON，不要 markdown 代码块。"},
+                {"role": "user", "content": src + '\n\n请输出 JSON：{"world":"一句话到一段的世界观/硬性设定","characters":[{"name","role","arc","quirk"}],"style":"文风基调一句话","beats":[{"no","title","goal","events","hook","continuity"}],"continuity_rules":"连续性铁律要点"}'}
+            ], cfg=cfg, stage="planning")
+            if not isinstance(bp, dict) or "beats" not in bp:
+                raise ValueError("熔炼结果缺 beats 字段")
+        except Exception as e:
+            proj.log(f"⚠️ 总架构熔炼失败，改用规则式蓝图：{e}")
+            bp = None
+    if not bp:
+        bp = _rule_blueprint(proj, plan)
+    open(jpath, "w", encoding="utf-8").write(json.dumps(bp, ensure_ascii=False, indent=2))
+    open(os.path.join(proj.path, BLUEPRINT_MD), "w", encoding="utf-8").write(_blueprint_md(bp))
+    proj.log("🧩 总架构就绪（02b-总架构，写任何一章前先读它）")
+    return bp
+
+def _s(x, cap=0):
+    """v0.6 B：把蓝图字段规整成纯文本（LLM 可能给 list/dict），空给 ''。"""
+    if x is None:
+        return ""
+    if isinstance(x, (list, tuple)):
+        v = "；".join(str(y) for y in x if y not in (None, ""))
+    elif isinstance(x, dict):
+        v = "；".join(f"{k}:{val}" for k, val in x.items() if val not in (None, ""))
+    else:
+        v = str(x).strip()
+    return v[:cap] if cap else v
+
+def _blueprint_md(bp):
+    L = ["# 总架构（全局蓝图 · 所有写作 Agent 写章前统一对齐）", ""]
+    L += ["## 世界观/设定", _s(bp.get("world")) or "（略）", ""]
+    L += ["## 人物", ""]
+    for c in (bp.get("characters") or [])[:30]:
+        if isinstance(c, str):
+            L.append("- " + c); continue
+        L.append(f"- **{c.get('name','')}**（{_s(c.get('role'))}" + (f" 弧线：{_s(c.get('arc'))}" if c.get("arc") else "") + (f"；{_s(c.get('quirk'))}" if c.get("quirk") else "") + "）")
+    L += ["", "## 全章节拍", ""]
+    for b in (bp.get("beats") or []):
+        if isinstance(b, str):
+            L.append("- " + b); continue
+        L.append(f"### 第{b.get('no','?')}章 {b.get('title','')}")
+        L.append(f"- 目标：{_s(b.get('goal'))}\n- 事件：{_s(b.get('events'))}\n- 钩子：{_s(b.get('hook'))}\n- 承接：{_s(b.get('continuity'))}")
+    L += ["", "## 文风", _s(bp.get("style")) or "（略）", "", "## 连续性铁律", _s(bp.get("continuity_rules")) or "（略）"]
+    return "\n".join(L)
+
+def blueprint_block(proj, ch_no):
+    """给单章写作注入的『总架构』紧凑块（全局 + 本章/邻章节拍），写任何一章前必读。"""
+    jpath = os.path.join(proj.path, BLUEPRINT_JSON)
+    if not os.path.exists(jpath):
+        return ""
+    try:
+        bp = json.load(open(jpath, encoding="utf-8"))
+    except Exception:
+        return ""
+    L = ["【总架构 · 全局蓝图（写本章前必读，严格对齐设定/人物/文风/连续性）】"]
+    if bp.get("world"):
+        L.append("· 世界观/设定：" + _s(bp["world"], 400))
+    if bp.get("characters"):
+        cs = "；".join(f"{_s(c.get('name'))}(角色:{_s(c.get('role'))}" + (f"/弧线:{_s(c.get('arc'))}" if c.get("arc") else "") + ")"
+                       for c in (bp["characters"] if isinstance(bp["characters"], list) else [bp["characters"]])[:14]
+                       if isinstance(c, dict))
+        L.append("· 人物：" + cs[:900])
+    if bp.get("style"):
+        L.append("· 文风：" + _s(bp["style"], 300))
+    if bp.get("continuity_rules"):
+        L.append("· 连续性铁律：" + _s(bp["continuity_rules"], 400))
+    beats = bp.get("beats") or []
+    no_set = [b.get("no") for b in beats if isinstance(b, dict)]
+    def _bt(no):
+        b = next((x for x in beats if isinstance(x, dict) and x.get("no") == no), None)
+        if not b:
+            return f"第{no}章（无独立节拍）"
+        return (f"第{b.get('no')}章「{b.get('title','')}」目标:{b.get('goal','')} "
+                f"事件:{b.get('events','')} 钩子:{b.get('hook','')} 承接:{b.get('continuity','')}")
+    if ch_no > 1:
+        L.append("· 上一章（承接）：" + _bt(ch_no - 1))
+    L.append("· 本章（重点）：" + _bt(ch_no))
+    if no_set and ch_no < max(no_set):
+        L.append("· 下一章（预告对齐）：" + _bt(ch_no + 1))
+    return "\n".join(L)[:3500]
+
+def _write_loop_parallel(proj, n_workers=5):
+    """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）。
+    先熔炼『总架构』，各 worker 领 1..N 章，写完一个立即取下一未完成章；
+    真 LLM 并发由 providers.ConcurrencyGuard 兜底防 429。"""
+    n_workers = max(1, int(n_workers or 5))
+    ensure_blueprint(proj)                       # 写任何一章前先读总架构
+    plan = proj.plan(); plan["status"] = "in_progress"; proj.save_plan(plan)
+    pend = [c.get("chapterNumber") for c in plan["chapters"] if c.get("status") != "completed"]
+    q = queue.Queue()
+    for n in pend:
+        q.put(n)
+    min_words = plan.get("minWordsPerChapter", 3000)
+    done_log = []
+
+    def _worker(wid):
+        while True:
+            if is_paused(proj):
+                break
+            try:
+                no = q.get_nowait()
+            except queue.Empty:
+                break
+            p = proj.plan()
+            ch = next((c for c in p["chapters"] if c.get("chapterNumber") == no), None)
+            if not ch:
+                q.task_done(); continue
+            try:
+                proj.log(f"🧵 Agent#{wid} 领第{no}章（总架构已注入，写完立即取下一章）")
+                _write_chapter(proj, ch, min_words, 3)   # 内部 LLM 走 ConcurrencyGuard
+            except Exception as e:
+                proj.log(f"⚠️ Agent#{wid} 第{no}章异常：{e}")
+            q.task_done()
+    threads = [threading.Thread(target=_worker, args=(i,), daemon=True) for i in range(1, n_workers + 1)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if is_paused(proj):
+        p = proj.plan(); p["status"] = "paused"; proj.save_plan(p)
+        proj.log("⏸ 并行写作已暂停（点「▶ 继续」恢复剩余章）")
+        return
+    _validate_and_finish(proj)
+    proj.log(f"🧵 并行写作完成（{n_workers} 个 Agent，总架构对齐）")
+
+# v0.6 B 起：让 _write_chapter 的『领章/完成』在并行下不互踩 —— 由 providers.ConcurrencyGuard 限真 LLM 并发；
+# 章状态落盘仍走 proj.save_plan（各 worker 写不同章文件；plan 更新按章号区分，末尾 _validate 汇总）。
+
 
 def _ch_review_ctx(proj, ch_no):
     """给 chapter_review 的参照上下文（文风基准节选 + 人物档案节选 + 上一章尾）。"""
@@ -368,16 +559,17 @@ def score_chapter(proj, ch_no):
     llm.book(os.path.basename(proj.path), "review")           # 评分 token 归集
     r = workflow.chapter_review(body, cfg, _ch_review_ctx(proj, ch_no))
     total = workflow.score_dimensions(r.get("scores")) if r else None
-    plan = proj.plan()
-    if not isinstance(plan.get("meta"), dict):
-        plan["meta"] = {}
-    cs = plan["meta"].setdefault("chapter_scores", {})
-    pl = _pass_line()
-    cs[str(ch_no)] = {"score": total, "dims": r.get("scores", {}) if r else {},
-                      "weak": (r.get("weak", []) if r else []), "verdict": (r.get("verdict", "") if r else ""),
-                      "status": "unscored" if total is None else ("pass" if total >= pl else "below"),
-                      "ts": int(datetime.datetime.now().timestamp())}
-    proj.save_plan(plan)
+    with proj.lock:   # v0.6 B：并行写作下 meta.chapter_scores 读改写原子化
+        plan = proj.plan()
+        if not isinstance(plan.get("meta"), dict):
+            plan["meta"] = {}
+        cs = plan["meta"].setdefault("chapter_scores", {})
+        pl = _pass_line()
+        cs[str(ch_no)] = {"score": total, "dims": r.get("scores", {}) if r else {},
+                          "weak": (r.get("weak", []) if r else []), "verdict": (r.get("verdict", "") if r else ""),
+                          "status": "unscored" if total is None else ("pass" if total >= pl else "below"),
+                          "ts": int(datetime.datetime.now().timestamp())}
+        proj.save_plan(plan)
     return total
 
 def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
@@ -502,14 +694,15 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 txt.rstrip() + f"\n\n## 本书校准段落（第1章定稿回填）\n{cal.strip()}\n")
         except Exception:
             pass
-    plan = proj.plan()
-    for c in plan["chapters"]:
-        if c["chapterNumber"] == no:
-            c["status"] = "completed" if ok else "failed"
-            c["wordCount"] = words
-            c["wordCountPass"] = ok
-            c["retryCount"] = i
-    proj.save_plan(plan)
+    with proj.lock:   # v0.6 B：并行下读改写 02-写作计划.json 原子化，避免多 worker 互踩
+        plan = proj.plan()
+        for c in plan["chapters"]:
+            if c["chapterNumber"] == no:
+                c["status"] = "completed" if ok else "failed"
+                c["wordCount"] = words
+                c["wordCountPass"] = ok
+                c["retryCount"] = i
+        proj.save_plan(plan)
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
              if ok else f"❌ 第{no}章未达标（{words}字）")
     # v0.5 M1：逐章评分 + 低于 90 自动局部重写（可配关，失败不阻断主流程）
