@@ -40,7 +40,8 @@ body{
 .ss-item:hover{background:rgba(255,255,255,.04)}
 .ss-item.on{background:rgba(124,92,255,.14);border-color:rgba(124,92,255,.45)}
 .ss-dot{width:8px;height:8px;border-radius:50%;flex:none}
-.ss-dot.in_progress{background:#38bdf8}.ss-dot.completed{background:#34d399}.ss-dot.awaiting_title{background:#f59e0b}.ss-dot.released{background:#34d399;box-shadow:0 0 6px #34d399}.ss-dot.other{background:var(--muted)}
+.ss-dot.in_progress{background:#38bdf8;animation:sspulse 1.4s ease-in-out infinite}.ss-dot.completed{background:#34d399}.ss-dot.awaiting_title{background:#f59e0b}.ss-dot.released{background:#34d399;box-shadow:0 0 6px #34d399}.ss-dot.other{background:var(--muted)}
+@keyframes sspulse{0%,100%{box-shadow:0 0 0 0 rgba(56,189,248,.5)}50%{box-shadow:0 0 0 4px rgba(56,189,248,0)}}
 .ss-main{flex:1;min-width:0}
 .ss-name{font:600 13px var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ss-meta{font:11px var(--sans);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
@@ -556,6 +557,8 @@ function startPolling(){
       $('evts').innerHTML=(j.events||[]).slice(-8).map(e=>'<div>'+esc(e)+'</div>').join('');
       // v0.3.5：中间「稿件」实时刷新 —— 正在写/校验时，小说正文随进度逐章出现（事件仍留右侧）
       if($('manuscript').style.display==='block'){ loadManuscript(curKey); }
+      // v0.3.5：左侧书行「正在写第X章/校验第N轮」实时刷新
+      if(j.state==='in_progress'||j.state==='validating'||j.state==='releasing'){ if(window.renderSessions)renderSessions(); }
       if(j.state==='completed'){refreshProjects();}
     }catch(e){}
   },4000);
@@ -1135,12 +1138,23 @@ window.sideTab=sideTab;
 function _sessRow(i){
   const st=i.state==='completed'?(i.released===true?'released':'completed'):(i.awaiting_title?'awaiting_title':(i.running?'in_progress':'other'));
   const qm=i.quality!=null?(' · '+i.quality+(i.released===false?'未放行':'')):'';
+  const live=sessLive(i);
   return '<div class="ss-item'+(curSession===i.key?' on':'')+'" data-key="'+i.key+'">'
     +'<span class="ss-dot '+st+'"></span>'
     +'<div class="ss-main"><div class="ss-name">'+(S_pins.includes(i.key)?'📌 ':'')+esc(i.name)+'</div>'
-    +'<div class="ss-meta">'+esc(i.genre||'—')+' · '+i.done+'/'+i.total+' 章'+qm+(i.schedule?' · ⏱':'')+'</div></div>'
+    +'<div class="ss-meta">'+esc(i.genre||'—')+' · '+i.done+'/'+i.total+' 章'+(live?' · <span style="color:var(--accent);font-weight:600">'+live+'</span>':'')+qm+(i.schedule?' · ⏱':'')+'</div></div>'
     +'<span class="ss-act" data-menu="'+i.key+'" title="操作">⋯</span></div>';
 }
+// v0.3.5：左侧书行实时状态（正在写第X章 / 校验第N轮 / 待选书名 …）
+function sessLive(i){
+  if(i.awaiting_title)return '⏸ 待选书名';
+  if(i.state==='in_progress')return '✍️ 正在写第 '+(i.total?Math.min(i.done+1,i.total):(i.done||0)+1)+' 章';
+  if(i.state==='validating'||i.state==='releasing')return '🔁 校验/放行'+(i.gate_rounds?' 第 '+i.gate_rounds+' 轮':'中');
+  if(i.state==='completed')return i.released===false?('⏳ 待放行'+(i.gate_rounds?'（'+i.gate_rounds+'轮）':'')):'✅ 已成书';
+  if(i.state==='failed')return '⚠ 失败';
+  return '✍ 创作中';
+}
+window.sessLive=sessLive;
 function renderSessions(){
   fetch('/api/library?sort=updated&order=desc').then(r=>r.json()).then(d=>{
     if(!d.items)return;
@@ -1298,7 +1312,7 @@ function switchView(v){
   const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar');
   document.querySelectorAll('#viewsw button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   if(v==='ms'){ms.style.display='block';msgs.style.display='none';loadManuscript(curSession||curKey);}   // 保留输入框（读稿同时可下令）
-  else{ms.style.display='none';msgs.style.display='';ib.style.display='';}
+  else{ms.style.display='none';msgs.style.display='';ib.style.display='';stopMs();}
 }
 window.switchView=switchView;
 document.querySelectorAll('#viewsw button').forEach(b=>b.onclick=()=>switchView(b.dataset.v));
@@ -1316,13 +1330,39 @@ async function loadManuscript(key){
     +' · 写到第 <b>'+(st.done!=null?st.done:done)+'</b>/'+(st.total!=null?st.total:tot)+' 章 · 共 <b>'+((st.words||pv.total_words||0))+'</b> 字 · 累计 <span class="tk">'+((u.total_tokens||0).toLocaleString())+' token</span>（'+(u.calls||0)+' 次调用）'
     +'<br><span style="font-size:10.5px">'+(st.events?('· '+esc((st.events||[]).slice(-1)[0]||'')):(u.by_stage?Object.entries(u.by_stage).map(([k,v])=>k+' '+(v.total||0)).join(' · '):''))+(u.last?' · 最近 '+u.last.stage+' '+ (u.last.total||0):'')+'</span>';
   let txt=(pv.text||'').trim();
-  if(!txt)txt='（尚未生成正文。切到「💬 对话」直接开写，或点上方快捷操作「▶ 续写」。）';
-  $('msbody').innerHTML=txt.split(/(\n+#[^\n]+)/g).map(seg=>{
+  const isW=(st.state==='in_progress'||st.state==='validating'||st.state==='releasing');
+  // v0.3.5 打字机：换书重置；写作中逐字揭示新增正文，已完成的书整段显示
+  if(_msKey!==key){ _msKey=key; _msRevealed=isW?Math.min((txt||'').length,500):(txt||'').length; stopMs(); }
+  _msFull=(pv.text||'').trim(); _msWriting=isW;
+  _msRevealed=Math.min(_msRevealed,_msFull.length);
+  if(!txt && !isW){ _msFull=''; _msRevealed=0; $('msbody').innerHTML='<span style="color:var(--muted)">（尚未生成正文。切到「💬 对话」直接开写，或点上方快捷操作「▶ 续写」。）</span>'; return; }
+  if(!isW){ _msRevealed=_msFull.length; renderMsBody(_msFull,false); }
+  else { if(_msRevealed<_msFull.length)startMs(); else renderMsBody(_msFull,true); }
+  scrollMsBottom();
+}
+window.loadManuscript=loadManuscript;
+// ===== v0.3.5 打字机逐字显示（正在写/校验时，新增正文逐字出现）=====
+let _msFull='', _msKey='', _msRevealed=0, _msWriting=false, _msTick=null;
+function renderMsBody(txt,typing){
+  const el=$('msbody'); if(!el)return;
+  const html=txt.split(/(\n+#[^\n]+)/g).map(seg=>{
     if(/^#[\s]/.test(seg))return '<div class="mschap">'+esc(seg.replace(/^#+\s*/,'').trim())+'</div>';
     return esc(seg);
   }).join('');
+  el.innerHTML=html+(typing?'<span style="color:var(--accent);font-weight:700">▍</span>':'');
 }
-window.loadManuscript=loadManuscript;
+function scrollMsBottom(){ const m=$('manuscript'); if(m)m.scrollTop=m.scrollHeight; }
+function stopMs(){ if(_msTick){clearInterval(_msTick);_msTick=null;} }
+function startMs(){
+  stopMs();
+  _msTick=setInterval(()=>{
+    if(_msRevealed>=_msFull.length){ stopMs(); renderMsBody(_msFull,_msWriting); return; }
+    _msRevealed=Math.min(_msFull.length,_msRevealed+22);   // 每 tick 揭示 22 字 ≈ 700+ 字/秒
+    renderMsBody(_msFull.slice(0,_msRevealed),true);
+    scrollMsBottom();
+  },28);
+}
+window.renderMsBody=renderMsBody; window.startMs=startMs; window.stopMs=stopMs;
 async function loadTokenLedger(key){
   const el=$('tkcard');if(!el||!key)return;
   let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){el.innerHTML='';return;}

@@ -614,6 +614,7 @@ def library_item(key, with_quality=True):
             "total_words": total_words, "running": st.get("running", False),
             "quality": q, "passing": passing, "pass_line": _pass_line(),
             "released": released, "final_quality": final_q, "awaiting_title": awaiting_title,
+            "gate_rounds": meta.get("gate_rounds"),
             "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
             "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
             "archived": bool(meta.get("archived"))}
