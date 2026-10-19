@@ -211,6 +211,17 @@ def _build_ctx(proj, ch):
                 style_text += "\n\n## 创作风格技能（本作品按此技能设定书写，严格遵守）\n" + "\n".join(_parts)
     except Exception:
         pass
+    # v0.3.4：专属蒸馏风格（style_ref.json）→ 追加注入，按该风格技法书写
+    try:
+        import json as _js2
+        _sr = os.path.join(proj.path, "style_ref.json")
+        if os.path.exists(_sr):
+            _sc = _js2.load(open(_sr, encoding="utf-8"))
+            if _sc.get("style_prompt"):
+                style_text += ("\n\n## 专属蒸馏风格（" + str(_sc.get("name", "")) + "，按此技法写，不改变剧情）\n"
+                               + _sc["style_prompt"])
+    except Exception:
+        pass
     prev_tail = ""
     if ch["chapterNumber"] > 1:
         prev = plan["chapters"][ch["chapterNumber"] - 2]

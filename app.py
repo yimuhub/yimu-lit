@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from bot import llm, workflow, writer, providers, version
+from bot import llm, workflow, writer, providers, version, distill, learn
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="novel-bot")
@@ -332,6 +332,20 @@ def _deep_merge(base, over):
         out[k] = _deep_merge(out.get(k, {}), v) if isinstance(out.get(k), dict) and isinstance(v, dict) else v
     return out
 
+def _attach_style_ref(proj, style_id):
+    """v0.3.4：把蒸馏风格卡写进该书 style_ref.json，供 _build_ctx 注入 craft。"""
+    if not style_id:
+        return
+    card = distill.get_style(style_id)
+    if not card:
+        return
+    try:
+        open(os.path.join(proj.path, "style_ref.json"), "w", encoding="utf-8").write(
+            json.dumps({"name": style_id, "style_prompt": card.get("style_prompt", ""),
+                        "summary": card.get("summary", "")}, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
 @app.post("/api/create")
 def api_create(payload: dict):
     """REST 直接开书。{title?, genre?, tone?, sells?, perspective?, idea?, total_chapters?, provider_id?, model?, cfg_overrides?}。
@@ -360,17 +374,24 @@ def api_create(payload: dict):
         cfg.setdefault("defaults", {})["model"] = payload["model"]
     total = int(payload.get("total_chapters") or cfg.get("chapters") or (cfg.get("defaults") or {}).get("total_chapters") or 10)
     cfg["chapters"] = total
+    style_id = (payload.get("style_id") or "").strip()   # v0.3.4：蒸馏风格 id → 注入该书 craft
     cfg = workflow.fill_defaults(cfg)
     try:
         n = int((cfg.get("defaults") or {}).get("title_count", 8))
         if title:
             titles = [{"title": title, "technique": "指定书名", "why": "用户指定"}] + workflow.gen_titles(cfg, n=n)
             proj = writer.create_project(cfg, titles)
+            _attach_style_ref(proj, style_id)
+            _st = cfg.get("style") or {}
+            learn.record_book(_st.get("题材", ""), _st.get("金手指", ""), _st.get("节奏", ""), _st.get("语言", ""))
             writer.start_writing(proj)
             base = os.path.basename(proj.path)
             return {"project": base, "pid": base, "key": base, "awaiting_title": False}
         cands = workflow.gen_titles(cfg, n=n) or [{"title": "未命名", "technique": "", "why": ""}]
         proj = writer.create_project(cfg, cands)
+        _attach_style_ref(proj, style_id)
+        _st = cfg.get("style") or {}
+        learn.record_book(_st.get("题材", ""), _st.get("金手指", ""), _st.get("节奏", ""), _st.get("语言", ""))
         plan = proj.plan(); meta = plan.get("meta") or {}
         meta["title_candidates"] = cands; meta["awaiting_title"] = True
         plan["meta"] = meta; plan["status"] = "awaiting_title"; proj.save_plan(plan)
@@ -382,6 +403,42 @@ def api_create(payload: dict):
 # ---------- v0.2：作品库管理 + 审查后重写 ----------
 _REWRITING = {}  # key -> {"running":bool,"result":dict}
 
+# ---------- v0.3.4：风格蒸馏引擎（粘贴文本 / 网址抓取 → 风格库）----------
+@app.get("/api/styles")
+def api_styles():
+    return {"items": distill.list_styles()}
+
+@app.get("/api/styles/{name}")
+def api_style(name: str):
+    c = distill.get_style(name)
+    return c if c else JSONResponse({"error": "风格不存在"}, status_code=404)
+
+@app.delete("/api/styles/{name}")
+def api_style_delete(name: str):
+    return distill.delete_style(name)
+
+@app.post("/api/distill")
+def api_distill(payload: dict):
+    """{name, text?, urls?[], genre?}。粘贴 text 或抓 urls → 蒸馏成命名风格 → 存 styles/。"""
+    name = re.sub(r'[\\/:*?"<>|\s]+', "", (payload.get("name") or "").strip())[:40]
+    if not name:
+        return JSONResponse({"error": "请给这个风格起个名字"}, status_code=400)
+    corpus = (payload.get("text") or "").strip()
+    urls = payload.get("urls") or []
+    source = "粘贴文本"
+    if not corpus and urls:
+        parts = [t for t in (distill.fetch_url_text(u) for u in urls[:5]) if t]
+        corpus = "\n".join(parts)
+        source = "网址抓取: " + " ".join(str(u) for u in urls[:5])
+        if len(corpus) < 300:
+            return {"ok": False, "note": "网址抓到的正文太少（可能是 JS 渲染站或被反爬挡了）。请改用「粘贴文本」：把这部小说的几段内容复制进来再蒸馏。"}
+    return distill.distill(corpus, name, (payload.get("genre") or "").strip(), source, cfg=payload.get("cfg"))
+
+# ---------- v0.3.4：自我进化（学习报告）----------
+@app.get("/api/learn")
+def api_learn():
+    """自我进化引擎报告：写过的题材分布、各题材偏好（金手指/节奏/语言）、平均成书质量。"""
+    return learn.profile()
 @app.get("/api/library")
 def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
                 status: str = "", q: str = "", include_archived: str = "false"):

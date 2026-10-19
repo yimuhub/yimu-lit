@@ -302,6 +302,10 @@ input,select,textarea{color-scheme:dark}
       <h2>该书设置</h2>
       <div id="setbody" style="padding:0 14px 8px"></div>
       <div id="mrcard" style="margin:0 14px 10px"></div>
+      <div class="secrow"><h2>📈 学习进化（自我进化引擎）</h2></div>
+      <div id="learnreport" style="padding:0 14px 8px"><div class="empty">加载中…</div></div>
+      <div class="secrow"><h2>✨ 风格库（蒸馏）</h2><button id="btn-distill">＋ 蒸馏新风格</button></div>
+      <div id="stylelib" style="padding:0 14px 8px"><div class="empty">加载中…</div></div>
       <div class="secrow"><h2>模型供应商</h2><button id="addprov">＋ 绑定</button></div>
       <div id="provsum" style="display:none"></div>
       <div id="provlist"><div class="empty">加载中…</div></div>
@@ -421,6 +425,8 @@ input,select,textarea{color-scheme:dark}
   <div class="mrow"><div class="mfield"><label>🧩 金手指</label><select id="ob_hand"></select></div>
     <div class="mfield"><label>节奏</label><select id="ob_pace"></select></div>
     <div class="mfield"><label>语言</label><select id="ob_lang"></select></div></div>
+  <div id="obprefnote" class="mhint" style="display:none;margin:-6px 0 8px;font-size:11px"></div>
+  <div class="mfield"><label>✨ 风格（可选·蒸馏风格库）</label><select id="ob_style"></select></div>
   <div class="mfield"><label>核心卖点（可多选）</label><div id="ob_sells" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
   <div class="mfield"><label>一句话设定（可选）</label><input id="ob_idea" placeholder="例如：退休刑警被诬陷杀人"></div>
   <div class="mfield"><label>书名（留空=下一步 ABC 弹框选）</label><input id="ob_title" placeholder="留空则自动出候选"></div>
@@ -435,6 +441,18 @@ input,select,textarea{color-scheme:dark}
   <div class="merr" id="oberr"></div>
   <div class="mactions"><button class="mcancel" onclick="closeOnb()">取消</button>
     <button class="mok" id="obgo">规划（出候选）</button></div>
+</div></div>
+<!-- 风格蒸馏 弹框 -->
+<div id="distillmodal" class="modal"><div class="mbox" style="width:560px">
+  <h3>✨ 蒸馏写作风格</h3>
+  <div class="mhint">给「一段小说文本」或「小说网址」，蒸馏出作者的写作风格/技法（7 维：句式·指纹词·节奏·对话·视角·情绪·反AI），存成<b>可命名的专属风格</b>，之后开书可直接按它创作。只提技法、不搬运原文。</div>
+  <div class="mfield"><label>风格名（自定义，开书时选它用）</label><input id="dl_name" placeholder="例如：都市爽文速读体 / 冷硬悬疑腔"></div>
+  <div class="mfield"><label>参考题材（可选）</label><input id="dl_genre" placeholder="例如：都市 / 悬疑"></div>
+  <div class="mfield"><label>① 粘贴文本（推荐，≥500 字）</label><textarea id="dl_text" rows="5" placeholder="把那部小说的几段内容复制到这里…"></textarea></div>
+  <div class="mfield"><label>② 或 小说网址（每行一个，抓取节选）</label><textarea id="dl_urls" rows="2" placeholder="https://…（JS 渲染站可能抓不到，改粘贴文本）"></textarea></div>
+  <div class="merr" id="dlerr"></div>
+  <div class="mactions"><button class="mcancel" onclick="closeDistill()">取消</button>
+    <button class="mok" id="dlgo">✨ 蒸馏（约 10-30 秒）</button></div>
 </div></div>
 <!-- 书名 ABC 弹框 -->
 <div id="titlemodal" class="modal"><div class="mbox" style="width:560px">
@@ -930,7 +948,9 @@ async function openOnb(){
   sel('ob_pace',_sty['节奏']||[],_pre['节奏']||(_sty['节奏']||[])[0]);
   sel('ob_lang',_sty['语言']||[],_pre['语言']||(_sty['语言']||[])[0]);
   $('ob_genre').onchange=()=>{const p=(_sty.preset||{})[$('ob_genre').value]||{};
-    if(p['金手指'])$('ob_hand').value=p['金手指']; if(p['节奏'])$('ob_pace').value=p['节奏']; if(p['语言'])$('ob_lang').value=p['语言'];};
+    if(p['金手指'])$('ob_hand').value=p['金手指']; if(p['节奏'])$('ob_pace').value=p['节奏']; if(p['语言'])$('ob_lang').value=p['语言'];
+    const pn=$('obprefnote');if(pn)pn.style.display='none';};
+  fillOnbStyle(); prefillFromLearn();
   $('ob_sells').innerHTML=ONB.sells.map(s=>'<label class="libchip" style="cursor:pointer"><input type="checkbox" value="'+esc(s)+'" style="display:none"> '+esc(s)+'</label>').join('');
   $('ob_sells').querySelectorAll('label').forEach(l=>l.onclick=()=>{l.classList.toggle('on');l.querySelector('input').checked=l.classList.contains('on');});
   try{
@@ -958,6 +978,7 @@ async function submitOnb(){
     style:{金手指:$('ob_hand').value, 节奏:$('ob_pace').value, 语言:$('ob_lang').value, 卷:(_chap<=10?'单卷(10章)':'多卷(3卷各10)')},
     sells, idea:$('ob_idea').value.trim(), total_chapters:_chap,
     provider_id:$('ob_prov').value, model:$('ob_model').value,
+    style_id:($('ob_style').value==='__none'?'':$('ob_style').value)||'',
     cfg_overrides:{defaults:{release_gate:$('ob_gate').checked, p5_pipeline:$('ob_p5').checked}}};
   if($('ob_title').value.trim()) payload.title=$('ob_title').value.trim();
   $('oberr').textContent='📐 规划中（生成候选，约 30-90 秒）…';
@@ -970,6 +991,73 @@ async function submitOnb(){
 }
 $('obgo').onclick=submitOnb;
 window.openOnb=openOnb;
+// ===== v0.3.4 学习进化：报告 + 按偏好预填 =====
+async function loadLearn(){
+  const el=$('learnreport');if(!el)return;
+  let p;try{p=await (await fetch('/api/learn')).json();}catch(e){el.innerHTML='<div class="empty">加载失败</div>';return;}
+  const g=p.genres||[];
+  el.innerHTML=(p.total?'<div class="rwnote" style="margin-bottom:8px;font-size:11px">'+esc(p.insight||('已学习 '+p.total+' 本'))+'</div>':'')
+    +(g.length?'<div style="display:flex;flex-direction:column;gap:7px">'+g.slice(0,6).map(x=>{
+      const bar='<div style="display:flex;align-items:center;gap:8px;font:11px var(--sans)"><span style="width:56px;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">'+esc(x.genre)+'</span>'
+        +'<span style="flex:1;height:6px;background:var(--panel2);border-radius:4px;overflow:hidden"><span style="display:block;height:100%;width:'+(x.share||0)+'%;background:linear-gradient(90deg,#7c5cff,#3ad29b)"></span></span>'
+        +'<span style="color:var(--muted);width:30px;text-align:right">'+x.count+'本</span></div>';
+      const pf=[];if(x.top_hand&&x.top_hand[0])pf.push(x.top_hand[0]);if(x.top_pace&&x.top_pace[0])pf.push(x.top_pace[0]);if(x.top_lang&&x.top_lang[0])pf.push(x.top_lang[0]);
+      return '<div>'+bar+(pf.length?'<div style="font:10px var(--muted);margin:2px 0 0 56px">偏好：'+esc(pf.join(' · '))+'</div>':'')+'</div>';
+    }).join('')+'</div>':'<div class="empty">还没写过小说。写几本后，系统会自动学习你的题材与偏好，下次开书按偏好预填。</div>');
+}
+window.loadLearn=loadLearn;
+async function prefillFromLearn(){
+  let p;try{p=await (await fetch('/api/learn')).json();}catch(e){return;}
+  const g=(p.genres||[]).find(x=>x.genre===$('ob_genre').value);
+  if(!g)return;
+  let changed=false;
+  if(g.top_hand&&g.top_hand[0]){ $('ob_hand').value=g.top_hand[0]; changed=true; }
+  if(g.top_pace&&g.top_pace[0]){ $('ob_pace').value=g.top_pace[0]; changed=true; }
+  if(g.top_lang&&g.top_lang[0]){ $('ob_lang').value=g.top_lang[0]; changed=true; }
+  const n=$('obprefnote'); if(n){ n.style.display=changed?'block':'none'; n.textContent='📈 已按你「'+g.genre+'」的偏好预填（金手指/节奏/语言）'; }
+  if(changed&&window.cxApplyAll)cxApplyAll();
+}
+window.prefillFromLearn=prefillFromLearn;
+async function fillOnbStyle(){
+  const names=[];try{names=(await (await fetch('/api/styles')).json()).items.map(x=>x.name);}catch(e){}
+  const el=$('ob_style');
+  el.innerHTML='<option value="__none">（不用蒸馏风格）</option>'+names.map(n=>'<option value="'+esc(n)+'">✨ '+esc(n)+'</option>').join('');
+  el.value='__none';
+}
+window.fillOnbStyle=fillOnbStyle;
+async function loadStyleLib(){
+  const el=$('stylelib');if(!el)return;
+  let items=[];try{items=(await (await fetch('/api/styles')).json()).items;}catch(e){el.innerHTML='<div class="empty">加载失败</div>';return;}
+  el.innerHTML=items.length?(''):'<div class="empty">暂无蒸馏风格。点「＋ 蒸馏新风格」把一段小说/网址蒸馏成可复用的专属风格。</div>';
+  items.forEach(s=>{
+    const c=document.createElement('div');
+    c.style.cssText='border:1px solid var(--border);background:var(--panel2);border-radius:11px;padding:9px 11px;margin-bottom:8px';
+    c.innerHTML='<div style="font:600 13px var(--sans);color:var(--text)">✨ '+esc(s.name)+(s.genre?' <span style="font:10px var(--muted);font-weight:400">· '+esc(s.genre)+'</span>':'')+'</div>'
+      +'<div style="font:11px var(--muted);line-height:1.5;margin-top:3px">'+esc(s.summary||'')+'</div>'
+      +(s.fingerprint_words&&s.fingerprint_words.length?'<div style="font:10.5px var(--muted);margin-top:4px">指纹词：'+esc(s.fingerprint_words.slice(0,6).join(' · '))+'</div>':'')
+      +'<div style="margin-top:7px"><button class="pb" style="font-size:10.5px;padding:3px 8px" onclick="delStyle(\''+esc(s.name)+'\')">🗑 删除</button></div>';
+    el.append(c);
+  });
+}
+window.loadStyleLib=loadStyleLib;
+function delStyle(name){ if(!confirm('删除风格「'+name+'」？（开过的新书不受影响）'))return; fetch('/api/styles/'+encodeURIComponent(name),{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.ok?'已删除风格':'删除失败','ok');loadStyleLib();}); }
+window.delStyle=delStyle;
+function openDistill(){ ['dl_name','dl_genre','dl_text','dl_urls'].forEach(id=>{const e=$(id);if(e)e.value='';}); $('dlerr').textContent=''; $('distillmodal').classList.add('show'); }
+window.openDistill=openDistill;
+window.closeDistill=()=>$('distillmodal').classList.remove('show');
+async function submitDistill(){
+  const name=$('dl_name').value.trim(), genre=$('dl_genre').value.trim();
+  const text=$('dl_text').value.trim(), urls=$('dl_urls').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!name){ $('dlerr').textContent='⚠️ 请给风格起个名字'; return; }
+  if(!text && !urls.length){ $('dlerr').textContent='⚠️ 请粘贴文本或填网址（至少一样）'; return; }
+  $('dlerr').textContent='✨ 蒸馏中（约 10-30 秒）…';
+  let j; try{ j=await (await fetch('/api/distill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,genre,text,urls})})).json(); }catch(e){ $('dlerr').textContent='⚠️ '+e; return; }
+  if(!j.ok){ $('dlerr').textContent='⚠️ '+(j.note||j.error||'蒸馏失败'); return; }
+  $('dlerr').textContent=''; closeDistill(); toast('✨ 已蒸馏风格「'+name+'」（'+(j.style?.fingerprint_words?.length||0)+' 指纹词）','ok');
+  loadStyleLib(); fillOnbStyle();
+}
+window.submitDistill=submitDistill;
+(function(){ const b=$('btn-distill'); if(b)b.onclick=openDistill; const g=$('dlgo'); if(g)g.onclick=submitDistill; })();
 
 async function openTitle(key){
   TMKEY=key; $('titlemodal').classList.add('show'); $('tmcards').innerHTML='<div class="rwnote">加载候选…</div>';
@@ -1040,7 +1128,7 @@ bindModalClose();
 // ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
 const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
 let curSession=null; let _LIB_ITEMS=[];   // v0.3.3：左侧「⋯」菜单 用（缓存当前书列表）
-function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'&&window.loadModelRules)loadModelRules();if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
+function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'){if(window.loadModelRules)loadModelRules();if(window.loadStyleLib)loadStyleLib();if(window.loadLearn)loadLearn();}if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
 window.sideTab=sideTab;
 function _sessRow(i){
   const st=i.state==='completed'?(i.released===true?'released':'completed'):(i.awaiting_title?'awaiting_title':(i.running?'in_progress':'other'));
@@ -1305,7 +1393,7 @@ function _cxBindDoc(){
 }
 window.cxSelect=cxSelect;
 function cxApplyAll(){
-  ['pselect','mselect','libsort','mpreset','pvch','ob_genre','ob_persp','ob_tone','ob_chap','ob_hand','ob_pace','ob_lang','ob_prov','ob_model']
+  ['pselect','mselect','libsort','mpreset','pvch','ob_genre','ob_persp','ob_tone','ob_chap','ob_hand','ob_pace','ob_lang','ob_prov','ob_model','ob_style']
     .forEach(id=>cxSelect(id));
 }
 window.cxApplyAll=cxApplyAll;
