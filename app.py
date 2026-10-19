@@ -662,6 +662,13 @@ def api_onboarding():
                         "p5_pipeline": d.get("p5_pipeline", True)}
     return _ONB
 
+def _plan_genre(proj):
+    """从 02-写作计划.json 安全取 genre（brief/meta/顶层 任一），不存在返回 ''。"""
+    plan = proj.plan() or {}
+    brief = plan.get("brief") or {}
+    meta = plan.get("meta") or {}
+    return brief.get("genre") or plan.get("genre") or meta.get("genre") or ""
+
 @app.get("/api/style")
 def api_style_get(key: str):
     """v0.3 P2：取某书的题材×风格技能（style.json）。"""
@@ -674,7 +681,7 @@ def api_style_get(key: str):
             return {"key": key, "style": json.load(open(p, encoding="utf-8"))}
         except Exception:
             pass
-    return {"key": key, "style": {"genre": proj.meta().get("genre", ""), "style": {}}}
+    return {"key": key, "style": {"genre": _plan_genre(proj), "style": {}}}
 
 @app.put("/api/style")
 def api_style_put(payload: dict):
@@ -683,7 +690,7 @@ def api_style_put(payload: dict):
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    st = {"genre": proj.meta().get("genre") or payload.get("genre") or "",
+    st = {"genre": _plan_genre(proj) or payload.get("genre") or "",
           "style": payload.get("style") or {}}
     open(os.path.join(proj.path, "style.json"), "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False, indent=2))
     return {"ok": True, "style": st}
