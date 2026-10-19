@@ -1039,7 +1039,7 @@ bindModalClose();
 
 // ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
 const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
-let curSession=null;
+let curSession=null; let _LIB_ITEMS=[];   // v0.3.3：左侧「⋯」菜单 用（缓存当前书列表）
 function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'&&window.loadModelRules)loadModelRules();if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
 window.sideTab=sideTab;
 function _sessRow(i){
@@ -1049,11 +1049,12 @@ function _sessRow(i){
     +'<span class="ss-dot '+st+'"></span>'
     +'<div class="ss-main"><div class="ss-name">'+(S_pins.includes(i.key)?'📌 ':'')+esc(i.name)+'</div>'
     +'<div class="ss-meta">'+esc(i.genre||'—')+' · '+i.done+'/'+i.total+' 章'+qm+(i.schedule?' · ⏱':'')+'</div></div>'
-    +'<span class="ss-act" data-pin="'+i.key+'" title="'+(S_pins.includes(i.key)?'取消置顶':'置顶')+'">'+(S_pins.includes(i.key)?'📌':'📍')+'</span></div>';
+    +'<span class="ss-act" data-menu="'+i.key+'" title="操作">⋯</span></div>';
 }
 function renderSessions(){
   fetch('/api/library?sort=updated&order=desc').then(r=>r.json()).then(d=>{
     if(!d.items)return;
+    _LIB_ITEMS=d.items;
     const autoArch=localStorage.nbot_autoarch!=='0';
     const active=d.items.filter(i=>!i.archived&&i.state!=='archived');
     const isDone=i=>autoArch&&i.state==='completed'&&i.released===true;
@@ -1067,13 +1068,52 @@ function renderSessions(){
     $('slist').innerHTML=h;
     $('slist').querySelectorAll('.ss-item').forEach(el=>{
       el.onclick=()=>selectBook(el.dataset.key);
-      const p=el.querySelector('[data-pin]');if(p)p.onclick=e=>{e.stopPropagation();togglePin(p.dataset.pin);};
+      const m=el.querySelector('[data-menu]');if(m)m.onclick=e=>{e.stopPropagation();openBookMenu(el.dataset.key,m);};
     });
   }).catch(()=>{});
 }
 window.renderSessions=renderSessions;
 function togglePin(key){const i=S_pins.indexOf(key);if(i>=0)S_pins.splice(i,1);else S_pins.unshift(key);localStorage.nbot_pins=JSON.stringify(S_pins);renderSessions();}
 window.togglePin=togglePin;
+// v0.3.3：左侧「⋯」小菜单（仿 Hermes 会话三点）——置顶/归档/改名/下载/续写/彻底删除，按书状态动态
+let _bkPanel=null,_bkAnchor=null;
+function _bkClose(){ if(_bkPanel)_bkPanel.style.display='none'; }
+function openBookMenu(key, anchor){
+  const it=_LIB_ITEMS.find(x=>x.key===key)||{key,state:'other',archived:false,name:'?'};
+  if(!_bkPanel){
+    _bkPanel=document.createElement('div');
+    _bkPanel.style.cssText='display:none;position:fixed;z-index:999;background:#141830;border:1px solid var(--border);border-radius:11px;box-shadow:0 12px 34px rgba(0,0,0,.55);min-width:178px;padding:5px';
+    document.body.append(_bkPanel);
+    document.addEventListener('click',e=>{ if(_bkPanel&&_bkAnchor&&_bkAnchor.contains(e.target))return; if(_bkPanel.contains(e.target))return; _bkClose(); });
+    document.addEventListener('keydown',e=>{ if(e.key==='Escape')_bkClose(); });
+  }
+  _bkAnchor=anchor;
+  const pinned=S_pins.includes(key), st=it.state||'other';
+  const canBook=['completed','released','validating'].includes(st);
+  const canCont=['completed','in_progress','validating'].includes(st);
+  const items=[];
+  items.push(['📌 '+(pinned?'取消置顶':'置顶'),()=>{togglePin(key);_bkClose();renderSessions();}]);
+  items.push([(it.archived?'♻️ 恢复归档':'🗄 归档'),()=>{fetch('/api/library/'+encodeURIComponent(key)+'/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!it.archived})}).then(r=>r.json()).then(()=>{toast(it.archived?'已恢复':'已移入回收站','ok');_bkClose();renderSessions();});}]);
+  items.push(['✏️ 重命名',()=>{const nn=prompt('新书名：',it.name||'');if(nn&&nn.trim()){fetch('/api/library/'+encodeURIComponent(key)+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn.trim()})}).then(r=>r.json()).then(j=>{toast(j.ok?'已改名':(j.note||'改名失败'),j.ok?'ok':'err');renderSessions();});}_bkClose();}]);
+  if(canBook)items.push(['⬇ 下载成书',()=>{window.open('/api/download?key='+encodeURIComponent(key),'_blank');_bkClose();}]);
+  if(canCont)items.push(['▶ 续写',()=>{const r=prompt('续写：在现有章节后继续写几章？','3');if(r!==null){const n=Math.max(1,+r||1);fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,n})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=key;startPolling();renderSessions();});}_bkClose();}]);
+  items.push(['🗑 彻底删除（不可恢复）',()=>{ if(confirm('彻底删除《'+(it.name||key)+'》？将删除作品目录，不可恢复！')){fetch('/api/library/'+encodeURIComponent(key)+'?hard=true',{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.note||'已删除',j.ok?'ok':'err');renderSessions();});} _bkClose(); }]);
+  _bkPanel.innerHTML='';
+  items.forEach(([label,fn],idx)=>{
+    if(label.startsWith('🗑')){const sep=document.createElement('div');sep.style.cssText='height:1px;background:var(--border);margin:4px 6px';_bkPanel.append(sep);}
+    const d=document.createElement('div'); d.textContent=label;
+    d.style.cssText='padding:8px 11px;font:12.5px var(--sans);color:'+(label.startsWith('🗑')?'var(--err)':'var(--text)')+';cursor:pointer;border-radius:8px;white-space:nowrap';
+    d.onmouseenter=()=>d.style.background='rgba(255,255,255,.07)'; d.onmouseleave=()=>d.style.background='';
+    d.onclick=e=>{e.stopPropagation();fn();}; _bkPanel.append(d);
+  });
+  _bkPanel.style.display='block';
+  const r=anchor.getBoundingClientRect(), pw=Math.max(178,_bkPanel.offsetWidth);
+  _bkPanel.style.width=pw+'px'; _bkPanel.style.left=r.left+'px'; _bkPanel.style.transform='';
+  const below=(r.bottom+2+_bkPanel.offsetHeight)<=innerHeight;
+  if(below)_bkPanel.style.top=(r.bottom+2)+'px';
+  else{ _bkPanel.style.top=(r.top-2)+'px'; _bkPanel.style.transform='translateY(-100%)'; }
+}
+window.openBookMenu=openBookMenu;
 async function selectBook(key){
   curSession=key;curKey=key;sideTab('art');renderSessions();
   let st={state:'',done:0,total:0};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
@@ -1206,7 +1246,7 @@ async function loadGlobalToken(){
   el.innerHTML='🔢 全部作品累计消耗 <b style="color:var(--accent)">'+((g.total_tokens||0).toLocaleString())+'</b> token · '+(g.calls||0)+' 次调用';
 }
 window.loadGlobalToken=loadGlobalToken;
-/* ===== v0.3.2：自定义深色下拉（替代原生 <select> 弹层，彻底修复「下拉箭头不好使/看不清」）=====
+/* ===== v0.3.3：自定义深色下拉（替代原生 <select> 弹层，彻底修复「下拉箭头不好使/看不清」）=====
    原生 <select> 的弹层由操作系统渲染，在深色玻璃拟态 UI 下不可控（macOS/WebKit 尤甚）。
    方案：把原生 select 隐藏但保留（.value/.onchange/.options 全部继续可用，提交逻辑零改动），
    在其后插入一个自定义深色下拉面板；点选后写回原生 value 并派发 change。MutationObserver
@@ -1285,14 +1325,14 @@ window.initDrag=initDrag;
 
 refreshProjects();
 renderSessions(); initDrag();
-(function(){cxApplyAll();var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500); if(q.get('onb'))setTimeout(()=>openOnb(),250); if(q.get('cxt'))setTimeout(async()=>{try{await openOnb();await new Promise(r=>setTimeout(r,250));const out={};['ob_chap','ob_hand','ob_prov'].forEach(id=>{const cs=$(id);out[id]={hidden:cs.style.display==='none',wrapped:!!cs._cxd,btn:!!cs._cxbtn};if(cs._cxbtn){cs._cxbtn.click();out[id].panelOpen=cs._cxpanel.style.display==='block';out[id].opts=cs._cxpanel.querySelectorAll('div').length;const op=cs._cxpanel.querySelectorAll('div');if(op[1]){op[1].click();out[id].valAfter=cs.value;}}});document.title='CXT '+JSON.stringify(out);}catch(e){document.title='CXT_ERR '+e;}}),50;})();
+(function(){cxApplyAll();var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500); if(q.get('onb'))setTimeout(()=>openOnb(),250); if(q.get('bkt'))setTimeout(()=>{const m=document.querySelector('[data-menu]');if(m){m.click();setTimeout(()=>{document.title='BKT items='+(_bkPanel?_bkPanel.querySelectorAll('div').length:0);},250);}else document.title='BKT no-anchor';},900); if(q.get('cxt'))setTimeout(async()=>{try{await openOnb();await new Promise(r=>setTimeout(r,250));const out={};['ob_chap','ob_hand','ob_prov'].forEach(id=>{const cs=$(id);out[id]={hidden:cs.style.display==='none',wrapped:!!cs._cxd,btn:!!cs._cxbtn};if(cs._cxbtn){cs._cxbtn.click();out[id].panelOpen=cs._cxpanel.style.display==='block';out[id].opts=cs._cxpanel.querySelectorAll('div').length;const op=cs._cxpanel.querySelectorAll('div');if(op[1]){op[1].click();out[id].valAfter=cs.value;}}});document.title='CXT '+JSON.stringify(out);}catch(e){document.title='CXT_ERR '+e;}}),50;})();
 loadProviders();
 loadProviderPicker();
 document.getElementById('addprov').onclick=openProvModal;
 document.getElementById('mbind').onclick=bindProv;
 document.getElementById('provmodal').addEventListener('click',e=>{if(e.target.id==='provmodal')closeProvModal();});
 document.getElementById('pvmodal').addEventListener('click',e=>{if(e.target.id==='pvmodal')closePvModal();});
-bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.2 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.2。');
+bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.3 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.3。');
 </script>
 </body>
 </html>

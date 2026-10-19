@@ -32,8 +32,8 @@ class Project:
         plan = self.plan()
         if not plan:
             return {"state": "missing", "done": 0, "total": 0, "words": 0}
-        chs = plan["chapters"]
-        done = sum(1 for c in chs if c["status"] == "completed")
+        chs = plan.get("chapters") or []
+        done = sum(1 for c in chs if c.get("status") == "completed")
         words = sum(c.get("wordCount") or 0 for c in chs)
         return {"state": plan.get("status", "unknown"), "done": done, "total": len(chs),
                 "words": words, "running": self.running,
@@ -650,6 +650,41 @@ def set_meta(key, **fields):
     plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
     json.dump(plan, open(pj, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     return library_item(key)
+
+def rename_book(key, new_name):
+    """v0.3.3：改书名（只改显示名 novelName + 成书文件名，key/目录不变，避免破坏引用）。"""
+    new_name = (new_name or "").strip()
+    if not new_name:
+        return {"ok": False, "note": "书名不能为空"}
+    pdir = os.path.join(PROJECTS_DIR, key)
+    pj = os.path.join(pdir, "02-写作计划.json")
+    plan = json.load(open(pj, encoding="utf-8")) if os.path.exists(pj) else {}
+    old = plan.get("novelName")
+    plan["novelName"] = new_name
+    plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+    json.dump(plan, open(pj, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    if old and old != new_name:
+        oldf, newf = os.path.join(pdir, f"成书-{old}.md"), os.path.join(pdir, f"成书-{new_name}.md")
+        if os.path.exists(oldf) and not os.path.exists(newf):
+            try: os.rename(oldf, newf)
+            except Exception: pass
+    return {"ok": True, "key": key, "name": new_name}
+
+def delete_book(key, hard=False):
+    """v0.3.3：删除。soft（默认）=归档进回收站可恢复；hard=彻底删除（删目录+清 schedules，不可逆）。"""
+    pdir = os.path.join(PROJECTS_DIR, key)
+    if not os.path.isdir(pdir):
+        return {"ok": False, "note": "该作品不存在"}
+    if hard:
+        import shutil
+        shutil.rmtree(pdir, ignore_errors=True)
+        try:
+            sc = json.load(open(SCHEDULES_FILE, encoding="utf-8")) if os.path.exists(SCHEDULES_FILE) else {}
+            if isinstance(sc, dict) and sc.pop(key, None) is not None:
+                json.dump(sc, open(SCHEDULES_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        except Exception: pass
+        return {"ok": True, "hard": True, "note": "已彻底删除（不可恢复）"}
+    return {"ok": True, "hard": False, "archived": True, "note": "已移入回收站（可恢复）", "item": set_meta(key, archived=True)}
 
 # ---------- 审查后定向重写 ----------
 

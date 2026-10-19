@@ -441,6 +441,15 @@ def api_lib_archive(key: str, payload: dict):
     writer.set_meta(key, archived=on)
     return {"ok": True, "archived": on}
 
+@app.post("/api/library/{key}/rename")
+def api_lib_rename(key: str, payload: dict):
+    return writer.rename_book(key, (payload or {}).get("name", ""))
+
+@app.delete("/api/library/{key}")
+def api_lib_delete(key: str, hard: bool = False):
+    """v0.3.3：软删=归档(可恢复)；?hard=true 彻底删除（删目录+清定时，不可逆）。"""
+    return writer.delete_book(key, hard=bool(hard))
+
 @app.post("/api/library/batch")
 def api_lib_batch(payload: dict):
     keys = payload.get("keys") or []
