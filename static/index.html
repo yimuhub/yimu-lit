@@ -554,6 +554,8 @@ function startPolling(){
       $('pinfo').textContent=j.done+'/'+j.total+' 章 · '+(j.state==='completed'?'✅ 完成':j.state==='in_progress'?'✍️ 创作中':j.state==='validating'?'🔁 校验中':j.state);
       $('pwords').textContent=j.words+' 字';
       $('evts').innerHTML=(j.events||[]).slice(-8).map(e=>'<div>'+esc(e)+'</div>').join('');
+      // v0.3.5：中间「稿件」实时刷新 —— 正在写/校验时，小说正文随进度逐章出现（事件仍留右侧）
+      if($('manuscript').style.display==='block'){ loadManuscript(curKey); }
       if(j.state==='completed'){refreshProjects();}
     }catch(e){}
   },4000);
@@ -987,7 +989,7 @@ async function submitOnb(){
   if(r.error){ $('oberr').textContent='⚠️ '+r.error; return; }
   closeOnb(); refreshProjects();
   if(r.awaiting_title){ openTitle(r.key); }
-  else { curKey=r.key; startPolling(); bubble('bot','📐 《'+payload.title+'》开写中（放行门禁 '+(payload.cfg_overrides.defaults.release_gate?'开':'关')+'）…'); }
+  else { curKey=r.key; curSession=r.key; startPolling(); bubble('bot','📐 《'+payload.title+'》开写中（放行门禁 '+(payload.cfg_overrides.defaults.release_gate?'开':'关')+'）…'); switchView('ms'); loadManuscript(r.key); }
 }
 $('obgo').onclick=submitOnb;
 window.openOnb=openOnb;
@@ -1078,7 +1080,7 @@ async function doPickTitle(key,title){
   closeTitle();
   let r; try{ r=await (await fetch('/api/pick-title',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,title})})).json(); }
   catch(e){ toast('⚠️ 选名失败：'+e,'err'); return; }
-  if(r.ok){ curKey=r.key; startPolling(); loadLibrary(); toast('📐 《<b>'+esc(title)+'</b>》开写中…','ok'); }
+  if(r.ok){ curKey=r.key; curSession=r.key; startPolling(); loadLibrary(); toast('📐 《<b>'+esc(title)+'</b>》开写中…','ok'); switchView('ms'); loadManuscript(r.key); }
   else toast('⚠️ 选名失败：'+(r.error||''),'err');
 }
 window.openTitle=openTitle; window.closeTitle=()=>$('titlemodal').classList.remove('show');
@@ -1184,7 +1186,7 @@ function openBookMenu(key, anchor){
   items.push([(it.archived?'♻️ 恢复归档':'🗄 归档'),()=>{fetch('/api/library/'+encodeURIComponent(key)+'/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!it.archived})}).then(r=>r.json()).then(()=>{toast(it.archived?'已恢复':'已移入回收站','ok');_bkClose();renderSessions();});}]);
   items.push(['✏️ 重命名',()=>{const nn=prompt('新书名：',it.name||'');if(nn&&nn.trim()){fetch('/api/library/'+encodeURIComponent(key)+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn.trim()})}).then(r=>r.json()).then(j=>{toast(j.ok?'已改名':(j.note||'改名失败'),j.ok?'ok':'err');renderSessions();});}_bkClose();}]);
   if(canBook)items.push(['⬇ 下载成书',()=>{window.open('/api/download?key='+encodeURIComponent(key),'_blank');_bkClose();}]);
-  if(canCont)items.push(['▶ 续写',()=>{const r=prompt('续写：在现有章节后继续写几章？','3');if(r!==null){const n=Math.max(1,+r||1);fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,n})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=key;startPolling();renderSessions();});}_bkClose();}]);
+  if(canCont)items.push(['▶ 续写',()=>{const r=prompt('续写：在现有章节后继续写几章？','3');if(r!==null){const n=Math.max(1,+r||1);fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,n})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=key;curSession=key;startPolling();switchView('ms');renderSessions();});}_bkClose();}]);
   items.push(['🗑 彻底删除（不可恢复）',()=>{ if(confirm('彻底删除《'+(it.name||key)+'》？将删除作品目录，不可恢复！')){fetch('/api/library/'+encodeURIComponent(key)+'?hard=true',{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.note||'已删除',j.ok?'ok':'err');renderSessions();});} _bkClose(); }]);
   _bkPanel.innerHTML='';
   items.forEach(([label,fn],idx)=>{
@@ -1226,10 +1228,11 @@ async function selectBook(key){
     +'⏱ <b style="color:var(--text)">定时任务</b>（默认关，可设总章/节奏）：<div id="booksched" style="margin-top:4px"></div><br>'
     +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div></div>';
   loadBookSkill(key); loadBookSched(key); loadTokenLedger(key);
-  startPolling();refreshProjects();
+  startPolling(); refreshProjects();
+  switchView('ms');   // v0.3.5：选中书后默认显示「稿件」（小说正文），实时刷新；对话仍可切换
 }
 window.selectBook=selectBook;
-function actCont(){if(!curSession)return;cont(curSession);startPolling();}
+function actCont(){if(!curSession)return;cont(curSession);startPolling();switchView('ms');}
 window.actCont=actCont;
 function actValidate(){if(!curSession)return;fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession,mode:'report'})}).then(async r=>{const j=await r.json();toast('📝 审稿'+(r.ok?'完成':'失败：'+(j.msg||'')),r.ok?'ok':'err');if(r.ok)selectBook(curSession);});}
 window.actValidate=actValidate;
@@ -1294,7 +1297,7 @@ window.saveModelRules=saveModelRules;
 function switchView(v){
   const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar');
   document.querySelectorAll('#viewsw button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
-  if(v==='ms'){ms.style.display='block';msgs.style.display='none';ib.style.display='none';loadManuscript(curSession||curKey);}
+  if(v==='ms'){ms.style.display='block';msgs.style.display='none';loadManuscript(curSession||curKey);}   // 保留输入框（读稿同时可下令）
   else{ms.style.display='none';msgs.style.display='';ib.style.display='';}
 }
 window.switchView=switchView;
@@ -1306,9 +1309,12 @@ async function loadManuscript(key){
   let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){}
   const u=us.usage||{};
   const done=(pv.chapters||[]).filter(c=>c.status==='completed').length, tot=(pv.chapters||[]).length;
+  const _state = st.awaiting_title?'⏸ 待选书名':(st.state==='in_progress'?'✍️ 创作中':st.state==='validating'?'🔁 校验中':st.state==='completed'?'✅ 已成书':(st.state||'—'));
+  const _curCh=(st.state==='in_progress')?(' · 正在写第 '+Math.min((st.done!=null?st.done:done)+1,(st.total!=null?st.total:tot))+' 章'):'';
   $('msprog').innerHTML='第 '+(st.done!=null?st.done:done)+'/'+(st.total!=null?st.total:tot)+' 章 · '+((u.total_tokens||0).toLocaleString())+' token';
-  $('msline').innerHTML='📄 稿件 · <b>'+esc(pv.name||key)+'</b> · 写到第 <b>'+(st.done!=null?st.done:done)+'</b>/'+(st.total!=null?st.total:tot)+' 章 · 共 <b>'+((st.words||pv.total_words||0))+'</b> 字 · 累计 <span class="tk">'+((u.total_tokens||0).toLocaleString())+' token</span>（'+(u.calls||0)+' 次调用）'
-    +'<br><span style="font-size:10.5px">'+(u.by_stage?Object.entries(u.by_stage).map(([k,v])=>k+' '+(v.total||0)).join(' · '):'')+(u.last?' · 最近 '+u.last.stage+' '+ (u.last.total||0):'')+'</span>';
+  $('msline').innerHTML='📄 稿件 · <b>'+esc(pv.name||key)+'</b> · <span style="color:var(--accent);font-weight:600">'+_state+'</span>'+_curCh
+    +' · 写到第 <b>'+(st.done!=null?st.done:done)+'</b>/'+(st.total!=null?st.total:tot)+' 章 · 共 <b>'+((st.words||pv.total_words||0))+'</b> 字 · 累计 <span class="tk">'+((u.total_tokens||0).toLocaleString())+' token</span>（'+(u.calls||0)+' 次调用）'
+    +'<br><span style="font-size:10.5px">'+(st.events?('· '+esc((st.events||[]).slice(-1)[0]||'')):(u.by_stage?Object.entries(u.by_stage).map(([k,v])=>k+' '+(v.total||0)).join(' · '):''))+(u.last?' · 最近 '+u.last.stage+' '+ (u.last.total||0):'')+'</span>';
   let txt=(pv.text||'').trim();
   if(!txt)txt='（尚未生成正文。切到「💬 对话」直接开写，或点上方快捷操作「▶ 续写」。）';
   $('msbody').innerHTML=txt.split(/(\n+#[^\n]+)/g).map(seg=>{
