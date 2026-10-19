@@ -343,6 +343,8 @@ def api_create(payload: dict):
         cfg["genre"] = payload["genre"]
     if payload.get("tone"):
         cfg["tone"] = payload["tone"]
+    if payload.get("style"):           # v0.3 P2：题材×风格技能 {金手指,基调,节奏,语言,卷}
+        cfg["style"] = payload["style"]
     if payload.get("sells"):
         cfg["sells"] = payload["sells"]
     if payload.get("perspective"):
@@ -498,12 +500,32 @@ def api_rewrite_log(key: str):
             "text": open(p, encoding="utf-8").read() if os.path.exists(p) else ""}
 
 # ---------- v0.2.1：开书向导 / 书名选 / 放行门禁 ----------
+# v0.3 P2：题材×风格技能目录（16 题材 × 风格维度：金手指/基调/视角/节奏/语言/卷）
 _ONB = {
-    "genres": ["都市爽文", "悬疑", "玄幻", "言情", "恐怖", "穿越/宫斗"],
-    "tones": ["爽文", "虐", "轻松", "暗黑", "复仇"],
+    "genres": ["都市", "玄幻", "重生", "系统流", "穿越", "历史/民国", "军旅", "悬疑/刑侦", "末日", "科幻", "游戏", "职场", "现言", "古言/宫斗", "快穿", "恐怖/灵异"],
+    "tones": ["爽文", "虐", "轻松", "暗黑", "复仇", "燃"],
     "sells": ["打脸", "逆袭", "反转", "金手指", "系统", "复仇", "升级", "打怪", "甜宠", "燃"],
-    "perspectives": ["男主", "女主", "不限"],
+    "perspectives": ["男主", "女主", "不限", "第一人称"],
     "chapter_options": [3, 5, 10, 20, 50],
+    # v0.3 P2 风格技能维度（每项可填"自定义"）
+    "style": {
+        "金手指": ["系统面板", "重生预知", "空间/储物", "马甲扮猪吃虎", "悟性/顿悟", "无(纯剧情)", "自定义"],
+        "基调": ["爽", "虐心", "热血", "轻松沙雕", "暗黑复仇", "治愈"],
+        "节奏": ["快节奏(3章1转折)", "中节奏", "慢热(前3章铺垫)", "自定义"],
+        "语言": ["口语爽利", "文白夹杂", "硬核细节", "轻松幽默", "克制内敛", "自定义"],
+        "卷": ["单卷(10章)", "多卷(3卷各10)", "长篇连载", "自定义"],
+        # 默认技能（题材 → 推荐风格组合，可覆盖）
+        "preset": {
+            "都市": {"金手指": "马甲扮猪吃虎", "基调": "爽", "节奏": "快节奏(3章1转折)", "语言": "口语爽利", "卷": "多卷(3卷各10)"},
+            "重生": {"金手指": "重生预知", "基调": "爽", "节奏": "快节奏(3章1转折)", "语言": "口语爽利", "卷": "多卷(3卷各10)"},
+            "系统流": {"金手指": "系统面板", "基调": "燃", "节奏": "中节奏", "语言": "轻松幽默", "卷": "多卷(3卷各10)"},
+            "玄幻": {"金手指": "悟性/顿悟", "基调": "热血", "节奏": "中节奏", "语言": "硬核细节", "卷": "多卷(3卷各10)"},
+            "穿越": {"金手指": "重生预知", "基调": "轻松沙雕", "节奏": "慢热(前3章铺垫)", "语言": "文白夹杂", "卷": "多卷(3卷各10)"},
+            "悬疑/刑侦": {"金手指": "无(纯剧情)", "基调": "暗黑复仇", "节奏": "中节奏", "语言": "硬核细节", "卷": "单卷(10章)"},
+            "古言/宫斗": {"金手指": "马甲扮猪吃虎", "基调": "爽", "节奏": "中节奏", "语言": "文白夹杂", "卷": "多卷(3卷各10)"},
+            "快穿": {"金手指": "系统面板", "基调": "爽", "节奏": "快节奏(3章1转折)", "语言": "轻松幽默", "卷": "单卷(10章)"},
+        },
+    },
 }
 
 @app.get("/api/onboarding")
@@ -515,6 +537,32 @@ def api_onboarding():
                         "title_count": d.get("title_count", 8),
                         "p5_pipeline": d.get("p5_pipeline", True)}
     return _ONB
+
+@app.get("/api/style")
+def api_style_get(key: str):
+    """v0.3 P2：取某书的题材×风格技能（style.json）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    p = os.path.join(proj.path, "style.json")
+    if os.path.exists(p):
+        try:
+            return {"key": key, "style": json.load(open(p, encoding="utf-8"))}
+        except Exception:
+            pass
+    return {"key": key, "style": {"genre": proj.meta().get("genre", ""), "style": {}}}
+
+@app.put("/api/style")
+def api_style_put(payload: dict):
+    """v0.3 P2：改某书的题材×风格技能 → 写 style.json（后续 craft 注入用）。"""
+    key = payload.get("key") or ""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    st = {"genre": proj.meta().get("genre") or payload.get("genre") or "",
+          "style": payload.get("style") or {}}
+    open(os.path.join(proj.path, "style.json"), "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False, indent=2))
+    return {"ok": True, "style": st}
 
 @app.get("/api/titles")
 def api_titles(key: str):

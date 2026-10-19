@@ -398,6 +398,9 @@ body{
     <div class="mfield"><label>主角视角</label><select id="ob_persp"></select></div></div>
   <div class="mrow"><div class="mfield"><label>基调</label><select id="ob_tone"></select></div>
     <div class="mfield"><label>章数</label><select id="ob_chap"></select></div></div>
+  <div class="mrow"><div class="mfield"><label>🧩 金手指</label><select id="ob_hand"></select></div>
+    <div class="mfield"><label>节奏</label><select id="ob_pace"></select></div>
+    <div class="mfield"><label>语言</label><select id="ob_lang"></select></div></div>
   <div class="mfield"><label>核心卖点（可多选）</label><div id="ob_sells" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
   <div class="mfield"><label>一句话设定（可选）</label><input id="ob_idea" placeholder="例如：退休刑警被诬陷杀人"></div>
   <div class="mfield"><label>书名（留空=下一步 ABC 弹框选）</label><input id="ob_title" placeholder="留空则自动出候选"></div>
@@ -899,6 +902,13 @@ async function openOnb(){
   const sel=(id,vals,def)=>{const el=$(id);el.innerHTML=vals.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');if(def)el.value=def;};
   sel('ob_genre',ONB.genres,ONB.genres[0]); sel('ob_persp',ONB.perspectives,'男主');
   sel('ob_tone',ONB.tones,'爽文'); sel('ob_chap',ONB.chapter_options,10);
+  // v0.3 P2 风格技能（金手指/节奏/语言，按题材 preset 自动填，可改）
+  const _sty=ONB.style||{}, _prev=($('ob_genre').value)||ONB.genres[0], _pre=( _sty.preset||{})[_prev]||{};
+  sel('ob_hand',_sty['金手指']||[],_pre['金手指']||(_sty['金手指']||[])[0]);
+  sel('ob_pace',_sty['节奏']||[],_pre['节奏']||(_sty['节奏']||[])[0]);
+  sel('ob_lang',_sty['语言']||[],_pre['语言']||(_sty['语言']||[])[0]);
+  $('ob_genre').onchange=()=>{const p=(_sty.preset||{})[$('ob_genre').value]||{};
+    if(p['金手指'])$('ob_hand').value=p['金手指']; if(p['节奏'])$('ob_pace').value=p['节奏']; if(p['语言'])$('ob_lang').value=p['语言'];};
   $('ob_sells').innerHTML=ONB.sells.map(s=>'<label class="libchip" style="cursor:pointer"><input type="checkbox" value="'+esc(s)+'" style="display:none"> '+esc(s)+'</label>').join('');
   $('ob_sells').querySelectorAll('label').forEach(l=>l.onclick=()=>{l.classList.toggle('on');l.querySelector('input').checked=l.classList.contains('on');});
   try{
@@ -921,6 +931,7 @@ window.closeOnb=()=>$('onbmodal').classList.remove('show');
 async function submitOnb(){
   const sells=[...$('ob_sells').querySelectorAll('input:checked')].map(i=>i.value);
   const payload={genre:$('ob_genre').value, tone:$('ob_tone').value, perspective:$('ob_persp').value,
+    style:{金手指:$('ob_hand').value, 节奏:$('ob_pace').value, 语言:$('ob_lang').value, 卷:(+($('ob_chap').value||0)<=10?'单卷(10章)':'多卷(3卷各10)')},
     sells, idea:$('ob_idea').value.trim(), total_chapters:+$('ob_chap').value,
     provider_id:$('ob_prov').value, model:$('ob_model').value,
     cfg_overrides:{defaults:{release_gate:$('ob_gate').checked, p5_pipeline:$('ob_p5').checked}}};
@@ -1060,8 +1071,9 @@ async function selectBook(key){
   $('setbody').innerHTML='<div style="font:12px/2.1 var(--sans);color:var(--muted)">'
     +'🎚 <b style="color:var(--text)">门禁</b>：达标线 90 · 每轮 top-3 改写 · 未达标标 beta<br>'
     +'⏱ <b style="color:var(--text)">定时任务</b>：总章/节奏（P3，默认关）<br>'
-    +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'（P2 可换）<br>'
+    +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div><br>'
     +'🤖 <b style="color:var(--text)">模型规则</b>：按接入模型自动套（P4 可自由设）</div>';
+  loadBookSkill(key);
   startPolling();refreshProjects();
 }
 window.selectBook=selectBook;
@@ -1071,6 +1083,23 @@ function actValidate(){if(!curSession)return;fetch('/api/validate',{method:'POST
 window.actValidate=actValidate;
 function actGate(){if(!curSession)return;fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession})}).then(r=>r.json()).then(j=>toast('🔓 门禁：'+(j.msg||''),'ok'));}
 window.actGate=actGate;
+async function loadBookSkill(key){
+  const el=$('bookskill');if(!el)return;
+  let sty=null;try{sty=(await (await fetch('/api/style?key='+encodeURIComponent(key))).json()).style;}catch(e){}
+  const cur=(sty&&sty.style)||{}, genre=sty?.genre||'';
+  let cat=ONB?.style;if(!cat){try{cat=(await (await fetch('/api/onboarding')).json()).style;}catch(e){cat=null;}}
+  if(!cat){el.innerHTML='<span style="font:11px var(--muted)">未绑定技能</span>';return;}
+  const dims=['金手指','节奏','语言','卷'];
+  el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:4px 0">'
+    +dims.map(d=>'<div><div style="font:10px var(--muted)">'+d+'</div><select id="bs_'+d+'" style="width:100%;margin-top:2px;padding:5px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">'+(cat[d]||[]).map(v=>'<option value="'+esc(v)+'"'+(cur[d]===v?' selected':'')+'>'+esc(v)+'</option>').join('')+'</select></div>').join('')
+    +'</div><button class="pb run" style="width:100%" onclick="saveBookSkill(\''+key+'\')">💾 保存技能（后续章节按此书写）</button>';
+}
+window.loadBookSkill=loadBookSkill;
+function saveBookSkill(key){
+  const dims={};['金手指','节奏','语言','卷'].forEach(d=>{const e=$('bs_'+d);if(e)dims[d]=e.value;});
+  fetch('/api/style',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,style:dims})}).then(r=>r.json()).then(j=>{toast('🧩 技能已保存','ok');loadBookSkill(key);});
+}
+window.saveBookSkill=saveBookSkill;
 function toggleSess(){const c=$('sessions');c.classList.toggle('collapsed');$('sestog').textContent=c.classList.contains('collapsed')?'»':'«';}
 window.toggleSess=toggleSess;
 function initDrag(){

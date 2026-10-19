@@ -108,6 +108,12 @@ def create_project(cfg, titles):
     style = workflow.gen_style(cfg)
     open(os.path.join(pdir, "03-文风基准.md"), "w", encoding="utf-8").write(style)
 
+    # v0.3 P2：题材×风格技能（金手指/基调/视角/节奏/语言/卷）→ style.json，供 craft 注入
+    import json as _json
+    _sk = {"genre": cfg.get("genre", ""), "tone": cfg.get("tone", ""),
+           "perspective": cfg.get("perspective", ""), "style": cfg.get("style") or {}}
+    open(os.path.join(pdir, "style.json"), "w", encoding="utf-8").write(_json.dumps(_sk, ensure_ascii=False, indent=2))
+
     # ---------- 连续性结构（加法，单个失败不阻断规划） ----------
     if _cfg_defaults().get("v3_pipeline", True):
         proj.log("📐 阶段2：生成 连续性结构（故事圣经/线索账本/时间线）…")
@@ -190,6 +196,21 @@ def _build_ctx(proj, ch):
     outline_text = _rf("01-大纲.md") or open(os.path.join(proj.path, "01-大纲.md"), encoding="utf-8").read()
     characters_text = _rf("00-人物档案.md")
     style_text = _rf("03-文风基准.md")
+    # v0.3 P2：题材×风格技能（style.json）→ 追加到 style_text，write/expand craft 自动带上
+    try:
+        import json as _js
+        _sp = os.path.join(proj.path, "style.json")
+        if os.path.exists(_sp):
+            _sk = _js.load(open(_sp, encoding="utf-8"))
+            _d = _sk.get("style") or {}
+            _parts = [f"{k}：{v}" for k, v in [
+                ("题材", _sk.get("genre", "")), ("基调", _sk.get("tone", "")), ("视角", _sk.get("perspective", "")),
+                ("金手指", _d.get("金手指", "")), ("风格基调", _d.get("基调", "")), ("节奏", _d.get("节奏", "")),
+                ("语言", _d.get("语言", "")), ("卷", _d.get("卷", ""))] if v]
+            if _parts:
+                style_text += "\n\n## 创作风格技能（本作品按此技能设定书写，严格遵守）\n" + "\n".join(_parts)
+    except Exception:
+        pass
     prev_tail = ""
     if ch["chapterNumber"] > 1:
         prev = plan["chapters"][ch["chapterNumber"] - 2]
