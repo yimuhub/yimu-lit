@@ -1154,7 +1154,7 @@ window.initDrag=initDrag;
 
 refreshProjects();
 renderSessions(); initDrag();
-(function(){var b=new URLSearchParams(location.search).get('book'); if(b)selectBook(b);})();
+(function(){var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300);})();
 loadProviders();
 loadProviderPicker();
 document.getElementById('addprov').onclick=openProvModal;
