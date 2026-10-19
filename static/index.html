@@ -74,6 +74,8 @@ body{
 #manuscript #msline b{color:var(--text)}
 #manuscript #msline .tk{color:var(--accent);font-weight:600}
 #msbody{font:15px/1.95 var(--sans);color:var(--text);white-space:pre-wrap;word-break:break-word}
+#msrw{margin:2px 0 6px}   /* v0.6 D：稿件区重写结果卡（按书隔离，切书清空）*/
+#msrw:empty{display:none}
 #msbody .mschap{font-weight:700;color:var(--accent);margin:18px 0 8px;font-size:16px}
 .msg{display:flex;margin-bottom:16px;gap:10px;animation:fade .3s ease}
 @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -277,7 +279,7 @@ input,select,textarea{color-scheme:dark}
     <div id="quickacts"></div>
     <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="msprog" style="margin-left:auto"></span></div>
     <div id="msgs"></div>
-    <div id="manuscript" style="display:none"><div id="msline"></div><div id="mschart"></div><div id="msbody"></div></div>
+    <div id="manuscript" style="display:none"><div id="msline"></div><div id="mschart"></div><div id="msrw"></div><div id="msbody"></div></div>
     <div id="inputbar">
       <div id="picker">
         <select id="pselect" title="选择模型供应商"></select>
@@ -516,8 +518,10 @@ function pushBkChat(key,who,text){
 async function loadBkChat(key){
   msgBox.innerHTML='';
   if(!key)return;
+  const tk=_viewToken;   // v0.6 A：切书后弃旧响应，防上一本书的对话串进来
   let d={messages:[]};
   try{ d=await (await fetch('/api/bkchat?key='+encodeURIComponent(key))).json(); }catch(e){}
+  if(tk!==_viewToken)return;
   const ms=d.messages||[];
   if(!ms.length){
     const it=(window._libCache||[]).find(x=>x.key===key);
@@ -800,13 +804,21 @@ function pollRewrite(){
     }catch(e){}
   },6000);
 }
-function showRewriteResult(res){
+// v0.6 D：重写结果卡（预览 rwbox 与稿件 msrw 共用；内容=预览「定向重写」同款）
+function renderRewriteResultCard(res, key){
+  if(res&&res.error) return '<div class="rwcard" style="border-color:#f59e0b"><h4>⚠️ 重写失败</h4><div class="rwnote">'+esc(res.error)+'</div></div>';
+  if(!res) return '<div class="rwcard"><div class="rwnote">重写完成（无返回结果，见 16-重写记录.md）。</div></div>';
   const delta=res.after-res.before, up=delta>=0;
-  $('rwbox').innerHTML='<div class="rwcard"><h4>🔁 重写完成</h4>'+
-    '<div class="rwsum">百分制 '+res.before+' → '+res.after+'（<span class="'+(up?'up':'dn')+'">'+(up?'+':'')+delta+'</span>）· '+(res.pass?'✅ 已达标':'未达标')+' · 改写 '+res.changed.length+' 章</div>'+
-    '<div class="rwdir"><b>仍弱维度：</b>'+(res.weak_after||[]).join(' / ')||'（无明显短板）'+'</div>'+
-    '<div class="rwnote">各章注入的要求 + 前后字数见 <b>16-重写记录.md</b>（作品目录内）。分数为 LLM 五角色重评，可能有波动。</div>'+
-    '<div style="margin-top:8px;display:flex;gap:8px"><button class="rwbtn" onclick="showPv(\'quality\')">查看新质量报告</button></div></div>';
+  const weak=(res.weak_after&&res.weak_after.length)?res.weak_after.join(' / '):'（无明显短板）';
+  return '<div class="rwcard"><h4>🔁 定向重写完成</h4>'
+    +'<div class="rwsum">百分制 <b>'+res.before+'</b> → <b style="color:'+(up?'#3ad29b':'#f59e0b')+'">'+res.after+'</b>（<span class="'+(up?'up':'dn')+'">'+(up?'+':'')+delta+'</span>）· '+(res.pass?'✅ 已达标':'未达标')+' · 改写 '+(res.changed||[]).length+' 章</div>'
+    +'<div class="rwdir"><b>仍弱维度：</b>'+weak+'</div>'
+    +'<div class="rwnote">各章注入的要求 + 前后字数见 <b>16-重写记录.md</b>（作品目录内）。分数为 LLM 五角色重评，可能有波动。</div>'
+    +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="rwbtn" onclick="showPv(\'quality\')">查看新质量报告</button><button class="rwbtn" onclick="loadManuscript(\''+esc(key)+'\');showPv(\'quality\')">刷新稿件评分</button></div></div>';
+}
+window.renderRewriteResultCard=renderRewriteResultCard;
+function showRewriteResult(res){
+  $('rwbox').innerHTML=renderRewriteResultCard(res, PV_KEY);
 }
 window.pick=k=>{curKey=k;startPolling();refreshProjects();};
 window.cont=k=>{
@@ -1289,6 +1301,7 @@ bindModalClose();
 // ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
 const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
 let curSession=null; let _LIB_ITEMS=[];   // v0.3.3：左侧「⋯」菜单 用（缓存当前书列表）
+let _viewToken=0;   // v0.6 A：视图代际——切书 +1，丢弃旧书慢响应对当前视图的覆盖（防跨书串台）
 function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'){if(window.loadModelRules)loadModelRules();if(window.loadStyleLib)loadStyleLib();if(window.loadLearn)loadLearn();if(window.renderAgentCard)renderAgentCard();}if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
 window.sideTab=sideTab;
 function _sessRow(i){
@@ -1305,10 +1318,10 @@ function _sessRow(i){
 function sessLive(i){
   if(i.awaiting_title)return '⏸ 待选书名';
   if(i.paused)return '⏸ 已暂停 · 第 '+(i.total?Math.min(i.done+1,i.total):((i.done||0)+1))+' 章';
-  if(i.halted)return '⚠ 已中断 · 可续写（点行/⋯）';
+  if(i.halted)return '⚠ 已中断 · 可续写（点该书 / ⋯ 菜单）';
   if(i.state==='in_progress')return '✍️ 正在写第 '+(i.total?Math.min(i.done+1,i.total):(i.done||0)+1)+' 章';
   if(i.state==='validating'||i.state==='releasing')return '🔁 校验/放行'+(i.gate_rounds?' 第 '+i.gate_rounds+' 轮':'中');
-  if(i.state==='completed')return i.released===false?('⏳ 待放行 · 点行放行'+(i.gate_rounds?'（'+i.gate_rounds+'轮）':'')):'✅ 已成书';
+  if(i.state==='completed')return i.released===false?('⏳ 待放行 · 点击放行'+(i.gate_rounds?'（'+i.gate_rounds+'轮）':'')):'✅ 已成书';
   if(i.state==='failed')return '⚠ 失败 · 可重试';
   return '✍ 创作中';
 }
@@ -1385,13 +1398,17 @@ function openBookMenu(key, anchor){
 }
 window.openBookMenu=openBookMenu;
 async function selectBook(key){
-  curSession=key;curKey=key;sideTab('art');renderSessions();updateSendBtn();
+  curSession=key;curKey=key;_viewToken++;const tk=_viewToken;sideTab('art');renderSessions();updateSendBtn();
+  $('msrw').innerHTML='';   // v0.6 D/A：切书清空上一本书的重写结果卡（按书隔离）
   switchView('chat'); loadBkChat(key);   // v0.4.1：点书 → 中间=对话页，只加载这本书自己的聊天
   let st={state:'',done:0,total:0};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
+  if(tk!==_viewToken)return;   // v0.6 A：期间切了书，弃旧响应
   let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
+  if(tk!==_viewToken)return;
   const name=pv.name||st.name||key;
   const stt=st.awaiting_title?'待选书名':(st.state==='completed'?'已成书':(st.state==='in_progress'?'创作中':(st.state||'')));
   let u={};try{u=(await (await fetch('/api/usage?key='+encodeURIComponent(key))).json()).usage||{};}catch(e){}
+  if(tk!==_viewToken)return;
   $('midctx').innerHTML='📖 当前书：<b>'+esc(name)+'</b> · '+esc(stt)+' · <span style="color:var(--accent)">🔢 '+((u.total_tokens||0).toLocaleString())+' token</span> · 对话/操作都针对这本书';
   let qa='<button class="pb run" onclick="actCont()">▶ 续写</button>'
     +'<button class="pb" onclick="actValidate()">📝 审稿</button>'
@@ -1531,9 +1548,13 @@ window.switchView=switchView;
 document.querySelectorAll('#viewsw button').forEach(b=>b.onclick=()=>switchView(b.dataset.v));
 async function loadManuscript(key){
   if(!key){$('msbody').innerHTML='<span style="color:var(--muted)">未选中书。先在左侧选一本书，或点「＋新建」。</span>';$('msline').textContent='';$('msprog').textContent='';return;}
+  const tk=_viewToken;   // v0.6 A：视图代际守卫——每个 await 后若已切书则弃旧响应
   let st={};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
+  if(tk!==_viewToken||key!==(curSession||curKey))return;
   let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
+  if(tk!==_viewToken||key!==(curSession||curKey))return;
   let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){}
+  if(tk!==_viewToken||key!==(curSession||curKey))return;
   const u=us.usage||{};
   const done=(pv.chapters||[]).filter(c=>c.status==='completed').length, tot=(pv.chapters||[]).length;
   const _state = st.awaiting_title?'⏸ 待选书名':(st.state==='in_progress'?'✍️ 创作中':st.state==='validating'?'🔁 校验中':st.state==='completed'?'✅ 已成书':(st.state||'—'));
@@ -1598,7 +1619,9 @@ window.renderMsChart=renderMsChart;
 // ===== v0.5 M3：中间台自然语言指令 → 结构化动作 =====
 function triggerRewrite(key, chapters){
   switchView('ms'); loadManuscript(key);
-  bubble('bot','🔁 正在定向重写'+(chapters&&chapters.length?'第 '+chapters.join('、')+' 章':' 全书弱章')+'（把要求逐条带入，约 1-6 分钟，稿件区会实时刷新）…','');
+  const who=(chapters&&chapters.length)?('第 '+chapters.join('、')+' 章'):' 全书弱章';
+  $('msrw').innerHTML='<div class="rwcard" style="border-color:var(--accent);opacity:.9"><h4>🔁 正在定向重写'+who+'…</h4><div class="rwnote">把要求书逐条带进目标章，约 1-6 分钟，完成后此处出现「百分制 before→after + 质量报告」（与预览定向重写同款）。</div></div>';
+  bubble('bot','🔁 正在定向重写'+who+'（稿件区实时刷新，完成后出结果卡）…','');
   fetch('/api/rewrite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,chapters})})
    .then(r=>r.json()).then(()=>pollRewriteKey(key));
 }
@@ -1612,10 +1635,13 @@ function pollRewriteKey(key){
       const d=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json();
       if(!d.running){
         clearInterval(_rwPoll[key]);
-        if(d.result&&d.result.error){ bubble('bot','⚠️ 重写失败：'+esc(d.result.error),''); }
-        else if(d.result){ bubble('bot','✅ 重写完成：'+d.before+' → '+d.after+'（'+(d.pass?'达标':'未达标')+'）· 改写 '+d.changed.length+' 章。稿件已刷新。',''); }
-        else bubble('bot','✅ 重写完成（见 16-重写记录）。','');
-        loadManuscript(key); loadLibrary();
+        const isCur=(key===(curSession||curKey));   // v0.6 A：只刷当前书视图，不串台
+        if(isCur){
+          if(d.result&&d.result.error){ bubble('bot','⚠️ 重写失败：'+esc(d.result.error),''); $('msrw').innerHTML=renderRewriteResultCard(d.result,key); }
+          else { $('msrw').innerHTML=renderRewriteResultCard(d.result,key); bubble('bot','✅ 重写完成：'+(d.result?d.result.before+' → '+d.result.after:'详见 16-重写记录')+'。结果卡已出现在稿件区（同预览定向重写）。',''); }
+          loadManuscript(key);
+        }
+        loadLibrary();
       } else if(Date.now()-t0>420000){ clearInterval(_rwPoll[key]); }
     }catch(e){}
   },6000);
