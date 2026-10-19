@@ -1070,10 +1070,10 @@ async function selectBook(key){
     +'<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="pb prev" onclick="openPreview(\''+key+'\')">👁 预览成书</button><button class="pb" onclick="actValidate()">📊 质量报告</button></div>';
   $('setbody').innerHTML='<div style="font:12px/2.1 var(--sans);color:var(--muted)">'
     +'🎚 <b style="color:var(--text)">门禁</b>：达标线 90 · 每轮 top-3 改写 · 未达标标 beta<br>'
-    +'⏱ <b style="color:var(--text)">定时任务</b>：总章/节奏（P3，默认关）<br>'
+    +'⏱ <b style="color:var(--text)">定时任务</b>（默认关，可设总章/节奏）：<div id="booksched" style="margin-top:4px"></div><br>'
     +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div><br>'
     +'🤖 <b style="color:var(--text)">模型规则</b>：按接入模型自动套（P4 可自由设）</div>';
-  loadBookSkill(key);
+  loadBookSkill(key); loadBookSched(key);
   startPolling();refreshProjects();
 }
 window.selectBook=selectBook;
@@ -1100,6 +1100,24 @@ function saveBookSkill(key){
   fetch('/api/style',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,style:dims})}).then(r=>r.json()).then(j=>{toast('🧩 技能已保存','ok');loadBookSkill(key);});
 }
 window.saveBookSkill=saveBookSkill;
+async function loadBookSched(key){
+  const el=$('booksched');if(!el)return;
+  let d=null;try{d=(await (await fetch('/api/schedule')).json()).schedules;}catch(e){}
+  const s=(d&&d[key])||{};
+  el.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font:11.5px var(--sans)">'
+    +'<label class="libchip'+(s.enabled?' on':'')+'" id="bsch_en" style="cursor:pointer">'+(s.enabled?'⏱ 定时开':'⏱ 定时关')+'</label>'
+    +'<span>每 <input id="bsch_iv" value="'+(s.interval_days||7)+'" style="width:36px;text-align:center;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text)"> 天</span>'
+    +'<span>每次写 <input id="bsch_pr" value="'+(s.per_run||10)+'" style="width:40px;text-align:center;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text)"> 章</span>'
+    +'<button class="pb" onclick="saveBookSched(\''+key+'\')">💾 保存</button></div>'
+    +(s.last_note?'<div style="font:10.5px var(--muted);margin-top:3px">最近：'+esc(s.last_note)+'</div>':'');
+  $('bsch_en').onclick=()=>$('bsch_en').classList.toggle('on');
+}
+window.loadBookSched=loadBookSched;
+function saveBookSched(key){
+  const en=$('bsch_en').classList.contains('on');
+  fetch('/api/schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,enabled:en,interval_days:+($('bsch_iv').value||7),per_run:+($('bsch_pr').value||10)})}).then(r=>r.json()).then(j=>{toast(en?'⏱ 定时任务已开启（每 N 天写一批）':'⏱ 定时任务已关','ok');loadBookSched(key);});
+}
+window.saveBookSched=saveBookSched;
 function toggleSess(){const c=$('sessions');c.classList.toggle('collapsed');$('sestog').textContent=c.classList.contains('collapsed')?'»':'«';}
 window.toggleSess=toggleSess;
 function initDrag(){

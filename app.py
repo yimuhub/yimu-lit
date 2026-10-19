@@ -1,5 +1,5 @@
 """novel-bot 主应用：聊天即开写（深绑 「一幕·神笔」创作系统）"""
-import json, os, re, threading, uuid
+import json, os, re, threading, uuid, time
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -563,6 +563,64 @@ def api_style_put(payload: dict):
           "style": payload.get("style") or {}}
     open(os.path.join(proj.path, "style.json"), "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False, indent=2))
     return {"ok": True, "style": st}
+
+# ---------- v0.3 P3：定时任务 调度器 + /api/schedule（默认关；每 60s 巡检到期批次） ----------
+@app.get("/api/schedule")
+def api_sched_list():
+    return {"schedules": writer.load_schedules()}
+
+@app.post("/api/schedule")
+def api_sched_set(payload: dict):
+    key = payload.get("key") or ""
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    d = writer.load_schedules(); now = time.time()
+    cur = d.get(key, {})
+    enabled = bool(payload.get("enabled", cur.get("enabled", False)))
+    iv = int(payload.get("interval_days", cur.get("interval_days", 7)))
+    per = int(payload.get("per_run", cur.get("per_run", 10)))
+    d[key] = {"enabled": enabled, "interval_days": iv, "per_run": per,
+              "next_run": (now + iv * 86400) if enabled else cur.get("next_run"),
+              "last_run": cur.get("last_run"), "last_note": cur.get("last_note")}
+    writer.save_schedules(d)
+    return {"ok": True, "schedules": d}
+
+def _scheduler_tick():
+    d = writer.load_schedules(); now = time.time(); changed = False
+    for key, s in list(d.items()):
+        if not s.get("enabled"):
+            continue
+        if s.get("next_run") and now < float(s["next_run"]):
+            continue
+        proj = _get_project(key)
+        if not proj:
+            continue
+        try:
+            plan = proj.plan()
+        except Exception:
+            continue
+        if plan.get("status") == "completed":
+            s["enabled"] = False; s["last_note"] = "已成书，自动停用"; changed = True; continue
+        if getattr(proj, "running", False):
+            continue
+        n = int(s.get("per_run", 10))
+        if writer.start_writing_batch(proj, n):
+            s["next_run"] = now + int(s.get("interval_days", 7)) * 86400
+            s["last_run"] = now; s["last_note"] = f"⏱ 定时写 {n} 章"; changed = True
+    if changed:
+        writer.save_schedules(d)
+
+def _scheduler_loop():
+    while True:
+        try:
+            _scheduler_tick()
+        except Exception:
+            pass
+        time.sleep(60)
+
+@app.on_event("startup")
+def _start_scheduler():
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
 
 @app.get("/api/titles")
 def api_titles(key: str):

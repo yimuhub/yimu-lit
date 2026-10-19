@@ -458,6 +458,8 @@ def validate_project(proj, mode="report", max_rounds=2):
     return res
 
 def _write_loop(proj: Project):
+    _sem = _write_semaphore()          # v0.3 P3：并发（默认 2 本同时写，超出排队）
+    _sem.acquire()
     try:
         plan = proj.plan()
         plan["status"] = "in_progress"
@@ -472,7 +474,53 @@ def _write_loop(proj: Project):
         plan["status"] = "in_progress"
         proj.save_plan(plan)
     finally:
+        _sem.release()
         proj.running = False
+
+# v0.3 P3：并发写（同一时刻最多 N 本在写，N=defaults.concurrency 默认 2，超出排队）
+_WRITE_SEM, _WRITE_SEM_N = None, 0
+def _write_semaphore():
+    global _WRITE_SEM, _WRITE_SEM_N
+    try:
+        n = int(_cfg_defaults().get("concurrency", 2))
+    except Exception:
+        n = 2
+    if _WRITE_SEM is None or _WRITE_SEM_N != n:
+        _WRITE_SEM = threading.Semaphore(max(1, n)); _WRITE_SEM_N = n
+    return _WRITE_SEM
+
+# ---------- v0.3 P3：定时任务（批量写 + 调度） ----------
+SCHEDULES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "schedules.json")
+def load_schedules():
+    try:
+        return json.load(open(SCHEDULES_FILE, encoding="utf-8"))
+    except Exception:
+        return {}
+def save_schedules(d):
+    open(SCHEDULES_FILE, "w", encoding="utf-8").write(json.dumps(d, ensure_ascii=False, indent=2))
+
+def start_writing_batch(proj, limit):
+    """v0.3 P3：只写最多 limit 章（定时批次用），写完停在 in_progress，供下次续。默认并发受限。"""
+    if getattr(proj, "running", False):
+        return False
+    def _bl():
+        _sem = _write_semaphore(); _sem.acquire()
+        try:
+            plan = proj.plan(); plan["status"] = "in_progress"; proj.save_plan(plan)
+            wrote = 0
+            for ch in plan["chapters"]:
+                if wrote >= limit:
+                    break
+                if ch["status"] != "completed":
+                    _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3); wrote += 1
+            proj.log(f"⏱ 定时批次：本次写 {wrote} 章（上限 {limit}），待续")
+        except Exception as e:
+            proj.log(f"💥 定时批次异常：{e}")
+        finally:
+            _sem.release(); proj.running = False
+    proj.running = True
+    threading.Thread(target=_bl, daemon=True).start()
+    return True
 
 # ---------- 阶段0 中断续写检测 ----------
 
