@@ -23,3 +23,5 @@ projects/
 *.log
 .DS_Store
 交付截图/
+schedules.json
+model_rules.json

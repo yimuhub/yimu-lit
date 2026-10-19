@@ -1,10 +1,1 @@
-{
-  "20261018-154524-大唐帅才的现代降维打击": {
-    "enabled": false,
-    "interval_days": 7,
-    "per_run": 10,
-    "next_run": 1792996470.390038,
-    "last_run": null,
-    "last_note": null
-  }
-}
+{}

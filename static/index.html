@@ -283,6 +283,7 @@ body{
     <div class="side-pane" id="pane-set" style="display:none">
       <h2>该书设置</h2>
       <div id="setbody" style="padding:0 14px 8px"></div>
+      <div id="mrcard" style="margin:0 14px 10px"></div>
       <div class="secrow"><h2>模型供应商</h2><button id="addprov">＋ 绑定</button></div>
       <div id="provsum" style="display:none"></div>
       <div id="provlist"><div class="empty">加载中…</div></div>
@@ -1016,7 +1017,7 @@ bindModalClose();
 // ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
 const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
 let curSession=null;
-function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));}
+function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'&&window.loadModelRules)loadModelRules();}
 window.sideTab=sideTab;
 function _sessRow(i){
   const st=i.state==='completed'?(i.released===true?'released':'completed'):(i.awaiting_title?'awaiting_title':(i.running?'in_progress':'other'));
@@ -1071,8 +1072,7 @@ async function selectBook(key){
   $('setbody').innerHTML='<div style="font:12px/2.1 var(--sans);color:var(--muted)">'
     +'🎚 <b style="color:var(--text)">门禁</b>：达标线 90 · 每轮 top-3 改写 · 未达标标 beta<br>'
     +'⏱ <b style="color:var(--text)">定时任务</b>（默认关，可设总章/节奏）：<div id="booksched" style="margin-top:4px"></div><br>'
-    +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div><br>'
-    +'🤖 <b style="color:var(--text)">模型规则</b>：按接入模型自动套（P4 可自由设）</div>';
+    +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div></div>';
   loadBookSkill(key); loadBookSched(key);
   startPolling();refreshProjects();
 }
@@ -1118,6 +1118,26 @@ function saveBookSched(key){
   fetch('/api/schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,enabled:en,interval_days:+($('bsch_iv').value||7),per_run:+($('bsch_pr').value||10)})}).then(r=>r.json()).then(j=>{toast(en?'⏱ 定时任务已开启（每 N 天写一批）':'⏱ 定时任务已关','ok');loadBookSched(key);});
 }
 window.saveBookSched=saveBookSched;
+async function loadModelRules(){
+  const el=$('mrcard');if(!el)return;
+  let d=null;try{d=await (await fetch('/api/model_rules')).json();}catch(e){el.innerHTML='';return;}
+  const r=d.rules||{}, ov=d.overrides||{};
+  const _lbl={context:'上下文窗口',max_tokens:'max_tokens',rpm:'RPM(次/分)',tpm:'TPM(字/分)',backoff_base:'429退避(s)',call_gap:'调用间隔(s)'};
+  const inp=n=>'<div><div style="font:10px var(--muted);margin-bottom:2px">'+_lbl[n]+'</div><input id="mr_'+n+'" value="'+(ov[n]!==undefined?ov[n]:(r[n]?r[n]:''))+'" style="width:100%;box-sizing:border-box;padding:5px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)"></div>';
+  el.innerHTML='<div style="border:1px solid var(--border);background:var(--panel2);border-radius:12px;padding:10px">'
+    +'<div style="font:600 12px var(--sans)">'+esc(d.provider?.name||'当前模型')+' · '+esc(d.provider?.model||'')+'</div>'
+    +'<div style="font:11px var(--muted);margin:3px 0 8px">检测到 <b style="color:var(--text)">'+esc(d.vendor||'generic')+'</b> · '+esc(r.note||'')+' · '+(r.generic?'可自由配置':'按该厂规则自动套')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+    +['context','max_tokens','rpm','tpm','backoff_base','call_gap'].map(inp).join('')
+    +'</div>'
+    +'<button class="pb run" style="width:100%;margin-top:8px" onclick="saveModelRules()">💾 保存模型规则</button></div>';
+}
+window.loadModelRules=loadModelRules;
+function saveModelRules(){
+  const o={};['context','max_tokens','rpm','tpm','backoff_base','call_gap'].forEach(k=>{const e=$('mr_'+k);if(e&&e.value!=='')o[k]=/^[0-9.]+$/.test(e.value)?+e.value:e.value;});
+  fetch('/api/model_rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)}).then(r=>r.json()).then(j=>toast('🤖 模型规则已保存','ok'));
+}
+window.saveModelRules=saveModelRules;
 function toggleSess(){const c=$('sessions');c.classList.toggle('collapsed');$('sestog').textContent=c.classList.contains('collapsed')?'»':'«';}
 window.toggleSess=toggleSess;
 function initDrag(){
@@ -1141,7 +1161,7 @@ document.getElementById('addprov').onclick=openProvModal;
 document.getElementById('mbind').onclick=bindProv;
 document.getElementById('provmodal').addEventListener('click',e=>{if(e.target.id==='provmodal')closeProvModal();});
 document.getElementById('pvmodal').addEventListener('click',e=>{if(e.target.id==='pvmodal')closePvModal();});
-bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.2.1。');
+bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.0 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.0。');
 </script>
 </body>
 </html>

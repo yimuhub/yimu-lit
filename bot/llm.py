@@ -48,7 +48,9 @@ def _trace_prov(prov, model):
 
 def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None):
     """一次性 chat 调用，返回文本。带简单重试。cfg 决定用哪个供应商/模型；
-    stage（planning/writing/review）若配置了 stage_models 则按环节选模型（P4）。"""
+    stage（planning/writing/review）若配置了 stage_models 则按环节选模型（P4）。
+    v0.3 P4：按模型规则引擎套 上下文/max_tokens/RPM/429退避/extra_body。"""
+    from . import model_rules
     if stage:
         prov, model = providers.stage_resolve(cfg, stage)
     else:
@@ -56,27 +58,38 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     _trace_prov(prov, model)
     key = providers.key_of(prov)
     base = prov["base_url"].rstrip("/")
+    rules = model_rules.effective_rules(prov, model_rules.load_overrides())
+    _mt = max_tokens or prov.get("max_tokens", 12000)
+    if rules.get("max_tokens"):
+        _mt = min(int(_mt), int(rules["max_tokens"]))
+    _msgs = model_rules.clamp_context(messages, rules.get("context", 0))
     body = {
         "model": model,
-        "messages": messages,
+        "messages": _msgs,
         "temperature": (temperature if temperature is not None else prov.get("temperature", 0.85)),
-        "max_tokens": max_tokens or prov.get("max_tokens", 12000),
+        "max_tokens": _mt,
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+    if rules.get("extra_body"):          # v0.3 P4：供应商专属参数（如 DeepSeek thinking）
+        for _k, _v in rules["extra_body"].items():
+            if _k not in body:
+                body[_k] = _v
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = "Bearer %s" % key
     last_err = None
     _throttle(cfg)                      # P4/P5：调用前平滑节奏（防 429）
+    model_rules.pace_rpm(rules)         # v0.3 P4：按模型规则的 RPM 限流
     timeout = _llm_timeout(cfg, stage, prov)
+    _backoff = int(rules.get("backoff_base", 3))
     for i in range(retries):
         try:
             with httpx.Client(timeout=timeout) as client:
                 r = client.post(base + "/chat/completions",
                                 json=body, headers=headers)
                 if r.status_code == 429:
-                    time.sleep(5 * (i + 1))
+                    time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值
                     last_err = LLMError(f"429 限流: {r.text[:200]}")
                     continue
                 r.raise_for_status()

@@ -622,6 +622,29 @@ def _scheduler_loop():
 def _start_scheduler():
     threading.Thread(target=_scheduler_loop, daemon=True).start()
 
+# ---------- v0.3 P4：模型规则引擎 /api/model_rules ----------
+@app.get("/api/model_rules")
+def api_model_rules():
+    from bot import model_rules
+    try:
+        prov, model = providers.resolve()
+    except Exception:
+        prov, model = {}, ""
+    prov = dict(prov or {}); prov.setdefault("model", model)
+    rules = model_rules.effective_rules(prov, model_rules.load_overrides())
+    return {"vendor": model_rules.detect_vendor(prov.get("base_url", "")), "rules": rules,
+            "provider": {"id": prov.get("id"), "name": prov.get("name"), "model": prov.get("model")},
+            "overrides": model_rules.load_overrides()}
+
+@app.post("/api/model_rules")
+def api_model_rules_set(payload: dict):
+    """通用/自由配置：存 override（context/max_tokens/rpm/tpm/backoff_base/call_gap/extra_body）。"""
+    from bot import model_rules
+    ovr = model_rules.load_overrides()
+    ovr.update({k: v for k, v in payload.items() if v not in (None, "")})
+    model_rules.save_overrides(ovr)
+    return {"ok": True, "overrides": ovr}
+
 @app.get("/api/titles")
 def api_titles(key: str):
     proj = _get_project(key)
