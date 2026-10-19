@@ -92,8 +92,19 @@ body{
 #inputrow{display:flex;gap:10px;max-width:760px;margin:0 auto}
 #inp{flex:1;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:13px;padding:12px 15px;color:var(--text);font-size:14.5px;outline:none;resize:none;height:52px;font-family:inherit;transition:border .2s}
 #inp:focus{border-color:var(--accent)}
-#send{width:52px;border:none;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:18px;cursor:pointer;transition:transform .15s}
+#send{width:52px;flex:0 0 52px;height:52px;border:none;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:18px;cursor:pointer;transition:transform .15s,background .15s}
 #send:hover{transform:scale(1.06)}
+#send.stop{background:linear-gradient(135deg,#ff5470,#ff9f43);font-weight:800;transform:none}
+#send.qsend{background:linear-gradient(135deg,#3ad29b,#4dd4ff);font-weight:800;font-size:13px}
+#stage{flex:0 0 auto;height:52px;padding:0 13px;border:1px solid var(--border);background:var(--panel2);color:var(--text);border-radius:13px;font:600 12px var(--sans);cursor:pointer;display:none;transition:.15s}
+#stage:hover{border-color:var(--accent)}
+#qbar{display:flex;flex-direction:column;gap:5px}
+#qbar:empty{display:none}
+.qitem{display:flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid var(--border);border-radius:10px;background:var(--panel2);font:11.5px var(--sans);color:var(--text)}
+.qitem .qt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qitem.imm{border-color:rgba(58,210,155,.45);background:rgba(58,210,155,.08)}
+.qitem .qa{border:0;background:transparent;color:var(--muted);font:600 11px var(--sans);cursor:pointer;padding:2px 6px;border-radius:6px}
+.qitem .qa:hover{color:var(--text);background:var(--panel3)}
 /* 侧栏 */
 #side{width:380px;min-width:260px;border-left:1px solid var(--border);background:rgba(10,14,26,.6);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow:hidden}
 #side h2{font-size:13px;color:var(--muted);padding:16px 18px 8px;font-weight:500;letter-spacing:.5px}
@@ -273,8 +284,10 @@ input,select,textarea{color-scheme:dark}
         <select id="mselect" title="选择大模型"></select>
         <span id="pvhint"></span>
       </div>
+      <div id="qbar"></div>
       <div id="inputrow">
         <textarea id="inp" placeholder="告诉我要写什么小说… 例如：写一部悬疑小说，退休刑警被诬陷杀人，10章"></textarea>
+        <button id="stage" title="暂存为「待发送」（写作中可随时加指令，下一条自动用上）">＋待发送</button>
         <button id="send">➤</button>
       </div>
     </div>
@@ -455,6 +468,18 @@ input,select,textarea{color-scheme:dark}
   <div class="mactions"><button class="mcancel" onclick="closeDistill()">取消</button>
     <button class="mok" id="dlgo">✨ 蒸馏（约 10-30 秒）</button></div>
 </div></div>
+<!-- v0.4 放行弹窗（待放行 → 直接解决，不留死路）-->
+<div id="releasemodal" class="modal"><div class="mbox" style="width:520px">
+  <h3>🔓 放行成书</h3>
+  <div id="rlbody" style="font:13px/1.8 var(--sans);color:var(--text)"><div class="rwnote">加载…</div></div>
+  <div class="merr" id="rlerr"></div>
+  <div class="mactions">
+    <button class="mcancel" onclick="closeRelease()">取消</button>
+    <button class="pb" id="rl_again">🔁 再校验一轮</button>
+    <button class="pb" id="rl_beta">保持 beta</button>
+    <button class="mok" id="rl_go">🔓 放行成书</button>
+  </div>
+</div></div>
 <!-- 书名 ABC 弹框 -->
 <div id="titlemodal" class="modal"><div class="mbox" style="width:560px">
   <h3 id="tmtitle">✍ 选书名（点一张卡 / 或填自定义）</h3>
@@ -536,10 +561,63 @@ function attachTitleCards(d, text){
   row.querySelectorAll('.libchip').forEach(c=>c.onclick=()=>{ c.style.opacity=.5; $('inp').value=c.dataset.n; send(); });
   d.querySelector('.bubble').appendChild(row);
 }
-$('send').onclick=send;
+// ===== v0.4：Agent 式随时控（箭头随状态变换：➤发送 / ■停止 / ▶继续 / ⚡发指令）=====
+function _libItem(k){ if(!k)return null; return (window._libCache||[]).find(x=>x.key===k)||null; }
+function _curKey(){ return curSession||curKey||null; }
+function dispatchSend(){
+  const it=_libItem(_curKey());
+  const running=it&&it.state==='in_progress'&&!it.paused;
+  const paused=it&&it.paused;
+  const hasText=$('inp').value.trim().length>0;
+  if(running&&!hasText){ pauseBook(); return; }            // ■ 停止
+  if(paused&&!hasText){ resumeBook(); return; }             // ▶ 继续
+  if((running||paused)&&hasText){ queueInstruction(true); return; } // ⚡立即发这条修正指令
+  send();                                                    // ➤ 正常聊天 / 开新指令
+}
+$('send').onclick=dispatchSend;
+$('stage').onclick=()=>queueInstruction(false);            // ＋待发送（暂存）
+$('inp').addEventListener('input',updateSendBtn);
 $('inp').addEventListener('keydown',e=>{
-  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();dispatchSend();}
 });
+function updateSendBtn(){
+  const it=_libItem(_curKey());
+  const running=it&&it.state==='in_progress'&&!it.paused;
+  const paused=it&&it.paused;
+  const hasText=$('inp').value.trim().length>0;
+  const sendEl=$('send'), stageEl=$('stage');
+  sendEl.classList.remove('stop','qsend');
+  if(running||paused){
+    stageEl.style.display='';
+    if(hasText){ sendEl.textContent='⚡发'; sendEl.classList.add('qsend'); sendEl.title='立即发送这条修正指令（下一章立刻用上）'; }
+    else if(running){ sendEl.textContent='■'; sendEl.classList.add('stop'); sendEl.title='停止（暂停当前写作）'; }
+    else { sendEl.textContent='▶'; sendEl.title='继续写作（恢复）'; }
+  } else { stageEl.style.display='none'; sendEl.textContent='➤'; sendEl.title='发送'; }
+  updateQbar();
+}
+function pauseBook(){ const k=_curKey(); if(!k)return toast('先选一本书','err');
+  fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})}).then(x=>x.json()).then(j=>{toast(j.msg||'已暂停','ok');renderSessions();startPolling();updateSendBtn();}).catch(()=>{}); }
+function resumeBook(){ const k=_curKey(); if(!k)return toast('先选一本书','err');
+  fetch('/api/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})}).then(x=>x.json()).then(j=>{toast(j.msg||'继续中','ok');curSession=k;renderSessions();startPolling();switchView('ms');updateSendBtn();}).catch(()=>{}); }
+function queueInstruction(imm){ const k=_curKey(), t=$('inp').value.trim(); if(!k)return toast('先选一本书','err'); if(!t)return;
+  fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,text:t,immediate:!!imm})}).then(x=>x.json()).then(j=>{
+    if(j.ok){ $('inp').value=''; updateQbar(); updateSendBtn(); toast(imm?'⚡ 指令已立即生效（下一章立刻用上）':'＋ 已暂存为「待发送」（下一条自动用上）','ok'); }
+    else toast(j.error||'加入失败','err');
+  }).catch(()=>{}); }
+async function updateQbar(){
+  const k=_curKey(), bar=$('qbar'); if(!k){bar.innerHTML='';return;}
+  try{
+    const d=await (await fetch('/api/queue?key='+encodeURIComponent(k))).json();
+    const items=d.items||[];
+    if(!items.length){bar.innerHTML='';return;}
+    bar.innerHTML=items.map(q=>'<div class="qitem'+(q.immediate?' imm':'')+'" data-i="'+q.i+'"><span>'+(q.immediate?'⚡':'⏳')+'</span><span class="qt">'+esc(q.text)+'</span>'+(q.immediate?'':'<button class="qa" data-a="imm">▶立即</button>')+'<button class="qa" data-a="rm">✕</button></div>').join('');
+    bar.querySelectorAll('.qa').forEach(b=>b.onclick=async()=>{
+      const i=+b.parentElement.dataset.i, a=b.dataset.a;
+      await fetch('/api/queue/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,index:i,action:a==='rm'?'remove':'imm'})});
+      updateQbar();
+    });
+  }catch(e){}
+}
 
 function startPolling(){
   if(polling)return; polling=true;
@@ -560,6 +638,7 @@ function startPolling(){
       // v0.3.5：左侧书行「正在写第X章/校验第N轮」实时刷新
       if(j.state==='in_progress'||j.state==='validating'||j.state==='releasing'){ if(window.renderSessions)renderSessions(); }
       if(j.state==='completed'){refreshProjects();}
+      if(window.updateSendBtn)updateSendBtn();
     }catch(e){}
   },4000);
 }
@@ -1050,6 +1129,27 @@ window.delStyle=delStyle;
 function openDistill(){ ['dl_name','dl_genre','dl_text','dl_urls'].forEach(id=>{const e=$(id);if(e)e.value='';}); $('dlerr').textContent=''; $('distillmodal').classList.add('show'); }
 window.openDistill=openDistill;
 window.closeDistill=()=>$('distillmodal').classList.remove('show');
+// ===== v0.4 放行弹窗：待放行书 → 直接解决 =====
+var _rlKey=null;
+async function openReleaseModal(key){
+  _rlKey=key; const b=$('rlbody'); b.innerHTML='<div class="rwnote">加载放行信息…</div>'; $('rlerr').textContent='';
+  $('releasemodal').classList.add('show');
+  let lib={}; try{ const d=await (await fetch('/api/library')).json(); lib=d.items.find(x=>x.key===key)||{}; }catch(e){}
+  let log={}; try{ log=await (await fetch('/api/release-log?key='+encodeURIComponent(key))).json(); }catch(e){}
+  const q=(lib.final_quality!=null?lib.final_quality:(lib.quality!=null?lib.quality:null));
+  const pl=lib.pass_line||90;
+  let rows=''; ((log.result&&log.result.gate_results)||[]).slice(0,6).forEach(g=>{ rows+='<div style="font:11px var(--muted)">第'+(g.round||'')+'轮：'+(g.before||0)+' → '+(g.after||0)+(g.stopped?'（达标停）':'')+'</div>'; });
+  b.innerHTML='📖 <b>'+esc(lib.name||key)+'</b><br>'
+    +'当前成书质量：<b style="color:'+(q!=null&&q>=pl?'#3ad29b':'#f59e0b')+'">'+(q!=null?q:'未评分')+'</b> / 放行线 '+pl
+    +(q!=null?(q>=pl?'（已达标，可放行 ✅）':'（未达线，放行将标 beta）'):'')
+    +'<br>'+(lib.gate_rounds?('已跑 '+lib.gate_rounds+' 轮门禁'):'')+(rows?('<div style="margin-top:4px">'+rows+'</div>'):'')
+    +'<br><span style="font:11px var(--muted)">🔓放行=定稿成书 · 再校验=重跑门禁试图提分到线 · 保持beta=先留着不改</span>';
+  $('rl_go').onclick=()=>{ fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{ toast('🔓 '+(j.msg||'放行中')+'（完成会弹通知）','ok'); closeRelease(); renderSessions(); startPolling(); }); };
+  $('rl_again').onclick=()=>{ fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,mode:'report'})}).then(x=>x.json()).then(j=>{ toast('🔁 再校验中（' + (j.msg||'') + '）','ok'); closeRelease(); startPolling(); }); };
+  $('rl_beta').onclick=()=>{ toast('保持 beta（先留着不改）','ok'); closeRelease(); };
+}
+window.openReleaseModal=openReleaseModal;
+window.closeRelease=()=>$('releasemodal').classList.remove('show');
 async function submitDistill(){
   const name=$('dl_name').value.trim(), genre=$('dl_genre').value.trim();
   const text=$('dl_text').value.trim(), urls=$('dl_urls').value.split('\n').map(s=>s.trim()).filter(Boolean);
@@ -1148,17 +1248,19 @@ function _sessRow(i){
 // v0.3.5：左侧书行实时状态（正在写第X章 / 校验第N轮 / 待选书名 …）
 function sessLive(i){
   if(i.awaiting_title)return '⏸ 待选书名';
+  if(i.paused)return '⏸ 已暂停 · 第 '+(i.total?Math.min(i.done+1,i.total):((i.done||0)+1))+' 章';
+  if(i.halted)return '⚠ 已中断 · 可续写（点行/⋯）';
   if(i.state==='in_progress')return '✍️ 正在写第 '+(i.total?Math.min(i.done+1,i.total):(i.done||0)+1)+' 章';
   if(i.state==='validating'||i.state==='releasing')return '🔁 校验/放行'+(i.gate_rounds?' 第 '+i.gate_rounds+' 轮':'中');
-  if(i.state==='completed')return i.released===false?('⏳ 待放行'+(i.gate_rounds?'（'+i.gate_rounds+'轮）':'')):'✅ 已成书';
-  if(i.state==='failed')return '⚠ 失败';
+  if(i.state==='completed')return i.released===false?('⏳ 待放行 · 点行放行'+(i.gate_rounds?'（'+i.gate_rounds+'轮）':'')):'✅ 已成书';
+  if(i.state==='failed')return '⚠ 失败 · 可重试';
   return '✍ 创作中';
 }
 window.sessLive=sessLive;
 function renderSessions(){
   fetch('/api/library?sort=updated&order=desc').then(r=>r.json()).then(d=>{
     if(!d.items)return;
-    _LIB_ITEMS=d.items;
+    _LIB_ITEMS=d.items; window._libCache=d.items; updateSendBtn();
     const autoArch=localStorage.nbot_autoarch!=='0';
     const active=d.items.filter(i=>!i.archived&&i.state!=='archived');
     const isDone=i=>autoArch&&i.state==='completed'&&i.released===true;
@@ -1171,7 +1273,9 @@ function renderSessions(){
     if(done.length)h+='<div class="sgrp">✅ 已归档（完结）</div>'+done.map(_sessRow).join('');
     $('slist').innerHTML=h;
     $('slist').querySelectorAll('.ss-item').forEach(el=>{
-      el.onclick=()=>selectBook(el.dataset.key);
+      el.onclick=()=>{ const it=_LIB_ITEMS.find(x=>x.key===el.dataset.key);
+        if(it&&it.state==='completed'&&it.released===false&&!it.archived){ openReleaseModal(el.dataset.key); }  // 待放行→弹窗直接放行
+        selectBook(el.dataset.key); };
       const m=el.querySelector('[data-menu]');if(m)m.onclick=e=>{e.stopPropagation();openBookMenu(el.dataset.key,m);};
     });
   }).catch(()=>{});
@@ -1198,6 +1302,12 @@ function openBookMenu(key, anchor){
   const items=[];
   items.push(['📌 '+(pinned?'取消置顶':'置顶'),()=>{togglePin(key);_bkClose();renderSessions();}]);
   items.push([(it.archived?'♻️ 恢复归档':'🗄 归档'),()=>{fetch('/api/library/'+encodeURIComponent(key)+'/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:!it.archived})}).then(r=>r.json()).then(()=>{toast(it.archived?'已恢复':'已移入回收站','ok');_bkClose();renderSessions();});}]);
+  // v0.4：随时控（像 Agent 聊天）：暂停/继续/续写剩余/放行/即时指令 —— 不留死路
+  if(it.state==='in_progress'&&!it.paused)items.push(['⏸ 暂停（停在当前进度）',()=>{fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'已暂停','ok');_bkClose();renderSessions();startPolling();});}]);
+  if(it.paused)items.push(['▶ 继续写作',()=>{fetch('/api/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'继续中','ok');_bkClose();renderSessions();curSession=key;startPolling();switchView('ms');});}]);
+  if(it.state==='in_progress')items.push(['▶ 续写剩余全部',()=>{fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'续写中','ok');_bkClose();renderSessions();curSession=key;startPolling();switchView('ms');});}]);
+  if(it.state==='completed'&&it.released===false)items.push(['🔓 放行成书（解决待放行）',()=>{openReleaseModal(key);_bkClose();}]);
+  items.push(['📝 加即时修正指令',()=>{const t=prompt('给这本书加一条创作指令（写作中可随时改剧情/细节）：');if(t&&t.trim()){const imm=confirm('点「确定」=立即生效（下一章立刻用）；「取消」=排队到下一条。');fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,text:t.trim(),immediate:imm})}).then(x=>x.json()).then(j=>{toast(j.ok?('指令已加入，'+(j.items.length||0)+' 条待处理'):'加入失败','ok');renderSessions();})}_bkClose();}]);
   items.push(['✏️ 重命名',()=>{const nn=prompt('新书名：',it.name||'');if(nn&&nn.trim()){fetch('/api/library/'+encodeURIComponent(key)+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn.trim()})}).then(r=>r.json()).then(j=>{toast(j.ok?'已改名':(j.note||'改名失败'),j.ok?'ok':'err');renderSessions();});}_bkClose();}]);
   if(canBook)items.push(['⬇ 下载成书',()=>{window.open('/api/download?key='+encodeURIComponent(key),'_blank');_bkClose();}]);
   if(canCont)items.push(['▶ 续写',()=>{const r=prompt('续写：在现有章节后继续写几章？','3');if(r!==null){const n=Math.max(1,+r||1);fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,n})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=key;curSession=key;startPolling();switchView('ms');renderSessions();});}_bkClose();}]);
@@ -1219,7 +1329,7 @@ function openBookMenu(key, anchor){
 }
 window.openBookMenu=openBookMenu;
 async function selectBook(key){
-  curSession=key;curKey=key;sideTab('art');renderSessions();
+  curSession=key;curKey=key;sideTab('art');renderSessions();updateSendBtn();
   let st={state:'',done:0,total:0};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
   let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
   const name=pv.name||st.name||key;

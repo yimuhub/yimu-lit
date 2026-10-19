@@ -177,6 +177,9 @@ def _p5_block(ctx):
 def write_chapter(ctx):
     cont = _continuity_block(ctx)
     p5 = _p5_block(ctx)
+    # v0.4：读者即时修正指令（运行中随时插一条，标 immediate 立即生效 / 否则下一条生效）
+    qnote = (ctx.get("queue_note") or "").strip()
+    qblock = ("\n【读者即时指令（本章必须优先满足，不破坏既有剧情设定）】\n" + qnote) if qnote else ""
     if ctx.get("continuation"):
         user_p = (
             f"【本书文风基准】\n{ctx['style_text']}\n"
@@ -185,6 +188,7 @@ def write_chapter(ctx):
             f"【上一章结尾】\n{ctx.get('prev_tail') or '（无）'}\n"
             f"{cont}\n"
             f"{p5}\n"
+            f"{qblock}\n"
             f"现在续写第 {ctx['chapter_no']} 章。这是承接前文的续写章：请严格消化上一章结尾的语态与悬念，"
             f"自然推进剧情，可引入新的转折/冲突/角色（须符合人物性格与既定设定），严禁重复已写情节；"
             f"严守人物性格一致性，结尾必留钩子。输出章节文件内容。"
@@ -198,6 +202,7 @@ def write_chapter(ctx):
         f"【上一章结尾】\n{ctx.get('prev_tail') or '（第1章，无）'}\n"
         f"{cont}\n"
         f"{p5}\n"
+        f"{qblock}\n"
         f"现在写第 {ctx['chapter_no']} 章「{ctx['chapter_title']}」。严格按该章在大纲中的规划（核心事件/承接/钩子/出场人物/场景）创作。"
         f"输出章节文件内容。"
     )

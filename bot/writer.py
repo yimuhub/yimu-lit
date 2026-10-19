@@ -35,8 +35,11 @@ class Project:
         chs = plan.get("chapters") or []
         done = sum(1 for c in chs if c.get("status") == "completed")
         words = sum(c.get("wordCount") or 0 for c in chs)
+        meta = plan.get("meta") or {}
         return {"state": plan.get("status", "unknown"), "done": done, "total": len(chs),
                 "words": words, "running": self.running,
+                "paused": bool(meta.get("paused")),
+                "queued": len([q for q in meta.get("queued_msgs", []) if not q.get("consumed")]),
                 "name": plan.get("novelName", self.name)}
 
 # ---------- 阶段2 落盘 ----------
@@ -184,6 +187,91 @@ def start_writing(proj: Project):
     threading.Thread(target=_write_loop, args=(proj,), daemon=True).start()
     proj.running = True
 
+# ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
+def _project_dir(key):
+    return os.path.join(PROJECTS_DIR, key)
+
+def is_paused(proj):
+    return bool((proj.plan() or {}).get("meta", {}).get("paused"))
+
+def pause_book(key):
+    """置暂停位：写线程在下一检查点停，status=paused。"""
+    p = Project(_project_dir(key), key)
+    plan = p.plan()
+    if not plan:
+        return False
+    plan.setdefault("meta", {})["paused"] = True
+    plan["status"] = "paused"
+    p.save_plan(plan)
+    p.log("⏸ 已请求暂停（在下一检查点停，停在当前进度，可点「▶继续」恢复）")
+    return True
+
+def resume_book(key):
+    """清暂停位 + 续写剩余章节。"""
+    p = Project(_project_dir(key), key)
+    plan = p.plan()
+    if not plan:
+        return False
+    plan.setdefault("meta", {})["paused"] = False
+    plan["status"] = "in_progress"
+    p.save_plan(plan)
+    p.log("▶ 继续写作（从上次进度接着写剩余章节）")
+    start_writing(p)
+    return True
+
+def queue_msg(key, text, immediate=False):
+    """存一条读者即时指令。immediate=下一章立即用；否则下一条生效（用完标 consumed）。"""
+    p = Project(_project_dir(key), key)
+    plan = p.plan()
+    if not plan:
+        return False
+    text = (text or "").strip()
+    if not text:
+        return False
+    qs = plan.setdefault("meta", {}).setdefault("queued_msgs", [])
+    qs.append({"text": text, "immediate": bool(immediate), "consumed": False,
+               "ts": datetime.datetime.now().isoformat()})
+    p.save_plan(plan)
+    p.log(("⚡ 立即修正指令：「" if immediate else "📝 待发送指令（下一条生效）：「") + text[:40] + "」")
+    return True
+
+def pending_queue(key):
+    """尚未消化的读者指令列表（给 UI 显示「待发送」），带原始下标 i 供移除/标记用。"""
+    p = Project(_project_dir(key), key)
+    qm = (p.plan() or {}).get("meta", {}).get("queued_msgs") or []
+    return [{"i": i, "text": q.get("text", ""), "immediate": bool(q.get("immediate"))}
+            for i, q in enumerate(qm) if not q.get("consumed")]
+
+
+def queue_action(key, index, action):
+    """对某条待发送指令：'remove'=移除 / 'imm'=标记立即生效。返回剩余（未消化）列表。"""
+    p = Project(_project_dir(key), key)
+    plan = p.plan() or {}
+    qm = plan.get("meta", {}).get("queued_msgs") or []
+    if 0 <= index < len(qm):
+        if action == "remove":
+            qm.pop(index)
+        elif action == "imm":
+            qm[index]["immediate"] = True
+    p.save_plan(plan)
+    return [q for q in qm if not q.get("consumed")]
+
+def _pop_queue_note(proj, ch_no):
+    qs = (proj.plan() or {}).get("meta", {}).get("queued_msgs") or []
+    if not qs:
+        return ""
+    active = [q for q in qs if not q.get("consumed")]
+    if not active:
+        return ""
+    imm = [q for q in active if q.get("immediate")]
+    pick = imm[-1] if imm else active[-1]
+    pick["consumed"] = True   # 无论「立即」还是「排队」，本章用一次即消，避免同一指令重复注入后续每章
+    try:
+        proj.save_plan(proj.plan())
+    except Exception:
+        pass
+    return (pick.get("text") or "").strip()
+
 def _chapter_file_path(proj, ch):
     return os.path.join(proj.path, ch["filePath"])
 
@@ -253,9 +341,18 @@ def _build_ctx(proj, ch):
 def _write_chapter(proj, ch, min_words, max_retries):
     no = ch["chapterNumber"]
     proj.log(f"✍️ 开始第{no}章「{ch['title']}」")
+    if is_paused(proj):
+        ch["status"] = "in_progress"
+        proj.save_plan(proj.plan())
+        proj.log(f"⏸ 第{no}章未开写即暂停")
+        return
     ch["status"] = "in_progress"
     proj.save_plan(proj.plan())
     ctx = _build_ctx(proj, ch)
+    qn = _pop_queue_note(proj, no)
+    if qn:
+        ctx["queue_note"] = qn
+        proj.log(f"📌 第{no}章注入读者即时指令：「{qn[:30]}」")
     body = workflow.write_chapter(ctx)
     fp = _chapter_file_path(proj, ch)
     words, ok, i = 0, False, 0
@@ -478,8 +575,16 @@ def _write_loop(proj: Project):
         plan["status"] = "in_progress"
         proj.save_plan(plan)
         for ch in plan["chapters"]:
+            if is_paused(proj):
+                break
             if ch["status"] != "completed":
                 _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3)
+                if is_paused(proj):
+                    break
+        if is_paused(proj):
+            plan = proj.plan(); plan["status"] = "paused"; proj.save_plan(plan)
+            proj.log("⏸ 已暂停（停在当前进度，点「▶继续」恢复；也可「⏹ 停止」）")
+            return
         _validate_and_finish(proj)
     except Exception as e:
         proj.log(f"💥 写作异常中断（说「继续」可续写）：{e}")
@@ -615,6 +720,9 @@ def library_item(key, with_quality=True):
             "quality": q, "passing": passing, "pass_line": _pass_line(),
             "released": released, "final_quality": final_q, "awaiting_title": awaiting_title,
             "gate_rounds": meta.get("gate_rounds"),
+            "paused": bool(meta.get("paused")),
+            "queued": len([q for q in (meta.get("queued_msgs") or []) if not q.get("consumed")]),
+            "halted": bool(state == "in_progress" and not meta.get("paused") and total_words == 0),
             "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
             "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
             "archived": bool(meta.get("archived"))}

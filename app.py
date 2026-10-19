@@ -788,6 +788,51 @@ def api_release_log(key: str):
 def api_release_cancel(payload: dict):
     return writer.cancel_release_gate(payload.get("key"))
 
+# ---------- v0.4：暂停 / 继续 / 读者即时指令（像 Agent 聊天一样随时控）----------
+@app.post("/api/pause")
+def api_pause(payload: dict):
+    key = payload.get("key")
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    ok = writer.pause_book(key)
+    return {"ok": ok, "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停"}
+
+@app.post("/api/resume")
+def api_resume(payload: dict):
+    key = payload.get("key")
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    ok = writer.resume_book(key)
+    return {"ok": ok, "msg": "▶ 继续写作中（接着写剩余章节）…" if ok else "无法继续"}
+
+@app.post("/api/queue")
+def api_queue(payload: dict):
+    key = payload.get("key")
+    text = (payload.get("text") or "").strip()
+    immediate = bool(payload.get("immediate"))
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    ok = writer.queue_msg(key, text, immediate)
+    return {"ok": ok, "items": writer.pending_queue(key)}
+
+@app.get("/api/queue")
+def api_queue_get(key: str):
+    return {"items": writer.pending_queue(key)}
+
+
+@app.post("/api/queue/action")
+def api_queue_action(payload: dict):
+    key = payload.get("key")
+    try:
+        index = int(payload.get("index", 0))
+    except (ValueError, TypeError):
+        index = 0
+    action = payload.get("action", "")
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    items = writer.queue_action(key, index, action)
+    return {"ok": True, "items": items, "msg": "已移除" if action == "remove" else "已标记立即生效"}
+
 @app.get("/api/status")
 def api_status(key: str):
     proj = _get_project(key)
