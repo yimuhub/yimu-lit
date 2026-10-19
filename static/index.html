@@ -458,7 +458,7 @@ function bubble(who,html,cls){
   msgBox.appendChild(d); msgBox.scrollTop=msgBox.scrollHeight;
   return d;
 }
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function esc(s){s=(s==null)?'':String(s);return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 // v0.2.1 UX：轻提示 / 骨架 / 模态统一关闭
 function toast(msg,type){
   const t=document.createElement('div'); t.className='toast '+(type||''); t.innerHTML=msg;
@@ -1113,6 +1113,7 @@ async function loadBookSkill(key){
   el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:4px 0">'
     +dims.map(d=>'<div><div style="font:10px var(--muted)">'+d+'</div><select id="bs_'+d+'" style="width:100%;margin-top:2px;padding:5px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">'+(cat[d]||[]).map(v=>'<option value="'+esc(v)+'"'+(cur[d]===v?' selected':'')+'>'+esc(v)+'</option>').join('')+'</select></div>').join('')
     +'</div><button class="pb run" style="width:100%" onclick="saveBookSkill(\''+key+'\')">💾 保存技能（后续章节按此书写）</button>';
+  dims.forEach(d=>{ const b=$('bs_'+d); if(b) cxSelect(b); });
 }
 window.loadBookSkill=loadBookSkill;
 function saveBookSkill(key){
@@ -1201,6 +1202,69 @@ async function loadGlobalToken(){
   el.innerHTML='🔢 全部作品累计消耗 <b style="color:var(--accent)">'+((g.total_tokens||0).toLocaleString())+'</b> token · '+(g.calls||0)+' 次调用';
 }
 window.loadGlobalToken=loadGlobalToken;
+/* ===== v0.3.2：自定义深色下拉（替代原生 <select> 弹层，彻底修复「下拉箭头不好使/看不清」）=====
+   原生 <select> 的弹层由操作系统渲染，在深色玻璃拟态 UI 下不可控（macOS/WebKit 尤甚）。
+   方案：把原生 select 隐藏但保留（.value/.onchange/.options 全部继续可用，提交逻辑零改动），
+   在其后插入一个自定义深色下拉面板；点选后写回原生 value 并派发 change。MutationObserver
+   监听 options 变化（向导 sel() 填值、供应商/模型切换、按题材 preset 联动）自动重建面板。 */
+function cxSelect(idOrEl){
+  const sel=(typeof idOrEl==='string')?$(idOrEl):idOrEl;
+  if(!sel||sel._cxd)return sel;
+  sel._cxd=true; sel.style.display='none';
+  const wrap=document.createElement('div'); wrap.style.cssText='position:relative;display:block;min-width:0';
+  sel.insertAdjacentElement('afterend',wrap);
+  const btn=document.createElement('button'); btn.type='button';
+  btn.style.cssText='width:100%;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:8px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:8px 11px;color:var(--text);font-size:13px;font-family:inherit;cursor:pointer;text-align:left';
+  const val=document.createElement('span'); val.style.cssText='flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  const arr=document.createElement('span'); arr.textContent='▾'; arr.style.cssText='color:var(--muted);font-size:12px;flex:none';
+  btn.append(val,arr); wrap.append(btn);
+  const panel=document.createElement('div');
+  panel.style.cssText='display:none;position:fixed;z-index:99;background:#101426;border:1px solid var(--border);border-radius:9px;max-height:240px;overflow:auto;box-shadow:0 12px 32px rgba(0,0,0,.55)';
+  document.body.append(panel);
+  const isSel=(o)=>o===sel.options[sel.selectedIndex];
+  function sync(){ const i=sel.selectedIndex; val.textContent=(i>=0&&sel.options[i])?sel.options[i].textContent:'(未选)'; }
+  function build(){
+    panel.innerHTML='';
+    Array.from(sel.options).forEach(o=>{
+      const it=document.createElement('div'); it.textContent=o.textContent||o.value;
+      it.style.cssText='padding:8px 12px;font-size:13px;color:var(--text);cursor:pointer;'+(isSel(o)?'background:rgba(108,140,255,.22);':'');
+      it.onmouseenter=()=>{ if(!isSel(o)) it.style.background='rgba(255,255,255,.08)'; };
+      it.onmouseleave=()=>{ it.style.background=isSel(o)?'rgba(108,140,255,.22)':''; };
+      it.onclick=()=>{ sel.value=o.value; sel.dispatchEvent(new Event('change',{bubbles:true})); sync(); close(); };
+      panel.append(it);
+    });
+  }
+  function open(){
+    build(); sync(); panel.style.display='block'; panel.style.transform='';
+    const r=btn.getBoundingClientRect();
+    const pw=Math.max(r.width,150);
+    panel.style.width=pw+'px'; panel.style.left=r.left+'px';
+    const below=(r.bottom+2+Math.min(240,panel.scrollHeight))<=innerHeight;
+    if(below){ panel.style.top=(r.bottom+2)+'px'; }
+    else{ panel.style.top=(r.top-2)+'px'; panel.style.transform='translateY(-100%)'; }
+  }
+  function close(){ panel.style.display='none'; }
+  btn.onclick=(e)=>{ e.stopPropagation(); _cxCtx.forEach(c=>{if(c.panel!==panel)c.close();}); (panel.style.display==='block')?close():open(); };
+  const ctx={sel,wrap,panel,close}; sel._cxpanel=panel; sel._cxbtn=btn;
+  ctx.mo=new MutationObserver(()=>{ build(); sync(); }); ctx.mo.observe(sel,{childList:true,subtree:true});
+  _cxCtx.push(ctx); _cxBindDoc(); sync();
+  return sel;
+}
+let _cxCtx=[],_cxDocBound=false;
+function _cxBindDoc(){
+  if(_cxDocBound)return; _cxDocBound=true;
+  document.addEventListener('click',e=>{
+    _cxCtx=_cxCtx.filter(c=>{ if(!c.wrap.isConnected){ c.mo.disconnect(); c.close(); return false; } return true; });
+    _cxCtx.forEach(c=>{ if(!c.wrap.contains(e.target)&&!c.panel.contains(e.target)) c.close(); });
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') _cxCtx.forEach(c=>c.close()); });
+}
+window.cxSelect=cxSelect;
+function cxApplyAll(){
+  ['pselect','mselect','libsort','mpreset','pvch','ob_genre','ob_persp','ob_tone','ob_chap','ob_hand','ob_pace','ob_lang','ob_prov','ob_model']
+    .forEach(id=>cxSelect(id));
+}
+window.cxApplyAll=cxApplyAll;
 function toggleSess(){const c=$('sessions');c.classList.toggle('collapsed');$('sestog').textContent=c.classList.contains('collapsed')?'»':'«';}
 window.toggleSess=toggleSess;
 function initDrag(){
@@ -1217,14 +1281,14 @@ window.initDrag=initDrag;
 
 refreshProjects();
 renderSessions(); initDrag();
-(function(){var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500);})();
+(function(){cxApplyAll();var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500); if(q.get('onb'))setTimeout(()=>openOnb(),250); if(q.get('cxt'))setTimeout(async()=>{try{await openOnb();await new Promise(r=>setTimeout(r,250));const out={};['ob_chap','ob_hand','ob_prov'].forEach(id=>{const cs=$(id);out[id]={hidden:cs.style.display==='none',wrapped:!!cs._cxd,btn:!!cs._cxbtn};if(cs._cxbtn){cs._cxbtn.click();out[id].panelOpen=cs._cxpanel.style.display==='block';out[id].opts=cs._cxpanel.querySelectorAll('div').length;const op=cs._cxpanel.querySelectorAll('div');if(op[1]){op[1].click();out[id].valAfter=cs.value;}}});document.title='CXT '+JSON.stringify(out);}catch(e){document.title='CXT_ERR '+e;}}),50;})();
 loadProviders();
 loadProviderPicker();
 document.getElementById('addprov').onclick=openProvModal;
 document.getElementById('mbind').onclick=bindProv;
 document.getElementById('provmodal').addEventListener('click',e=>{if(e.target.id==='provmodal')closeProvModal();});
 document.getElementById('pvmodal').addEventListener('click',e=>{if(e.target.id==='pvmodal')closePvModal();});
-bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.1 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.1。');
+bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.2 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.2。');
 </script>
 </body>
 </html>

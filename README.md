@@ -76,6 +76,12 @@ VERSION             版本号（0.1.0）
 - **书名 ABC 弹选**：8 个候选 A/B/C…卡点选或自定义；不带 title 开书会停在 `awaiting_title`，`POST /api/pick-title` 选名开写；聊天报书名也弹可点卡。
 - **放行门禁**：成书后自动带要求重写到 ≥达标线（默认90）才标记"放行✅"；未放行下载标"beta·未放行(分)"（仍可下载）。`POST /api/release` + `GET /api/release-log`；审稿视图「🔓 放行门禁」。
 
+## v0.3.2：开书向导下拉彻底修复（根因 + 自定义下拉）
+
+- **根因**：`esc()` 未做 `String()` 强转，`sel('ob_chap',[3,5,10,20,50])`（章数为数字）抛 `s.replace is not a function` → `openOnb` 在该行中止 → 金手指/节奏/语言/供应商/模型 全部没填 option，下拉空、选不了。修 `esc` 一行强转即修复全向导填充。
+- **自定义深色下拉 `cxSelect()`**：隐藏原生 `<select>`（保留 `.value/.onchange`，提交逻辑零改动），加自绘深色弹层；点选写回 value + 派发 change；`MutationObserver` 随 options 变化自动重建；全局单例 listener + 断连防泄漏。套到向导 9 项 + 供应商选择器 + 作品库排序 + 模型预设 + 预览章节 + 该书技能 bs_*。
+- headless 自测 `?cxt=1`（面板可开、点选写回）+ `?onb=1`（9 下拉全显值 + ▾）。
+
 ## v0.3.1：中档升级三点 + 稿件视图 + Token 统计
 
 - **开书向导下拉修复**：`color-scheme:dark` + 原生 `select option` 显式深色样式 + 去掉 `.modal` 背景模糊，深色下拉可选可读。
