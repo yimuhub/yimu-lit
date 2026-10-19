@@ -21,6 +21,43 @@ body{
 #app{display:flex;height:100vh}
 /* 聊天区 */
 #chat{flex:1;display:flex;flex-direction:column;min-width:0}
+/* ── v0.3 三栏：左·会话=书 ── */
+#sessions{width:250px;min-width:52px;border-right:1px solid var(--border);background:rgba(8,11,22,.55);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow:hidden;transition:width .18s}
+#sessions.collapsed{width:54px}
+#sessions.collapsed .shead .stx,#sessions.collapsed .slist .ss-name,#sessions.collapsed .slist .ss-meta,#sessions.collapsed .snew .txt{display:none}
+#sessions.collapsed .ss-item{justify-content:center}
+#sessions.collapsed .snew{margin:4px 6px;text-align:center;padding:8px 4px}
+.shead{padding:12px 12px 8px;display:flex;align-items:center;gap:8px}
+.shead .stx{flex:1;font:600 13px var(--sans);letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sbtn{width:24px;height:24px;border-radius:7px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--muted);cursor:pointer;font-size:13px;flex:none;display:flex;align-items:center;justify-content:center}
+.sbtn:hover{color:var(--text);border-color:var(--accent)}
+.snew{margin:4px 10px 10px;padding:9px 10px;border-radius:10px;border:1px dashed var(--accent);background:rgba(124,92,255,.1);color:#c9b8ff;font-size:12.5px;cursor:pointer;text-align:center}
+.snew:hover{background:rgba(124,92,255,.2)}
+.sgrp{padding:4px 12px;font:600 10.5px var(--sans);color:var(--muted);letter-spacing:.6px}
+.slist{flex:1;overflow-y:auto;padding:0 6px 12px}
+.ss-item{display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:10px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
+.ss-item:hover{background:rgba(255,255,255,.04)}
+.ss-item.on{background:rgba(124,92,255,.14);border-color:rgba(124,92,255,.45)}
+.ss-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.ss-dot.in_progress{background:#38bdf8}.ss-dot.completed{background:#34d399}.ss-dot.awaiting_title{background:#f59e0b}.ss-dot.released{background:#34d399;box-shadow:0 0 6px #34d399}.ss-dot.other{background:var(--muted)}
+.ss-main{flex:1;min-width:0}
+.ss-name{font:600 13px var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ss-meta{font:11px var(--sans);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.ss-act{font-size:13px;color:var(--muted);opacity:.55;flex:none}
+.ss-item:hover .ss-act{opacity:1}
+.dragh{width:6px;cursor:col-resize;background:transparent;flex:none}
+.dragh:hover,.dragh.hot{background:rgba(124,92,255,.4)}
+/* 右栏 3 tab */
+#side{width:380px;min-width:260px;border-left:1px solid var(--border);background:rgba(10,14,26,.6);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow:hidden}
+.side-tabs{display:flex;gap:4px;padding:10px 12px 0;flex:none}
+.side-tabs button{flex:1;padding:8px 4px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--muted);font:600 12px var(--sans);cursor:pointer}
+.side-tabs button.on{background:rgba(124,92,255,.16);border-color:var(--accent);color:var(--text)}
+.side-pane{flex:1;overflow-y:auto}
+.side-pane h2{font-size:13px;color:var(--muted);padding:14px 18px 6px;font-weight:500;letter-spacing:.5px}
+#midctx{padding:8px 16px;font:11px var(--sans);color:var(--muted);border-bottom:1px solid var(--border);flex:none}
+#midctx b{color:var(--text)}
+#quickacts{display:flex;gap:6px;flex-wrap:wrap;padding:8px 16px 0;flex:none}
+#quickacts .pb{padding:5px 9px;font-size:11.5px;border-radius:7px}
 #head{padding:18px 26px;border-bottom:1px solid var(--border);background:var(--panel);backdrop-filter:blur(14px);display:flex;align-items:center;gap:12px}
 #head .logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:20px}
 #head h1{font-size:17px;font-weight:600}
@@ -46,7 +83,7 @@ body{
 #send{width:52px;border:none;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:18px;cursor:pointer;transition:transform .15s}
 #send:hover{transform:scale(1.06)}
 /* 侧栏 */
-#side{width:320px;border-left:1px solid var(--border);background:rgba(10,14,26,.6);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow-y:auto}
+#side{width:380px;min-width:260px;border-left:1px solid var(--border);background:rgba(10,14,26,.6);backdrop-filter:blur(16px);display:flex;flex-direction:column;overflow:hidden}
 #side h2{font-size:13px;color:var(--muted);padding:16px 18px 8px;font-weight:500;letter-spacing:.5px}
 #prog{margin:0 14px 10px;border-radius:14px;padding:14px;background:var(--panel);border:1px solid var(--border);display:none}
 #prog .bar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin:10px 0 8px}
@@ -195,6 +232,12 @@ body{
 <body>
 <div id="toasts"></div>
 <div id="app">
+  <div id="sessions">
+    <div class="shead"><span class="stx">会话 · 书</span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
+    <div class="snew" id="snew" onclick="openOnb()"><span class="txt">＋ 新建一本书</span></div>
+    <div class="slist" id="slist"></div>
+  </div>
+  <div class="dragh" id="dragL"></div>
   <div id="chat">
     <div id="head">
       <div class="logo">🖋</div>
@@ -204,6 +247,8 @@ body{
       </div>
       <button id="onbbtn" onclick="openOnb()" style="border:none;border-radius:11px;padding:9px 16px;font-size:13px;font-weight:600;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer;white-space:nowrap">✍ 开书向导</button>
     </div>
+    <div id="midctx">📖 未选中书 · 直接对话开新书，或从左侧选一本书</div>
+    <div id="quickacts"></div>
     <div id="msgs"></div>
     <div id="inputbar">
       <div id="picker">
@@ -217,17 +262,35 @@ body{
       </div>
     </div>
   </div>
+  <div class="dragh" id="dragR"></div>
   <div id="side">
-    <h2>当前作品进度</h2>
-    <div id="prog">
-      <div class="t" id="pname" style="font-size:14px;font-weight:600"></div>
-      <div class="bar"><div class="fill" id="pfill" style="width:0%"></div></div>
-      <div class="prow"><span id="pinfo">0/0 章</span><span id="pwords">0 字</span></div>
+    <div class="side-tabs">
+      <button data-tab="art" class="on" onclick="sideTab('art')">📚 产物</button>
+      <button data-tab="set" onclick="sideTab('set')">⚙ 设置</button>
+      <button data-tab="lib" onclick="sideTab('lib')">🗂 作品库</button>
     </div>
-    <div id="evts"></div>
-    <h2>作品库</h2>
-    <div id="libtool">
-      <input id="libq" placeholder="🔍 搜索书名 / 题材…">
+    <div class="side-pane" id="pane-art">
+      <h2>该书产物</h2>
+      <div id="artbody" style="padding:0 14px 8px"></div>
+      <h2>进度 &amp; 事件</h2>
+      <div id="prog" style="margin:0 14px 10px">
+        <div class="t" id="pname" style="font-size:14px;font-weight:600"></div>
+        <div class="bar"><div class="fill" id="pfill" style="width:0%"></div></div>
+        <div class="prow"><span id="pinfo">0/0 章</span><span id="pwords">0 字</span></div>
+      </div>
+      <div id="evts"></div>
+    </div>
+    <div class="side-pane" id="pane-set" style="display:none">
+      <h2>该书设置</h2>
+      <div id="setbody" style="padding:0 14px 8px"></div>
+      <div class="secrow"><h2>模型供应商</h2><button id="addprov">＋ 绑定</button></div>
+      <div id="provsum" style="display:none"></div>
+      <div id="provlist"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="side-pane" id="pane-lib" style="display:none">
+      <h2>作品库（全局 · 按状态/题材）</h2>
+      <div id="libtool">
+        <input id="libq" placeholder="🔍 搜索书名 / 题材…">
       <div class="librow">
         <label>排序</label>
         <select id="libsort">
@@ -262,12 +325,7 @@ body{
     </div>
     <div id="plist"><div class="empty">暂无作品</div></div>
     <div id="cmpbox" style="padding:0 14px 8px"></div>
-    <div class="secrow">
-      <h2>模型供应商</h2>
-      <button id="addprov">＋ 绑定</button>
-    </div>
-    <div id="provsum" style="display:none"></div>
-    <div id="provlist"><div class="empty">加载中…</div></div>
+    </div><!-- /pane-lib -->
   </div>
 </div>
 <!-- 绑定供应商 模态 -->
@@ -460,7 +518,7 @@ function startPolling(){
   },4000);
 }
 
-function refreshProjects(){ loadLibrary(); }
+function refreshProjects(){ loadLibrary(); if(window.renderSessions)renderSessions(); }
 
 // ===== 作品库管理（v0.2）=====
 const L={sort:'updated',order:'desc',genre:'',status:'',q:'',sel:new Set()};
@@ -944,7 +1002,92 @@ window.runReleaseGate=runReleaseGate;
 })();
 bindModalClose();
 
+// ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
+const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
+let curSession=null;
+function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));}
+window.sideTab=sideTab;
+function _sessRow(i){
+  const st=i.state==='completed'?(i.released===true?'released':'completed'):(i.awaiting_title?'awaiting_title':(i.running?'in_progress':'other'));
+  const qm=i.quality!=null?(' · '+i.quality+(i.released===false?'未放行':'')):'';
+  return '<div class="ss-item'+(curSession===i.key?' on':'')+'" data-key="'+i.key+'">'
+    +'<span class="ss-dot '+st+'"></span>'
+    +'<div class="ss-main"><div class="ss-name">'+(S_pins.includes(i.key)?'📌 ':'')+esc(i.name)+'</div>'
+    +'<div class="ss-meta">'+esc(i.genre||'—')+' · '+i.done+'/'+i.total+' 章'+qm+(i.schedule?' · ⏱':'')+'</div></div>'
+    +'<span class="ss-act" data-pin="'+i.key+'" title="'+(S_pins.includes(i.key)?'取消置顶':'置顶')+'">'+(S_pins.includes(i.key)?'📌':'📍')+'</span></div>';
+}
+function renderSessions(){
+  fetch('/api/library?sort=updated&order=desc').then(r=>r.json()).then(d=>{
+    if(!d.items)return;
+    const autoArch=localStorage.nbot_autoarch!=='0';
+    const active=d.items.filter(i=>!i.archived&&i.state!=='archived');
+    const isDone=i=>autoArch&&i.state==='completed'&&i.released===true;
+    const pinned=active.filter(i=>S_pins.includes(i.key)).sort((a,b)=>S_pins.indexOf(a.key)-S_pins.indexOf(b.key));
+    const doing=active.filter(i=>!isDone(i)&&!S_pins.includes(i.key));
+    const done=active.filter(isDone);
+    let h='';
+    if(pinned.length)h+='<div class="sgrp">📌 置顶</div>'+pinned.map(_sessRow).join('');
+    h+='<div class="sgrp">进行中</div>'+(doing.length?doing.map(_sessRow).join(''):'<div class="snew" style="border:none;background:none;color:var(--muted);cursor:default"><span class="txt">暂无 · 点上方「＋新建」</span></div>');
+    if(done.length)h+='<div class="sgrp">✅ 已归档（完结）</div>'+done.map(_sessRow).join('');
+    $('slist').innerHTML=h;
+    $('slist').querySelectorAll('.ss-item').forEach(el=>{
+      el.onclick=()=>selectBook(el.dataset.key);
+      const p=el.querySelector('[data-pin]');if(p)p.onclick=e=>{e.stopPropagation();togglePin(p.dataset.pin);};
+    });
+  }).catch(()=>{});
+}
+window.renderSessions=renderSessions;
+function togglePin(key){const i=S_pins.indexOf(key);if(i>=0)S_pins.splice(i,1);else S_pins.unshift(key);localStorage.nbot_pins=JSON.stringify(S_pins);renderSessions();}
+window.togglePin=togglePin;
+async function selectBook(key){
+  curSession=key;curKey=key;sideTab('art');renderSessions();
+  let st={state:'',done:0,total:0};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
+  let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
+  const name=pv.name||st.name||key;
+  const stt=st.awaiting_title?'待选书名':(st.state==='completed'?'已成书':(st.state==='in_progress'?'创作中':(st.state||'')));
+  $('midctx').innerHTML='📖 当前书：<b>'+esc(name)+'</b> · '+esc(stt)+' · 对话/操作都针对这本书';
+  let qa='<button class="pb run" onclick="actCont()">▶ 续写</button>'
+    +'<button class="pb" onclick="actValidate()">📝 审稿</button>'
+    +'<button class="pb" onclick="actGate()">🔓 门禁</button>'
+    +'<a class="pb prev" href="/api/download?key='+encodeURIComponent(key)+'" target="_blank">⬇ 下载</a>';
+  if(st.awaiting_title)qa='<button class="pb run" onclick="openTitle(\''+key+'\')">✍ 选书名</button>'+qa;
+  if(st.state==='completed')qa+='<button class="pb" onclick="openPreview(\''+key+'\')">👁 预览</button>';
+  $('quickacts').innerHTML=qa;
+  const rel=pv.released===true?'已放行✅':(pv.released===false?'beta·未放行⚠️':'');
+  $('artbody').innerHTML='<div style="font:600 14px var(--sans)">'+esc(name)+'</div>'
+    +'<div style="font:11.5px var(--muted);margin:5px 0 9px">'+(pv.total||st.total||0)+' 章 · '+(pv.words||0)+' 字 · '+esc(rel||stt)+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="pb prev" onclick="openPreview(\''+key+'\')">👁 预览成书</button><button class="pb" onclick="actValidate()">📊 质量报告</button></div>';
+  $('setbody').innerHTML='<div style="font:12px/2.1 var(--sans);color:var(--muted)">'
+    +'🎚 <b style="color:var(--text)">门禁</b>：达标线 90 · 每轮 top-3 改写 · 未达标标 beta<br>'
+    +'⏱ <b style="color:var(--text)">定时任务</b>：总章/节奏（P3，默认关）<br>'
+    +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'（P2 可换）<br>'
+    +'🤖 <b style="color:var(--text)">模型规则</b>：按接入模型自动套（P4 可自由设）</div>';
+  startPolling();refreshProjects();
+}
+window.selectBook=selectBook;
+function actCont(){if(!curSession)return;cont(curSession);startPolling();}
+window.actCont=actCont;
+function actValidate(){if(!curSession)return;fetch('/api/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession,mode:'report'})}).then(async r=>{const j=await r.json();toast('📝 审稿'+(r.ok?'完成':'失败：'+(j.msg||'')),r.ok?'ok':'err');if(r.ok)selectBook(curSession);});}
+window.actValidate=actValidate;
+function actGate(){if(!curSession)return;fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession})}).then(r=>r.json()).then(j=>toast('🔓 门禁：'+(j.msg||''),'ok'));}
+window.actGate=actGate;
+function toggleSess(){const c=$('sessions');c.classList.toggle('collapsed');$('sestog').textContent=c.classList.contains('collapsed')?'»':'«';}
+window.toggleSess=toggleSess;
+function initDrag(){
+  [['dragL','sessions'],['dragR','side']].forEach(([id,col])=>{
+    const h=$(id),el=$(col);let sx=0,sw=0;
+    h.onmousedown=e=>{sx=e.clientX;sw=el.offsetWidth;document.body.style.userSelect='none';h.classList.add('hot');
+      const mv=ev=>{let w=sw+((col==='side')?(sx-ev.clientX):(ev.clientX-sx));w=Math.max(col==='sessions'?52:260,Math.min(col==='sessions'?440:680,w));el.style.width=w+'px';};
+      const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);h.classList.remove('hot');document.body.style.userSelect='';localStorage['nbot_w_'+col]=el.style.width;};
+      document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);};
+  });
+  [['sessions',250],['side',380]].forEach(([col,dft])=>{const v=localStorage['nbot_w_'+col];if(v)$(col).style.width=v;});
+}
+window.initDrag=initDrag;
+
 refreshProjects();
+renderSessions(); initDrag();
+(function(){var b=new URLSearchParams(location.search).get('book'); if(b)selectBook(b);})();
 loadProviders();
 loadProviderPicker();
 document.getElementById('addprov').onclick=openProvModal;
