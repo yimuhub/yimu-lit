@@ -1,4 +1,4 @@
-"""novel-bot 版本号（读 VERSION 文件，当前 v0.5.0 多Agent创作宇宙）。"""
+"""novel-bot 版本号（读 VERSION 文件，当前 v0.6.0 并行章节创作 + 状态隔离 + UI 升级）。"""
 import os
 def _read():
     try:
