@@ -495,12 +495,33 @@ const sid=(localStorage.nbot_sid||(localStorage.nbot_sid=crypto.randomUUID()));
 let curKey=null, timer=null, polling=false;
 const msgBox=$('msgs');
 
-function bubble(who,html,cls){
+function bubble(who,html,cls,plain){
   const d=document.createElement('div');
   d.className='msg '+who+(cls?' '+cls:'');
   d.innerHTML=`<div class="ava">${who==='bot'?'🖋':'🙂'}</div><div class="bubble">${html}</div>`;
   msgBox.appendChild(d); msgBox.scrollTop=msgBox.scrollHeight;
+  // v0.4.1：per-book 对话隔离 —— 传了纯文本 plain 且当前有绑定书，就写进这本书自己的对话记录
+  if(typeof plain==='string' && _chatKey()) pushBkChat(_chatKey(), who, plain);
   return d;
+}
+// ===== v0.4.1：每本书独立的对话（点哪本书，中间只看到它自己的聊天）=====
+function _chatKey(){ return curSession||curKey||''; }
+function pushBkChat(key,who,text){
+  if(!text||!text.trim())return;
+  fetch('/api/bkchat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,who,text:text.trim().slice(0,2000)})}).catch(()=>{});
+}
+async function loadBkChat(key){
+  msgBox.innerHTML='';
+  if(!key)return;
+  let d={messages:[]};
+  try{ d=await (await fetch('/api/bkchat?key='+encodeURIComponent(key))).json(); }catch(e){}
+  const ms=d.messages||[];
+  if(!ms.length){
+    const it=(window._libCache||[]).find(x=>x.key===key);
+    bubble('bot','💬 已切换到 <b>'+esc(it?it.name:key)+'</b> 的专属对话（只属于这本书）。直接告诉我要做什么：改剧情 / ⏸暂停 / ▶续写 / 🔓放行 / 加修正指令……','');
+    return;
+  }
+  ms.slice(-80).forEach(m=>{ bubble(m.who||'bot', fmt(m.text||''), '', null); });
 }
 function esc(s){s=(s==null)?'':String(s);return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 // v0.2.1 UX：轻提示 / 骨架 / 模态统一关闭
@@ -532,7 +553,7 @@ function killThinking(){const t=$('think'); if(t)t.remove();}
 async function send(){
   const v=$('inp').value.trim(); if(!v)return;
   $('inp').value='';
-  bubble('user',fmt(v));
+  bubble('user',fmt(v),'',v);
   thinking();
   const pid=$('pselect')?$('pselect').value:'', mid=$('mselect')?$('mselect').value:'';
   const payload={session_id:sid,message:v};
@@ -543,11 +564,14 @@ async function send(){
       body:JSON.stringify(payload)});
     const j=await r.json();
     killThinking();
-    const bb=bubble('bot',fmt(j.reply||'(空回复)'));
+    const bb=bubble('bot',fmt(j.reply||'(空回复)'),'', j.reply||null);
     attachTitleCards(bb, j.reply||'');
-    if(j.project){curKey=j.project; startPolling();}
+    if(j.project){curKey=j.project; curSession=j.project;
+      // v0.4.1：把开书这条对话记进新书自己的记录（开书=这本书的第一条专属对话）
+      pushBkChat(j.project,'user',v); pushBkChat(j.project,'bot', j.reply||'');
+    }
     refreshProjects();
-  }catch(e){killThinking();bubble('bot','⚠️ 服务异常：'+e);}
+  }catch(e){killThinking();bubble('bot','⚠️ 服务异常：'+e,'',null);}
 }
 // 聊天里 bot 报"请选书名【1】..【N】" → 渲染成可点卡片（点一下=发送编号）
 function attachTitleCards(d, text){
@@ -1330,6 +1354,7 @@ function openBookMenu(key, anchor){
 window.openBookMenu=openBookMenu;
 async function selectBook(key){
   curSession=key;curKey=key;sideTab('art');renderSessions();updateSendBtn();
+  switchView('chat'); loadBkChat(key);   // v0.4.1：点书 → 中间=对话页，只加载这本书自己的聊天
   let st={state:'',done:0,total:0};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
   let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
   const name=pv.name||st.name||key;
@@ -1353,7 +1378,7 @@ async function selectBook(key){
     +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div></div>';
   loadBookSkill(key); loadBookSched(key); loadTokenLedger(key);
   startPolling(); refreshProjects();
-  switchView('ms');   // v0.3.5：选中书后默认显示「稿件」（小说正文），实时刷新；对话仍可切换
+  switchView('chat');   // v0.4.1：选中书后默认显示「对话」（只属于这本书的专属聊天）；想看小说正文点「📄稿件」
 }
 window.selectBook=selectBook;
 function actCont(){if(!curSession)return;cont(curSession);startPolling();switchView('ms');}

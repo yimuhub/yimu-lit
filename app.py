@@ -833,6 +833,46 @@ def api_queue_action(payload: dict):
     items = writer.queue_action(key, index, action)
     return {"ok": True, "items": items, "msg": "已移除" if action == "remove" else "已标记立即生效"}
 
+
+# ===== v0.4.1：每本书独立的对话记录（会话隔离，点击书只显示它自己的聊天）=====
+def _bkchat_path(key: str):
+    return os.path.join(writer.PROJECTS_DIR, key, "chat.json")
+
+
+@app.get("/api/bkchat")
+def api_bkchat_get(key: str = ""):
+    if not key:
+        return {"messages": []}
+    p = _bkchat_path(key)
+    if not os.path.exists(p):
+        return {"messages": []}
+    try:
+        return {"messages": json.loads(open(p, encoding="utf-8").read())}
+    except Exception:
+        return {"messages": []}
+
+
+@app.post("/api/bkchat")
+def api_bkchat_post(payload: dict):
+    key = payload.get("key", ""); who = payload.get("who", "user")
+    text = (payload.get("text") or "").strip()
+    if not key or not text:
+        return {"ok": False}
+    if not _get_project(key):
+        return JSONResponse({"ok": False, "error": "项目不存在"}, status_code=404)
+    p = _bkchat_path(key)
+    msgs = []
+    if os.path.exists(p):
+        try:
+            msgs = json.loads(open(p, encoding="utf-8").read())
+        except Exception:
+            msgs = []
+    msgs.append({"who": who, "text": text, "ts": int(time.time() * 1000)})
+    # 每本书只保留最近 400 条，防止无限膨胀
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, "w", encoding="utf-8").write(json.dumps(msgs[-400:], ensure_ascii=False))
+    return {"ok": True, "count": len(msgs)}
+
 @app.get("/api/status")
 def api_status(key: str):
     proj = _get_project(key)
