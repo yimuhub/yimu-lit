@@ -645,6 +645,25 @@ def api_model_rules_set(payload: dict):
     model_rules.save_overrides(ovr)
     return {"ok": True, "overrides": ovr}
 
+@app.get("/api/usage")
+def api_usage(key: str = ""):
+    """v0.3.x：token 账本。带 key=单本；不带=全局合计。"""
+    gpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage_global.json")
+    g = {}
+    if os.path.exists(gpath):
+        try:
+            g = json.load(open(gpath, encoding="utf-8"))
+        except Exception:
+            g = {}
+    if key:
+        proj = _get_project(key)
+        if not proj:
+            return JSONResponse({"error": "项目不存在"}, status_code=404)
+        p = os.path.join(proj.path, "usage.json")
+        u = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {"total_tokens": 0, "calls": 0, "total_prompt": 0, "total_completion": 0}
+        return {"key": key, "usage": u, "global": g}
+    return {"key": "", "usage": {}, "global": g}
+
 @app.get("/api/titles")
 def api_titles(key: str):
     proj = _get_project(key)

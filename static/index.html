@@ -6,6 +6,7 @@
 <title>神笔 · 小说创作机器人</title>
 <style>
 :root{
+  color-scheme:dark;   /* v0.3.x：原生 select/输入框 弹层走深色底+浅色字，修复「下拉选项看不见没法选」 */
   --bg:#0a0e1a; --panel:rgba(255,255,255,.055); --panel2:rgba(255,255,255,.09);
   --border:rgba(255,255,255,.12); --text:#e8ecf5; --muted:#8b93a7;
   --accent:#6c8cff; --accent2:#a06cff; --ok:#4ade80; --warn:#fbbf24; --err:#f87171;
@@ -28,7 +29,7 @@ body{
 #sessions.collapsed .ss-item{justify-content:center}
 #sessions.collapsed .snew{margin:4px 6px;text-align:center;padding:8px 4px}
 .shead{padding:12px 12px 8px;display:flex;align-items:center;gap:8px}
-.shead .stx{flex:1;font:600 13px var(--sans);letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shead .stx{flex:1;font:700 14px var(--sans);letter-spacing:.3px;line-height:1.25;color:var(--text)}
 .sbtn{width:24px;height:24px;border-radius:7px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--muted);cursor:pointer;font-size:13px;flex:none;display:flex;align-items:center;justify-content:center}
 .sbtn:hover{color:var(--text);border-color:var(--accent)}
 .snew{margin:4px 10px 10px;padding:9px 10px;border-radius:10px;border:1px dashed var(--accent);background:rgba(124,92,255,.1);color:#c9b8ff;font-size:12.5px;cursor:pointer;text-align:center}
@@ -63,6 +64,16 @@ body{
 #head h1{font-size:17px;font-weight:600}
 #head p{font-size:11.5px;color:var(--muted);margin-top:2px}
 #msgs{flex:1;overflow-y:auto;padding:26px;scroll-behavior:smooth}
+#viewsw{display:flex;align-items:center;gap:4px;padding:7px 16px;border-bottom:1px solid var(--border);flex:none;background:var(--panel)}
+#viewsw button{border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--muted);border-radius:8px;padding:5px 12px;font-size:11.5px;font-weight:600;cursor:pointer}
+#viewsw button.on{background:linear-gradient(135deg,rgba(108,140,255,.22),rgba(160,108,255,.22));border-color:var(--accent);color:var(--text)}
+#viewsw #msprog{font:10.5px var(--muted);margin-left:auto}
+#manuscript{flex:1;overflow-y:auto;padding:16px 26px 26px}
+#manuscript #msline{position:sticky;top:0;z-index:2;padding:9px 12px;margin-bottom:10px;font:12px/1.7 var(--sans);color:var(--muted);background:rgba(10,14,26,.94);border:1px solid var(--border);border-radius:10px;backdrop-filter:blur(6px)}
+#manuscript #msline b{color:var(--text)}
+#manuscript #msline .tk{color:var(--accent);font-weight:600}
+#msbody{font:15px/1.95 var(--sans);color:var(--text);white-space:pre-wrap;word-break:break-word}
+#msbody .mschap{font-weight:700;color:var(--accent);margin:18px 0 8px;font-size:16px}
 .msg{display:flex;margin-bottom:16px;gap:10px;animation:fade .3s ease}
 @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .msg.user{flex-direction:row-reverse}
@@ -125,7 +136,7 @@ body{
 .vitem .vmodels .mtag.cur{border-color:var(--accent);color:var(--accent)}
 .vitem .vkey{margin-top:5px;font-size:10.5px;color:var(--muted)}
 /* 模态 */
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:50}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:50}
 .modal.show{display:flex}
 .modal .mbox{width:460px;max-width:92vw;max-height:88vh;overflow-y:auto;background:rgba(16,20,38,.97);border:1px solid var(--border);border-radius:18px;padding:20px 22px}
 .modal h3{font-size:15px;margin-bottom:4px}
@@ -134,6 +145,9 @@ body{
 .mfield label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
 .mfield input,.mfield select,.mfield textarea{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:8px 10px;color:var(--text);font-size:13px;font-family:inherit;outline:none;resize:vertical}
 .mfield input:focus,.mfield select:focus,.mfield textarea:focus{border-color:var(--accent)}
+select{cursor:pointer}
+select option{background:#101426;color:var(--text)}   /* v0.3.x：原生下拉选项强制深底浅字，防「浅字浅底看不见」 */
+input,select,textarea{color-scheme:dark}
 .mrow{display:flex;gap:10px}
 .mrow .mfield{flex:1}
 .mtoggle{display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:11px}
@@ -233,7 +247,7 @@ body{
 <div id="toasts"></div>
 <div id="app">
   <div id="sessions">
-    <div class="shead"><span class="stx">会话 · 书</span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
+    <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔小说工作台</span></span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
     <div class="snew" id="snew" onclick="openOnb()"><span class="txt">＋ 新建一本书</span></div>
     <div class="slist" id="slist"></div>
   </div>
@@ -249,7 +263,9 @@ body{
     </div>
     <div id="midctx">📖 未选中书 · 直接对话开新书，或从左侧选一本书</div>
     <div id="quickacts"></div>
+    <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="msprog" style="margin-left:auto"></span></div>
     <div id="msgs"></div>
+    <div id="manuscript" style="display:none"><div id="msline"></div><div id="msbody"></div></div>
     <div id="inputbar">
       <div id="picker">
         <select id="pselect" title="选择模型供应商"></select>
@@ -279,6 +295,8 @@ body{
         <div class="prow"><span id="pinfo">0/0 章</span><span id="pwords">0 字</span></div>
       </div>
       <div id="evts"></div>
+      <h2>🔢 Token 账本</h2>
+      <div id="tkcard" style="margin:0 14px 10px"></div>
     </div>
     <div class="side-pane" id="pane-set" style="display:none">
       <h2>该书设置</h2>
@@ -290,6 +308,7 @@ body{
     </div>
     <div class="side-pane" id="pane-lib" style="display:none">
       <h2>作品库（全局 · 按状态/题材）</h2>
+      <div id="libtk" style="margin:0 14px 8px;font:11.5px var(--sans);color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 11px">🔢 加载中…</div>
       <div id="libtool">
         <input id="libq" placeholder="🔍 搜索书名 / 题材…">
       <div class="librow">
@@ -1017,7 +1036,7 @@ bindModalClose();
 // ===== v0.3 三栏工作台：会话=书 / 该书对话 / 产物·设置·作品库 =====
 const S_pins=(()=>{try{return JSON.parse(localStorage.nbot_pins)||[]}catch(e){return[]}})();
 let curSession=null;
-function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'&&window.loadModelRules)loadModelRules();}
+function sideTab(name){['art','set','lib'].forEach(t=>$('pane-'+t).style.display=t===name?'block':'none');document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));if(name==='set'&&window.loadModelRules)loadModelRules();if(name==='lib'&&window.loadGlobalToken)loadGlobalToken();}
 window.sideTab=sideTab;
 function _sessRow(i){
   const st=i.state==='completed'?(i.released===true?'released':'completed'):(i.awaiting_title?'awaiting_title':(i.running?'in_progress':'other'));
@@ -1057,7 +1076,8 @@ async function selectBook(key){
   let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
   const name=pv.name||st.name||key;
   const stt=st.awaiting_title?'待选书名':(st.state==='completed'?'已成书':(st.state==='in_progress'?'创作中':(st.state||'')));
-  $('midctx').innerHTML='📖 当前书：<b>'+esc(name)+'</b> · '+esc(stt)+' · 对话/操作都针对这本书';
+  let u={};try{u=(await (await fetch('/api/usage?key='+encodeURIComponent(key))).json()).usage||{};}catch(e){}
+  $('midctx').innerHTML='📖 当前书：<b>'+esc(name)+'</b> · '+esc(stt)+' · <span style="color:var(--accent)">🔢 '+((u.total_tokens||0).toLocaleString())+' token</span> · 对话/操作都针对这本书';
   let qa='<button class="pb run" onclick="actCont()">▶ 续写</button>'
     +'<button class="pb" onclick="actValidate()">📝 审稿</button>'
     +'<button class="pb" onclick="actGate()">🔓 门禁</button>'
@@ -1073,7 +1093,7 @@ async function selectBook(key){
     +'🎚 <b style="color:var(--text)">门禁</b>：达标线 90 · 每轮 top-3 改写 · 未达标标 beta<br>'
     +'⏱ <b style="color:var(--text)">定时任务</b>（默认关，可设总章/节奏）：<div id="booksched" style="margin-top:4px"></div><br>'
     +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div></div>';
-  loadBookSkill(key); loadBookSched(key);
+  loadBookSkill(key); loadBookSched(key); loadTokenLedger(key);
   startPolling();refreshProjects();
 }
 window.selectBook=selectBook;
@@ -1138,6 +1158,49 @@ function saveModelRules(){
   fetch('/api/model_rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)}).then(r=>r.json()).then(j=>toast('🤖 模型规则已保存','ok'));
 }
 window.saveModelRules=saveModelRules;
+function switchView(v){
+  const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar');
+  document.querySelectorAll('#viewsw button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  if(v==='ms'){ms.style.display='block';msgs.style.display='none';ib.style.display='none';loadManuscript(curSession||curKey);}
+  else{ms.style.display='none';msgs.style.display='';ib.style.display='';}
+}
+window.switchView=switchView;
+document.querySelectorAll('#viewsw button').forEach(b=>b.onclick=()=>switchView(b.dataset.v));
+async function loadManuscript(key){
+  if(!key){$('msbody').innerHTML='<span style="color:var(--muted)">未选中书。先在左侧选一本书，或点「＋新建」。</span>';$('msline').textContent='';$('msprog').textContent='';return;}
+  let st={};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
+  let pv={};try{pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json();}catch(e){}
+  let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){}
+  const u=us.usage||{};
+  const done=(pv.chapters||[]).filter(c=>c.status==='completed').length, tot=(pv.chapters||[]).length;
+  $('msprog').innerHTML='第 '+(st.done!=null?st.done:done)+'/'+(st.total!=null?st.total:tot)+' 章 · '+((u.total_tokens||0).toLocaleString())+' token';
+  $('msline').innerHTML='📄 稿件 · <b>'+esc(pv.name||key)+'</b> · 写到第 <b>'+(st.done!=null?st.done:done)+'</b>/'+(st.total!=null?st.total:tot)+' 章 · 共 <b>'+((st.words||pv.total_words||0))+'</b> 字 · 累计 <span class="tk">'+((u.total_tokens||0).toLocaleString())+' token</span>（'+(u.calls||0)+' 次调用）'
+    +'<br><span style="font-size:10.5px">'+(u.by_stage?Object.entries(u.by_stage).map(([k,v])=>k+' '+(v.total||0)).join(' · '):'')+(u.last?' · 最近 '+u.last.stage+' '+ (u.last.total||0):'')+'</span>';
+  let txt=(pv.text||'').trim();
+  if(!txt)txt='（尚未生成正文。切到「💬 对话」直接开写，或点上方快捷操作「▶ 续写」。）';
+  $('msbody').innerHTML=txt.split(/(\n+#[^\n]+)/g).map(seg=>{
+    if(/^#[\s]/.test(seg))return '<div class="mschap">'+esc(seg.replace(/^#+\s*/,'').trim())+'</div>';
+    return esc(seg);
+  }).join('');
+}
+window.loadManuscript=loadManuscript;
+async function loadTokenLedger(key){
+  const el=$('tkcard');if(!el||!key)return;
+  let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){el.innerHTML='';return;}
+  const u=us.usage||{},g=us.global||{},bs=u.by_stage||{};
+  el.innerHTML='<div style="border:1px solid var(--border);background:var(--panel2);border-radius:10px;padding:10px 12px;font:11.5px/1.7 var(--sans);color:var(--muted)">'
+    +'<div style="font:600 13px var(--sans);color:var(--text)">全书累计 <span style="color:var(--accent)">'+((u.total_tokens||0).toLocaleString())+'</span> token · '+(u.calls||0)+' 次调用</div>'
+    +'<div style="margin:4px 0">输入 '+((u.total_prompt||0).toLocaleString())+' · 输出 '+((u.total_completion||0).toLocaleString())+'</div>'
+    +(Object.keys(bs).length?('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">'+Object.entries(bs).map(([k,v])=>'<span class="libchip" style="cursor:default">'+k+' <b style="color:var(--text)">'+(v.total||0).toLocaleString()+'</b></span>').join('')+'</div>'):'')
+    +'<div style="margin-top:7px;font-size:10.5px;border-top:1px solid var(--border);padding-top:6px">全部作品累计：'+((g.total_tokens||0).toLocaleString())+' token · '+(g.calls||0)+' 次调用</div></div>';
+}
+window.loadTokenLedger=loadTokenLedger;
+async function loadGlobalToken(){
+  const el=$('libtk');if(!el)return;
+  let g={};try{g=(await (await fetch('/api/usage')).json()).global||{};}catch(e){}
+  el.innerHTML='🔢 全部作品累计消耗 <b style="color:var(--accent)">'+((g.total_tokens||0).toLocaleString())+'</b> token · '+(g.calls||0)+' 次调用';
+}
+window.loadGlobalToken=loadGlobalToken;
 function toggleSess(){const c=$('sessions');c.classList.toggle('collapsed');$('sestog').textContent=c.classList.contains('collapsed')?'»':'«';}
 window.toggleSess=toggleSess;
 function initDrag(){
@@ -1154,14 +1217,14 @@ window.initDrag=initDrag;
 
 refreshProjects();
 renderSessions(); initDrag();
-(function(){var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300);})();
+(function(){var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500);})();
 loadProviders();
 loadProviderPicker();
 document.getElementById('addprov').onclick=openProvModal;
 document.getElementById('mbind').onclick=bindProv;
 document.getElementById('provmodal').addEventListener('click',e=>{if(e.target.id==='provmodal')closeProvModal();});
 document.getElementById('pvmodal').addEventListener('click',e=>{if(e.target.id==='pvmodal')closePvModal();});
-bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.0 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.0。');
+bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.1 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.1。');
 </script>
 </body>
 </html>

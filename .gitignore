@@ -25,3 +25,6 @@ projects/
 交付截图/
 schedules.json
 model_rules.json
+usage_global.json
+projects/*/usage.json
+*.bak

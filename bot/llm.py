@@ -2,12 +2,47 @@
 
 未带 cfg 时安全回落到默认 active 供应商，不破坏旧行为。
 """
-import json, sys, time
+import json, os, sys, time, threading
 import httpx
 from . import providers
 
 class LLMError(RuntimeError):
     pass
+
+# ---------- v0.3.x：Token 账本（按书归集 LLM 用量；线程本地防并发串账） ----------
+_TL = threading.local()
+_PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "projects")
+_USAGE_GLOBAL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "usage_global.json")
+
+def book(key: str, stage: str = ""):
+    """标记当前线程正在为谁记账（书 key + 阶段），供 chat() 回读 usage 归集。"""
+    _TL.book = key
+    _TL.stage = stage or "writing"
+
+def _record_usage(book_key: str, stage: str, usage: dict):
+    """把一次调用的 usage 累加到 <书>/usage.json + 全局 usage_global.json（不致命）。"""
+    try:
+        pt = int(usage.get("prompt_tokens") or 0)
+        ct = int(usage.get("completion_tokens") or 0)
+        tt = int(usage.get("total_tokens") or (pt + ct))
+        # 单本
+        bdir = os.path.join(_PROJECTS_DIR, book_key)
+        if os.path.isdir(bdir):
+            uf = os.path.join(bdir, "usage.json")
+            u = json.load(open(uf, encoding="utf-8")) if os.path.exists(uf) else {
+                "total_prompt": 0, "total_completion": 0, "total_tokens": 0, "calls": 0, "by_stage": {}}
+            u["total_prompt"] += pt; u["total_completion"] += ct; u["total_tokens"] += tt; u["calls"] += 1
+            bs = u.setdefault("by_stage", {})
+            sb = bs.setdefault(stage, {"prompt": 0, "completion": 0, "total": 0, "calls": 0})
+            sb["prompt"] += pt; sb["completion"] += ct; sb["total"] += tt; sb["calls"] += 1
+            u["last"] = {"stage": stage, "prompt": pt, "completion": ct, "total": tt}
+            json.dump(u, open(uf, "w", encoding="utf-8"), ensure_ascii=False)
+        # 全局
+        g = json.load(open(_USAGE_GLOBAL, encoding="utf-8")) if os.path.exists(_USAGE_GLOBAL) else {"total_tokens": 0, "calls": 0}
+        g["total_tokens"] += tt; g["calls"] += 1
+        json.dump(g, open(_USAGE_GLOBAL, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception:
+        pass
 
 # P5/P4 节奏：两次 LLM 调用之间的最小间隔（防 429 限流）+ 每调用超时可配
 _last_call = {"ts": 0.0}
@@ -95,6 +130,10 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                 r.raise_for_status()
                 data = r.json()
                 _last_call["ts"] = time.time()
+                _u = data.get("usage") or {}
+                _bk = getattr(_TL, "book", None)
+                if _bk and _u:                     # v0.3.x：回读 usage，归集到该书 token 账本
+                    _record_usage(_bk, getattr(_TL, "stage", "writing") or "writing", _u)
                 return data["choices"][0]["message"]["content"]
         except LLMError as e:
             last_err = e

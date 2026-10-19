@@ -1,6 +1,6 @@
 """串行写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）"""
 import json, os, re, datetime, threading
-from . import workflow, skill, continuity
+from . import workflow, skill, continuity, llm
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECTS_DIR = os.path.join(ROOT, "projects")
@@ -87,7 +87,7 @@ def create_project(cfg, titles):
     pdir = os.path.join(PROJECTS_DIR, f"{ts}-{name}")
     os.makedirs(pdir, exist_ok=True)
     proj = Project(pdir, name)
-
+    llm.book(os.path.basename(pdir), "planning")     # v0.3.x：规划阶段 token 归集到该书
     proj.log("📐 阶段2：生成人物档案…")
     characters = workflow.gen_characters(cfg)
     open(os.path.join(pdir, "00-人物档案.md"), "w", encoding="utf-8").write(
@@ -301,6 +301,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
              if ok else f"❌ 第{no}章未达标（{words}字）")
 
 def _validate_and_finish(proj):
+    llm.book(os.path.basename(proj.path), "review")   # v0.3.x：五角色审校 token 归集
     plan = proj.plan()
     plan["status"] = "validating"
     proj.save_plan(plan)
@@ -460,6 +461,7 @@ def validate_project(proj, mode="report", max_rounds=2):
 def _write_loop(proj: Project):
     _sem = _write_semaphore()          # v0.3 P3：并发（默认 2 本同时写，超出排队）
     _sem.acquire()
+    llm.book(os.path.basename(proj.path), "writing")   # v0.3.x：写稿 token 归集到该书
     try:
         plan = proj.plan()
         plan["status"] = "in_progress"
@@ -505,6 +507,7 @@ def start_writing_batch(proj, limit):
         return False
     def _bl():
         _sem = _write_semaphore(); _sem.acquire()
+        llm.book(os.path.basename(proj.path), "writing")   # v0.3.x：定时批次写稿 token 归集
         try:
             plan = proj.plan(); plan["status"] = "in_progress"; proj.save_plan(plan)
             wrote = 0
@@ -708,6 +711,7 @@ def _top_targets(brief, max_rounds):
 def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_over=None):
     """执行『审查后定向重写』：把要求书逐条带进目标章重写，重评出前后对比，写 16-重写记录.md。"""
     proj = Project(os.path.join(PROJECTS_DIR, key), key)
+    llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
     plan = proj.plan()
     cfg = dict((plan.get("config") or {}))
     cfg.update(cfg_over or {})
@@ -782,6 +786,7 @@ def _write_gate_report(proj, before, after, released, pass_line, rounds, gate_re
 def run_release_gate(key, cfg_over=None):
     """放行门禁：循环「重评→未达标则带要求书定向重写→再评」，直到 ≥pass_line 或到轮数上限。写 02.meta + 14 放行判定。"""
     proj = Project(os.path.join(PROJECTS_DIR, key), key)
+    llm.book(key, "gate")               # v0.3.x：门禁重写 token 归集
     plan = proj.plan()
     cfg = dict(plan.get("config") or {}); cfg.update(cfg_over or {})
     d = _cfg_defaults(); pl = _pass_line()

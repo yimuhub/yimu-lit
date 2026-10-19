@@ -76,6 +76,14 @@ VERSION             版本号（0.1.0）
 - **书名 ABC 弹选**：8 个候选 A/B/C…卡点选或自定义；不带 title 开书会停在 `awaiting_title`，`POST /api/pick-title` 选名开写；聊天报书名也弹可点卡。
 - **放行门禁**：成书后自动带要求重写到 ≥达标线（默认90）才标记"放行✅"；未放行下载标"beta·未放行(分)"（仍可下载）。`POST /api/release` + `GET /api/release-log`；审稿视图「🔓 放行门禁」。
 
+## v0.3.1：中档升级三点 + 稿件视图 + Token 统计
+
+- **开书向导下拉修复**：`color-scheme:dark` + 原生 `select option` 显式深色样式 + 去掉 `.modal` 背景模糊，深色下拉可选可读。
+- **中间工作台「稿件」视图**：`💬对话 / 📄稿件` 切换，稿件直接看已写正文（章节高亮）+「写到第 N/总章 · 共 X 字 · 累计 Y token（Z 次调用）」；右侧「产物」加 **Token 账本**（全书/各阶段/全局累计），「作品库」加全局 token 合计，当前书信息条加累计 token。
+- **Token 统计后端**：`llm` 捕获每次调用的 usage → 按书/按阶段落盘（`usage.json` + `usage_global.json`，并发安全），`GET /api/usage`。真实 LLM 调用已验证采集正确。
+- **左上角**改名「一幕·YIMU · 神笔小说工作台」。
+- 提交人 `yimuhub <yimu@hyipf.com>`；tag `v0.3.1`。
+
 ## v0.3.0：三栏工作台 + 5 项能力升级
 
 界面从单页升级为**左·中·右三栏工作台**（Hermes 风格，三栏宽可**拖动**、左栏可**折叠**为图标条），全部 v0.2.x 功能保留（兼容 superset）：
