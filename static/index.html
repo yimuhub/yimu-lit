@@ -908,9 +908,12 @@ function renderRwProgress(p,elapsed){
   $('rwbar_fill').style.width=pct+'%';
   $('rwboard_head').innerHTML=(p.running?'🔁 重写进行中':'✅ 重写完成')+'（'+done+'/'+total+' 章 · 已用 '+Math.round(elapsed)+'s'+(p.cancelled?' · 已取消':'')+'）';
   $('rwrows').innerHTML=rows.map(r=>{
-    const st=r.status==='done'?'✔ 完成':(r.status==='skipped'?'⏭ 跳过':(r.status==='rewriting'?'◐ 改写中':'⏸ 排队'));
-    const color=r.status==='done'?'#3ad29b':(r.status==='rewriting'?'var(--accent)':'var(--muted)');
-    const sc=(r.after!=null&&r.before!=null)?' <b style="color:#3ad29b">'+r.before+' → '+r.after+'</b>':(r.before!=null?' <span style="opacity:.7">基线 '+r.before+'</span>':'');
+    const rev=(r.status==='reverted');
+    const st=rev?'🔒 保留原稿':(r.status==='done'?'✔ 完成':(r.status==='skipped'?'⏭ 跳过':(r.status==='rewriting'?'◐ 改写中':'⏸ 排队')));
+    const color=rev?'#f5a524':(r.status==='done'?'#3ad29b':(r.status==='rewriting'?'var(--accent)':'var(--muted)'));
+    const sc=rev
+      ? ' <b style="color:#f5a524">'+(r.before!=null?r.before:'?')+' → '+((r.note||'').replace(/[^\d<>. ]/g,'')||'')+'</b>'
+      :((r.after!=null&&r.before!=null)?' <b style="color:'+(r.after>=r.before?'#3ad29b':'#f5a524')+'">'+r.before+' → '+r.after+'</b>':(r.before!=null?' <span style="opacity:.7">基线 '+r.before+'</span>':''));
     return '<div style="font:11px var(--sans);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;background:var(--card);margin-bottom:3px"><b>第'+r.ch+'章</b>'+sc+(r.new_words!=null?' · '+r.orig_words+'→'+r.new_words+' 字':'')+' <span style="float:right;color:'+color+';font-weight:700">'+st+'</span></div>';
   }).join('')||'<div class="rwnote">（进行中）</div>';
 }

@@ -1136,6 +1136,35 @@ def delete_book(key, hard=False):
         return {"ok": True, "hard": True, "note": "已彻底删除（不可恢复）"}
     return {"ok": True, "hard": False, "archived": True, "note": "已移入回收站（可恢复）", "item": set_meta(key, archived=True)}
 
+# ---------- v0.7 R3：逐章『保留更好』守护 + 按书任务串行（防并发写同一本书死锁）----------
+import contextlib
+_BOOK_LOCKS = {}          # key -> threading.RLock（同一本书的 重写/门禁 串行，防 proj.lock 竞争死锁）
+_BL_LOCK = threading.Lock()
+
+@contextlib.contextmanager
+def _acq_book(key):
+    """同一本书的重写/门禁/一键任务串行（可重入：门禁内部再调重写不自我死锁）；跨书互不影响。"""
+    with _BL_LOCK:
+        lk = _BOOK_LOCKS.setdefault(key, threading.RLock())
+    lk.acquire()
+    try:
+        yield
+    finally:
+        lk.release()
+
+import functools
+def _serialize_book(fn):
+    """同书任务串行装饰器：取首参 key，整段调用置于该书的 RLock（可重入，嵌套不自我死锁）。
+    门禁线程 / 一键任务 / 手动重写 并发落到同一本书时排队执行，避免 proj.lock 竞争 + 章节文件并发写死锁。"""
+    @functools.wraps(fn)
+    def wrap(*a, **k):
+        key = a[0] if a else k.get("key")
+        if not key:
+            return fn(*a, **k)
+        with _acq_book(key):
+            return fn(*a, **k)
+    return wrap
+
 # ---------- 审查后定向重写 ----------
 
 def rewrite_brief(proj, cfg, pass_line=None):
@@ -1219,6 +1248,7 @@ def _pch_before(proj, ch_no):
     except Exception:
         return None
 
+@_serialize_book
 def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_over=None):
     """执行『审查后定向重写』：把要求书逐条带进目标章重写，重评出前后对比，写 16-重写记录.md。
     v0.7 R2：逐章实时进度写 _RW_PROGRESS[key]（供 /api/rewrite-progress 轮询）+ 支持取消（_RW_CANCEL）。"""
@@ -1261,12 +1291,29 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
             reqs += [f"【重点维度】{d}" for d in dimensions]      # R2：只带所选维度
         new = workflow.guided_rewrite(orig, "\n".join(reqs), cons, cfg)
         new = _clean_chapter_text(new or "")
-        if new.strip():
-            open(fp, "w", encoding="utf-8").write(new)
-            changed.append({"chapter": n, "injected": reqs, "orig_words": len(orig), "new_words": len(new)})
-            if p: p.update(status="done", ok=True, orig_words=len(orig), new_words=len(new))
-        else:
+        if not new.strip():
             if p: p.update(status="done", ok=False, new_words=0)
+            continue
+        # ---- v0.7 R3：逐章『保留更好』守护：写新稿→逐章评分→新稿分低于该章原分则回滚原稿（绝不把书改差）----
+        before_sc = _pch_before(proj, n)
+        open(fp, "w", encoding="utf-8").write(new)
+        new_sc = None
+        try:
+            new_sc = score_chapter(proj, n)          # 评新稿（读=新稿）
+        except Exception:
+            new_sc = None
+        reverted = bool(before_sc is not None and new_sc is not None and new_sc < before_sc)
+        if reverted:
+            open(fp, "w", encoding="utf-8").write(orig)      # 回滚原稿
+            if p: p.update(status="reverted", ok=False, orig_words=len(orig), new_words=len(new),
+                           before=before_sc, after=before_sc, keep_better=True,
+                           note=f"新稿 {new_sc} < 原稿 {before_sc} → 保留原稿（守护）")
+            proj.log(f"🔒 第{n}章 保留更好守护：重写分 {new_sc} < 原分 {before_sc} → 已回滚原稿")
+            continue
+        changed.append({"chapter": n, "injected": reqs, "orig_words": len(orig), "new_words": len(new),
+                        "kept_better": True, "before_score": before_sc, "after_score": new_sc})
+        if p: p.update(status="done", ok=True, orig_words=len(orig), new_words=len(new),
+                       before=before_sc, after=new_sc, keep_better=not reverted)
         _RW_PROGRESS[key]["done"] = len(changed)
     # 重评（保留：书级 before→after + 逐章 after）
     book = workflow.list_chapters_text(proj.path) or ""
@@ -1327,6 +1374,7 @@ def _write_gate_report(proj, before, after, released, pass_line, rounds, gate_re
     with open(p, "w", encoding="utf-8") as f:
         f.write(base + "\n".join(sec))
 
+@_serialize_book
 def run_release_gate(key, cfg_over=None):
     """放行门禁：循环「重评→未达标则带要求书定向重写→再评」，直到 ≥pass_line 或到轮数上限。写 02.meta + 14 放行判定。"""
     proj = Project(os.path.join(PROJECTS_DIR, key), key)

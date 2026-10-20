@@ -5,7 +5,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py314"
 src = ["bot", "tests"]
 
 [tool.ruff.lint]
@@ -13,7 +13,7 @@ src = ["bot", "tests"]
 # 忽略本代码库长期沿用的风格项（合并 import / 分号 / 行长），避免大面积 churn。
 select = ["E", "F", "W", "B", "UP"]
 ignore = [
-    "E501", "E401", "E402", "E702", "E731", "E741",
+    "E501", "E401", "E402", "E702", "E731", "E741", "E701", "F541",
     "B008", "B006", "B011",
     "UP031", "UP035", "UP037",
 ]
@@ -21,3 +21,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # 测试脚本允许 sys.path hack + 合并 import
 "tests/*.py" = ["E402"]
+# 历史大文件（writer/app）暂不强制未用变量/括号清理，聚焦抓真 bug；新代码仍走全局基线
+"bot/writer.py" = ["F401", "F841", "UP034"]
+"app.py" = ["F401", "F841", "UP034"]
