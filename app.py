@@ -589,8 +589,11 @@ def api_book_live(key: str):
     par = _PARALLEL_RUNNING.get(key, {}).get("running")
     rw = _REWRITING.get(key, {}).get("running")
     rel = _RELEASE_RUNNING.get(key, {}).get("running")
+    osh = _ONESHOT_RUNNING.get(key, {}).get("running")
     state = st.get("state")
-    if par:
+    if osh:
+        phase = "one_shot"
+    elif par:
         phase = "parallel"
     elif rw:
         phase = "rewriting"
@@ -1127,6 +1130,68 @@ def api_parallel_log(key: str):
     """v0.6 B：该书并行创作进度（是否仍在跑 + 结果）。"""
     return {"running": bool(_PARALLEL_RUNNING.get(key, {}).get("running")),
             "result": _PARALLEL_RUNNING.get(key, {}).get("result")}
+
+# ---------- v0.7 R5：一键完稿（小白）+ 工作室总览（重度） ----------
+_ONESHOT_RUNNING = {}
+
+@app.post("/api/one-shot")
+def api_one_shot(payload: dict):
+    """v0.7 R5 一键完稿：熔炼总架构 → 写剩余章节 → 逐章评分 → 不达标自动重写(保留更好守护) → 放行门禁。
+    全程后台跑，实时进度看 /api/book-live「本书在干什么」活动卡。auto_rewrite/auto_release 可关。"""
+    key = payload.get("key"); proj = _get_project(key)
+    if not proj or not proj.plan():
+        return JSONResponse({"ok": False, "error": "项目不存在或未创建"}, status_code=404)
+    if _ONESHOT_RUNNING.get(key, {}).get("running"):
+        return {"ok": True, "running": True, "msg": "✨ 一键完稿进行中（看对话区本书活动卡）"}
+    auto_rw = bool(payload.get("auto_rewrite", True)); auto_rel = bool(payload.get("auto_release", True))
+    _ONESHOT_RUNNING[key] = {"running": True}
+    def _job():
+        try:
+            proj.log("✨ 一键完稿 ① 熔炼总架构…")
+            try: writer.ensure_blueprint(proj)
+            except Exception as e: proj.log("⚠️ 总架构熔炼失败(继续)：" + str(e))
+            proj.log("✨ ② 写剩余章节…")
+            try: writer._write_loop(proj)
+            except Exception as e: proj.log("⚠️ 写章节中断：" + str(e))
+            proj.log("✨ ③ 逐章评分…")
+            for c in (proj.plan().get("chapters") or []):
+                try: writer.score_chapter(proj, c.get("chapterNumber"))
+                except Exception: pass
+            below = [x["ch"] for x in writer.per_chapter_scores(proj) if x.get("status") == "below"]
+            if auto_rw and below:
+                proj.log(f"✨ ④ 不达标自动重写（{len(below)} 章，含『保留更好』守护）…")
+                try: writer.run_guided_rewrite(key, chapters=below, max_rounds=2)
+                except Exception as e: proj.log("⚠️ 自动重写中断：" + str(e))
+            elif auto_rw:
+                proj.log("✨ ④ 全部达标，跳过自动重写")
+            if auto_rel:
+                proj.log("✨ ⑤ 放行门禁…")
+                try: writer.run_release_gate(key)
+                except Exception as e: proj.log("⚠️ 放行门禁中断：" + str(e))
+            _ONESHOT_RUNNING[key] = {"running": False, "result": "ok"}
+            proj.log("✅ 一键完稿完成")
+        except Exception as e:
+            _ONESHOT_RUNNING[key] = {"running": False, "result": str(e)}
+            proj.log("⚠️ 一键完稿中断：" + str(e))
+    threading.Thread(target=_job, daemon=True).start()
+    return {"ok": True, "running": True,
+            "msg": "✨ 一键完稿启动：熔炼→写剩余→逐章评分→不达标自动重写→放行门禁（全程看对话区「本书在干什么」活动卡）"}
+
+@app.get("/api/studio-overview")
+def api_studio_overview():
+    """v0.7 R5 工作室总览（重度）：所有书 mini 进度 + 运行态（并行/重写/放行/一键），像任务看板。"""
+    items = []
+    for it in writer.library_all():
+        k = it.get("key")
+        items.append({
+            "key": k, "name": it.get("name"), "state": it.get("state"),
+            "done": it.get("done"), "total": it.get("total"), "quality": it.get("quality"),
+            "archived": it.get("archived"),
+            "running": bool(_PARALLEL_RUNNING.get(k, {}).get("running") or _REWRITING.get(k, {}).get("running")
+                          or _RELEASE_RUNNING.get(k, {}).get("running") or _ONESHOT_RUNNING.get(k, {}).get("running")),
+        })
+    active = [i for i in items if i["running"]]
+    return {"books": items, "active_count": len(active)}
 
 @app.get("/api/blueprint")
 def api_blueprint(key: str):

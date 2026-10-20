@@ -277,6 +277,7 @@ input,select,textarea{color-scheme:dark}
   <div id="sessions">
     <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔小说工作台</span></span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
     <div class="snew" id="snew" onclick="openOnb()"><span class="txt">＋ 新建一本书</span></div>
+    <div id="studioview" style="display:none;padding:8px 12px;border-bottom:1px solid var(--border)"></div>
     <div class="slist" id="slist"></div>
   </div>
   <div class="dragh" id="dragL"></div>
@@ -941,8 +942,8 @@ function startBookLive(key){
 }
 function stopBookLive(){ if(_blPoll){clearInterval(_blPoll);_blPoll=null;} $('booklive').style.display='none'; }
 function renderBookLive(d){
-  const ph={parallel:'⚡ 并行创作中',rewriting:'🔁 定向重写中',releasing:'🔓 校验/放行中',writing:'✍️ 创作中',done:'✅ 已成书',failed:'⚠️ 失败',idle:'💤 未运行'}[d.phase]||d.phase;
-  const ic={parallel:'⚡',rewriting:'🔁',releasing:'🔓',writing:'✍️',done:'✅',failed:'⚠️',idle:'💤'}[d.phase]||'📖';
+  const ph={one_shot:'✨ 一键完稿中',parallel:'⚡ 并行创作中',rewriting:'🔁 定向重写中',releasing:'🔓 校验/放行中',writing:'✍️ 创作中',done:'✅ 已成书',failed:'⚠️ 失败',idle:'💤 未运行'}[d.phase]||d.phase;
+  const ic={one_shot:'✨',parallel:'⚡',rewriting:'🔁',releasing:'🔓',writing:'✍️',done:'✅',failed:'⚠️',idle:'💤'}[d.phase]||'📖';
   const p=d.progress||{}; const pct=p.pct||0;
   const cur=d.current_chapter?('正在处理 <b>第 '+d.current_chapter+' 章</b>'):'';
   const log=(d.live_log||[]).slice(-4).map(l=>'<div style="opacity:.72">'+esc(l)+'</div>').join('');
@@ -1568,9 +1569,11 @@ async function selectBook(key){
   let u={};try{u=(await (await fetch('/api/usage?key='+encodeURIComponent(key))).json()).usage||{};}catch(e){}
   if(tk!==_viewToken)return;
   $('midctx').innerHTML='📖 当前书：<b>'+esc(name)+'</b> · '+esc(stt)+' · <span style="color:var(--accent)">🔢 '+((u.total_tokens||0).toLocaleString())+' token</span> · 对话/操作都针对这本书';
-  let qa='<button class="pb run" onclick="actCont()">▶ 续写</button>'
+  let qa='<button class="pb run" onclick="oneShot(\''+key+'\')" title="熔炼总架构→写剩余章节→逐章评分→不达标自动重写→放行门禁，全自动（看活动卡）">✨ 一键完稿</button>'
+    +'<button class="pb run" onclick="actCont()">▶ 续写</button>'
     +'<button class="pb" onclick="actValidate()">📝 审稿</button>'
     +'<button class="pb" onclick="actGate()">🔓 门禁</button>'
+    +'<button class="pb" onclick="toggleStudio()" title="展开/收起顶部『工作室总览』（多书任务看板）">🏆 总览</button>'
     +'<a class="pb prev" href="/api/download?key='+encodeURIComponent(key)+'" target="_blank">⬇ 下载</a>';
   if(st.awaiting_title)qa='<button class="pb run" onclick="openTitle(\''+key+'\')">✍ 选书名</button>'+qa;
   if(st.state==='completed')qa+='<button class="pb" onclick="openPreview(\''+key+'\')">👁 预览</button>';
@@ -1607,6 +1610,51 @@ function parallelWrite(){
    .then(r=>r.json()).then(j=>{bubble('bot','⚡ '+esc(j.msg||'并行创作已启动')+'（稿件区实时刷新）','');pollParallel(key);});
 }
 window.parallelWrite=parallelWrite;
+// ===== v0.7 R5：一键完稿（小白）—— 串引擎全自动，进度看「本书在干什么」活动卡 =====
+function oneShot(key){
+  key=key||curSession; if(!key)return;
+  if(!confirm('✨ 一键完稿这本书？\n将自动串起：熔炼总架构 → 写剩余章节 → 逐章评分 → 不达标自动重写（含「更好才换」守护）→ 放行门禁。\n全程后台跑，看对话区「本书在干什么」活动卡实时进度。\n\n⚠ 会消耗较多 LLM 额度，确认？'))return;
+  fetch('/api/one-shot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,auto_rewrite:true,auto_release:true})})
+   .then(r=>r.json()).then(j=>{ toast(j.msg||'✨ 一键完稿已启动','ok'); startBookLive(key); switchView('chat'); });
+}
+window.oneShot=oneShot;
+// ===== v0.7 R5：工作室总览（重度）—— 任务看板 mini 进度（多书同看） =====
+let _studioPoll=null;
+async function studioOverview(){
+  const ov=await fetch('/api/studio-overview').then(r=>r.json()).catch(()=>null);
+  const el=$('studioview'); if(!el)return; if(!ov){el.style.display='none';return;}
+  const books=(ov.books||[]).filter(b=>!b.archived).slice(0,12);
+  const card=b=>{
+    const pct=b.total?Math.round(b.done/b.total*100):0;
+    const ic={in_progress:'✍️',completed:'✅',validating:'🔓',releasing:'🔓',failed:'⚠️'}[b.state]||'📖';
+    const q=(b.quality==null)?'':(b.quality>=90?' · 达标✅':' · 分'+b.quality);
+    return '<div class="stbook" style="flex:0 0 auto;min-width:150px;max-width:180px;border:1px solid '+(b.running?'var(--accent)':'var(--border)')+';border-radius:10px;padding:8px 10px;background:'+(b.running?'rgba(108,140,255,.14)':'var(--card)')+';cursor:pointer" onclick="selectBook(\''+b.key+'\')">'+
+      '<div style="font:600 12px var(--sans);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(b.running?'⚡ ':'')+ic+' '+esc(b.name||b.key)+'</div>'+
+      '<div style="font:10.5px var(--sans);color:var(--muted);margin:3px 0">'+b.done+'/'+b.total+' 章'+q+(b.running?' · 运行中':'')+'</div>'+
+      '<div style="height:5px;background:var(--panel2);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:var(--grad-accent)"></div></div></div>';
+  };
+  el.style.display='';
+  el.innerHTML='<div style="font:11px var(--sans);color:var(--muted);margin-bottom:5px;display:flex;justify-content:space-between"><span>🏆 工作室总览 · <b style="color:var(--accent)">'+(ov.active_count||0)+'</b> 本运行中</span><span style="opacity:.6">点卡片切书</span></div>'+
+    '<div style="display:flex;gap:8px;overflow-x:auto">'+books.map(card).join('')+'</div>';
+}
+function startStudio(){ if(!_studioPoll){ studioOverview(); _studioPoll=setInterval(studioOverview,3000);} }
+function toggleStudio(){ const el=$('studioview'); if(!el)return; if(el.style.display==='none') startStudio(); else { if(_studioPoll){clearInterval(_studioPoll);_studioPoll=null;} el.style.display='none'; } }
+window.startStudio=startStudio; window.toggleStudio=toggleStudio;
+// ===== v0.7 R5：小白空态 3 步引导（#msgs 空 + 未选书时）=====
+function emptyGuide(){
+  if(msgBox.children.length>0)return;
+  const d=document.createElement('div'); d.className='msg bot'; d.id='empguide';
+  d.innerHTML='<div class="ava">🖋</div><div class="bubble" style="max-width:430px">'+
+    '<div style="font:600 14px var(--sans);color:var(--text);margin-bottom:6px">👋 三步开一本小说</div>'+
+    '<ol style="margin:0;padding-left:18px;font:12.5px/1.9 var(--sans);color:var(--muted)">'+
+    '<li><b style="color:var(--text)">① 说个主题</b>：下方输入框打字（如「都市悬疑·退休刑警复仇翻盘」），或点左侧「＋ 新建一本书」。</li>'+
+    '<li><b style="color:var(--text)">② 选书看进度</b>：左侧选一本书，对话区「📖 本书在干什么」活动卡实时显示它在写哪一章、进度、日志（Hermes 式）。</li>'+
+    '<li><b style="color:var(--text)">③ 一键完稿</b>：选中书后点「✨ 一键完稿」，自动 熔炼总架构→写剩余章→逐章评分→不达标重写→放行，全程看活动卡。</li></ol>'+
+    '<div style="margin-top:8px;font:11px var(--sans);color:var(--muted);opacity:.75">小白：直接「✨ 一键完稿」；重度：用 并行创作 / 重写工作台 / 工作室总览 精细控制。</div>'+
+    '</div>';
+  msgBox.appendChild(d); msgBox.scrollTop=msgBox.scrollHeight;
+}
+window.emptyGuide=emptyGuide;
 let _ppPoll={};
 function pollParallel(key){
   if(_ppPoll[key])clearInterval(_ppPoll[key]);
@@ -2011,7 +2059,7 @@ function initDrag(){
 window.initDrag=initDrag;
 
 refreshProjects();
-renderSessions(); initDrag();
+renderSessions(); initDrag(); startStudio(); emptyGuide();   // v0.7 R5：工作室总览 + 小白空态引导
 (function(){cxApplyAll();var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500); if(q.get('onb'))setTimeout(()=>openOnb(),250); if(q.get('bkt'))setTimeout(()=>{const m=document.querySelector('[data-menu]');if(m){m.click();setTimeout(()=>{document.title='BKT items='+(_bkPanel?_bkPanel.querySelectorAll('div').length:0);},250);}else document.title='BKT no-anchor';},900); if(q.get('cxt'))setTimeout(async()=>{try{await openOnb();await new Promise(r=>setTimeout(r,250));const out={};['ob_chap','ob_hand','ob_prov'].forEach(id=>{const cs=$(id);out[id]={hidden:cs.style.display==='none',wrapped:!!cs._cxd,btn:!!cs._cxbtn};if(cs._cxbtn){cs._cxbtn.click();out[id].panelOpen=cs._cxpanel.style.display==='block';out[id].opts=cs._cxpanel.querySelectorAll('div').length;const op=cs._cxpanel.querySelectorAll('div');if(op[1]){op[1].click();out[id].valAfter=cs.value;}}});document.title='CXT '+JSON.stringify(out);}catch(e){document.title='CXT_ERR '+e;}}),50;})();
 loadProviders();
 loadProviderPicker();
