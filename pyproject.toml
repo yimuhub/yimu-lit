@@ -1,0 +1,23 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["bot", "tests"]
+
+[tool.ruff.lint]
+# 大厂基线：抓真 bug（F 未定义/未用、B bugbear、UP 语法升级），
+# 忽略本代码库长期沿用的风格项（合并 import / 分号 / 行长），避免大面积 churn。
+select = ["E", "F", "W", "B", "UP"]
+ignore = [
+    "E501", "E401", "E402", "E702", "E731", "E741",
+    "B008", "B006", "B011",
+    "UP031", "UP035", "UP037",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试脚本允许 sys.path hack + 合并 import
+"tests/*.py" = ["E402"]

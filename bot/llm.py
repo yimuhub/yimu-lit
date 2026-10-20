@@ -75,11 +75,61 @@ def _llm_timeout(cfg, stage, prov):
             pass
     return base
 
+# ---------- v0.7 R3：LLM 内容缓存（大厂标准：确定性 prompt 复用，省 token + 提速；cfg llm_cache 可关） ----------
+import hashlib
+_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_MAX = 256
+
+def _read_global_cache_default():
+    """模块级读一次全局 <ROOT>/config.json 的 defaults.llm_cache（缺省 False）。"""
+    try:
+        gc = json.load(open(os.path.join(providers.ROOT, "config.json"), encoding="utf-8"))
+        return bool((gc.get("defaults") or {}).get("llm_cache", False))
+    except Exception:
+        return False
+
+_GLOBAL_CACHE_DEFAULT = _read_global_cache_default()
+
+def _cache_key(model, temperature, json_mode, msgs):
+    try:
+        blob = json.dumps([model, temperature, json_mode, msgs], ensure_ascii=False, sort_keys=True)[:6000]
+    except Exception:
+        return None
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+def _cache_get(k):
+    if not k:
+        return None
+    with _CACHE_LOCK:
+        return _CACHE.get(k)
+
+def _cache_set(k, v):
+    if not k:
+        return
+    with _CACHE_LOCK:
+        if len(_CACHE) >= _CACHE_MAX:
+            _CACHE.pop(next(iter(_CACHE)), None)   # 近似 LRU（插入序）
+        _CACHE[k] = v
+
+def _cache_enabled(cfg, use_cache):
+    """use_cache 显式参数优先；否则读 cfg.defaults.llm_cache；再否则回落全局 providers/config.json
+    defaults.llm_cache（每书 cfg 通常不含该键，需读全局默认，否则生产路径缓存不生效）；默认关。"""
+    if use_cache is not None:
+        return bool(use_cache)
+    if ((cfg or {}).get("defaults") or {}).get("llm_cache") is not None:
+        return bool((cfg or {}).get("defaults")["llm_cache"])
+    return bool(_GLOBAL_CACHE_DEFAULT)
+
 
 def _trace_prov(prov, model):
     """可观测性：记录每次调用命中的供应商/模型（stderr，不影响返回）。"""
     print(f"[llm] provider={prov.get('id')} model={model} base={prov.get('base_url')}",
           file=sys.stderr, flush=True)
+
+def _trace_cache(hit: bool, model):
+    """v0.7 R3：可观测性：标记 LLM 缓存命中/写入（stderr）。"""
+    print(f"[llm] cache={'HIT' if hit else 'MISS/SET'} model={model}", file=sys.stderr, flush=True)
 
 def _max_global():
     """v0.5 M4：全局并发上限（config.json defaults.max_global_agents，缺省 4）。"""
@@ -89,11 +139,12 @@ def _max_global():
     except Exception:
         return 4
 
-def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None, agent=None):
+def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None, agent=None, use_cache=None):
     """一次性 chat 调用，返回文本。带简单重试。cfg 决定用哪个供应商/模型；
     stage（planning/writing/review）若配置了 stage_models 则按环节选模型（P4）。
     agent（v0.5 M4）：子 Agent 岗位（planner/writer/reviewer/rewriter/title）——优先 agent_models 绑定。
-    v0.3 P4：按模型规则引擎套 上下文/max_tokens/RPM/429退避/extra_body。v0.5：跨线程 ConcurrencyGuard 限并发。"""
+    v0.3 P4：按模型规则引擎套 上下文/max_tokens/RPM/429退避/extra_body。v0.5：跨线程 ConcurrencyGuard 限并发。
+    v0.7 R3：use_cache（None=按 cfg.defaults.llm_cache）——确定性 prompt 命中缓存直接返回（省 token+提速）。"""
     from . import model_rules
     if agent is None and stage:          # v0.5 M4：未显式指定 agent 时按 stage 推导岗位，agent_models 绑定即生效
         agent = {"planning": "planner", "writing": "writer", "review": "reviewer"}.get(stage, stage)
@@ -121,6 +172,13 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = "Bearer %s" % key
+    # v0.7 R3：确定性 prompt 缓存命中 → 直接返回（不调 LLM、不记账、不占并发）
+    _ce = _cache_enabled(cfg, use_cache)
+    _ck = _cache_key(body["model"], body["temperature"], json_mode, _msgs) if _ce else None
+    _hit = _cache_get(_ck)
+    if _hit is not None:
+        _trace_cache(True, model)
+        return _hit
     last_err = None
     _throttle(cfg)                      # P4/P5：调用前平滑节奏（防 429）
     model_rules.pace_rpm(rules)         # v0.3 P4：按模型规则的 RPM 限流
@@ -144,7 +202,9 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
             _bk = getattr(_TL, "book", None)
             if _bk and _u:                     # v0.3.x：回读 usage，归集到该书 token 账本
                 _record_usage(_bk, getattr(_TL, "stage", "writing") or "writing", _u)
-            return data["choices"][0]["message"]["content"]
+            _content = data["choices"][0]["message"]["content"]
+            _cache_set(_ck, _content)          # v0.7 R3：存缓存（成功后）
+            return _content
         except LLMError as e:
             last_err = e
         except Exception as e:
@@ -152,9 +212,10 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
             time.sleep(3)
     raise last_err
 
-def chat_json(messages, temperature=None, cfg=None, stage=None, agent=None):
-    """调用并解析 JSON（容忍模型夹带 markdown 代码块）。cfg 决定供应商/模型；stage 按环节选模型；agent（v0.5）子 Agent 岗位。"""
-    raw = chat(messages, json_mode=True, temperature=temperature, cfg=cfg, stage=stage, agent=agent)
+def chat_json(messages, temperature=None, cfg=None, stage=None, agent=None, use_cache=None):
+    """调用并解析 JSON（容忍模型夹带 markdown 代码块）。cfg 决定供应商/模型；stage 按环节选模型；agent（v0.5）子 Agent 岗位。
+    v0.7 R3：use_cache 透传 chat()（确定性 prompt 命中缓存直接返回）。"""
+    raw = chat(messages, json_mode=True, temperature=temperature, cfg=cfg, stage=stage, agent=agent, use_cache=use_cache)
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.strip("`")
