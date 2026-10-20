@@ -15,6 +15,8 @@ SESSIONS = {}
 PROJECT_INDEX = {}  # key -> writer.Project（后台写作项目）
 
 def _get_project(key):
+    if not isinstance(key, str) or not key:
+        return None   # 缺 key / 非 str → 交调用方 404，不再 500（os.path.join(dir, None) 会 TypeError）
     if key not in PROJECT_INDEX:
         pdir = os.path.join(writer.PROJECTS_DIR, key)
         if os.path.isdir(pdir):

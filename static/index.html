@@ -269,6 +269,12 @@ input,select,textarea{color-scheme:dark}
 @keyframes skel{0%{background-position:0 0}100%{background-position:200% 0}}
 .gcancel{margin-top:8px;font-size:11px;background:var(--panel2);border:1px solid var(--border);color:var(--err);border-radius:8px;padding:4px 10px;cursor:pointer}
 .pb.spin::after{content:'…';opacity:.7}
+/* v0.7.x：LLM 慢动作『活体进度』——转圈环 + 秒数跳动，防"看起来冻住/误点重复" */
+.byspin{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;vertical-align:-2px;margin-right:6px;animation:byspin .8s linear infinite}
+@keyframes byspin{to{transform:rotate(360deg)}}
+.busymsg{font:12px var(--sans);color:var(--muted);line-height:1.5}
+.busymsg b{color:var(--text)}
+button:disabled{cursor:not-allowed;opacity:.55}
 </style>
 </head>
 <body>
@@ -579,6 +585,22 @@ async function loadBkChat(key){
   ms.slice(-80).forEach(m=>{ bubble(m.who||'bot', fmt(m.text||''), '', null); });
 }
 function esc(s){s=(s==null)?'':String(s);return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+// v0.7.x：LLM 慢动作「活体进度」引擎——转圈+已等待秒数+防双击。用法：
+//   const busy=busyStart('create',$('oberr'),'📐 规划中（选题→人物→大纲→细纲 + 书名候选）');
+//   ... await 慢请求 ...（成功/失败 finally 里）busy.stop();
+const _busy={};
+function busyStart(id, el, base, btn){
+  if(_busy[id]) _busy[id].stop();                 // 防同键重入（双击/连点）
+  const t0=Date.now(); let stopped=false;
+  const show=()=>{ if(stopped||!el)return; const s=Math.round((Date.now()-t0)/1000);
+    el.innerHTML='<span class="busymsg"><span class="byspin"></span>'+esc(base)+' · 已等待 <b>'+s+'</b> 秒…'+(s>=40?'（本地模型较慢，后台仍在生成，别重复点）':'')+'</span>'; };
+  show(); const iv=setInterval(show,1000);
+  if(btn){ btn.dataset._bt=btn.textContent; btn.disabled=true; }
+  const stop=()=>{ stopped=true; clearInterval(iv); delete _busy[id]; if(btn){ btn.disabled=false; if(btn.dataset._bt)btn.textContent=btn.dataset._bt; } };
+  _busy[id]={stop}; return {stop};
+}
+// 快速判断某键是否在跑（供按钮 onclick 前置守卫，避免连点）
+function isBusy(id){ return !!_busy[id]; }
 // v0.2.1 UX：轻提示 / 骨架 / 模态统一关闭
 function toast(msg,type){
   const t=document.createElement('div'); t.className='toast '+(type||''); t.innerHTML=msg;
@@ -818,9 +840,12 @@ function syncChips(){ $('libstatus').querySelectorAll('.libchip').forEach(c=>c.c
 // ===== 审查后重写 =====
 let RWBRIEF=null, _rwT=0;
 async function runRewritePlan(){
-  if(!PV_KEY)return;
-  $('rwbox').innerHTML='<div class="rwcard"><h4>🔁 生成重写方向</h4><div class="rwnote">正在分析 13/14/L1 与最低维度（约 30-90 秒）…</div></div>';
-  let b; try{ b=await (await fetch('/api/rewrite-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:PV_KEY})})).json(); }catch(e){$('rwbox').innerHTML='';return;}
+  if(!PV_KEY||isBusy('rwplan'))return;
+  $('rwbox').innerHTML='<div class="rwcard"><h4>🔁 生成重写方向</h4><span id="rwp_busy" class="rwnote">正在分析 13/14/L1 与最低维度…</span></div>';
+  const busy=busyStart('rwplan',$('rwp_busy'),'🔁 分析重写方向（五角色审校 + 定位最低维度）');
+  let b;
+  try{ b=await (await fetch('/api/rewrite-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:PV_KEY})})).json(); }catch(e){busy.stop();$('rwbox').innerHTML='<div class="rwcard"><div class="rwnote" style="color:#f59e0b">⚠️ 加载重写方向失败（'+esc(e.message||e)+'），稍后重试。</div></div>';return;}
+  busy.stop();
   if(!b||b.before_total==null){$('rwbox').innerHTML='';return;}
   RWBRIEF=b;
   const chaps=(b.chapters||[]).map(c=>c.chapter);
@@ -858,10 +883,14 @@ async function openRewriteWorkbench(key, preChapters){
   _rwKey=key; $('rwname').textContent='🔁 重写工作台';
   $('rwboard').style.display='none'; $('rwresult').style.display='none';
   $('rwsetup').style.display=''; $('rwgo_row').style.display='flex';
-  $('rwchapters').innerHTML='<span class="rwnote">正在分析重写方向（约 30-90 秒，读 13/14/L1 + 最低维度）…</span>';
+  $('rwchapters').innerHTML='<span id="rwb_busy" class="rwnote">正在分析重写方向…</span>';
   $('rwdims').innerHTML=''; $('rwctx').textContent='';
-  let b; try{ b=await (await fetch('/api/rewrite-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})})).json(); }
-  catch(e){ $('rwchapters').innerHTML='<span class="rwnote" style="color:#f59e0b">加载重写方向失败（可稍后重试）</span>'; return; }
+  if(isBusy('rwplan'))return;
+  const busy=busyStart('rwplan',$('rwb_busy'),'🔁 分析重写方向（读 13/14/L1 + 最低维度）');
+  let b;
+  try{ b=await (await fetch('/api/rewrite-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})})).json(); }
+  catch(e){ busy.stop(); $('rwchapters').innerHTML='<span class="rwnote" style="color:#f59e0b">⚠️ 加载重写方向失败（'+esc(e.message||e)+'），稍后重试</span>'; return; }
+  busy.stop();
   if(!b||b.before_total==null){ $('rwchapters').innerHTML='<span class="rwnote">（该书暂无可分析内容）</span>'; }
   const planCh=(b.chapters&&b.chapters.length)?b.chapters.map(c=>c.chapter):[];
   const dims=(b.weak_dims||[]).map(d=>d.dim);
@@ -1275,10 +1304,13 @@ async function submitOnb(){
     style_id:($('ob_style').value==='__none'?'':$('ob_style').value)||'',
     cfg_overrides:{defaults:{release_gate:$('ob_gate').checked, p5_pipeline:$('ob_p5').checked}}};
   if($('ob_title').value.trim()) payload.title=$('ob_title').value.trim();
-  $('oberr').textContent='📐 规划中（生成候选，约 30-90 秒）…';
-  let r; try{ r=await (await fetch('/api/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
-  catch(e){ $('oberr').textContent='⚠️ '+e; return; }
-  if(r.error){ $('oberr').textContent='⚠️ '+r.error; return; }
+  if(isBusy('create'))return;                       // 防双击/连点（本地模型慢时尤易误点）
+  const busy=busyStart('create',$('oberr'),'📐 规划中（选题→人物→大纲→细纲 + 生成 8 个候选书名）',$('obgo'));
+  let r;
+  try{ r=await (await fetch('/api/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json(); }
+  catch(e){ busy.stop(); $('oberr').textContent='⚠️ '+(e.message||e)+'——开书超时/失败（本地模型响应慢或网络中断）。可稍后重试，或在供应商里换成 Agnes 公网再开；'+($('oberr').textContent?'':''); return; }
+  if(r.error){ busy.stop(); $('oberr').textContent='⚠️ '+r.error; return; }
+  busy.stop();
   closeOnb(); refreshProjects();
   if(r.awaiting_title){ openTitle(r.key); }
   else { curKey=r.key; curSession=r.key; startPolling(); bubble('bot','📐 《'+payload.title+'》开写中（放行门禁 '+(payload.cfg_overrides.defaults.release_gate?'开':'关')+'）…'); switchView('ms'); loadManuscript(r.key); }
@@ -1384,9 +1416,13 @@ async function submitDistill(){
   const text=$('dl_text').value.trim(), urls=$('dl_urls').value.split('\n').map(s=>s.trim()).filter(Boolean);
   if(!name){ $('dlerr').textContent='⚠️ 请给风格起个名字'; return; }
   if(!text && !urls.length){ $('dlerr').textContent='⚠️ 请粘贴文本或填网址（至少一样）'; return; }
-  $('dlerr').textContent='✨ 蒸馏中（约 10-30 秒）…';
-  let j; try{ j=await (await fetch('/api/distill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,genre,text,urls})})).json(); }catch(e){ $('dlerr').textContent='⚠️ '+e; return; }
-  if(!j.ok){ $('dlerr').textContent='⚠️ '+(j.note||j.error||'蒸馏失败'); return; }
+  if(isBusy('distill'))return;
+  const busy=busyStart('distill',$('dlerr'),'✨ 蒸馏中（抽取 7 维写作 DNA + 生成指纹词）',$('dlgo'));
+  let j;
+  try{ j=await (await fetch('/api/distill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,genre,text,urls})})).json(); }
+  catch(e){ busy.stop(); $('dlerr').textContent='⚠️ '+(e.message||e)+'（蒸馏超时/失败，可重试）'; return; }
+  if(!j.ok){ busy.stop(); $('dlerr').textContent='⚠️ '+(j.note||j.error||'蒸馏失败'); return; }
+  busy.stop();
   $('dlerr').textContent=''; closeDistill(); toast('✨ 已蒸馏风格「'+name+'」（'+(j.style?.fingerprint_words?.length||0)+' 指纹词）','ok');
   loadStyleLib(); fillOnbStyle();
 }
@@ -1394,8 +1430,13 @@ window.submitDistill=submitDistill;
 (function(){ const b=$('btn-distill'); if(b)b.onclick=openDistill; const g=$('dlgo'); if(g)g.onclick=submitDistill; })();
 
 async function openTitle(key){
-  TMKEY=key; $('titlemodal').classList.add('show'); $('tmcards').innerHTML='<div class="rwnote">加载候选…</div>';
-  let d; try{ d=await (await fetch('/api/titles?key='+encodeURIComponent(key))).json(); }catch(e){ $('tmcards').innerHTML='⚠️ 加载失败'; return; }
+  TMKEY=key; $('titlemodal').classList.add('show');
+  $('tmcards').innerHTML='<div class="rwnote"><span id="tm_busy">生成候选书名中…</span></div>';
+  if(isBusy('titles'))return;
+  const busy=busyStart('titles',$('tm_busy'),'✍️ 生成 8 个候选书名');
+  let d;
+  try{ d=await (await fetch('/api/titles?key='+encodeURIComponent(key))).json(); }catch(e){ busy.stop(); $('tmcards').innerHTML='<div class="rwnote" style="color:#f59e0b">⚠️ 加载失败（'+esc(e.message||e)+'），稍后重试</div>'; return; }
+  busy.stop();
   TMCANDS=d.candidates||[]; $('tmcustom').value='';
   const L='ABCDEFGHIJ';
   $('tmcards').innerHTML=(TMCANDS.length?TMCANDS:[{title:'未命名'}]).map((c,i)=>
