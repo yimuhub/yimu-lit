@@ -15,9 +15,20 @@ class Project:
 
     def log(self, msg):
         with self.lock:
-            self.events.append(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
+            line = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}"
+            self.events.append(line)
             if len(self.events) > 200:
                 self.events.pop(0)
+            # v0.7 R4：持久化逐条过程日志（供 /api/book-live live 卡 + 断点排障；封顶 ~300 行）
+            try:
+                lf = os.path.join(self.path, "运行日志.txt")
+                with open(lf, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+                lines = open(lf, encoding="utf-8").read().splitlines()
+                if len(lines) > 300:
+                    open(lf, "w", encoding="utf-8").write("\n".join(lines[-300:]) + "\n")
+            except Exception:
+                pass
 
     def plan(self):
         p = os.path.join(self.path, "02-写作计划.json")
@@ -1182,21 +1193,63 @@ def _top_targets(brief, max_rounds):
     cs = [c["chapter"] for c in brief["chapters"]]
     return cs[:max_rounds] if cs else []
 
+# ---------- v0.7 R2：重写工作台 = 逐章实时进度 + 可取消（解决"点了重写没反应"）----------
+_RW_PROGRESS = {}   # key -> {running,started_at,total,done,cancelled,per_chapter:[{ch,status,before,after,orig_words,new_words,ok}],result}
+_RW_CANCEL = set()  # 请求取消的重写 key（逐章检查点生效）
+
+def rewrite_progress(key):
+    """R2：返回该书重写 job 的实时逐章进度（纯读，供 /api/rewrite-progress 轮询）。"""
+    return _RW_PROGRESS.get(key)
+
+def cancel_rewrite(key):
+    """R2：请求取消该书重写（下一检查点停，已写章保留）。"""
+    _RW_CANCEL.add(key)
+    _RW_PROGRESS.get(key, {}).update(cancelled=True)
+    return True
+
+def _pset(key, **kw):
+    _RW_PROGRESS.setdefault(key, {"running": True, "started_at": int(datetime.datetime.now().timestamp()),
+                                  "total": 0, "done": 0, "cancelled": False, "per_chapter": [], "result": None})
+    _RW_PROGRESS[key].update(kw)
+
+def _pch_before(proj, ch_no):
+    try:
+        cs = (proj.plan().get("meta") or {}).get("chapter_scores", {}) or {}
+        return (cs.get(str(ch_no)) or {}).get("score")
+    except Exception:
+        return None
+
 def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_over=None):
-    """执行『审查后定向重写』：把要求书逐条带进目标章重写，重评出前后对比，写 16-重写记录.md。"""
+    """执行『审查后定向重写』：把要求书逐条带进目标章重写，重评出前后对比，写 16-重写记录.md。
+    v0.7 R2：逐章实时进度写 _RW_PROGRESS[key]（供 /api/rewrite-progress 轮询）+ 支持取消（_RW_CANCEL）。"""
     proj = Project(os.path.join(PROJECTS_DIR, key), key)
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
+    _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
     plan = proj.plan()
     cfg = dict((plan.get("config") or {}))
     cfg.update(cfg_over or {})
     brief = rewrite_brief(proj, cfg)
     targets = chapters or _top_targets(brief, int(_cfg_defaults().get("max_rewrite_rounds", max_rounds)))
     chmap = {c["chapterNumber"]: c for c in plan.get("chapters", [])}
+    # R2：初始化逐章进度（before 分来自 meta，免费）
+    _pset(key, running=True, total=len(targets), done=0, cancelled=False, result=None,
+          per_chapter=[{"ch": n, "status": "queued", "before": _pch_before(proj, n), "after": None,
+                        "orig_words": None, "new_words": None, "ok": False} for n in targets])
     changed = []
     for n in targets:
+        if key in _RW_CANCEL:           # R2：取消检查点
+            for p in _RW_PROGRESS[key]["per_chapter"]:
+                if p["status"] == "queued":
+                    p["status"] = "skipped"
+            _RW_PROGRESS[key].update(cancelled=True, running=False, result={"cancelled": True})
+            proj.log(f"⏹ 第{key} 重写已取消（已写 {len(changed)} 章保留，余章跳过）")
+            return {"cancelled": True}
+        p = next((x for x in _RW_PROGRESS[key]["per_chapter"] if x["ch"] == n), None)
+        if p: p["status"] = "rewriting"
         ch = chmap.get(n)
         fp = os.path.join(proj.path, ch["filePath"]) if ch and ch.get("filePath") else None
         if not fp or not os.path.exists(fp):
+            if p: p["status"] = "skipped"
             continue
         orig = open(fp, encoding="utf-8").read()
         ctx = _build_ctx(proj, ch)
@@ -1205,13 +1258,17 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
         reqs = [f"【全局主攻】{g}" for g in brief["global_directions"]]
         reqs += [f"【第{n}章】{r}" for r in next((c["requirements"] for c in brief["chapters"] if c["chapter"] == n), [])]
         if dimensions:
-            reqs += [f"【重点维度】{d}" for d in dimensions]
+            reqs += [f"【重点维度】{d}" for d in dimensions]      # R2：只带所选维度
         new = workflow.guided_rewrite(orig, "\n".join(reqs), cons, cfg)
         new = _clean_chapter_text(new or "")
         if new.strip():
             open(fp, "w", encoding="utf-8").write(new)
             changed.append({"chapter": n, "injected": reqs, "orig_words": len(orig), "new_words": len(new)})
-    # 重评
+            if p: p.update(status="done", ok=True, orig_words=len(orig), new_words=len(new))
+        else:
+            if p: p.update(status="done", ok=False, new_words=0)
+        _RW_PROGRESS[key]["done"] = len(changed)
+    # 重评（保留：书级 before→after + 逐章 after）
     book = workflow.list_chapters_text(proj.path) or ""
     l1 = continuity.run_project(proj.path, min_words=1).get("findings", [])
     review2 = workflow.five_role_review(book, cfg, l1) or {}
@@ -1230,12 +1287,18 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     rec += [f"- **{d}**：{_DIM_ADVICE.get(d, '')}" for d in weak2] or ["- （无明显短板）"]
     with open(os.path.join(proj.path, "16-重写记录.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(rec))
-    # v0.5 M1：改写后逐章重评（刷新 meta.chapter_scores）
+    # v0.5 M1 + v0.7 R2：改写后逐章重评（刷新 meta + 回填进度 after）
     for c in changed:
         try:
-            score_chapter(proj, c["chapter"])
+            af = score_chapter(proj, c["chapter"])
+            p = next((x for x in _RW_PROGRESS[key]["per_chapter"] if x["ch"] == c["chapter"]), None)
+            if p: p["after"] = af
         except Exception:
             pass
+    _RW_PROGRESS[key].update(running=False, result={"before": brief["before_total"], "after": after, "delta": delta,
+                                                    "changed": changed, "pass": after >= brief["pass_line"],
+                                                    "weak_after": weak2, "brief": brief,
+                                                    "per_chapter": per_chapter_scores(proj)})
     proj.log(f"🔁 定向重写 {len(changed)} 章：{brief['before_total']} → {after}（{delta:+.1f}）")
     return {"before": brief["before_total"], "after": after, "delta": delta,
             "changed": changed, "pass": after >= brief["pass_line"],

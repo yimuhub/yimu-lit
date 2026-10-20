@@ -558,6 +558,74 @@ def api_rewrite(payload: dict):
     threading.Thread(target=_job, daemon=True).start()
     return {"ok": True, "running": True, "msg": "🔁 审查后定向重写中…（约 2-5 分钟，把要求书逐条带进目标章）"}
 
+@app.get("/api/rewrite-progress")
+def api_rewrite_progress(key: str):
+    """v0.7 R2：重写 job 逐章实时进度（前端进度板轮询；无 job 时返回空结构）。"""
+    p = writer.rewrite_progress(key)
+    return p or {"running": False, "total": 0, "done": 0, "cancelled": False, "per_chapter": [], "result": None}
+
+@app.post("/api/rewrite-cancel")
+def api_rewrite_cancel(payload: dict):
+    """v0.7 R2：取消该书重写（下一检查点停，已写章保留）。"""
+    key = payload.get("key")
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    writer.cancel_rewrite(key)
+    _REWRITING[key] = {"running": False, "result": {"cancelled": True}}
+    return {"ok": True, "msg": "已请求取消（下一检查点停，已写章保留）"}
+
+@app.get("/api/book-live")
+def api_book_live(key: str):
+    """v0.7 R4：对话区「本书在干什么」live 卡数据源（纯读、无 LLM、按书隔离）。
+    聚合 阶段/当前章/进度/实时日志，前端 1.5s 轮询原地刷新（Hermes 式 live 工具步骤）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    st = proj.status()
+    plan = proj.plan() or {}
+    chs = plan.get("chapters") or []
+    inprog = [c.get("chapterNumber") for c in chs if c.get("status") == "in_progress"]
+    cur_ch = (max(inprog) if inprog else min(st.get("done", 0) + 1, st.get("total", 0)))
+    par = _PARALLEL_RUNNING.get(key, {}).get("running")
+    rw = _REWRITING.get(key, {}).get("running")
+    rel = _RELEASE_RUNNING.get(key, {}).get("running")
+    state = st.get("state")
+    if par:
+        phase = "parallel"
+    elif rw:
+        phase = "rewriting"
+    elif rel or state in ("validating", "releasing"):
+        phase = "releasing"
+    elif st.get("running") and state in ("in_progress", "unknown"):
+        phase = "writing"
+    elif state == "completed":
+        phase = "done"
+    elif state == "failed":
+        phase = "failed"
+    else:
+        phase = "idle"
+    total = st.get("total", 0) or 0
+    done = st.get("done", 0) or 0
+    # R4：live_log 优先持久化 运行日志.txt（跨重启可用），无则内存 events
+    live = []
+    try:
+        lf = os.path.join(proj.path, "运行日志.txt")
+        if os.path.exists(lf):
+            live = open(lf, encoding="utf-8").read().splitlines()[-8:]
+    except Exception:
+        live = []
+    if not live:
+        live = (proj.events or [])[-8:]
+    return {
+        "key": key, "name": st.get("name"), "phase": phase, "state": state,
+        "current_chapter": cur_ch,
+        "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0},
+        "running": bool(st.get("running") or par or rw or rel),
+        "paused": st.get("paused"), "parallel": bool(par), "rewriting": bool(rw), "releasing": bool(rel),
+        "live_log": live,
+        "updated_at": int(time.time()),
+    }
+
 @app.post("/api/cmd")
 def api_cmd(payload: dict):
     """v0.5 M3：把中间台自然语言指令解析成结构化动作，前端照做（改写某段/某章/全书/看评分/聊天）。"""

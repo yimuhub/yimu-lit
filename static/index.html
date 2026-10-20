@@ -226,6 +226,11 @@ input,select,textarea{color-scheme:dark}
 #libsort{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;padding:5px 8px;color:var(--text);font-size:12px;outline:none;flex:1;min-width:0}
 #liborder{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px}
 .libchip{font-size:10.5px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);border-radius:20px;padding:3px 9px;cursor:pointer;transition:.15s;white-space:nowrap}
+/* v0.7 R2：重写工作台 章节/维度 复选片 */
+.rwpick{font-size:11px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:4px 9px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:.15s}
+.rwpick:hover{border-color:var(--accent)}
+.rwpick input{margin:0;accent-color:var(--accent);cursor:pointer}
+.rwbar,.rwrows{transition:.3s}
 .libchip.on{color:var(--text);border-color:var(--accent);background:rgba(108,140,255,.16)}
 #libstats{padding:0 14px;margin:0 0 8px;font-size:10.5px;color:var(--muted);line-height:1.7;border-bottom:1px dashed var(--border);padding-bottom:8px}
 #libstats b{color:var(--text)}
@@ -285,6 +290,7 @@ input,select,textarea{color-scheme:dark}
       <button id="onbbtn" onclick="openOnb()" style="border:none;border-radius:11px;padding:9px 16px;font-size:13px;font-weight:600;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer;white-space:nowrap">✍ 开书向导</button>
     </div>
     <div id="midctx">📖 未选中书 · 直接对话开新书，或从左侧选一本书</div>
+    <div id="booklive" style="display:none"></div>
     <div id="quickacts"></div>
     <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="msprog" style="margin-left:auto"></span></div>
     <div id="msgs"></div>
@@ -430,7 +436,7 @@ input,select,textarea{color-scheme:dark}
       <div style="display:flex;gap:8px;align-items:center">
         <select id="pvch"></select>
         <button id="pvval" class="pb prev" onclick="runValidate()" title="对全书跑 确定性引擎 + 五角色审校 + 百分制达标判定">📝 审稿</button>
-        <button id="pvrw" class="pb run" onclick="runRewritePlan()" title="未达标时按审查结论+重写方向定向重写">🔁 重写</button>
+        <button id="pvrw" class="pb run" onclick="openRewriteWorkbench(PV_KEY)" title="选章节+维度定向重写，逐章实时进度、可取消">🔁 重写</button>
         <button id="pvgate" class="pb run" onclick="runReleaseGate()" title="未达标时自动带要求重写到 ≥90 才放行">🔓 放行门禁</button>
         <a id="pvdow" class="pb prev" href="#" target="_blank">⬇ 下载</a>
         <button class="pvclose" onclick="closePvModal()">✕ 关闭</button>
@@ -508,6 +514,32 @@ input,select,textarea{color-scheme:dark}
   <div class="mhint">写任何一章前，所有 Agent 都先读这份唯一蓝图（世界观/人物/全章节拍/文风/连续性），并行写章才又快又一致。</div>
   <div id="bpbody" style="margin:4px 0 8px"></div>
   <div class="mactions"><button class="mok" onclick="showBlueprint()">刷新</button><button class="mcancel" onclick="document.getElementById('bpmodal').classList.remove('show')">关闭</button></div>
+</div></div>
+<!-- v0.7 R2：重写工作台（选章+选维 → 触发 → 逐章实时进度板 → 可取消 → 结果卡） -->
+<div id="rwmodal" class="modal"><div class="mbox" style="width:680px">
+  <h3 id="rwname">🔁 重写工作台</h3>
+  <div class="mhint" id="rwctx"></div>
+  <!-- 选章 + 选维 -->
+  <div id="rwsetup">
+    <div style="font:11px var(--sans);color:var(--muted);margin:6px 0 4px">① 选要重写的章节（默认未达标章）</div>
+    <div id="rwchapters" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px"></div>
+    <div style="font:11px var(--sans);color:var(--muted);margin:6px 0 4px">② 只按这些维度改写（默认勾最弱维度，可增减 · 选得越聚焦越快越省）</div>
+    <div id="rwdims" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+  </div>
+  <!-- 触发 -->
+  <div class="mactions" id="rwgo_row" style="margin-top:10px">
+    <button class="mok" id="rwgo2" style="background:var(--accent);color:#0b1020">🔁 开始定向重写（带所选章节+维度）</button>
+    <button class="mcancel" onclick="document.getElementById('rwmodal').classList.remove('show')">关闭</button>
+  </div>
+  <!-- 进度板（触发后显示） -->
+  <div id="rwboard" style="display:none">
+    <div id="rwboard_head" style="font:12px var(--sans);color:var(--text);margin:10px 0 6px"></div>
+    <div id="rwbar" style="height:8px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:8px"><div id="rwbar_fill" style="height:100%;width:0%;background:var(--grad-accent);transition:width .4s"></div></div>
+    <div id="rwrows" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;margin-bottom:8px"></div>
+    <div class="mactions" style="margin-top:4px"><button class="mcancel" id="rwcancel">⏹ 取消（已写章保留）</button><button class="mok" style="opacity:.6;pointer-events:none">完成后自动出结果</button></div>
+  </div>
+  <!-- 结果 -->
+  <div id="rwresult" style="display:none"></div>
 </div></div>
 <script>
 const $=id=>document.getElementById(id);
@@ -819,6 +851,116 @@ function pollRewrite(){
     }catch(e){}
   },6000);
 }
+// ===== v0.7 R2：重写工作台（选章+选维 → 逐章实时进度板 → 取消 → 结果）=====
+let _rwBoardPoll=null, _rwKey=null;
+async function openRewriteWorkbench(key, preChapters){
+  _rwKey=key; $('rwname').textContent='🔁 重写工作台';
+  $('rwboard').style.display='none'; $('rwresult').style.display='none';
+  $('rwsetup').style.display=''; $('rwgo_row').style.display='flex';
+  $('rwchapters').innerHTML='<span class="rwnote">正在分析重写方向（约 30-90 秒，读 13/14/L1 + 最低维度）…</span>';
+  $('rwdims').innerHTML=''; $('rwctx').textContent='';
+  let b; try{ b=await (await fetch('/api/rewrite-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})})).json(); }
+  catch(e){ $('rwchapters').innerHTML='<span class="rwnote" style="color:#f59e0b">加载重写方向失败（可稍后重试）</span>'; return; }
+  if(!b||b.before_total==null){ $('rwchapters').innerHTML='<span class="rwnote">（该书暂无可分析内容）</span>'; }
+  const planCh=(b.chapters&&b.chapters.length)?b.chapters.map(c=>c.chapter):[];
+  const dims=(b.weak_dims||[]).map(d=>d.dim);
+  const cands=[...new Set([...(preChapters||[]), ...planCh])];          // 可选章节（预选 ∪ 计划待修）
+  const selDef=(preChapters===null)?[]:((preChapters&&preChapters.length)?preChapters:planCh);  // 默认勾：预选>计划；null=全书(不勾)
+  $('rwchapters').innerHTML=(cands.length?cands:(selDef.length?selDef:[])).map(c=>
+    '<label class="rwpick"><input type="checkbox" class="rwch" value="'+c+'" '+((selDef.includes(c))?'checked':'')+'> 第'+c+'章</label>').join('')
+    || '<span class="rwnote">（无定位到章的待修项 · 全不勾 = 触发时传 null=重写全书弱章）</span>';
+  $('rwdims').innerHTML=(dims.length?dims:[]).map(d=>
+    '<label class="rwpick"><input type="checkbox" class="rwdm" value="'+esc(d)+'" checked> '+esc(d)+'</label>').join('')
+    || '<span class="rwnote">（不选维度 = 按审查结论全维度主攻）</span>';
+  $('rwctx').innerHTML='当前 <b>'+b.before_total+'</b> / 达标线 <b>'+b.pass_line+'</b>（'+(b.pass?'✅已达标':'未达标')+'）· 主攻方向：'+(b.global_directions||[]).map(g=>esc(g.split('：')[0])).join(' / ');
+  $('rwmodal').classList.add('show');
+  $('rwgo2').onclick=()=>{
+    const selCh=[...document.querySelectorAll('.rwch:checked')].map(c=>+c.value);
+    const selDims=[...document.querySelectorAll('.rwdm:checked')].map(c=>c.value);
+    startRwWorkbench(key, selCh.length?selCh:null, selDims.length?selDims:null);
+  };
+}
+function startRwWorkbench(key, chapters, dims){
+  _rwKey=key;
+  $('rwsetup').style.display='none'; $('rwgo_row').style.display='none'; $('rwresult').style.display='none';
+  $('rwboard').style.display='';
+  $('rwboard_head').innerHTML='🔁 重写中…（所选 '+(chapters?chapters.length:'全书弱章')+' 章 · '+(dims?dims.join(' / '):'全维度')+'）';
+  $('rwrows').innerHTML='<div class="rwnote">正在后台逐章改写（约 2-5 分钟），下方逐章进度实时刷新…</div>';
+  $('rwcancel').onclick=()=>cancelRw(key);
+  fetch('/api/rewrite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,chapters,dims})}).then(r=>r.json()).then(j=>{ if(j.error) toast(j.error,'err'); });
+  pollRwProgress(key);
+}
+function pollRwProgress(key){
+  if(_rwBoardPoll)clearInterval(_rwBoardPoll);
+  const t0=Date.now();
+  _rwBoardPoll=setInterval(async()=>{
+    let p; try{ p=await (await fetch('/api/rewrite-progress?key='+encodeURIComponent(key))).json(); }catch(e){return;}
+    if(!p)return;
+    renderRwProgress(p,(Date.now()-t0)/1000);
+    if(!p.running && p.result){ clearInterval(_rwBoardPoll); _rwBoardPoll=null; showRwResult(p.result,key); }
+    else if(p.cancelled){ clearInterval(_rwBoardPoll); _rwBoardPoll=null; $('rwboard_head').innerHTML='⏹ 已取消（已写章保留）'; }
+  },1500);
+}
+function renderRwProgress(p,elapsed){
+  const rows=p.per_chapter||[]; const total=p.total||rows.length; const done=p.done||0;
+  const pct=total?Math.round(done/total*100):0;
+  $('rwbar_fill').style.width=pct+'%';
+  $('rwboard_head').innerHTML=(p.running?'🔁 重写进行中':'✅ 重写完成')+'（'+done+'/'+total+' 章 · 已用 '+Math.round(elapsed)+'s'+(p.cancelled?' · 已取消':'')+'）';
+  $('rwrows').innerHTML=rows.map(r=>{
+    const st=r.status==='done'?'✔ 完成':(r.status==='skipped'?'⏭ 跳过':(r.status==='rewriting'?'◐ 改写中':'⏸ 排队'));
+    const color=r.status==='done'?'#3ad29b':(r.status==='rewriting'?'var(--accent)':'var(--muted)');
+    const sc=(r.after!=null&&r.before!=null)?' <b style="color:#3ad29b">'+r.before+' → '+r.after+'</b>':(r.before!=null?' <span style="opacity:.7">基线 '+r.before+'</span>':'');
+    return '<div style="font:11px var(--sans);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;background:var(--card);margin-bottom:3px"><b>第'+r.ch+'章</b>'+sc+(r.new_words!=null?' · '+r.orig_words+'→'+r.new_words+' 字':'')+' <span style="float:right;color:'+color+';font-weight:700">'+st+'</span></div>';
+  }).join('')||'<div class="rwnote">（进行中）</div>';
+}
+function cancelRw(key){ fetch('/api/rewrite-cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(r=>r.json()).then(j=>toast(j.msg||'已请求取消（下一检查点停）','ok')); }
+function showRwResult(res,key){
+  if(res.cancelled){ $('rwboard_head').innerHTML='⏹ 已取消（已写章保留）'; loadManuscript(key); return; }
+  if(res.error){ $('rwresult').innerHTML='<div class="rwcard" style="border-color:#f59e0b"><h4>⚠️ 重写失败</h4><div class="rwnote">'+esc(res.error)+'</div></div>'; $('rwresult').style.display=''; return; }
+  $('rwresult').innerHTML=renderRewriteResultCard(res,key);
+  $('rwresult').style.display=''; $('rwboard').style.display='none';
+  loadManuscript(key); loadLibrary();
+  bubble('bot','✅ 定向重写完成：'+res.before+' → '+res.after+'（改 '+((res.changed||[]).length)+' 章）','');
+}
+window.openRewriteWorkbench=openRewriteWorkbench; window.cancelRw=cancelRw;
+
+// ===== v0.7 R4：对话区「本书在干什么」live 卡（Hermes 式 live 步骤，按书隔离+代际守卫）=====
+let _blPoll=null;
+function startBookLive(key){
+  stopBookLive();
+  const tk=_viewToken;
+  $('booklive').style.display='';
+  $('booklive').innerHTML='<div style="font:12px var(--sans);color:var(--muted);padding:5px 2px">📖 载入本书活动…</div>';
+  const load=async()=>{
+    let d; try{ d=await (await fetch('/api/book-live?key='+encodeURIComponent(key))).json(); }catch(e){return;}
+    if(tk!==_viewToken||d.error)return;   // v0.6 A：切书代际守卫
+    renderBookLive(d);
+  };
+  load();
+  _blPoll=setInterval(load,1500);
+}
+function stopBookLive(){ if(_blPoll){clearInterval(_blPoll);_blPoll=null;} $('booklive').style.display='none'; }
+function renderBookLive(d){
+  const ph={parallel:'⚡ 并行创作中',rewriting:'🔁 定向重写中',releasing:'🔓 校验/放行中',writing:'✍️ 创作中',done:'✅ 已成书',failed:'⚠️ 失败',idle:'💤 未运行'}[d.phase]||d.phase;
+  const ic={parallel:'⚡',rewriting:'🔁',releasing:'🔓',writing:'✍️',done:'✅',failed:'⚠️',idle:'💤'}[d.phase]||'📖';
+  const p=d.progress||{}; const pct=p.pct||0;
+  const cur=d.current_chapter?('正在处理 <b>第 '+d.current_chapter+' 章</b>'):'';
+  const log=(d.live_log||[]).slice(-4).map(l=>'<div style="opacity:.72">'+esc(l)+'</div>').join('');
+  $('booklive').innerHTML=
+    '<div style="border:1px solid var(--border);border-radius:11px;background:var(--card);backdrop-filter:var(--glass-blur);box-shadow:var(--glass-shadow);padding:8px 11px;font:12px var(--sans);color:var(--text);margin:0 16px 8px">'+
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">'+
+        '<b style="color:var(--text)">'+ic+' '+esc(d.name||'本书')+'</b>'+
+        '<span style="color:'+(d.running?'var(--accent)':'var(--muted)')+';font-size:11px">'+ph+'</span>'+
+        (cur?'<span style="color:var(--accent);font-size:11px">· '+cur+'</span>':'')+
+        (d.paused?'<span style="color:#f59e0b;font-size:11px">· ⏸已暂停</span>':'')+
+      '</div>'+
+      '<div style="height:6px;background:var(--panel2);border:1px solid var(--border);border-radius:4px;overflow:hidden;margin-bottom:5px"><div style="height:100%;width:'+pct+'%;background:var(--grad-accent);transition:width .5s"></div></div>'+
+      '<div style="font-size:10.5px;color:var(--muted);margin-bottom:'+(log?5:0)+'px">'+(p.done||0)+' / '+(p.total||0)+' 章 · '+pct+'%</div>'+
+      (log?'<div style="font-size:10.5px;color:var(--muted);border-top:1px dashed var(--border);padding-top:4px;line-height:1.6">'+log+'</div>':'')+
+    '</div>';
+}
+window.startBookLive=startBookLive; window.stopBookLive=stopBookLive;
+
 // v0.6 D：重写结果卡（预览 rwbox 与稿件 msrw 共用；内容=预览「定向重写」同款）
 function renderRewriteResultCard(res, key){
   if(res&&res.error) return '<div class="rwcard" style="border-color:#f59e0b"><h4>⚠️ 重写失败</h4><div class="rwnote">'+esc(res.error)+'</div></div>';
@@ -1415,6 +1557,7 @@ window.openBookMenu=openBookMenu;
 async function selectBook(key){
   curSession=key;curKey=key;_viewToken++;const tk=_viewToken;sideTab('art');renderSessions();updateSendBtn();
   $('msrw').innerHTML='';   // v0.6 D/A：切书清空上一本书的重写结果卡（按书隔离）
+  startBookLive(key);       // v0.7 R4：对话区「本书在干什么」live 卡（切书换代际守卫自动切）
   switchView('chat'); loadBkChat(key);   // v0.4.1：点书 → 中间=对话页，只加载这本书自己的聊天
   let st={state:'',done:0,total:0};try{st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json();}catch(e){}
   if(tk!==_viewToken)return;   // v0.6 A：期间切了书，弃旧响应
@@ -1687,10 +1830,9 @@ window.renderMsChart=renderMsChart;
 function triggerRewrite(key, chapters){
   switchView('ms'); loadManuscript(key);
   const who=(chapters&&chapters.length)?('第 '+chapters.join('、')+' 章'):' 全书弱章';
-  $('msrw').innerHTML='<div class="rwcard" style="border-color:var(--accent);opacity:.9"><h4>🔁 正在定向重写'+who+'…</h4><div class="rwnote">把要求书逐条带进目标章，约 1-6 分钟，完成后此处出现「百分制 before→after + 质量报告」（与预览定向重写同款）。</div></div>';
-  bubble('bot','🔁 正在定向重写'+who+'（稿件区实时刷新，完成后出结果卡）…','');
-  fetch('/api/rewrite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,chapters})})
-   .then(r=>r.json()).then(()=>pollRewriteKey(key));
+  $('msrw').innerHTML='<div class="rwcard" style="border-color:var(--accent);opacity:.9"><h4>🔁 重写工作台</h4><div class="rwnote">已预选 '+who+'。在工作台增减章节/维度 → 触发后<b>逐章实时进度、可取消</b>，结果卡随后出现在此 + 对话。</div></div>';
+  bubble('bot','🔁 打开重写工作台（预选 '+who+'，可增减章节/维度；触发后逐章实时进度 + 可取消）…','');
+  openRewriteWorkbench(key, chapters);
 }
 window.triggerRewrite=triggerRewrite;
 let _rwPoll={};
