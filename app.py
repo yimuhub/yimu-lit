@@ -1147,6 +1147,7 @@ def api_one_shot(payload: dict):
     _ONESHOT_RUNNING[key] = {"running": True}
     def _job():
         try:
+            writer.one_shot_begin(key)   # v0.7：期间 成书 不再二次自动门控
             proj.log("✨ 一键完稿 ① 熔炼总架构…")
             try: writer.ensure_blueprint(proj)
             except Exception as e: proj.log("⚠️ 总架构熔炼失败(继续)：" + str(e))
@@ -1173,6 +1174,8 @@ def api_one_shot(payload: dict):
         except Exception as e:
             _ONESHOT_RUNNING[key] = {"running": False, "result": str(e)}
             proj.log("⚠️ 一键完稿中断：" + str(e))
+        finally:
+            writer.one_shot_end(key)   # v0.7：释放驱动标记（无论成败，恢复成书自动门控）
     threading.Thread(target=_job, daemon=True).start()
     return {"ok": True, "running": True,
             "msg": "✨ 一键完稿启动：熔炼→写剩余→逐章评分→不达标自动重写→放行门禁（全程看对话区「本书在干什么」活动卡）"}

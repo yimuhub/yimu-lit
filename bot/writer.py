@@ -769,7 +769,9 @@ def _validate_and_finish(proj):
     proj.save_plan(plan)
     proj.log(f"📚 《{plan['novelName']}》成书完成：{total} 字，文件：成书-{plan['novelName']}.md")
     # 放行门禁：成书后自动（后台线程）带要求重写到 ≥达标线，不阻断成书；已放行则跳过
-    if _cfg_defaults().get("release_gate", True) and not ((plan.get("meta") or {}).get("released")):
+    # v0.7：一键完稿驱动时由 ⑤ 统一门控，此处不再二次触发（避免同书 6 轮冗余 LLM）
+    if _cfg_defaults().get("release_gate", True) and not ((plan.get("meta") or {}).get("released")) \
+            and not one_shot_driving(os.path.basename(proj.path)):
         _gkey = os.path.basename(proj.path)
         threading.Thread(target=lambda: run_release_gate(_gkey), daemon=True).start()
         proj.log("🔓 成书后自动触发放行门禁（后台定向重写到 ≥ 达标线，约几分钟）…")
@@ -1164,6 +1166,27 @@ def _serialize_book(fn):
         with _acq_book(key):
             return fn(*a, **k)
     return wrap
+
+# v0.7：一键完稿驱动标记（抑制 成书自动放行 与 一键⑤门禁 双重门控，避免同书 6 轮冗余 LLM）
+_ONESHOT_DRIVING = set()
+
+def one_shot_driving(key):
+    return key in _ONESHOT_DRIVING
+
+@contextlib.contextmanager
+def one_shot_scope(key):
+    """一键完稿全程占用该书的『驱动』标记：期间 成书 不再自动触发放行门禁（由一键⑤统一门控）。"""
+    _ONESHOT_DRIVING.add(key)
+    try:
+        yield
+    finally:
+        _ONESHOT_DRIVING.discard(key)
+
+def one_shot_begin(key):
+    _ONESHOT_DRIVING.add(key)
+
+def one_shot_end(key):
+    _ONESHOT_DRIVING.discard(key)
 
 # ---------- 审查后定向重写 ----------
 
