@@ -1,4 +1,4 @@
-"""novel-bot 版本号（读 VERSION 文件，当前 v0.6.0 并行章节创作 + 状态隔离 + UI 升级）。"""
+"""novel-bot 版本号（单一来源：读 VERSION 文件；升级只需改 VERSION 一处，全站版本随之一致）。"""
 import os
 def _read():
     try:
