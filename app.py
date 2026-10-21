@@ -49,6 +49,22 @@ def chat(session_id, message):
     _trace("chat-in", sid=session_id, state=s["state"], msg=msg[:40], busy=s.get("busy"))
     reply = []
 
+    # ---- 文体自动分流：用户直接写诗词/散文/剧本 指令时，不走小说流水线 ----
+    if s["state"] == "idle":
+        try:
+            med = medium_mod.detect(msg)
+        except Exception:
+            med = "novel"
+        if med in ("poetry", "prose", "script") and len(msg) >= 6:
+            s["state"] = "routed"
+            s["routed_medium"] = med
+            from bot import prose_writer as _pw, poetry_writer as _pyw, script_writer as _sw
+            hint = {
+                "poetry": "🎵 识别为诗词创作。在左侧「诗词」面板里点「新建」，粘贴同样需求；或直接告诉我「诗词 七绝 写秋夜」，我用诗词流水线处理。",
+                "prose": "✒️ 识别为散文创作。在左侧「散文」面板里点「新建」，粘贴同样需求；或直接告诉我「散文 写一段关于母亲的回忆」，我用散文流水线处理。",
+                "script": "🎬 识别为剧本创作。在左侧「剧本」面板里点「新建」，粘贴同样需求；或直接告诉我「剧本 电影 写一个短片前提」，我用剧本流水线处理。",
+            }[med]
+            return hint + "\n\n（自动分流：此请求不进入小说流水线，避免文体错配。）"
     # ---- 重复投递保护：同一会话的 LLM 重操作进行中，短消息/重复消息直接给状态提示 ----
     if s.get("busy"):
         if len(msg) <= 4 or s.get("state") in ("planning", "writing"):
