@@ -128,8 +128,8 @@ body{
 .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
 @keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
 #inputbar{padding:16px 26px 20px;border-top:1px solid var(--border);background:var(--panel);backdrop-filter:blur(14px)}
-#inputrow{display:flex;gap:10px;max-width:760px;margin:0 auto}
-#inp{flex:1;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:13px;padding:12px 15px;color:var(--text);font-size:14.5px;outline:none;resize:none;height:52px;font-family:inherit;transition:border .2s}
+#inputrow{display:flex;gap:10px;max-width:760px;margin:0 auto;align-items:flex-end}
+#inp{flex:1;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:13px;padding:12px 15px;color:var(--text);font-size:14.5px;outline:none;resize:none;min-height:52px;max-height:170px;height:52px;overflow-y:auto;line-height:1.5;font-family:inherit;transition:border .2s}
 #inp:focus{border-color:var(--accent)}
 #send{width:52px;flex:0 0 52px;height:52px;border:none;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:18px;cursor:pointer;transition:transform .15s,background .15s}
 #send:hover{transform:scale(1.06)}
@@ -471,44 +471,49 @@ button:disabled{cursor:not-allowed;opacity:.55}
 </div>
 <!-- 绑定供应商 模态 -->
 <div id="provmodal" class="modal">
-  <div class="mbox">
-    <h3>绑定模型供应商</h3>
-    <div class="mhint">支持 OpenAI 兼容 <code>/chat/completions</code> 接口。选预设一键绑定，或填 base_url + key 完全自定义。可同时绑定多个并存，创作时按需选择。</div>
-    <div class="mfield">
-      <label>预设供应商</label>
-      <select id="mpreset"></select>
-    </div>
-    <div class="mfield">
-      <label>名称</label>
-      <input id="mname" placeholder="例如：我的 Agnes">
-    </div>
-    <div class="mfield">
-      <label>Base URL（root，不含 /chat/completions）</label>
-      <input id="murl" placeholder="https://…/v1 或 http://127.0.0.1:11434/v1">
-    </div>
-    <div class="mrow">
-      <div class="mfield"><label>API Key（可选）</label><input id="mkey" placeholder="Bearer 密钥"></div>
-      <div class="mfield"><label>或 Key 文件路径</label><input id="mkeyfile" placeholder="/path/to/key"></div>
-    </div>
-    <div class="mfield">
-      <label>模型清单（逗号分隔；绑定时可点「拉取」自动获取）</label>
-      <textarea id="mmodels" rows="2" placeholder="model-a, model-b"></textarea>
-    </div>
-    <details class="madv">
-      <summary>高级（温度 / 上限 / 超时）</summary>
-      <div class="mfields">
-        <div class="mrow">
-          <div class="mfield"><label>temperature</label><input id="mtemp" type="number" step="0.05" value="0.85"></div>
-          <div class="mfield"><label>max_tokens</label><input id="mtoken" type="number" step="100" value="12000"></div>
-          <div class="mfield"><label>超时(秒)</label><input id="mtimeout" type="number" step="30" value="900"></div>
-        </div>
+  <div class="mbox premium" style="width:560px">
+    <div class="mbin">
+      <div class="mhead">
+        <div class="mico">🔌</div>
+        <div class="mt"><h3>绑定模型供应商</h3><div class="msub">支持 OpenAI 兼容 <code>/chat/completions</code>。选预设一键绑定，或填 base_url + key 完全自定义；可同时绑定多个并存，创作时按需选择。</div></div>
+        <button class="mx" onclick="closeProvModal()" title="关闭">✕</button>
       </div>
-    </details>
-    <label class="mtoggle"><input type="checkbox" id="mactive" checked> 立即设为可用（active）</label>
-    <div class="merr" id="merr"></div>
-    <div class="mactions">
-      <button class="mcancel" onclick="closeProvModal()">取消</button>
-      <button class="mok" id="mbind">绑定</button>
+      <div class="mfield">
+        <label>预设供应商</label>
+        <select id="mpreset"></select>
+      </div>
+      <div class="mfield">
+        <label>名称</label>
+        <input id="mname" placeholder="例如：我的 Agnes">
+      </div>
+      <div class="mfield">
+        <label>Base URL（root，不含 /chat/completions）</label>
+        <input id="murl" placeholder="https://…/v1 或 http://127.0.0.1:11434/v1">
+      </div>
+      <div class="mrow">
+        <div class="mfield"><label>API Key（可选）</label><input id="mkey" placeholder="Bearer 密钥"></div>
+        <div class="mfield"><label>或 Key 文件路径</label><input id="mkeyfile" placeholder="/path/to/key"></div>
+      </div>
+      <div class="mfield">
+        <label>模型清单（逗号分隔；绑定时可点「拉取」自动获取）</label>
+        <textarea id="mmodels" rows="2" placeholder="model-a, model-b"></textarea>
+      </div>
+      <details class="madv">
+        <summary>高级（温度 / 上限 / 超时）</summary>
+        <div class="mfields">
+          <div class="mrow">
+            <div class="mfield"><label>temperature</label><input id="mtemp" type="number" step="0.05" value="0.85"></div>
+            <div class="mfield"><label>max_tokens</label><input id="mtoken" type="number" step="100" value="12000"></div>
+            <div class="mfield"><label>超时(秒)</label><input id="mtimeout" type="number" step="30" value="900"></div>
+          </div>
+        </div>
+      </details>
+      <label class="mtoggle"><input type="checkbox" id="mactive" checked> 立即设为可用（active）</label>
+      <div class="merr" id="merr"></div>
+      <div class="mactions">
+        <button class="mcancel" onclick="closeProvModal()">取消</button>
+        <button class="mok" id="mbind">绑定</button>
+      </div>
     </div>
   </div>
 </div>
@@ -535,66 +540,87 @@ button:disabled{cursor:not-allowed;opacity:.55}
   </div>
 </div>
 <!-- 开书向导 -->
-<div id="onbmodal" class="modal"><div class="mbox" style="width:560px">
-  <h3>✍ 开书向导</h3>
-  <div class="mhint">几乎全可选，留空用默认。定完题材/卖点/基调后，书名可留空（下一步 ABC 弹框选）。</div>
-  <div class="mrow"><div class="mfield"><label>题材</label><select id="ob_genre"></select></div>
-    <div class="mfield"><label>主角视角</label><select id="ob_persp"></select></div></div>
-  <div class="mrow"><div class="mfield"><label>基调</label><select id="ob_tone"></select></div>
-    <div class="mfield"><label>章节数</label><select id="ob_chap"></select><input id="ob_chap_custom" type="number" min="1" max="200" style="display:none;margin-top:6px;width:100%;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:7px 10px;color:var(--text);font-size:13px;font-family:inherit" placeholder="自定义章节数（1-200）"></div></div>
-  <div class="mrow"><div class="mfield"><label>🧩 金手指</label><select id="ob_hand"></select></div>
-    <div class="mfield"><label>节奏</label><select id="ob_pace"></select></div>
-    <div class="mfield"><label>语言</label><select id="ob_lang"></select></div></div>
-  <div id="obprefnote" class="mhint" style="display:none;margin:-6px 0 8px;font-size:11px"></div>
-  <div class="mfield"><label>✨ 风格（可选·蒸馏风格库）</label><select id="ob_style"></select></div>
-  <div class="mfield"><label>核心卖点（可多选）</label><div id="ob_sells" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
-  <div class="mfield"><label>一句话设定（可选）</label><input id="ob_idea" placeholder="例如：退休刑警被诬陷杀人"></div>
-  <div class="mfield"><label>书名（留空=下一步 ABC 弹框选）</label><input id="ob_title" placeholder="留空则自动出候选"></div>
-  <details class="madv"><summary>高级（供应商 / 模型 / 门禁）</summary>
-    <div class="mfields">
-      <div class="mrow"><div class="mfield"><label>供应商</label><select id="ob_prov"></select></div>
-        <div class="mfield"><label>模型</label><select id="ob_model"></select></div></div>
-      <div class="mtoggle"><input type="checkbox" id="ob_gate" checked> 放行门禁（≥90 自动带要求重写）</div>
-      <div class="mtoggle"><input type="checkbox" id="ob_p5" checked> P5 故事图谱 + 语义检索</div>
+<div id="onbmodal" class="modal"><div class="mbox premium" style="width:560px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">🧙</div>
+      <div class="mt"><h3>开书向导</h3><div class="msub">几乎全可选，留空用默认。定完题材/卖点/基调后，书名可留空（下一步 ABC 弹框选）。</div></div>
+      <button class="mx" onclick="closeOnb()" title="关闭">✕</button>
     </div>
-  </details>
-  <div class="merr" id="oberr"></div>
-  <div class="mactions"><button class="mcancel" onclick="closeOnb()">取消</button>
-    <button class="mok" id="obgo">规划（出候选）</button></div>
+    <div class="mrow"><div class="mfield"><label>题材</label><select id="ob_genre"></select></div>
+      <div class="mfield"><label>主角视角</label><select id="ob_persp"></select></div></div>
+    <div class="mrow"><div class="mfield"><label>基调</label><select id="ob_tone"></select></div>
+      <div class="mfield"><label>章节数</label><select id="ob_chap"></select><input id="ob_chap_custom" type="number" min="1" max="200" style="display:none;margin-top:6px;width:100%;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:7px 10px;color:var(--text);font-size:13px;font-family:inherit" placeholder="自定义章节数（1-200）"></div></div>
+    <div class="mrow"><div class="mfield"><label>🧩 金手指</label><select id="ob_hand"></select></div>
+      <div class="mfield"><label>节奏</label><select id="ob_pace"></select></div>
+      <div class="mfield"><label>语言</label><select id="ob_lang"></select></div></div>
+    <div id="obprefnote" class="mhint" style="display:none;margin:-6px 0 8px;font-size:11px"></div>
+    <div class="mfield"><label>✨ 风格（可选·蒸馏风格库）</label><select id="ob_style"></select></div>
+    <div class="mfield"><label>核心卖点（可多选）</label><div id="ob_sells" style="display:flex;flex-wrap:wrap;gap:5px"></div></div>
+    <div class="mfield"><label>一句话设定（可选）</label><input id="ob_idea" placeholder="例如：退休刑警被诬陷杀人"></div>
+    <div class="mfield"><label>书名（留空=下一步 ABC 弹框选）</label><input id="ob_title" placeholder="留空则自动出候选"></div>
+    <details class="madv"><summary>高级（供应商 / 模型 / 门禁）</summary>
+      <div class="mfields">
+        <div class="mrow"><div class="mfield"><label>供应商</label><select id="ob_prov"></select></div>
+          <div class="mfield"><label>模型</label><select id="ob_model"></select></div></div>
+        <div class="mtoggle"><input type="checkbox" id="ob_gate" checked> 放行门禁（≥90 自动带要求重写）</div>
+        <div class="mtoggle"><input type="checkbox" id="ob_p5" checked> P5 故事图谱 + 语义检索</div>
+      </div>
+    </details>
+    <div class="merr" id="oberr"></div>
+    <div class="mactions"><button class="mcancel" onclick="closeOnb()">取消</button>
+      <button class="mok" id="obgo">规划（出候选）</button></div>
+  </div>
 </div></div>
 <!-- 风格蒸馏 弹框 -->
-<div id="distillmodal" class="modal"><div class="mbox" style="width:560px">
-  <h3>✨ 蒸馏写作风格</h3>
-  <div class="mhint">给「一段小说文本」或「小说网址」，蒸馏出作者的写作风格/技法（7 维：句式·指纹词·节奏·对话·视角·情绪·反AI），存成<b>可命名的专属风格</b>，之后开书可直接按它创作。只提技法、不搬运原文。</div>
-  <div class="mfield"><label>风格名（自定义，开书时选它用）</label><input id="dl_name" placeholder="例如：都市爽文速读体 / 冷硬悬疑腔"></div>
-  <div class="mfield"><label>参考题材（可选）</label><input id="dl_genre" placeholder="例如：都市 / 悬疑"></div>
-  <div class="mfield"><label>① 粘贴文本（推荐，≥500 字）</label><textarea id="dl_text" rows="5" placeholder="把那部小说的几段内容复制到这里…"></textarea></div>
-  <div class="mfield"><label>② 或 小说网址（每行一个，抓取节选）</label><textarea id="dl_urls" rows="2" placeholder="https://…（JS 渲染站可能抓不到，改粘贴文本）"></textarea></div>
-  <div class="merr" id="dlerr"></div>
-  <div class="mactions"><button class="mcancel" onclick="closeDistill()">取消</button>
-    <button class="mok" id="dlgo">✨ 蒸馏（约 10-30 秒）</button></div>
+<div id="distillmodal" class="modal"><div class="mbox premium" style="width:560px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">✨</div>
+      <div class="mt"><h3>蒸馏写作风格</h3><div class="msub">给「一段小说文本」或「小说网址」，蒸馏出作者的写作风格/技法（7 维），存成<b style="color:var(--text)">可命名的专属风格</b>，之后开书直接套用。只提技法、不搬运原文。</div></div>
+      <button class="mx" onclick="closeDistill()" title="关闭">✕</button>
+    </div>
+    <div class="mfield"><label>风格名（自定义，开书时选它用）</label><input id="dl_name" placeholder="例如：都市爽文速读体 / 冷硬悬疑腔"></div>
+    <div class="mfield"><label>参考题材（可选）</label><input id="dl_genre" placeholder="例如：都市 / 悬疑"></div>
+    <div class="mfield"><label>① 粘贴文本（推荐，≥500 字）</label><textarea id="dl_text" rows="5" placeholder="把那部小说的几段内容复制到这里…"></textarea></div>
+    <div class="mfield"><label>② 或 小说网址（每行一个，抓取节选）</label><textarea id="dl_urls" rows="2" placeholder="https://…（JS 渲染站可能抓不到，改粘贴文本）"></textarea></div>
+    <div class="merr" id="dlerr"></div>
+    <div class="mactions"><button class="mcancel" onclick="closeDistill()">取消</button>
+      <button class="mok" id="dlgo">✨ 蒸馏（约 10-30 秒）</button></div>
+  </div>
 </div></div>
 <!-- v0.4 放行弹窗（待放行 → 直接解决，不留死路）-->
-<div id="releasemodal" class="modal"><div class="mbox" style="width:520px">
-  <h3>🔓 放行成书</h3>
-  <div id="rlbody" style="font:13px/1.8 var(--sans);color:var(--text)"><div class="rwnote">加载…</div></div>
-  <div class="merr" id="rlerr"></div>
-  <div class="mactions">
-    <button class="mcancel" onclick="closeRelease()">取消</button>
-    <button class="pb" id="rl_rw" title="带要求重写全书弱章，并直接进入该书工作台稿件视图实时看书写内容">🔁 重写并看稿件</button>
-    <button class="pb" id="rl_again">🔁 再校验一轮</button>
-    <button class="pb" id="rl_beta">保持 beta</button>
-    <button class="mok" id="rl_go">🔓 放行成书</button>
+<div id="releasemodal" class="modal"><div class="mbox premium" style="width:520px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">🔓</div>
+      <div class="mt"><h3>放行成书</h3><div class="msub">看达标判定，然后选择：带要求重写 / 再校验一轮 / 保持 beta / 放行成书。</div></div>
+      <button class="mx" onclick="closeRelease()" title="关闭">✕</button>
+    </div>
+    <div id="rlbody" style="font:13px/1.8 var(--sans);color:var(--text);margin-bottom:6px"><div class="rwnote">加载…</div></div>
+    <div class="merr" id="rlerr"></div>
+    <div class="mactions" style="flex-wrap:wrap">
+      <button class="mcancel" onclick="closeRelease()">取消</button>
+      <button class="pb" id="rl_rw" title="带要求重写全书弱章，并直接进入该书工作台稿件视图实时看书写内容">🔁 重写并看稿件</button>
+      <button class="pb" id="rl_again">🔁 再校验一轮</button>
+      <button class="pb" id="rl_beta">保持 beta</button>
+      <button class="mok" id="rl_go">🔓 放行成书</button>
+    </div>
   </div>
 </div></div>
 <!-- 书名 ABC 弹框 -->
-<div id="titlemodal" class="modal"><div class="mbox" style="width:560px">
-  <h3 id="tmtitle">✍ 选书名（点一张卡 / 或填自定义）</h3>
-  <div class="mhint">A/B/C… 点选其一，或在下方输入自定义书名。</div>
-  <div id="tmcards" style="display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow:auto"></div>
-  <div class="mfield" style="margin-top:10px"><label>自定义书名（填了就用它）</label><input id="tmcustom" placeholder=""></div>
-  <div class="mactions"><button class="mcancel" onclick="closeTitle()">取消</button>
-    <button class="mok" id="tmgoto">确认开写</button></div>
+<div id="titlemodal" class="modal"><div class="mbox premium" style="width:560px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">✍</div>
+      <div class="mt"><h3 id="tmtitle">选书名</h3><div class="msub">A/B/C… 点一张卡，或在下方输入自定义书名（填了就用它）。</div></div>
+      <button class="mx" onclick="closeTitle()" title="关闭">✕</button>
+    </div>
+    <div id="tmcards" style="display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow:auto"></div>
+    <div class="mfield" style="margin-top:10px"><label>自定义书名（填了就用它）</label><input id="tmcustom" placeholder=""></div>
+    <div class="mactions"><button class="mcancel" onclick="closeTitle()">取消</button>
+      <button class="mok" id="tmgoto">确认开写</button></div>
+  </div>
 </div></div>
 <div id="bpmodal" class="modal"><div class="mbox premium" style="width:680px">
   <div class="mbin">
@@ -623,31 +649,64 @@ button:disabled{cursor:not-allowed;opacity:.55}
       <button class="mok" id="parpgo" style="padding:6px 16px">⚡ 开始并行创作</button></div>
   </div>
 </div></div>
+<!-- v0.9.1 一键完稿 确认（统一 premium 弹窗，替代原生 confirm） -->
+<div id="oneshotmodal" class="modal"><div class="mbox premium" style="width:480px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">✨</div>
+      <div class="mt"><h3>一键完稿</h3><div class="msub">自动串起：熔炼总架构 → 写剩余章节 → 逐章评分 → 不达标自动重写（含「更好才换」守护）→ 放行门禁。全程后台跑，看对话区「本书在干什么」活动卡实时进度。</div></div>
+      <button class="mx" onclick="document.getElementById('oneshotmodal').classList.remove('show')" title="关闭">✕</button>
+    </div>
+    <div style="font:12px var(--sans);color:var(--warn);background:rgba(245,165,36,.1);border:1px solid rgba(245,165,36,.3);border-radius:10px;padding:9px 12px;margin:0 0 12px">⚠ 会消耗较多 LLM 额度，确认继续？</div>
+    <div class="mactions"><button class="mcancel" onclick="document.getElementById('oneshotmodal').classList.remove('show')">取消</button>
+      <button class="mok" id="oshgo">✨ 开始一键完稿</button></div>
+  </div>
+</div></div>
+<!-- v0.9.1 通用 确认/输入 弹窗（统一 premium，替代所有原生 confirm()/prompt()） -->
+<div id="gconfirm" class="modal"><div class="mbox premium" style="width:460px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico" id="gcmico">⚠️</div>
+      <div class="mt"><h3 id="gcctitle">确认</h3><div class="msub" id="gccsub"></div></div>
+      <button class="mx" onclick="uniClose()" title="关闭">✕</button>
+    </div>
+    <div id="gccbody" style="font:13px/1.7 var(--sans);color:var(--text);margin-bottom:6px"></div>
+    <div class="mfield" id="gcinpwrap" style="display:none;margin-bottom:6px"><label id="gcilabel"></label><input id="gcinput"></div>
+    <div class="mactions"><button class="mcancel" id="gccancel">取消</button>
+      <button class="mok" id="gcok">确认</button></div>
+  </div>
+</div></div>
 <!-- v0.7 R2：重写工作台（选章+选维 → 触发 → 逐章实时进度板 → 可取消 → 结果卡） -->
-<div id="rwmodal" class="modal"><div class="mbox" style="width:680px">
-  <h3 id="rwname">🔁 重写工作台</h3>
-  <div class="mhint" id="rwctx"></div>
-  <!-- 选章 + 选维 -->
-  <div id="rwsetup">
-    <div style="font:11px var(--sans);color:var(--muted);margin:6px 0 4px">① 选要重写的章节（默认未达标章）</div>
-    <div id="rwchapters" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px"></div>
-    <div style="font:11px var(--sans);color:var(--muted);margin:6px 0 4px">② 只按这些维度改写（默认勾最弱维度，可增减 · 选得越聚焦越快越省）</div>
-    <div id="rwdims" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+<div id="rwmodal" class="modal"><div class="mbox premium" style="width:680px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">🔁</div>
+      <div class="mt"><h3 id="rwname">重写工作台</h3><div class="msub">选章 + 选维 → 触发 → 逐章实时进度 → 可取消 → 结果卡。</div></div>
+      <button class="mx" onclick="document.getElementById('rwmodal').classList.remove('show')" title="关闭">✕</button>
+    </div>
+    <div id="rwctx" style="font:11.5px var(--sans);color:var(--muted);margin:-2px 0 8px;line-height:1.6"></div>
+    <!-- 选章 + 选维 -->
+    <div id="rwsetup">
+      <div style="font:11px var(--sans);color:var(--muted);margin:6px 0 4px">① 选要重写的章节（默认未达标章）</div>
+      <div id="rwchapters" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px"></div>
+      <div style="font:11px var(--sans);color:var(--muted);margin:6px 0 4px">② 只按这些维度改写（默认勾最弱维度，可增减 · 选得越聚焦越快越省）</div>
+      <div id="rwdims" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+    </div>
+    <!-- 触发 -->
+    <div class="mactions" id="rwgo_row" style="margin-top:10px">
+      <button class="mok" id="rwgo2" style="background:var(--accent);color:#0b1020">🔁 开始定向重写（带所选章节+维度）</button>
+      <button class="mcancel" onclick="document.getElementById('rwmodal').classList.remove('show')">关闭</button>
+    </div>
+    <!-- 进度板（触发后显示） -->
+    <div id="rwboard" style="display:none">
+      <div id="rwboard_head" style="font:12px var(--sans);color:var(--text);margin:10px 0 6px"></div>
+      <div id="rwbar" style="height:8px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:8px"><div id="rwbar_fill" style="height:100%;width:0%;background:var(--grad-accent);transition:width .4s"></div></div>
+      <div id="rwrows" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;margin-bottom:8px"></div>
+      <div class="mactions" style="margin-top:4px"><button class="mcancel" id="rwcancel">⏹ 取消（已写章保留）</button><button class="mok" style="opacity:.6;pointer-events:none">完成后自动出结果</button></div>
+    </div>
+    <!-- 结果 -->
+    <div id="rwresult" style="display:none"></div>
   </div>
-  <!-- 触发 -->
-  <div class="mactions" id="rwgo_row" style="margin-top:10px">
-    <button class="mok" id="rwgo2" style="background:var(--accent);color:#0b1020">🔁 开始定向重写（带所选章节+维度）</button>
-    <button class="mcancel" onclick="document.getElementById('rwmodal').classList.remove('show')">关闭</button>
-  </div>
-  <!-- 进度板（触发后显示） -->
-  <div id="rwboard" style="display:none">
-    <div id="rwboard_head" style="font:12px var(--sans);color:var(--text);margin:10px 0 6px"></div>
-    <div id="rwbar" style="height:8px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:8px"><div id="rwbar_fill" style="height:100%;width:0%;background:var(--grad-accent);transition:width .4s"></div></div>
-    <div id="rwrows" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;margin-bottom:8px"></div>
-    <div class="mactions" style="margin-top:4px"><button class="mcancel" id="rwcancel">⏹ 取消（已写章保留）</button><button class="mok" style="opacity:.6;pointer-events:none">完成后自动出结果</button></div>
-  </div>
-  <!-- 结果 -->
-  <div id="rwresult" style="display:none"></div>
 </div></div>
 <script>
 const $=id=>document.getElementById(id);
@@ -732,7 +791,7 @@ function killThinking(){const t=$('think'); if(t)t.remove();}
 
 async function send(){
   const v=$('inp').value.trim(); if(!v)return;
-  $('inp').value='';
+  $('inp').value=''; growInp();
   bubble('user',fmt(v),'',v);
   thinking();
   // v0.5 M3：中间台自然语言指令 → 结构化动作（改写某段/某章/全书/看评分）；非指令才走聊天
@@ -790,10 +849,13 @@ function dispatchSend(){
 }
 $('send').onclick=dispatchSend;
 $('stage').onclick=()=>queueInstruction(false);            // ＋待发送（暂存）
-$('inp').addEventListener('input',updateSendBtn);
+$('inp').addEventListener('input',()=>{updateSendBtn();growInp();});
 $('inp').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();dispatchSend();}
 });
+// v0.9.1：输入框默认 1 行；字数多了自动增高（最多 ~4 行），再多才上下滚动 —— 不是一直可滚动的多行框
+function growInp(){const t=$('inp');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,170)+'px';}
+window.growInp=growInp;
 function updateSendBtn(){
   const it=_libItem(_curKey());
   const running=it&&it.state==='in_progress'&&!it.paused;
@@ -1183,10 +1245,7 @@ window.cont=k=>{
     .then(r=>r.json()).then(j=>{bubble('bot',fmt(j.msg||'继续中…'));curKey=k;startPolling();refreshProjects();});
 };
 window.contExtra=k=>{
-  const r=prompt('续写：在现有章节之后继续写几章？','3'); if(r===null)return;
-  const extra=Math.max(0,parseInt(r)||0); if(!extra)return;
-  fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,extra:extra})})
-    .then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=k;startPolling();refreshProjects();});
+  uniPrompt('续写','在现有章节之后继续写几章？','续写',(r)=>{ if(r===null||r==='')return; const extra=Math.max(0,parseInt(r)||0); if(!extra)return; fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,extra:extra})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=k;startPolling();refreshProjects();}); },'▶','3');
 };
 // ============ 模型供应商（多供应商绑定 / 创作选模型） ============
 let provOpts=[], provPresets=[], provOpen={}, provGroupOpen=null;
@@ -1282,9 +1341,14 @@ async function setProvDefaultModel(pid, model){
 async function provAction(act, pid, btn){
   try{
     if(act==='del'){
-      if(!confirm('删除供应商「'+pid+'」？（其数据与模型清单将一并移除）'))return;
-      const j=await (await fetch('/api/providers/'+encodeURIComponent(pid),{method:'DELETE'})).json();
-      if(j.error)throw new Error(j.error);
+      uniConfirm('删除供应商','删除供应商「'+pid+'」？其数据与模型清单将一并移除。','删除',async ()=>{
+        try{
+          const j=await (await fetch('/api/providers/'+encodeURIComponent(pid),{method:'DELETE'})).json();
+          if(j.error){toast('删除失败：'+j.error,'err');return;}
+          toast('已删除供应商「'+pid+'」','ok'); await loadProviders(); await loadProviderPicker();
+        }catch(e){toast('删除供应商失败：'+e,'err');}
+      },'🗑');
+      return;
     }else if(act==='def'){
       await fetch('/api/providers/'+encodeURIComponent(pid)+'/default',{method:'POST'});
     }else if(act==='toggle'){
@@ -1551,7 +1615,7 @@ async function loadStyleLib(){
   });
 }
 window.loadStyleLib=loadStyleLib;
-function delStyle(name){ if(!confirm('删除风格「'+name+'」？（开过的新书不受影响）'))return; fetch('/api/styles/'+encodeURIComponent(name),{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.ok?'已删除风格':'删除失败','ok');loadStyleLib();}); }
+function delStyle(name){ uniConfirm('删除风格','删除风格「'+name+'」？开过的新书不受影响。','删除',()=>{ fetch('/api/styles/'+encodeURIComponent(name),{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.ok?'已删除风格':'删除失败',j.ok?'ok':'err');loadStyleLib();}); },'🗑'); }
 window.delStyle=delStyle;
 function openDistill(){ ['dl_name','dl_genre','dl_text','dl_urls'].forEach(id=>{const e=$(id);if(e)e.value='';}); $('dlerr').textContent=''; $('distillmodal').classList.add('show'); }
 window.openDistill=openDistill;
@@ -1785,11 +1849,11 @@ function openBookMenu(key, anchor){
   if(it.paused)items.push(['▶ 继续写作',()=>{fetch('/api/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'继续中','ok');_bkClose();renderSessions();curSession=key;startPolling();switchView('ms');});}]);
   if(it.state==='in_progress')items.push(['▶ 续写剩余全部',()=>{fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}).then(x=>x.json()).then(j=>{toast(j.msg||'续写中','ok');_bkClose();renderSessions();curSession=key;startPolling();switchView('ms');});}]);
   if(it.state==='completed'&&it.released===false)items.push(['🔓 放行成书（解决待放行）',()=>{openReleaseModal(key);_bkClose();}]);
-  items.push(['📝 加即时修正指令',()=>{const t=prompt('给这本书加一条创作指令（写作中可随时改剧情/细节）：');if(t&&t.trim()){const imm=confirm('点「确定」=立即生效（下一章立刻用）；「取消」=排队到下一条。');fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,text:t.trim(),immediate:imm})}).then(x=>x.json()).then(j=>{toast(j.ok?('指令已加入，'+(j.items.length||0)+' 条待处理'):'加入失败','ok');renderSessions();})}_bkClose();}]);
-  items.push(['✏️ 重命名',()=>{const nn=prompt('新书名：',it.name||'');if(nn&&nn.trim()){fetch('/api/library/'+encodeURIComponent(key)+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn.trim()})}).then(r=>r.json()).then(j=>{toast(j.ok?'已改名':(j.note||'改名失败'),j.ok?'ok':'err');renderSessions();});}_bkClose();}]);
+  items.push(['📝 加即时修正指令',()=>{ _bkClose(); uniPrompt('加即时修正指令','给这本书加一条创作指令（写作中可随时改剧情/细节）：','提交',(t)=>{ if(!t||!t.trim())return; const q=im=>{fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,text:t.trim(),immediate:im})}).then(x=>x.json()).then(j=>{toast(j.ok?('指令已加入，'+(j.items.length||0)+' 条待处理'):'加入失败','ok');renderSessions();});}; uniConfirm('立即生效？','点「确认」=立即生效（下一章立刻用）；「取消」=排队到下一条。','立即生效',()=>q(true),'⚡',()=>q(false)); }); }]);
+  items.push(['✏️ 重命名',()=>{ _bkClose(); uniPrompt('重命名','新书名：','确认',(nn)=>{ if(nn&&nn.trim())fetch('/api/library/'+encodeURIComponent(key)+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn.trim()})}).then(r=>r.json()).then(j=>{toast(j.ok?'已改名':(j.note||'改名失败'),j.ok?'ok':'err');renderSessions();}); },'✏️',it.name||''); }]);
   if(canBook)items.push(['⬇ 下载成书',()=>{window.open('/api/download?key='+encodeURIComponent(key),'_blank');_bkClose();}]);
-  if(canCont)items.push(['▶ 续写',()=>{const r=prompt('续写：在现有章节后继续写几章？','3');if(r!==null){const n=Math.max(1,+r||1);fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,n})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=key;curSession=key;startPolling();switchView('ms');renderSessions();});}_bkClose();}]);
-  items.push(['🗑 彻底删除（不可恢复）',()=>{ if(confirm('彻底删除《'+(it.name||key)+'》？将删除作品目录，不可恢复！')){fetch('/api/library/'+encodeURIComponent(key)+'?hard=true',{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.note||'已删除',j.ok?'ok':'err');renderSessions();});} _bkClose(); }]);
+  if(canCont)items.push(['▶ 续写',()=>{ _bkClose(); uniPrompt('续写','在现有章节后继续写几章？','续写',(r)=>{ if(r===null||r==='')return; const n=Math.max(1,+r||1);fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,n})}).then(x=>x.json()).then(j=>{bubble('bot',fmt(j.msg||'续写中…'));curKey=key;curSession=key;startPolling();switchView('ms');renderSessions();}); },'▶','3'); }]);
+  items.push(['🗑 彻底删除（不可恢复）',()=>{ _bkClose(); uniConfirm('彻底删除','彻底删除《'+(it.name||key)+'》？将删除作品目录，不可恢复！','彻底删除',()=>{fetch('/api/library/'+encodeURIComponent(key)+'?hard=true',{method:'DELETE'}).then(r=>r.json()).then(j=>{toast(j.note||'已删除',j.ok?'ok':'err');renderSessions();});},'🗑'); }]);
   _bkPanel.innerHTML='';
   items.forEach(([label,fn],idx)=>{
     if(label.startsWith('🗑')){const sep=document.createElement('div');sep.style.cssText='height:1px;background:var(--border);margin:4px 6px';_bkPanel.append(sep);}
@@ -1889,11 +1953,41 @@ window.parallelWrite=parallelWrite; window.openParPicker=openParPicker; window.p
 // ===== v0.7 R5：一键完稿（小白）—— 串引擎全自动，进度看「本书在干什么」活动卡 =====
 function oneShot(key){
   key=key||curSession; if(!key)return;
-  if(!confirm('✨ 一键完稿这本书？\n将自动串起：熔炼总架构 → 写剩余章节 → 逐章评分 → 不达标自动重写（含「更好才换」守护）→ 放行门禁。\n全程后台跑，看对话区「本书在干什么」活动卡实时进度。\n\n⚠ 会消耗较多 LLM 额度，确认？'))return;
+  _oshKey=key;
+  const g=$('oshgo'); if(g)g.onclick=()=>{document.getElementById('oneshotmodal').classList.remove('show'); _oshRun();};
+  document.getElementById('oneshotmodal').classList.add('show');
+}
+let _oshKey=null;
+function _oshRun(){
+  const key=_oshKey; if(!key)return;
   fetch('/api/one-shot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,auto_rewrite:true,auto_release:true})})
    .then(r=>r.json()).then(j=>{ toast(j.msg||'✨ 一键完稿已启动','ok'); startBookLive(key); switchView('chat'); });
 }
 window.oneShot=oneShot;
+// ===== v0.9.1 通用 确认/输入 弹窗（统一 premium，替代原生 confirm()/prompt()，全站弹窗样式归一） =====
+let _gcOnOk=null, _gcOnCancel=null;
+function uniShow(o){
+  const M=document.getElementById('gconfirm'); if(!M)return;
+  $('gcctitle').textContent=o.title||'确认';
+  $('gccsub').textContent=o.sub||'';
+  $('gccbody').textContent=o.body||''; $('gccbody').style.display=o.body?'':'none';
+  const iw=$('gcinpwrap'), inp=$('gcinput');
+  if(o.input){ iw.style.display=''; $('gcilabel').textContent=o.input.label||''; inp.value=o.input.def||''; inp.placeholder=o.input.ph||''; inp.style.display='block'; }
+  else { iw.style.display='none'; }
+  if(o.ico)$('gcmico').textContent=o.ico;
+  $('gcok').textContent=o.okLabel||'确认';
+  _gcOnOk=()=>{ const val=o.input?$('gcinput').value:''; const cb=o.onOk; uniClose(); if(cb)cb(val); };
+  _gcOnCancel=o.onCancel||null;
+  $('gcok').onclick=_gcOnOk;
+  const cancel=()=>{ uniClose(); if(_gcOnCancel)_gcOnCancel(); };
+  $('gccancel').onclick=cancel;
+  M.classList.add('show');
+  if(o.input)setTimeout(()=>{try{inp.focus();}catch(e){}},30);
+}
+function uniConfirm(title,body,okLabel,onOk,icon,onCancel){ uniShow({ico:icon||'⚠️',title,body:body||'',input:null,okLabel:okLabel||'确认',onOk:()=>{onOk();},onCancel}); }
+function uniPrompt(title,placeholder,okLabel,onOk,icon,defaultValue){ uniShow({ico:icon||'✍',title,sub:'',body:'',input:{label:'',ph:placeholder,def:defaultValue||''},okLabel:okLabel||'确认',onOk:(v)=>{onOk(v);}}); }
+function uniClose(){ const M=document.getElementById('gconfirm'); if(M)M.classList.remove('show'); _gcOnOk=null; _gcOnCancel=null; }
+window.uniConfirm=uniConfirm; window.uniPrompt=uniPrompt; window.uniClose=uniClose;
 // ===== v0.7 R5：工作室总览（重度）—— 任务看板 mini 进度（多书同看） =====
 let _studioPoll=null;
 async function studioOverview(){
@@ -2112,9 +2206,11 @@ window.saveMaxGlobal=saveMaxGlobal;
 function dispatchBooks(){
   const sel=(window._libCache||[]).filter(x=>(x.state==='in_progress'||x.state==='completed')&&!x.archived).map(x=>x.key);
   if(!sel.length) return toast('没有可创作的书（先在左侧选书/新建）','err');
-  if(!confirm('并发创作这 '+(sel.length>8?8:sel.length)+' 本书？（每书一个Agent，LLM受全局上限限流）')) return;
-  fetch('/api/agents-dispatch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:sel.slice(0,8)})})
-   .then(r=>r.json()).then(j=>toast('🚀 已启动 '+(sel.length>8?8:sel.length)+' 本书并发创作（完成弹通知）','ok')).catch(()=>toast('并发创作失败','err'));
+  uniConfirm('并发创作','并发创作这 '+(sel.length>8?8:sel.length)+' 本书？每书一个 Agent，LLM 受全局上限限流。','开始',()=>{
+    fetch('/api/agents-dispatch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:sel.slice(0,8)})})
+      .then(r=>r.json()).then(j=>toast('🚀 已启动 '+(sel.length>8?8:sel.length)+' 本书并发创作（完成弹通知）','ok')).catch(()=>toast('并发创作失败','err'));
+  },'⚡');
+  return;
 }
 window.dispatchBooks=dispatchBooks;
 function switchView(v){

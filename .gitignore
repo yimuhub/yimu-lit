@@ -1,9 +1,42 @@
-# 备份（铁律：大改前备份，但不进 git）
-*.backup_*
+# 一幕·神笔 novel-bot .gitignore
+# 原则：只跟踪「可移植的源码 + 技能 + 测试」；数据/密钥/备份/日志/运行态 一律不入库。
+
+# —— 密钥 / 配置（每台机器自管，含 LLM key，绝不入库） ——
+providers.json
+config.json
+config.example.json
+user-preferences.json
+model_rules.json
+usage_global.json
+secrets/
+*.key
+
+# —— 运行时学习数据 / 用户作品（本地生成） ——
+data/
+projects/
+skills/
+styles/
+
+# —— 备份（铁律：大改前备份，但备份不进 git；含嵌套 git 子仓库） ——
+backup_*/
 novel-bot.backup_*/
-# 运行日志 / 临时
+*.backup_*
+*.backup
+
+# —— Python / Node 运行产物 ——
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+.venv/
+venv/
+
+# —— 日志 / 临时 / 系统 ——
 uvicorn.out
 *.log
 tests/_*.js
-# 运行时学习数据（本地）
-data/learn_profiles.json
+.DS_Store
+Thumbs.db
+
+# —— 交付截图（体积大、按需本地留档） ——
+交付截图/
