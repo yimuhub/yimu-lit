@@ -989,10 +989,20 @@ function _rwDlgBubble(key){
   msgBox.appendChild(d); return d;
 }
 function _stopRwDlg(key){ if(_rwDlgPoll[key]){clearInterval(_rwDlgPoll[key]);delete _rwDlgPoll[key];} }
-function _startRwDlg(key){ if(_rwDlgPoll[key])return; _rwDlgPoll[key]=setInterval(async()=>{ try{ const d=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json(); if(key!==(curSession||curKey))return; _rwDlgPaint(key,d); if(!d.running)_stopRwDlg(key); }catch(e){} },1500); }
+function _startRwDlg(key){ if(_rwDlgPoll[key])return; _rwDlgPoll[key]=setInterval(async()=>{
+  try{
+    const p=await (await fetch('/api/rewrite-progress?key='+encodeURIComponent(key))).json();   // live 逐章进度
+    if(key!==(curSession||curKey))return;
+    if(p.running){ _rwDlgPaint(key,{running:true,progress:{done:p.done,total:p.total},per_chapter:p.per_chapter||[]}); return; }
+    _stopRwDlg(key);
+    const lg=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json();     // 最终结果卡
+    if(key!==(curSession||curKey))return;
+    _rwDlgPaint(key,{running:false,result:lg.result,cancelled:(lg.result&&lg.result.cancelled)});
+  }catch(e){}
+},1500); }
 function _rwDlgPaint(key, d){
   const el=_rwDlgBubble(key); const stat=el.querySelector('.chstat'), body=el.querySelector('.rwbody');
-  if(d.cancelled){ stat.textContent='⏹ 已取消（已写章保留）'; body.innerHTML='<div class="rwnote">取消后已写章节保留，可再次发起重写。</div>'; _stopRwDlg(key); const m=msgBox;m.scrollTop=m.scrollHeight; return; }
+  if(d.cancelled || (d.result&&d.result.cancelled)){ stat.textContent='⏹ 已取消（已写章保留）'; body.innerHTML='<div class="rwnote">取消后已写章节保留，可再次发起重写。</div>'; _stopRwDlg(key); const m=msgBox;m.scrollTop=m.scrollHeight; return; }
   if(!d.running && d.result){ stat.innerHTML=''; body.innerHTML=renderRewriteResultCard(d.result, key); _stopRwDlg(key); const m=msgBox;m.scrollTop=m.scrollHeight; return; }
   if(d.running){
     const p=d.progress||{}; const done=p.done||0, total=p.total||0, pct=total?Math.round(done/total*100):0;
@@ -1012,8 +1022,17 @@ function rwDialogueLive(key, chapters, dims){
     +' —— 弹窗已关，重写在对话里进行；你可以<b>切别的书</b>继续，改完回来这里看进度 + 结果（查看质量报告 / 刷新评分）。','');
   _rwDlgBubble(key); _rwDlgPaint(key,{running:true,progress:{done:0,total:(chapters?chapters.length:0)},per_chapter:[]}); _startRwDlg(key);
 }
-// 切到这本书时：按 /api/rewrite-log 恢复重写气泡（进行中→live；已完成→结果卡；取消→提示）
-function rwDialogueCheck(key){ (async()=>{ try{ const d=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json(); if(key!==(curSession||curKey))return; if(d.running||d.result||d.cancelled)_rwDlgPaint(key,d); }catch(e){} })(); }
+// 切到这本书时：恢复重写气泡（进行中→live 逐章；已完成→结果卡；取消→提示）
+function rwDialogueCheck(key){ (async()=>{
+  try{
+    const p=await (await fetch('/api/rewrite-progress?key='+encodeURIComponent(key))).json();
+    if(key!==(curSession||curKey))return;
+    if(p.running){ _rwDlgPaint(key,{running:true,progress:{done:p.done,total:p.total},per_chapter:p.per_chapter||[]}); _startRwDlg(key); return; }
+    const lg=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json();
+    if(key!==(curSession||curKey))return;
+    if(lg.result||lg.cancelled)_rwDlgPaint(key,{running:false,result:lg.result,cancelled:(lg.result&&lg.result.cancelled)});
+  }catch(e){}
+})(); }
 window.rwDialogueLive=rwDialogueLive; window.rwDialogueCheck=rwDialogueCheck;
 
 // ===== v0.7 R4：对话区「本书在干什么」live 卡（Hermes 式 live 步骤，按书隔离+代际守卫）=====
