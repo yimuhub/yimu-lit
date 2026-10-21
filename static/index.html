@@ -44,8 +44,11 @@ body{
 .slist{flex:1;overflow-y:auto;padding:0 6px 12px}
 /* v0.8.1 左侧布局：工作室总览(竖向看板) + 我的书 分组标签 */
 .studioview{padding:8px 10px 4px;border-bottom:1px solid var(--border);max-height:40%;overflow-y:auto}
-.sthead{font:600 11px var(--sans);color:var(--muted);display:flex;justify-content:space-between;padding:2px 2px 7px;letter-spacing:.2px}
+.sthead{font:600 11px var(--sans);color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:6px;padding:2px 4px 7px;letter-spacing:.2px;cursor:pointer;user-select:none}
+.sthead:hover{color:var(--text)}
 .sthead b{font-size:12px}
+.sthead .schip{opacity:.75;flex:none}
+.sthead .chev{font-size:9px;opacity:.6;transition:transform .2s;flex:none}
 .stlist{display:flex;flex-direction:column;gap:6px}
 .strow{border:1px solid var(--border);border-radius:9px;padding:7px 9px;background:var(--card);cursor:pointer;transition:.15s}
 .strow:hover{border-color:var(--accent)}
@@ -58,6 +61,13 @@ body{
 .sbar i{display:block;height:100%;background:var(--grad-accent)}
 .strow .sr2{font:10.5px var(--sans);color:var(--muted)}
 .sllabel{font:600 10px var(--sans);color:var(--muted);letter-spacing:.6px;text-transform:uppercase;padding:8px 12px 4px;opacity:.7;flex:none}
+/* v0.9.0 左侧分组可折叠（点分组头 收起/展开）*/
+.sgrph{font:600 10.5px var(--sans);color:var(--muted);letter-spacing:.4px;padding:9px 12px 5px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px;transition:color .15s;flex:none}
+.sgrph:hover{color:var(--text)}
+.sgrph .chev{margin-left:auto;font-size:9px;opacity:.6;transition:transform .2s}
+.sgrph.collapsed .chev{transform:rotate(-90deg)}
+.sgrph .cnt{margin-left:auto}
+.sgrph .chev{margin-left:4px}
 .ss-item{display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:10px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
 .ss-item:hover{background:rgba(255,255,255,.04)}
 .ss-item.on{background:rgba(124,92,255,.14);border-color:rgba(124,92,255,.45)}
@@ -142,8 +152,8 @@ body{
 #prog .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .6s;border-radius:3px}
 #prog .prow{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted)}
 #evts{margin:6px 14px;font-size:11.5px;color:var(--muted);max-height:150px;overflow-y:auto;line-height:1.7}
-.pitem{margin:0 14px 8px;border-radius:13px;background:var(--panel);border:1px solid var(--border);padding:12px 14px;cursor:pointer;transition:background .2s}
-.pitem:hover{background:var(--panel2)}
+.pitem{margin:0 14px 8px;border-radius:13px;background:var(--card);backdrop-filter:var(--glass-blur);border:1px solid var(--border);padding:12px 14px;cursor:pointer;transition:all .16s cubic-bezier(.4,0,.2,1);position:relative}
+.pitem:hover{background:var(--panel2);border-color:var(--accent);transform:translateY(-1px);box-shadow:0 8px 22px rgba(0,0,0,.28)}
 .pitem .t{font-size:13.5px;font-weight:600;margin-bottom:5px}
 .pitem .s{font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between}
 .tag{display:inline-block;font-size:10.5px;padding:2px 8px;border-radius:20px;margin-left:6px;vertical-align:1px}
@@ -152,6 +162,19 @@ body{
 .tag.wait{background:rgba(139,147,167,.15);color:var(--muted)}
 #dow{display:inline-block;margin-top:9px;font-size:11.5px;color:var(--accent);text-decoration:none;border:1px solid rgba(108,140,255,.4);padding:4px 12px;border-radius:20px}
 .empty{padding:14px;color:var(--muted);font-size:12.5px;text-align:center}
+/* v0.9.0 写作骨架卡（产物页顶部，可读总体状态） */
+.skcard{margin:0 14px 10px;border:1px solid var(--border);border-radius:13px;background:var(--card);backdrop-filter:var(--glass-blur);overflow:hidden}
+.skcard .skh{display:flex;align-items:center;gap:7px;padding:9px 12px;background:linear-gradient(135deg,rgba(108,140,255,.17),rgba(160,108,255,.12));border-bottom:1px solid var(--border);font:600 12.5px var(--sans);color:var(--text)}
+.skcard .skh .skbtns{margin-left:auto;display:flex;gap:5px}
+.skcard .skb{padding:11px 14px;max-height:250px;overflow-y:auto;font:12px/1.7 var(--sans);color:var(--text)}
+.skcard .skfoot{font:10.5px var(--sans);color:var(--muted);padding:7px 13px;border-top:1px solid var(--border);line-height:1.5}
+.skcard .skb b{color:#fff}
+/* v0.9.0 该书设置 卡片化 */
+.srow{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border:1px solid var(--border);border-radius:12px;background:var(--card);backdrop-filter:var(--glass-blur);margin:0 14px 8px}
+.srow .sic{width:32px;height:32px;border-radius:10px;background:rgba(108,140,255,.15);display:flex;align-items:center;justify-content:center;font-size:16px;flex:none}
+.srow .sct{flex:1;min-width:0}
+.srow .sct b{font:600 12.5px var(--sans);color:var(--text)}
+.srow .sdesc{font:11px var(--sans);color:var(--muted);margin-top:2px;line-height:1.55}
 #read{width:100%;margin-top:6px}
 /* 供应商面板 */
 #side .secrow{display:flex;align-items:center;justify-content:space-between;padding:0 2px}
@@ -180,6 +203,19 @@ body{
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:50}
 .modal.show{display:flex}
 .modal .mbox{width:460px;max-width:92vw;max-height:88vh;overflow-y:auto;background:rgba(16,20,38,.97);border:1px solid var(--border);border-radius:18px;padding:20px 22px}
+/* v0.9.0 高级模态（预览/总架构/并行 等）：渐变顶线 + 玻璃深度 + 图标头 */
+.modal .mbox.premium{position:relative;background:linear-gradient(180deg,rgba(30,39,72,.99),rgba(13,17,32,.99));border:1px solid rgba(108,140,255,.26);box-shadow:0 26px 74px rgba(0,0,0,.6);overflow:hidden;padding:0}
+.modal .mbox.premium::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--grad-accent);z-index:2}
+.modal .mbox.premium .mbin{padding:18px 22px 20px}
+.mhead{display:flex;align-items:flex-start;gap:11px;margin-bottom:12px}
+.mhead .mico{width:40px;height:40px;border-radius:12px;background:var(--grad-accent);display:flex;align-items:center;justify-content:center;font-size:20px;flex:none;box-shadow:0 6px 16px rgba(108,140,255,.35)}
+.mhead .mt{flex:1;min-width:0}
+.mhead .mt h3{font:700 15.5px var(--sans);color:#fff;margin:0 0 3px;letter-spacing:.2px}
+.mhead .mt .msub{font:11px var(--sans);color:var(--muted);line-height:1.5}
+.mhead .mx{width:28px;height:28px;flex:none;border:1px solid var(--border);background:var(--panel2);color:var(--muted);border-radius:9px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;transition:.15s}
+.mhead .mx:hover{color:#fff;border-color:var(--err);background:rgba(248,113,113,.16)}
+.modal .mbox.premium .mrow,.modal .mbox.premium .mfield,.modal .mbox.premium .mactions,.modal .mbox.premium .merr{margin-left:0}
+#inp:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(108,140,255,.18)}
 .modal h3{font-size:15px;margin-bottom:4px}
 .modal .mhint{font-size:11.5px;color:var(--muted);margin-bottom:14px;line-height:1.6}
 .mfield{margin-bottom:11px}
@@ -197,6 +233,7 @@ input,select,textarea{color-scheme:dark}
 .madv .mfields{margin-top:9px}
 .mactions{display:flex;gap:10px;margin-top:14px}
 .mactions button{flex:1;padding:9px;border-radius:10px;font-size:13px;cursor:pointer;border:1px solid var(--border)}
+.mok{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff}
 .mactions .mok{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff}
 .mactions .mcancel{background:var(--panel2);color:var(--text)}
 .merr{font-size:11.5px;color:var(--err);margin-top:6px;min-height:14px;line-height:1.5}
@@ -211,6 +248,7 @@ input,select,textarea{color-scheme:dark}
 .pb:hover{border-color:var(--accent);background:var(--card-hi);transform:translateY(-1px);box-shadow:0 4px 14px rgba(108,140,255,.22)}
 .pb.prev{color:var(--text)}
 .pb.run{color:var(--warn);border-color:rgba(251,191,36,.4)}
+.pb.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent}
 /* 预览模态 */
 #pvbody{margin-top:14px;max-height:56vh;overflow-y:auto;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:12px;padding:16px 18px;font-size:14px;line-height:1.9;color:var(--text)}
 #pvbody .pv-h{font-weight:700;color:#fff;font-size:16px;margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--border)}
@@ -316,8 +354,12 @@ button:disabled{cursor:not-allowed;opacity:.55}
     <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔小说工作台</span></span><span id="verbadge" style="font:10px var(--sans);color:var(--muted);opacity:.75;margin-right:6px;flex:none">v…</span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
     <div class="snew" id="snew" onclick="newBookFlow()"><span class="txt">＋ 新建一本书</span></div>
     <div id="studioview" class="studioview" style="display:none"></div>
-    <div class="sllabel" id="slcount">📚 我的书</div>
-    <div class="slist" id="slist"></div>
+    <div class="slist" id="slist">
+      <div class="sgrph" id="slcount" onclick="toggleGrp('a')">📚 我的书 <span class="chev">▾</span></div>
+      <div id="grpbody-a"></div>
+      <div class="sgrph arch" id="slarch" onclick="toggleGrp('d')">✅ 已归档 <span class="chev">▾</span></div>
+      <div id="grpbody-d"></div>
+    </div>
   </div>
   <div class="dragh" id="dragL"></div>
   <div id="chat">
@@ -357,6 +399,8 @@ button:disabled{cursor:not-allowed;opacity:.55}
       <button data-tab="lib" onclick="sideTab('lib')">🗂 作品库</button>
     </div>
     <div class="side-pane" id="pane-art">
+      <h2>🦴 写作骨架</h2>
+      <div id="skcard" class="skcard"><div class="empty">选中一本书后，这里显示它的总体状态（写到哪 / 多少 / 重点 / 为何 / 续写提示）。写完·重写·放行会自动刷新。</div></div>
       <h2>该书产物</h2>
       <div id="artbody" style="padding:0 14px 8px"></div>
       <h2>进度 &amp; 事件</h2>
@@ -470,21 +514,24 @@ button:disabled{cursor:not-allowed;opacity:.55}
 </div>
 <!-- 作品预览 模态 -->
 <div id="pvmodal" class="modal">
-  <div class="mbox" style="width:700px">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <h3 id="pvtitle" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></h3>
-      <div style="display:flex;gap:8px;align-items:center">
-        <select id="pvch"></select>
-        <button id="pvval" class="pb prev" onclick="runValidate()" title="对全书跑 确定性引擎 + 五角色审校 + 百分制达标判定">📝 审稿</button>
-        <button id="pvrw" class="pb run" onclick="openRewriteWorkbench(PV_KEY)" title="选章节+维度定向重写，逐章实时进度、可取消">🔁 重写</button>
-        <button id="pvgate" class="pb run" onclick="runReleaseGate()" title="未达标时自动带要求重写到 ≥90 才放行">🔓 放行门禁</button>
-        <a id="pvdow" class="pb prev" href="#" target="_blank">⬇ 下载</a>
-        <button class="pvclose" onclick="closePvModal()">✕ 关闭</button>
+  <div class="mbox premium" style="width:720px">
+    <div class="mbin">
+      <div class="mhead">
+        <div class="mico">📖</div>
+        <div class="mt"><h3 id="pvtitle" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></h3><div class="msub" id="pvsub">预览成书 · 逐章 / 全书</div></div>
+        <button class="mx" onclick="closePvModal()" title="关闭">✕</button>
       </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 12px">
+        <select id="pvch" style="background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:9px;padding:6px 10px;color:var(--text);font-size:12px;cursor:pointer"></select>
+        <button id="pvval" class="pb" style="margin:0" onclick="runValidate()" title="对全书跑 确定性引擎 + 五角色审校 + 百分制达标判定">📝 审稿</button>
+        <button id="pvrw" class="pb run" style="margin:0" onclick="openRewriteWorkbench(PV_KEY)" title="选章节+维度定向重写，逐章实时进度、可取消">🔁 重写</button>
+        <button id="pvgate" class="pb run" style="margin:0" onclick="runReleaseGate()" title="未达标时自动带要求重写到 ≥90 才放行">🔓 放行门禁</button>
+        <a id="pvdow" class="pb prev" style="margin:0" href="#" target="_blank">⬇ 下载</a>
+      </div>
+      <div id="pvbody">加载中…</div>
+      <div id="rwbox"></div>
+      <div id="gatebox"></div>
     </div>
-    <div id="pvbody">加载中…</div>
-    <div id="rwbox"></div>
-    <div id="gatebox"></div>
   </div>
 </div>
 <!-- 开书向导 -->
@@ -549,11 +596,32 @@ button:disabled{cursor:not-allowed;opacity:.55}
   <div class="mactions"><button class="mcancel" onclick="closeTitle()">取消</button>
     <button class="mok" id="tmgoto">确认开写</button></div>
 </div></div>
-<div id="bpmodal" class="modal"><div class="mbox" style="width:640px">
-  <h3 id="bpname">🧩 总架构</h3>
-  <div class="mhint">写任何一章前，所有 Agent 都先读这份唯一蓝图（世界观/人物/全章节拍/文风/连续性），并行写章才又快又一致。</div>
-  <div id="bpbody" style="margin:4px 0 8px"></div>
-  <div class="mactions"><button class="mok" onclick="showBlueprint()">刷新</button><button class="mcancel" onclick="document.getElementById('bpmodal').classList.remove('show')">关闭</button></div>
+<div id="bpmodal" class="modal"><div class="mbox premium" style="width:680px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">🧩</div>
+      <div class="mt"><h3 id="bpname">总架构</h3><div class="msub">写任何一章前，所有 Agent 都先读这份唯一蓝图（世界观 / 人物 / 全章节拍 / 文风 / 连续性），并行写章才又快又一致。</div></div>
+      <button class="mx" onclick="document.getElementById('bpmodal').classList.remove('show')" title="关闭">✕</button>
+    </div>
+    <div id="bpbody" style="margin:0 0 10px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="pb" style="margin:0" onclick="showBlueprint()">↻ 刷新</button></div>
+  </div>
+</div></div>
+<!-- v0.9.0 并行创作：选「同时派出多少个子 Agent」(2/3/5/8 或自定义 1-8) -->
+<div id="parpicker" class="modal"><div class="mbox premium parpbx" style="width:440px">
+  <div class="mbin">
+    <div class="mhead">
+      <div class="mico">⚡</div>
+      <div class="mt"><h3>并行创作</h3><div class="msub">先熔炼『总架构』，<b style="color:var(--text)">N 个子 Agent</b> 分章齐写（写完一个立即取下一章），全程走全局并发限流防 429。</div></div>
+      <button class="mx" onclick="document.getElementById('parpicker').classList.remove('show')" title="关闭">✕</button>
+    </div>
+    <div style="font:11px var(--sans);color:var(--muted);margin:2px 0 8px">同时派出多少个子 Agent？（越多越快，受全局并发上限限制；本地模型慢建议 2–3）</div>
+    <div id="parpicks" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    <div class="mfield" style="margin-top:12px"><label>自定义（1–8）</label><input id="parpw" type="number" min="1" max="8" value="3" style="width:120px"></div>
+    <div class="merr" id="parperr"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="pb" style="margin:0;padding:6px 14px" onclick="document.getElementById('parpicker').classList.remove('show')">取消</button>
+      <button class="mok" id="parpgo" style="padding:6px 16px">⚡ 开始并行创作</button></div>
+  </div>
 </div></div>
 <!-- v0.7 R2：重写工作台（选章+选维 → 触发 → 逐章实时进度板 → 可取消 → 结果卡） -->
 <div id="rwmodal" class="modal"><div class="mbox" style="width:680px">
@@ -1655,21 +1723,42 @@ function renderSessions(){
     const pinned=active.filter(i=>S_pins.includes(i.key)).sort((a,b)=>S_pins.indexOf(a.key)-S_pins.indexOf(b.key));
     const doing=active.filter(i=>!isDone(i)&&!S_pins.includes(i.key));
     const done=active.filter(isDone);
-    const slc=$('slcount'); if(slc)slc.textContent='📚 我的书 · '+active.length;
-    let h='';
+    // 「我的书」（进行中）
+    const ga=$('grpbody-a'); let h='';
     if(pinned.length)h+='<div class="sgrp">📌 置顶</div>'+pinned.map(_sessRow).join('');
     h+='<div class="sgrp">进行中</div>'+(doing.length?doing.map(_sessRow).join(''):'<div class="snew" style="border:none;background:none;color:var(--muted);cursor:default"><span class="txt">暂无 · 点上方「＋新建」</span></div>');
-    if(done.length)h+='<div class="sgrp">✅ 已归档（完结）</div>'+done.map(_sessRow).join('');
-    $('slist').innerHTML=h;
-    $('slist').querySelectorAll('.ss-item').forEach(el=>{
-      el.onclick=()=>{ const it=_LIB_ITEMS.find(x=>x.key===el.dataset.key);
-        if(it&&it.state==='completed'&&it.released===false&&!it.archived){ openReleaseModal(el.dataset.key); }  // 待放行→弹窗直接放行
-        selectBook(el.dataset.key); };
-      const m=el.querySelector('[data-menu]');if(m)m.onclick=e=>{e.stopPropagation();openBookMenu(el.dataset.key,m);};
-    });
+    if(ga)ga.innerHTML=h;
+    // 「已归档」
+    const gd=$('grpbody-d'), arch=$('slarch');
+    if(done.length){ if(gd)gd.innerHTML=done.map(_sessRow).join(''); if(arch)arch.style.display=''; }
+    else { if(gd)gd.innerHTML=''; if(arch)arch.style.display='none'; }
+    // 分组头（计数 + chevron）
+    const slc=$('slcount'); if(slc)slc.innerHTML='📚 我的书 <span class="cnt">'+active.length+'</span><span class="chev">▾</span>';
+    if(arch)arch.innerHTML='✅ 已归档 <span class="cnt">'+done.length+'</span><span class="chev">▾</span>';
+    applyGrpState();
+    const bind=el=>{ el.onclick=()=>{ const it=_LIB_ITEMS.find(x=>x.key===el.dataset.key);
+      if(it&&it.state==='completed'&&it.released===false&&!it.archived){ openReleaseModal(el.dataset.key); }
+      selectBook(el.dataset.key); };
+      const m=el.querySelector('[data-menu]');if(m)m.onclick=e=>{e.stopPropagation();openBookMenu(el.dataset.key,m);}; };
+    (ga?ga.querySelectorAll('.ss-item'):[], gd?gd.querySelectorAll('.ss-item'):[]).flatMap(x=>[...x]).forEach(bind);
   }).catch(()=>{});
 }
-window.renderSessions=renderSessions;
+// v0.9.0 左侧分组折叠：点「我的书 / 已归档 / 总览」→ 收起/展开（localStorage 记忆）
+function toggleGrp(which){
+  const map={a:['slcount','grpbody-a'], d:['slarch','grpbody-d']};
+  const [h,b]=map[which]; const hh=$(h), bb=$(b); if(!hh||!bb)return;
+  const nowCollapsed=hh.classList.toggle('collapsed');
+  bb.style.display=nowCollapsed?'none':'';
+  localStorage['nbot_grp_'+which]=nowCollapsed?'1':'0';
+}
+function applyGrpState(){
+  [['slcount','grpbody-a','a'],['slarch','grpbody-d','d']].forEach(([h,b,w])=>{
+    const hh=$(h),bb=$(b); if(!hh||!bb)return;
+    const col=localStorage['nbot_grp_'+w]==='1';
+    hh.classList.toggle('collapsed',col); bb.style.display=col?'none':'';
+  });
+}
+window.renderSessions=renderSessions; window.toggleGrp=toggleGrp;
 function togglePin(key){const i=S_pins.indexOf(key);if(i>=0)S_pins.splice(i,1);else S_pins.unshift(key);localStorage.nbot_pins=JSON.stringify(S_pins);renderSessions();}
 window.togglePin=togglePin;
 // v0.3.3：左侧「⋯」小菜单（仿 Hermes 会话三点）——置顶/归档/改名/下载/续写/彻底删除，按书状态动态
@@ -1742,14 +1831,17 @@ async function selectBook(key){
   qa+='<button class="pb" onclick="parallelWrite()" title="先熔炼总架构，N 个 Agent 分章齐写（写完一个立即取下一章）">⚡ 并行创作</button>'
     +'<button class="pb" onclick="showBlueprint()" title="写前统一的总架构蓝图（世界观/人物/全章节拍/文风/连续性）">🧩 总架构</button>';
   $('quickacts').innerHTML=qa;
+  loadSkeleton(key);   // v0.9.0：切书即刷新「🦴 写作骨架」（写到哪/多少/重点/为何/续写提示）
   const rel=pv.released===true?'已放行✅':(pv.released===false?'beta·未放行⚠️':'');
   $('artbody').innerHTML='<div style="font:600 14px var(--sans)">'+esc(name)+'</div>'
     +'<div style="font:11.5px var(--muted);margin:5px 0 9px">'+(pv.total||st.total||0)+' 章 · '+(pv.words||0)+' 字 · '+esc(rel||stt)+'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="pb prev" onclick="openPreview(\''+key+'\')">👁 预览成书</button><button class="pb" onclick="actValidate()">📊 质量报告</button></div>';
-  $('setbody').innerHTML='<div style="font:12px/2.1 var(--sans);color:var(--muted)">'
-    +'🎚 <b style="color:var(--text)">门禁</b>：达标线 90 · 每轮 top-3 改写 · 未达标标 beta<br>'
-    +'⏱ <b style="color:var(--text)">定时任务</b>（默认关，可设总章/节奏）：<div id="booksched" style="margin-top:4px"></div><br>'
-    +'🧩 <b style="color:var(--text)">题材×风格技能</b>：'+esc(pv.genre||st.genre||'未绑定')+'<div id="bookskill" style="margin-top:6px"></div></div>';
+  $('setbody').innerHTML=
+    '<div style="padding:14px 14px 4px">'
+    +'<div class="srow"><span class="sic">🎚</span><div class="sct"><b>放行门禁</b><div class="sdesc">达标线 <b style="color:var(--text)">90</b> · 每轮 top-3 改写 · 未达标标 beta；一键完稿/并行写完后自动过门禁</div></div></div>'
+    +'<div class="srow"><span class="sic">⏱</span><div class="sct"><b>定时任务</b><div class="sdesc">默认关 · 可设总章 / 节奏 / 触发</div><div id="booksched" style="margin-top:7px"></div></div></div>'
+    +'<div class="srow"><span class="sic">🧩</span><div class="sct"><b>题材 × 风格技能</b><div class="sdesc">绑定 '+esc(pv.genre||st.genre||'未绑定')+' 技能，写前自动注入风格）</div><div id="bookskill" style="margin-top:7px"></div></div></div>'
+    +'</div>';
   loadBookSkill(key); loadBookSched(key); loadTokenLedger(key);
   startPolling(); refreshProjects();
   switchView('chat');   // v0.4.1：选中书后默认显示「对话」（只属于这本书的专属聊天）；想看小说正文点「📄稿件」
@@ -1762,16 +1854,38 @@ window.actValidate=actValidate;
 function actGate(){if(!curSession)return;fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:curSession})}).then(r=>r.json()).then(j=>toast('🔓 门禁：'+(j.msg||''),'ok'));}
 window.actGate=actGate;
 // ===== v0.6 B：并行创作 + 总架构查看 =====
-function parallelWrite(){
-  if(!curSession)return;
-  const key=curSession;
-  if(!confirm('⚡ 并行创作这本书？\n先熔炼『总架构』，5 个 Agent 分章齐写（写完一个立即取下一章）。\n会续写/重写尚未完成的章节，全程走并发限流防 429。'))return;
-  switchView('ms'); loadManuscript(key);
-  $('msrw').innerHTML='<div class="rwcard" style="border-color:var(--accent)"><h4>⚡ 并行创作中</h4><div class="rwnote">先熔炼『总架构』，5 个 Agent 分章齐写（写完一个立即取下一章）… 完成后此处刷新。</div></div>';
-  fetch('/api/parallel-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,workers:5})})
-   .then(r=>r.json()).then(j=>{bubble('bot','⚡ '+esc(j.msg||'并行创作已启动')+'（稿件区实时刷新）','');pollParallel(key);});
+// v0.9.0：点击并行创作 → 弹「派几个子 Agent」选择器（2/3/5/8 + 自定义 1-8），不再写死 5
+let _parKey=null, _parPreset=5;
+function openParPicker(key){
+  _parKey=key||curSession; if(!_parKey)return;
+  const P=$('parpicks'); if(!P)return;
+  P.innerHTML=[2,3,5,8].map(n=>'<button class="pb" style="padding:7px 15px;font-size:12px;margin:0" data-w="'+n+'">'+n+' 个</button>').join('');
+  P.querySelectorAll('[data-w]').forEach(b=>b.onclick=()=>{ $('parpw').value=b.dataset.w; P.querySelectorAll('[data-w]').forEach(x=>x.classList.toggle('on',x===b)); });
+  $('parpw').oninput=()=>{ const v=+$('parpw').value; P.querySelectorAll('[data-w]').forEach(x=>x.classList.toggle('on',+x.dataset.w===v)); };
+  $('parperr').textContent='';
+  const w=localStorage.nbot_parw; if(w) $('parpw').value=w;
+  P.querySelectorAll('[data-w]').forEach(x=>x.classList.toggle('on',+x.dataset.w===+$('parpw').value));
+  $('parpicker').classList.add('show');
 }
-window.parallelWrite=parallelWrite;
+function doParallelWrite(key, workers){
+  workers=Math.max(1,Math.min(8,workers||_parPreset||3));
+  localStorage.nbot_parw=workers;
+  switchView('ms'); loadManuscript(key);
+  $('msrw').innerHTML='<div class="rwcard" style="border-color:var(--accent)"><h4>⚡ 并行创作中（'+workers+' 个子 Agent）</h4><div class="rwnote">先熔炼『总架构』，'+workers+' 个子 Agent 分章齐写（写完一个立即取下一章）… 完成后此处刷新。</div></div>';
+  fetch('/api/parallel-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,workers:workers})})
+   .then(r=>r.json()).then(j=>{bubble('bot','⚡ '+esc(j.msg||('已派出 '+workers+' 个子 Agent 并行创作'))+'（稿件区实时刷新）','');pollParallel(key);})
+   .catch(e=>{ $('msrw').innerHTML=''; bubble('bot','⚠️ 并行创作启动失败：'+(e.message||e),'err'); });
+}
+function parallelWrite(){ openParPicker(curSession); }          // 快捷入口：弹选择器
+function parPick(){
+  if(!_parKey)return;
+  let w=Math.max(1,Math.min(8, +$('parpw').value||_parPreset||3));
+  $('parpw').value=w;
+  $('parpicker').classList.remove('show');
+  doParallelWrite(_parKey, w);
+}
+window.parallelWrite=parallelWrite; window.openParPicker=openParPicker; window.parPick=parPick;
+(function(){ const g=$('parpgo'); if(g)g.onclick=parPick; })();
 // ===== v0.7 R5：一键完稿（小白）—— 串引擎全自动，进度看「本书在干什么」活动卡 =====
 function oneShot(key){
   key=key||curSession; if(!key)return;
@@ -1802,12 +1916,51 @@ async function studioOverview(){
       '<div class="sr2">'+b.done+'/'+b.total+' 章'+(b.quality!=null?(ok?' · 达标':' · 分'+b.quality):'')+'</div></div>';
   };
   el.style.display='';
-  el.innerHTML='<div class="sthead"><span>🏆 工作室总览</span><span>'+(run.length?'<b style="color:var(--accent)">'+run.length+'</b> 运行中':'共 '+books.length+' 本')+' · 点卡片切书</span></div>'+
-    '<div class="stlist">'+list.map(row).join('')+'</div>';
+  const stListOpen=localStorage.nbot_studio_open!=='0';
+  el.innerHTML='<div class="sthead" onclick="toggleStudioList()" title="点击 收起/展开"><span>🏆 工作室总览</span><span class="schip">'+(run.length?'<b style="color:var(--accent)">'+run.length+'</b> 运行中':'共 '+books.length+' 本')+'</span><span class="chev" id="studiochev" '+(stListOpen?'':'style="transform:rotate(-90deg)"')+'>▾</span></div>'+
+    '<div class="stlist" id="studiolist" '+(stListOpen?'':'style="display:none"')+'>'+list.map(row).join('')+'</div>';
 }
+function toggleStudioList(){
+  const l=$('studiolist'), c=$('studiochev'); if(!l)return;
+  const open=l.style.display==='none';
+  l.style.display=open?'':'none';
+  if(c)c.style.transform=open?'':'rotate(-90deg)';
+  localStorage.nbot_studio_open=open?'1':'0';
+}
+window.toggleStudioList=toggleStudioList;
 function startStudio(){ if(!_studioPoll){ studioOverview(); _studioPoll=setInterval(studioOverview,3000);} }
 function toggleStudio(){ const el=$('studioview'); if(!el)return; if(el.style.display==='none') startStudio(); else { if(_studioPoll){clearInterval(_studioPoll);_studioPoll=null;} el.style.display='none'; } }
 window.startStudio=startStudio; window.toggleStudio=toggleStudio;
+// ===== v0.9.0 写作骨架：产物页顶部「🦴 写作骨架」卡（读到哪/多少/重点/为何/续写提示）=====
+let _skMd='';
+function skRender(md){
+  return md.split("\n").map(line=>{
+    const t=esc(line);
+    if(/^##\s/.test(line))return '<div style="font:700 12.5px var(--sans);color:var(--accent);margin:9px 0 4px">'+line.replace(/^##\s*/,'')+'</div>';
+    if(/^>\s?/.test(line))return '<div style="font:11px var(--sans);color:var(--muted);opacity:.85;margin:2px 0">'+t.replace(/^&gt;\s?/,'')+'</div>';
+    if(/^[-·]\s/.test(line))return '<div style="padding-left:9px;border-left:2px solid rgba(108,140,255,.35);margin:2px 0;line-height:1.75">'+t.replace(/^[-·]\s/,'').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')+'</div>';
+    if(line.trim()==='')return '';
+    return '<div style="line-height:1.75;margin:2px 0">'+t.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')+'</div>';
+  }).join('');
+}
+async function loadSkeleton(key, regen){
+  key=key||curSession; const c=$('skcard'); if(!c)return;
+  if(!key){ c.innerHTML='<div class="empty">选中一本书后，这里显示它的总体状态（写到哪 / 多少 / 重点 / 为何 / 续写提示）。写完·重写·放行会自动刷新。</div>'; return; }
+  c.innerHTML='<div class="skh">🦴 写作骨架 <span class="skbtns"><button class="pb" style="margin:0;padding:2px 9px" onclick="loadSkeleton(\''+esc(key)+'\',1)">↻ 刷新</button><button class="pb" style="margin:0;padding:2px 9px" onclick="copySkeleton()">⧉ 复制</button></span></div><div class="skb"><div class="empty">加载骨架中…</div></div>';
+  try{
+    const j=await (await fetch('/api/skeleton?key='+encodeURIComponent(key)+(regen?'&regen=1':''))).json();
+    _skMd=j.md||'';
+    const has=_skMd.trim();
+    c.innerHTML='<div class="skh">🦴 写作骨架 <span class="skbtns"><button class="pb" style="margin:0;padding:2px 9px" onclick="loadSkeleton(\''+esc(key)+'\',1)">↻ 刷新</button><button class="pb" style="margin:0;padding:2px 9px" onclick="copySkeleton()">⧉ 复制</button></span></div>'+
+      '<div class="skb">'+(has?skRender(_skMd):'<div class="empty">尚未生成（本书还没写够内容）。点上方「↻ 刷新」立即生成。</div>')+'</div>'+
+      '<div class="skfoot">文件 <b style="color:var(--accent)">17-写作骨架.md</b>'+(j.updated?' · 更新 '+esc(j.updated):'')+' · 已自动注入续写 / 改写 Agent 的上下文</div>';
+  }catch(e){ c.innerHTML='<div class="skh">🦴 写作骨架</div><div class="skb"><div class="empty">⚠️ 骨架加载失败：'+esc(String(e))+'</div></div>'; }
+}
+function copySkeleton(){
+  if(!_skMd){ toast('暂无骨架可复制','err'); return; }
+  navigator.clipboard?.writeText(_skMd).then(()=>toast('📋 写作骨架已复制（可直接粘给 LLM 作总体状态）','ok'),()=>toast('复制失败','err'));
+}
+window.loadSkeleton=loadSkeleton; window.copySkeleton=copySkeleton;
 // ===== v0.7 R5：小白空态 3 步引导（#msgs 空 + 未选书时）=====
 function emptyGuide(){
   if(msgBox.children.length>0)return;

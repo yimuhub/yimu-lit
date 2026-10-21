@@ -41,6 +41,17 @@ def test_version_endpoint():
     assert v.get("version") == version.VE, f"/api/version={v.get('version')} 与 VERSION 文件({version.VE}) 不一致"
 
 
+def test_skeleton_route_and_shape():
+    # v0.9.0：写作骨架端点（纯文件聚合，不花 LLM）——路由注册 + 返回结构
+    paths = {getattr(r, "path", "") for r in appmod.app.routes}
+    assert "/api/skeleton" in paths, "缺路由 /api/skeleton"
+    k = _first_key()
+    if not k:
+        return
+    d = client.get("/api/skeleton", params={"key": k}).json()
+    assert "md" in d and "exists" in d and d.get("skeleton_file") == "17-写作骨架.md"
+
+
 # ---------- 真实读端点结构 ----------
 def test_library_shape():
     d = client.get("/api/library").json()

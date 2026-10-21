@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from bot import llm, workflow, writer, providers, version, distill, learn, agents
+from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="novel-bot")
@@ -1220,6 +1220,36 @@ def api_blueprint(key: str):
         except Exception:
             out["blueprint"] = None
     return out
+
+@app.get("/api/skeleton")
+def api_skeleton(key: str, regen: int = 0):
+    """v0.9.0：该书『写作骨架』（17-写作骨架.md）——写到哪/多少/重点/为何/续写提示。
+    纯文件聚合，不花 LLM；regen=1 立即重新生成（也可由写作/重写/放行自动刷新）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    if regen:
+        try:
+            skeleton.build(key)
+        except Exception:
+            pass
+    md = skeleton.read(key, cap=8000)
+    meta = (writer.library_item(key, with_quality=False) or {})
+    return {"key": key, "exists": bool(md.strip()), "md": md,
+            "updated": meta.get("skeleton") or (proj.plan() or {}).get("meta", {}).get("skeleton"),
+            "skeleton_file": "17-写作骨架.md"}
+
+@app.post("/api/skeleton")
+def api_skeleton_regen(payload: dict):
+    """v0.9.0：手动刷新写作骨架。"""
+    key = payload.get("key")
+    if not key or not _get_project(key):
+        return JSONResponse({"ok": False, "error": "项目不存在"}, status_code=404)
+    try:
+        p = skeleton.build(key)
+        return {"ok": True, "key": key, "path": p, "md": skeleton.read(key, cap=8000) if p else ""}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @app.get("/api/chapter")
 def api_chapter(key: str, n: int):

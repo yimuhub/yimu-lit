@@ -5,6 +5,14 @@ from . import workflow, skill, continuity, llm, providers
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECTS_DIR = os.path.join(ROOT, "projects")
 
+def _skeleton_refresh(key):
+    """v0.9.0：刷新该书『17-写作骨架.md』（纯文件聚合，不花 LLM）。失败不影响主流程。"""
+    try:
+        from bot import skeleton
+        skeleton.build(key)
+    except Exception:
+        pass
+
 class Project:
     def __init__(self, path, name):
         self.path = path
@@ -353,6 +361,13 @@ def _build_ctx(proj, ch):
         ctx["blueprint"] = blueprint_block(proj, ch["chapterNumber"])
     except Exception:
         ctx["blueprint"] = ""
+    # v0.9.0：写作骨架注入 —— 续写/改写前先读总体状态（写到哪/多少/重点/为何/续写提示），快速对齐
+    try:
+        _sk = _rf("17-写作骨架.md", 3200)
+        if _sk.strip():
+            ctx["blueprint"] = (ctx.get("blueprint") or "") + "\n\n## 写作骨架（总体状态，动手前先读）\n" + _sk.strip()
+    except Exception:
+        pass
     return ctx
 
 # ---------- v0.6 B：总架构（蓝图）+ 并行章节创作 ----------
@@ -535,6 +550,7 @@ def _write_loop_parallel(proj, n_workers=5):
         return
     _validate_and_finish(proj)
     proj.log(f"🧵 并行写作完成（{n_workers} 个 Agent，总架构对齐）")
+    _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：并行写完 → 刷新写作骨架
 
 # v0.6 B 起：让 _write_chapter 的『领章/完成』在并行下不互踩 —— 由 providers.ConcurrencyGuard 限真 LLM 并发；
 # 章状态落盘仍走 proj.save_plan（各 worker 写不同章文件；plan 更新按章号区分，末尾 _validate 汇总）。
@@ -911,13 +927,16 @@ def _write_loop(proj: Project):
                 break
             if ch["status"] != "completed":
                 _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3)
+                _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：每写完一章即刷新写作骨架
                 if is_paused(proj):
                     break
         if is_paused(proj):
             plan = proj.plan(); plan["status"] = "paused"; proj.save_plan(plan)
             proj.log("⏸ 已暂停（停在当前进度，点「▶继续」恢复；也可「⏹ 停止」）")
+            _skeleton_refresh(os.path.basename(proj.path))
             return
         _validate_and_finish(proj)
+        _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：全书写完 → 刷新写作骨架
     except Exception as e:
         proj.log(f"💥 写作异常中断（说「继续」可续写）：{e}")
         plan = proj.plan()
@@ -1370,6 +1389,7 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
                                                     "weak_after": weak2, "brief": brief,
                                                     "per_chapter": per_chapter_scores(proj)})
     proj.log(f"🔁 定向重写 {len(changed)} 章：{brief['before_total']} → {after}（{delta:+.1f}）")
+    _skeleton_refresh(key)   # v0.9.0：定向重写完成 → 刷新写作骨架（本次重点/仍弱维度）
     return {"before": brief["before_total"], "after": after, "delta": delta,
             "changed": changed, "pass": after >= brief["pass_line"],
             "weak_after": weak2, "brief": brief,
@@ -1441,6 +1461,7 @@ def run_release_gate(key, cfg_over=None):
     _write_gate_report(proj, before, final, meta["released"], pl, len(gate_results), gate_results, cancelled=cancelled)
     _GATE_CANCEL.discard(key)
     proj.log(f"🔓 放行门禁 {before} → {final}：{'取消' if cancelled else ('放行✅' if meta['released'] else '未放行⚠️')}（{len(gate_results)} 轮）")
+    _skeleton_refresh(key)   # v0.9.0：放行门禁结束 → 刷新写作骨架
     return {"before": before, "after": final, "released": meta["released"], "cancelled": cancelled,
             "pass_line": pl, "rounds": len(gate_results), "gate_results": gate_results}
 
