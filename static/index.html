@@ -1274,8 +1274,8 @@ async function openOnb(){
     if(p['金手指'])$('ob_hand').value=p['金手指']; if(p['节奏'])$('ob_pace').value=p['节奏']; if(p['语言'])$('ob_lang').value=p['语言'];
     const pn=$('obprefnote');if(pn)pn.style.display='none';};
   fillOnbStyle(); prefillFromLearn();
-  $('ob_sells').innerHTML=ONB.sells.map(s=>'<label class="libchip" style="cursor:pointer"><input type="checkbox" value="'+esc(s)+'" style="display:none"> '+esc(s)+'</label>').join('');
-  $('ob_sells').querySelectorAll('label').forEach(l=>l.onclick=()=>{l.classList.toggle('on');l.querySelector('input').checked=l.classList.contains('on');});
+  $('ob_sells').innerHTML=ONB.sells.map(s=>'<span class="libchip" data-v="'+esc(s)+'" style="cursor:pointer">'+esc(s)+'</span>').join('');
+  $('ob_sells').querySelectorAll('.libchip').forEach(c=>c.onclick=()=>c.classList.toggle('on'));
   try{
     const mo=await (await fetch('/api/model_options')).json();
     $('ob_prov').innerHTML=(mo.options||[]).map(o=>'<option value="'+o.id+'">'+esc(o.name)+'</option>').join('');
@@ -1294,7 +1294,7 @@ function fillOnbModel(){
 }
 window.closeOnb=()=>$('onbmodal').classList.remove('show');
 async function submitOnb(){
-  const sells=[...$('ob_sells').querySelectorAll('input:checked')].map(i=>i.value);
+  const sells=[...$('ob_sells').querySelectorAll('.libchip.on')].map(c=>c.dataset.v);
   let _chap=+$('ob_chap').value;
   if($('ob_chap').value==='自定义'){ _chap=+$('ob_chap_custom').value; if(!(_chap>=1&&_chap<=200)){$('oberr').textContent='⚠️ 自定义章节数需在 1-200 之间';return;} }
   const payload={genre:$('ob_genre').value, tone:$('ob_tone').value, perspective:$('ob_persp').value,
