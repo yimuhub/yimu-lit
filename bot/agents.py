@@ -4,7 +4,7 @@
 限流在 providers.ConcurrencyGuard（全局并发上限 + 每 provider 限流，防 429）。
 这里提供「宇宙」语义层：AGENTS 注册表、每岗位绑定的读写、批量分发多书并发创作。
 """
-from . import providers, llm, workflow
+from . import providers
 
 # 岗位注册表：每个子 Agent 可单独配 provider/model；缺省回落到 stage_models / 默认供应商。
 AGENTS = {
@@ -29,7 +29,7 @@ def get_bindings():
 
 def set_binding(agent, provider_id=None, model=None):
     """把某岗位的模型绑定写进 config.json（留空 = 取消绑定、回落 stage/默认）。"""
-    import json, os
+    import json
     p = _config_path()
     try:
         c = json.load(open(p, encoding="utf-8"))

@@ -7,7 +7,7 @@
 - 并发安全：resolve 每次从 cfg 现读，不维护模块级"当前供应商"，避免多任务并写串台。
 - 密钥：只存本地（inline 或 api_key_file），不外发、不进日志；展示打码。
 """
-import json, os, re, time, threading, httpx
+import json, os, re, threading, httpx
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROVIDERS_FILE = os.path.join(ROOT, "providers.json")

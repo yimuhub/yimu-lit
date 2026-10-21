@@ -1,8 +1,8 @@
 """「一幕·神笔 · ShenBi NovelCraft」原创创作技能 运行时加载器
 （深度绑定：每次创作实时读取内置 skill/ 的文件，升级技能无需改代码）。
 全部技能文本为原创（见 NOTICE.md），不依赖任何外部技能仓库。"""
-import json, os, re, subprocess, sys
-from functools import lru_cache
+import json, os, re
+from functools import cache
 from . import wordcount
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +22,7 @@ def _skill_root():
     sp = (cfg.get("skill_path") or "skill").strip()
     return sp if os.path.isabs(sp) else os.path.join(ROOT, sp)
 
-@lru_cache(maxsize=None)
+@cache
 def read_file(relpath):
     p = os.path.join(_skill_root(), relpath)
     with open(p, encoding="utf-8") as f:

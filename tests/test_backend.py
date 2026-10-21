@@ -22,7 +22,8 @@ def _first_key():
 
 # ---------- 路由 / 版本 ----------
 def test_version_v07():
-    assert version.VE.startswith("0.7")
+    # v0.8.0：版本单源 —— 只校验是合法语义化版本（不与具体小版本绑死，升级不红）
+    assert version.VE and version.VE[0].isdigit() and version.VE.startswith("0.")
 
 
 def test_v07_routes_registered():
@@ -34,8 +35,10 @@ def test_v07_routes_registered():
 
 
 def test_version_endpoint():
+    # v0.8.0：版本单源 —— /api/version 必须与 VERSION 文件（bot.version.VE）一致，全站展示趋向一致
     v = client.get("/api/version").json()
-    assert v.get("version", "").startswith("0.7")
+    assert v.get("version", "").startswith("0.")
+    assert v.get("version") == version.VE, f"/api/version={v.get('version')} 与 VERSION 文件({version.VE}) 不一致"
 
 
 # ---------- 真实读端点结构 ----------

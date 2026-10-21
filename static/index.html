@@ -287,13 +287,17 @@ button:disabled{cursor:not-allowed;opacity:.55}
 @keyframes twblip{50%{opacity:0}}
 .chmore{font:10.5px var(--muted);cursor:pointer;margin-top:4px}
 .chchapmark{color:var(--muted)}
+/* v0.8.0 对话内「重写直播」气泡（区别于章节气泡 / LLM 聊天气泡）*/
+.msg.rwmsg .ava{background:linear-gradient(135deg,#b8860b,#8a6d1a);font-size:15px}
+.msg.rwmsg .bubble{border-left:3px solid #f5a524;max-width:92%;white-space:normal}
+.rwbody{font:13.5px/1.6 var(--sans);color:var(--text)}
 </style>
 </head>
 <body>
 <div id="toasts"></div>
 <div id="app">
   <div id="sessions">
-    <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔小说工作台</span></span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
+    <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔小说工作台</span></span><span id="verbadge" style="font:10px var(--sans);color:var(--muted);opacity:.75;margin-right:6px;flex:none">v…</span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
     <div class="snew" id="snew" onclick="openOnb()"><span class="txt">＋ 新建一本书</span></div>
     <div id="studioview" style="display:none;padding:8px 12px;border-bottom:1px solid var(--border)"></div>
     <div class="slist" id="slist"></div>
@@ -322,7 +326,7 @@ button:disabled{cursor:not-allowed;opacity:.55}
       </div>
       <div id="qbar"></div>
       <div id="inputrow">
-        <textarea id="inp" placeholder="告诉我要写什么小说… 例如：写一部悬疑小说，退休刑警被诬陷杀人，10章"></textarea>
+        <textarea id="inp" placeholder="万能对话：随时说 ——「写一部悬疑，退休刑警被诬陷，10章」／「重写第3章」／「把第5章那段改得更抓人」／「加一段打脸情节」／「看逐章评分」… 直接打字即可，弹窗只做确认"></textarea>
         <button id="stage" title="暂存为「待发送」（写作中可随时加指令，下一条自动用上）">＋待发送</button>
         <button id="send">➤</button>
       </div>
@@ -592,9 +596,11 @@ async function loadBkChat(key){
   if(!ms.length){
     const it=(window._libCache||[]).find(x=>x.key===key);
     bubble('bot','💬 已切换到 <b>'+esc(it?it.name:key)+'</b> 的专属对话（只属于这本书）。直接告诉我要做什么：改剧情 / ⏸暂停 / ▶续写 / 🔓放行 / 加修正指令……','');
+    if(window.rwDialogueCheck)rwDialogueCheck(key);   // v0.8.0 恢复该书的重写 live/结果气泡
     return;
   }
   ms.slice(-80).forEach(m=>{ bubble(m.who||'bot', fmt(m.text||''), '', null); });
+  if(window.rwDialogueCheck)rwDialogueCheck(key);   // v0.8.0 恢复该书的重写 live/结果气泡
 }
 function esc(s){s=(s==null)?'':String(s);return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 // v0.7.x：LLM 慢动作「活体进度」引擎——转圈+已等待秒数+防双击。用法：
@@ -929,13 +935,11 @@ async function openRewriteWorkbench(key, preChapters){
 }
 function startRwWorkbench(key, chapters, dims){
   _rwKey=key;
-  $('rwsetup').style.display='none'; $('rwgo_row').style.display='none'; $('rwresult').style.display='none';
-  $('rwboard').style.display='';
-  $('rwboard_head').innerHTML='🔁 重写中…（所选 '+(chapters?chapters.length:'全书弱章')+' 章 · '+(dims?dims.join(' / '):'全维度')+'）';
-  $('rwrows').innerHTML='<div class="rwnote">正在后台逐章改写（约 2-5 分钟），下方逐章进度实时刷新…</div>';
-  $('rwcancel').onclick=()=>cancelRw(key);
+  // v0.8.0：弹窗只是「确认」——点「开始」立即关弹窗、自动回对话页；重写在对话里逐章直播（可切别的书）
+  $('rwmodal').classList.remove('show');
   fetch('/api/rewrite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,chapters,dims})}).then(r=>r.json()).then(j=>{ if(j.error) toast(j.error,'err'); });
-  pollRwProgress(key);
+  if(key===(curSession||curKey)){ switchView('chat'); } else { selectBook(key); }   // 跳到「被重写这本书」的对话页
+  rwDialogueLive(key, chapters, dims);   // 对话里放一条「重写进行中」live 气泡，完成后变结果卡（两个按钮已修好）
 }
 function pollRwProgress(key){
   if(_rwBoardPoll)clearInterval(_rwBoardPoll);
@@ -973,6 +977,44 @@ function showRwResult(res,key){
   bubble('bot','✅ 定向重写完成：'+res.before+' → '+res.after+'（改 '+((res.changed||[]).length)+' 章）','');
 }
 window.openRewriteWorkbench=openRewriteWorkbench; window.cancelRw=cancelRw;
+
+// ===== v0.8.0：对话内「重写直播」气泡 —— 重写进行中逐章实时、可切别的书；完成变结果卡（两个按钮已修） =====
+let _rwDlgPoll={};   // key → interval（对话区重写 live 轮询，按书隔离）
+function _rwDlgBubble(key){
+  let el=document.querySelector('#msgs .rwbub[data-rwk="'+key+'"]');
+  if(el)return el;
+  const d=document.createElement('div');
+  d.className='msg rwmsg rwbub'; d.setAttribute('data-rwk',key);
+  d.innerHTML='<div class="ava">🔁</div><div class="bubble"><div class="chhead"><span class="chttl">🔁 定向重写</span><span class="chstat"></span></div><div class="rwbody"></div></div>';
+  msgBox.appendChild(d); return d;
+}
+function _stopRwDlg(key){ if(_rwDlgPoll[key]){clearInterval(_rwDlgPoll[key]);delete _rwDlgPoll[key];} }
+function _startRwDlg(key){ if(_rwDlgPoll[key])return; _rwDlgPoll[key]=setInterval(async()=>{ try{ const d=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json(); if(key!==(curSession||curKey))return; _rwDlgPaint(key,d); if(!d.running)_stopRwDlg(key); }catch(e){} },1500); }
+function _rwDlgPaint(key, d){
+  const el=_rwDlgBubble(key); const stat=el.querySelector('.chstat'), body=el.querySelector('.rwbody');
+  if(d.cancelled){ stat.textContent='⏹ 已取消（已写章保留）'; body.innerHTML='<div class="rwnote">取消后已写章节保留，可再次发起重写。</div>'; _stopRwDlg(key); const m=msgBox;m.scrollTop=m.scrollHeight; return; }
+  if(!d.running && d.result){ stat.innerHTML=''; body.innerHTML=renderRewriteResultCard(d.result, key); _stopRwDlg(key); const m=msgBox;m.scrollTop=m.scrollHeight; return; }
+  if(d.running){
+    const p=d.progress||{}; const done=p.done||0, total=p.total||0, pct=total?Math.round(done/total*100):0;
+    const rows=(d.per_chapter||p.per_chapter||[]);
+    stat.innerHTML='<span style="color:var(--accent);font-weight:600">✍️ 重写中 '+(total?done+'/'+total+' · '+pct+'%':'进行中')+'</span>';
+    let h='<div class="rwnote" style="margin-bottom:6px">后台逐章改写（保留更好守护）。你现在可以<b>切别的书</b>继续，改完回来这里看进度 + 结果。</div>';
+    if(rows.length) h+=rows.map(r=>{ const st=r.status==='reverted'?'🔒保留原稿':(r.status==='done'?'✔ 完成':(r.status==='rewriting'?'◐ 改写中':'⏸ 排队'));
+      const sc=(r.after!=null&&r.before!=null)?' <b style="color:'+(r.after>=r.before?'#3ad29b':'#f5a524')+'">'+r.before+'→'+r.after+'</b>':'';
+      return '<div style="font:11px var(--sans);color:var(--text);padding:3px 7px;border:1px solid var(--border);border-radius:6px;margin-bottom:3px;background:var(--card)"><b>第'+r.ch+'章</b>'+sc+' <span style="float:right;color:var(--muted)">'+st+'</span></div>'; }).join('');
+    body.innerHTML=h; _startRwDlg(key);
+    const m=msgBox; m.scrollTop=m.scrollHeight;
+  }
+}
+// 触发重写后：对话里立即放 live 气泡（逐章实时）
+function rwDialogueLive(key, chapters, dims){
+  bubble('bot','🔁 已开始重写 '+((chapters&&chapters.length)?('第 '+chapters.join('、')+' 章'):'全书弱章')+(dims&&dims.length?(' · '+dims.join(' / ')):' · 全维度')
+    +' —— 弹窗已关，重写在对话里进行；你可以<b>切别的书</b>继续，改完回来这里看进度 + 结果（查看质量报告 / 刷新评分）。','');
+  _rwDlgBubble(key); _rwDlgPaint(key,{running:true,progress:{done:0,total:(chapters?chapters.length:0)},per_chapter:[]}); _startRwDlg(key);
+}
+// 切到这本书时：按 /api/rewrite-log 恢复重写气泡（进行中→live；已完成→结果卡；取消→提示）
+function rwDialogueCheck(key){ (async()=>{ try{ const d=await (await fetch('/api/rewrite-log?key='+encodeURIComponent(key))).json(); if(key!==(curSession||curKey))return; if(d.running||d.result||d.cancelled)_rwDlgPaint(key,d); }catch(e){} })(); }
+window.rwDialogueLive=rwDialogueLive; window.rwDialogueCheck=rwDialogueCheck;
 
 // ===== v0.7 R4：对话区「本书在干什么」live 卡（Hermes 式 live 步骤，按书隔离+代际守卫）=====
 let _blPoll=null;
@@ -1021,9 +1063,13 @@ function renderRewriteResultCard(res, key){
     +'<div class="rwsum">百分制 <b>'+res.before+'</b> → <b style="color:'+(up?'#3ad29b':'#f59e0b')+'">'+res.after+'</b>（<span class="'+(up?'up':'dn')+'">'+(up?'+':'')+delta+'</span>）· '+(res.pass?'✅ 已达标':'未达标')+' · 改写 '+(res.changed||[]).length+' 章</div>'
     +'<div class="rwdir"><b>仍弱维度：</b>'+weak+'</div>'
     +'<div class="rwnote">各章注入的要求 + 前后字数见 <b>16-重写记录.md</b>（作品目录内）。分数为 LLM 五角色重评，可能有波动。</div>'
-    +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="rwbtn" onclick="showPv(\'quality\')">查看新质量报告</button><button class="rwbtn" onclick="loadManuscript(\''+esc(key)+'\');showPv(\'quality\')">刷新稿件评分</button></div></div>';
+    +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="rwbtn" onclick="viewQualityReport(\''+esc(key)+'\')">📊 查看新质量报告</button><button class="rwbtn" onclick="refreshMsScore(\''+esc(key)+'\')">📈 刷新稿件评分</button></div></div>';
 }
 window.renderRewriteResultCard=renderRewriteResultCard;
+// v0.8.0：重写结果卡两个按钮——按「被重写的那本书」定位（此前误用全局 PV_KEY → 别的书/空 就点不动）
+function viewQualityReport(key){ if(!key)return; openPreview(key,'quality'); }         // 打开该书预览并定位质量报告页
+function refreshMsScore(key){ if(!key)return; loadManuscript(key); switchView('ms'); }  // 刷新该书稿件评分 + 切到稿件视图
+window.viewQualityReport=viewQualityReport; window.refreshMsScore=refreshMsScore;
 function showRewriteResult(res){
   $('rwbox').innerHTML=renderRewriteResultCard(res, PV_KEY);
 }
@@ -1214,7 +1260,7 @@ function mdLite(s){
   t=t.replace(/<\/div><br>/g,'</div>').replace(/<br><div/g,'<div').replace(/<br><br>/g,'<br><br>');
   return t;
 }
-async function openPreview(key){
+async function openPreview(key, tab){
   PV_KEY=key; PV_TEXT='';
   $('pvmodal').classList.add('show');
   $('pvtitle').textContent='加载中…'; $('pvbody').textContent='加载中…'; $('pvch').innerHTML='';
@@ -1231,7 +1277,8 @@ async function openPreview(key){
     haveCh.map(c=>'<option value="'+c.n+'">第'+c.n+'章'+(c.continuation?'（续写）':(c.title&&c.title!=='续写'?' '+esc(c.title):''))+'</option>').join('')
     +(j.has_book?'<option value="quality">📊 质量报告（五角色+达标判定）</option><option value="review">📋 修订记录（五角色审校）</option>':'');
   sel.onchange=()=>showPv(sel.value);
-  showPv('all');
+  if(tab && [...sel.options].some(o=>o.value===tab)) sel.value=tab;
+  showPv(tab||'all');   // v0.8.0：支持直接定位到某页（如重写后「查看新质量报告」→ quality）
 }
 async function showPv(sel){
   const body=$('pvbody');
@@ -1730,7 +1777,7 @@ function pollParallel(key){
         if(isCur){
           const done=(st.done||0),tot=(st.total||0);
           const ev=(st.events||[]).slice(-6).map(e=>esc(e)).join('<br>')||'完成';
-          $('msrw').innerHTML='<div class="rwcard" style="border-color:#3ad29b"><h4>⚡ 并行创作完成（总架构对齐）· '+done+'/'+tot+' 章</h4><div class="rwnote" style="max-height:180px;overflow:auto">'+ev+'</div><div style="margin-top:8px"><button class="rwbtn" onclick="loadManuscript(\''+esc(key)+'\');showPv(\'quality\')">刷新 + 看质量报告</button></div></div>';
+          $('msrw').innerHTML='<div class="rwcard" style="border-color:#3ad29b"><h4>⚡ 并行创作完成（总架构对齐）· '+done+'/'+tot+' 章</h4><div class="rwnote" style="max-height:180px;overflow:auto">'+ev+'</div><div style="margin-top:8px"><button class="rwbtn" onclick="viewQualityReport(\''+esc(key)+'\')">📊 刷新评分 + 看质量报告</button></div></div>';
           loadManuscript(key);
         }
         loadLibrary();
@@ -1939,10 +1986,9 @@ function renderMsChart(key, pv){
 window.renderMsChart=renderMsChart;
 // ===== v0.5 M3：中间台自然语言指令 → 结构化动作 =====
 function triggerRewrite(key, chapters){
-  switchView('ms'); loadManuscript(key);
+  // v0.8.0：留在对话页，弹窗只做「确认」（选章/维度）；点开始→自动回对话页逐章直播（可切别的书）
   const who=(chapters&&chapters.length)?('第 '+chapters.join('、')+' 章'):' 全书弱章';
-  $('msrw').innerHTML='<div class="rwcard" style="border-color:var(--accent);opacity:.9"><h4>🔁 重写工作台</h4><div class="rwnote">已预选 '+who+'。在工作台增减章节/维度 → 触发后<b>逐章实时进度、可取消</b>，结果卡随后出现在此 + 对话。</div></div>';
-  bubble('bot','🔁 打开重写工作台（预选 '+who+'，可增减章节/维度；触发后逐章实时进度 + 可取消）…','');
+  bubble('bot','🔁 重写'+esc(who)+' —— 在弹窗里增减章节/维度，点「开始」就<b>自动回到对话页</b>逐章直播（可切别的书改别的书）…','');
   openRewriteWorkbench(key, chapters);
 }
 window.triggerRewrite=triggerRewrite;
@@ -1986,13 +2032,13 @@ async function doRewriteSection(key, chap, text){
 async function execCmd(cr, text){
   const k=cr.key;
   switch(cr.action){
-    case 'rewrite_chapter': bubble('bot','🔁 收到：重写第 '+cr.chapter+' 章…',''); triggerRewrite(k,[cr.chapter]); break;
+    case 'rewrite_chapter': triggerRewrite(k,[cr.chapter]); break;      // 弹窗确认 → 自动回对话页逐章改写
     case 'rewrite_section': bubble('bot','✒️ 收到：改写第 '+cr.chapter+' 章里的一小段…',''); await doRewriteSection(k,cr.chapter,text); break;
-    case 'rewrite_all': bubble('bot','🔁 收到：全书改写（逐章带要求重写，约 3-8 分钟）…',''); triggerRewrite(k,null); break;
+    case 'rewrite_all': triggerRewrite(k,null); break;                 // 全书改写：弹窗确认 → 对话页逐章
     case 'scores': bubble('bot','📊 正在拉取逐章评分…',''); await showScoreTable(k); break;
     default: break;
   }
-  if(cr.action!=='scores'){ switchView('ms'); }
+  // v0.8.0：全部留在对话页（不再跳稿件）——对话框是万能的，随时下各种修改指令
 }
 window.execCmd=execCmd;
 // ===== v0.5 M2：放行弹窗「重写并看稿件」——进入该书会话工作台，实时看书写 =====
@@ -2220,6 +2266,9 @@ window.initDrag=initDrag;
 
 refreshProjects();
 renderSessions(); initDrag(); startStudio(); emptyGuide();   // v0.7 R5：工作室总览 + 小白空态引导
+// v0.8.0：版本统一——顶栏徽标 + 页面标题 都取 /api/version（与 VERSION 文件同源），全站展示趋向一致
+window.APPVER='0.8.0';
+fetch('/api/version').then(r=>r.json()).then(j=>{ const v='v'+(j.version||window.APPVER); const b=document.getElementById('verbadge'); if(b)b.textContent=v; if(!/\b(bkt|cxt)=/.test(location.search))document.title='神笔 · 小说创作机器人 '+v; }).catch(()=>{});
 (function(){cxApplyAll();var q=new URLSearchParams(location.search),b=q.get('book'),t=q.get('tab'),v=q.get('view'); if(b)selectBook(b); if(t&&['art','set','lib'].includes(t))setTimeout(()=>sideTab(t),300); if(v==='ms')setTimeout(()=>switchView('ms'),500); if(q.get('onb'))setTimeout(()=>openOnb(),250); if(q.get('bkt'))setTimeout(()=>{const m=document.querySelector('[data-menu]');if(m){m.click();setTimeout(()=>{document.title='BKT items='+(_bkPanel?_bkPanel.querySelectorAll('div').length:0);},250);}else document.title='BKT no-anchor';},900); if(q.get('cxt'))setTimeout(async()=>{try{await openOnb();await new Promise(r=>setTimeout(r,250));const out={};['ob_chap','ob_hand','ob_prov'].forEach(id=>{const cs=$(id);out[id]={hidden:cs.style.display==='none',wrapped:!!cs._cxd,btn:!!cs._cxbtn};if(cs._cxbtn){cs._cxbtn.click();out[id].panelOpen=cs._cxpanel.style.display==='block';out[id].opts=cs._cxpanel.querySelectorAll('div').length;const op=cs._cxpanel.querySelectorAll('div');if(op[1]){op[1].click();out[id].valAfter=cs.value;}}});document.title='CXT '+JSON.stringify(out);}catch(e){document.title='CXT_ERR '+e;}}),50;})();
 loadProviders();
 loadProviderPicker();
@@ -2227,7 +2276,7 @@ document.getElementById('addprov').onclick=openProvModal;
 document.getElementById('mbind').onclick=bindProv;
 document.getElementById('provmodal').addEventListener('click',e=>{if(e.target.id==='provmodal')closeProvModal();});
 document.getElementById('pvmodal').addEventListener('click',e=>{if(e.target.id==='pvmodal')closePvModal();});
-bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v0.3.3 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v0.3.3。');
+bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v'+(window.APPVER||'0.8.0')+' 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v'+(window.APPVER||'0.8.0')+'。');
 </script>
 </body>
 </html>
