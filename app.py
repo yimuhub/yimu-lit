@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
+from bot import medium as medium_mod, skillkit
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="一幕·YIMU 神笔文学创作台")
@@ -1353,3 +1354,41 @@ def api_quality(key: str):
 @app.get("/api/version")
 async def api_version():
     return {"version": version.VE}
+
+# ---------- v1.0.0：文体路由 + 技能库（神笔文学创作台） ----------
+
+@app.get("/api/mediums")
+async def api_mediums():
+    """四种文体的注册表：阶段表 / 评估维度 / 目录规范，前端据此渲染选择器。"""
+    return {"mediums": medium_mod.registry()}
+
+
+@app.get("/api/medium/detect")
+async def api_medium_detect(text: str = ""):
+    """从一段文本判定文体（给对话入口用）。"""
+    m = medium_mod.detect(text)
+    return {"medium": m, "label": medium_mod.label(m) if m else "", "icon": medium_mod.icon(m) if m else ""}
+
+
+@app.get("/api/skillkit/stats")
+async def api_skillkit_stats():
+    """技能库统计：文件数 / 体量 / 分布。"""
+    return skillkit.stats()
+
+
+@app.get("/api/skillkit/list")
+async def api_skillkit_list(medium: str = "", stage: str = ""):
+    """技能清单（可按文体 / 阶段过滤）。"""
+    return {"skills": skillkit.list_skills(medium, stage)}
+
+
+@app.get("/api/skillkit/preview")
+async def api_skillkit_preview(stage: str, medium: str = "novel", genre: str = "",
+                               include_case: bool = False, max_bytes: int = 26000):
+    """预览某阶段的最小上下文注入内容（调试用：不调 LLM）。"""
+    if not medium_mod.is_medium(medium):
+        return JSONResponse({"error": f"未知文体：{medium}"}, status_code=400)
+    ctx = skillkit.stage_inject(stage, medium, include_case=include_case,
+                                max_bytes=max_bytes, genre=genre)
+    return {"stage": stage, "medium": medium, "genre": genre,
+            "bytes": len(ctx), "context": ctx}

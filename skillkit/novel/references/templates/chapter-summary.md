@@ -1,0 +1,21 @@
+---
+name: novel-references-templates-chapter-summary
+title: 章节摘要模板
+medium: [novel]
+stages: [P2, P3]
+kind: template
+weight: 4
+license: MIT
+source: 原创（神笔小说 ShenBi NovelCraft，方法论吸收业界通用创作思想）
+---
+
+# 章节摘要（11）· 模板（原创）
+
+> 每章写后补一条；是跨章承接与连续性核对的来源（不重复写剧情，只记"状态"）。
+
+## 第 NN 章 <章题>
+- 发生了什么（3-5 句，不抒情）：
+- 主角选择与代价：
+- 线索状态变化：埋了__ / 推进__ / 回收__（对 L#）
+- 时间/地点推进：
+- 未解决连贯性问题（若有，必须列，下一章写前处理）：
