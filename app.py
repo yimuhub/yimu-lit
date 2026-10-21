@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
-from bot import medium as medium_mod, skillkit
+from bot import medium as medium_mod, skillkit, script_writer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="一幕·YIMU 神笔文学创作台")
@@ -1392,3 +1392,138 @@ async def api_skillkit_preview(stage: str, medium: str = "novel", genre: str = "
                                 max_bytes=max_bytes, genre=genre)
     return {"stage": stage, "medium": medium, "genre": genre,
             "bytes": len(ctx), "context": ctx}
+
+
+# ---------- v1.0.0：剧本流水线 ----------
+
+@app.get("/api/script/projects")
+async def api_script_projects():
+    """剧本项目列表。"""
+    return {"items": script_writer.discover_projects()}
+
+
+@app.post("/api/script/create")
+async def api_script_create(payload: dict):
+    """建剧本项目。payload: {title?, idea?, form?, entryPath?, scenes?, pages?, episodes?, notes?, cfg_overrides?}"""
+    cfg = dict(payload.get("cfg_overrides") or {})
+    for k in ("title", "idea", "form", "entryPath", "scenes", "pages", "episodes", "notes"):
+        if payload.get(k) is not None:
+            cfg[k] = payload[k]
+    cfg.setdefault("form", "film")
+    if payload.get("provider_id"):
+        cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
+    if payload.get("model"):
+        cfg.setdefault("defaults", {})["model"] = payload["model"]
+    try:
+        proj = script_writer.create_project(cfg)
+    except Exception as e:
+        return JSONResponse({"error": f"创建失败：{e}"}, status_code=500)
+    base = os.path.basename(proj.path)
+    return {"key": base, "pid": base, "project": base, "medium": "script",
+            "status": proj.status()}
+
+
+@app.get("/api/script/status")
+async def api_script_status(key: str):
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return proj.status()
+
+
+@app.get("/api/script/bible")
+async def api_script_bible(key: str):
+    """创作圣经（S0 引擎 + 圣经头）。"""
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "text": script_writer.read_file_part(key, "bible")}
+
+
+@app.get("/api/script/chars")
+async def api_script_chars(key: str):
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "text": script_writer.read_file_part(key, "chars")}
+
+
+@app.get("/api/script/struct")
+async def api_script_struct(key: str):
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "text": script_writer.read_file_part(key, "struct")}
+
+
+@app.get("/api/script/scenes")
+async def api_script_scenes(key: str):
+    """场次清单（表格 + 解析后的结构化场次）。"""
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    plan = proj.plan() or {}
+    return {"key": key, "text": script_writer.read_file_part(key, "scenes"),
+            "scenes": plan.get("scenes") or []}
+
+
+@app.get("/api/script/scene")
+async def api_script_scene(key: str, no: int):
+    """单场正文。"""
+    return {"key": key, "no": no, "text": script_writer.read_scene(key, no)}
+
+
+@app.post("/api/script/write")
+async def api_script_write(payload: dict):
+    """按场次清单写正文。payload: {key, only?: [场次号]}"""
+    key = payload.get("key")
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    try:
+        return script_writer.write_scenes(proj, only=payload.get("only"))
+    except Exception as e:
+        return JSONResponse({"error": f"写作失败：{e}"}, status_code=500)
+
+
+@app.get("/api/script/revisions")
+async def api_script_revisions(key: str):
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "text": script_writer.read_file_part(key, "revisions")}
+
+
+@app.get("/api/script/quality")
+async def api_script_quality(key: str):
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "text": script_writer.read_file_part(key, "quality")}
+
+
+@app.post("/api/script/revise")
+async def api_script_revise(payload: dict):
+    """S6 通读修订 + 评分。"""
+    key = payload.get("key")
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    try:
+        return script_writer.run_revision(proj)
+    except Exception as e:
+        return JSONResponse({"error": f"修订失败：{e}"}, status_code=500)
+
+
+@app.get("/api/script/export")
+async def api_script_export(key: str):
+    """S7 导出定稿全文（text/plain）。"""
+    txt = script_writer.export_text(key)
+    if not txt:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return Response(txt, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{key}.txt"'})
+
+
+@app.get("/api/script/forms")
+async def api_script_forms():
+    """媒介形式与入口路径选项。"""
+    return {"forms": [{"key": k, "label": v["label"], "target": v["target_pages"],
+                       "unit": v["unit"]} for k, v in script_writer.FORMS.items()],
+            "entryPaths": [{"key": k, "label": v} for k, v in script_writer.ENTRY_PATHS.items()]}

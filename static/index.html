@@ -345,6 +345,45 @@ button:disabled{cursor:not-allowed;opacity:.55}
 .msg.rwmsg .ava{background:linear-gradient(135deg,#b8860b,#8a6d1a);font-size:15px}
 .msg.rwmsg .bubble{border-left:3px solid #f5a524;max-width:92%;white-space:normal}
 .rwbody{font:13.5px/1.6 var(--sans);color:var(--text)}
+
+/* ---------- v1.0.0 剧本工作台 ---------- */
+#scriptw{flex:1;overflow-y:auto;padding:16px 26px 26px}
+#scline{font-size:12.5px;color:var(--muted);margin-bottom:10px;line-height:1.9}
+#scline b{color:var(--text)}
+#sctabs{display:flex;gap:7px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+#sctabs button{padding:6px 13px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);
+  color:var(--muted);font-size:12.5px;cursor:pointer;font-family:inherit;transition:.15s}
+#sctabs button:hover{color:var(--text);border-color:var(--accent)}
+#sctabs button.on{background:linear-gradient(135deg,rgba(108,140,255,.22),rgba(160,108,255,.22));
+  border-color:var(--accent);color:var(--text)}
+#scprog{font-size:11.5px;color:var(--muted);font-weight:400}
+.scsheet{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px}
+.scsheet th{background:var(--panel2);color:var(--muted);font-weight:600;text-align:left;
+  padding:7px 8px;border:1px solid var(--line);white-space:nowrap;font-size:11.5px}
+.scsheet td{padding:6px 8px;border:1px solid var(--line);vertical-align:top;line-height:1.6}
+.scsheet tr:hover td{background:rgba(108,140,255,.06)}
+.scsheet tr.done td:first-child{color:var(--ok)}
+.scsheet tr.pending td:first-child{color:var(--warn)}
+.scsheet tr.failed td:first-child{color:var(--err)}
+.sccell-no{font-family:var(--mono);font-weight:600;white-space:nowrap}
+.scbody{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px 20px;
+  font-family:var(--mono);font-size:13px;line-height:1.85;white-space:pre-wrap;word-break:break-word}
+.scact{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.scact button{padding:7px 14px;border-radius:9px;border:1px solid var(--accent);
+  background:rgba(108,140,255,.14);color:#c9d4ff;font-size:12.5px;cursor:pointer;font-family:inherit}
+.scact button:hover{background:rgba(108,140,255,.26)}
+.scact button.ghost{border-color:var(--line);background:transparent;color:var(--muted)}
+.scdoc{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px 20px;
+  font-size:13.5px;line-height:1.85;white-space:pre-wrap;word-break:break-word}
+.scdoc h1,.scdoc h2,.scdoc h3{color:var(--accent);margin:14px 0 8px}
+.scdoc h1{font-size:18px} .scdoc h2{font-size:15.5px} .scdoc h3{font-size:13.5px}
+.scdoc table{border-collapse:collapse;margin:10px 0;font-size:12px}
+.scdoc th,.scdoc td{border:1px solid var(--line);padding:5px 9px}
+.scempty{text-align:center;color:var(--muted);padding:56px 20px;font-size:13.5px;line-height:2}
+.scempty button{margin-top:14px;padding:9px 20px;border-radius:10px;border:1px solid var(--accent);
+  background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:13px;
+  font-weight:600;cursor:pointer;font-family:inherit}
+
 </style>
 </head>
 <body>
@@ -366,7 +405,7 @@ button:disabled{cursor:not-allowed;opacity:.55}
     <div id="head">
       <div class="logo">🖋</div>
       <div style="flex:1">
-        <h1>神笔 · 小说创作机器人</h1>
+        <h1>神笔 · 文学创作台</h1>
         <p>「一幕·YIMU · 神笔文学创作台」原创创作系统 —— 小说 / 剧本 / 诗词 / 散文，四类文学创作一体</p>
       </div>
       <button id="onbbtn" onclick="openOnb()" style="border:none;border-radius:11px;padding:9px 16px;font-size:13px;font-weight:600;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer;white-space:nowrap">✍ 开书向导</button>
@@ -374,9 +413,22 @@ button:disabled{cursor:not-allowed;opacity:.55}
     <div id="midctx">📖 未选中书 · 直接对话开新书，或从左侧选一本书</div>
     <div id="booklive" style="display:none"></div>
     <div id="quickacts"></div>
-    <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="chmode" onclick="toggleChatMode()" title="逐字=像大模型一样一个个蹦出来；直显=一次显示整章">🎞 逐字</span><span id="msprog" style="margin-left:auto"></span></div>
+    <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><button data-v="sc" id="vsc">🎬 剧本</button><span id="chmode" onclick="toggleChatMode()" title="逐字=像大模型一样一个个蹦出来；直显=一次显示整章">🎞 逐字</span><span id="msprog" style="margin-left:auto"></span></div>
     <div id="msgs"></div>
     <div id="manuscript" style="display:none"><div id="msline"></div><div id="mschart"></div><div id="msrw"></div><div id="msbody"></div></div>
+    <div id="scriptw" style="display:none">
+      <div id="scline"></div>
+      <div id="sctabs">
+        <button data-sp="scenes" class="on">🎞 场次</button>
+        <button data-sp="bible">📕 创作圣经</button>
+        <button data-sp="chars">🎭 人物</button>
+        <button data-sp="struct">🧭 结构</button>
+        <button data-sp="revisions">🔍 修订</button>
+        <button data-sp="quality">📊 质量</button>
+        <span id="scprog" style="margin-left:auto"></span>
+      </div>
+      <div id="scbody"></div>
+    </div>
     <div id="inputbar">
       <div id="picker">
         <select id="pselect" title="选择模型供应商"></select>
@@ -2214,13 +2266,219 @@ function dispatchBooks(){
 }
 window.dispatchBooks=dispatchBooks;
 function switchView(v){
-  const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar');
+  const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar'),sw2=$('scriptw');
   document.querySelectorAll('#viewsw button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
-  if(v==='ms'){ms.style.display='block';msgs.style.display='none';loadManuscript(curSession||curKey);}
-  else{ms.style.display='none';msgs.style.display='';ib.style.display='';stopMs();
+  if(v==='ms'){ms.style.display='block';msgs.style.display='none';sw2.style.display='none';loadManuscript(curSession||curKey);}
+  else if(v==='sc'){ms.style.display='none';sw2.style.display='block';msgs.style.display='none';ib.style.display='none';
+    stopMs(); if(window.loadChatLive)loadChatLive(curSession||curKey);
+    scAutoOpen();}
+  else{ms.style.display='none';sw2.style.display='none';msgs.style.display='';ib.style.display='';stopMs();
     if(window.loadChatLive)loadChatLive(curSession||curKey);}   // v0.7.x 对话区逐章直播
 }
 window._chatModeBtn=$('chmode');
+
+// 剧本子页签
+document.querySelectorAll('#sctabs button').forEach(b=>b.onclick=async()=>{
+  document.querySelectorAll('#sctabs button').forEach(x=>x.classList.toggle('on',x===b));
+  SC_TAB=b.dataset.sp; scRender(await scCurrentItem());
+});
+async function scCurrentItem(){
+  if(!SC_KEY) return null;
+  const items=await scLoadProjects();
+  return items.find(x=>x.key===SC_KEY)||null;
+}
+async function scAutoOpen(){
+  if(!SC_KEY){
+    const items=await scLoadProjects();
+    if(items.length) SC_KEY=items[0].key;
+  }
+  scRender(await scCurrentItem());
+}
+
+
+// ---------- v1.0.0 剧本工作台 ----------
+let SC_KEY = null;          // 当前剧本项目 key
+let SC_TAB = 'scenes';      // 当前子页签
+let SC_SCENES = [];         // 场次数据
+
+function scEsc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+async function scLoadProjects(){
+  try{
+    const d = await (await fetch('/api/script/projects')).json();
+    return d.items||[];
+  }catch(e){return [];}
+}
+
+async function scOpen(key){
+  SC_KEY = key;
+  const items = await scLoadProjects();
+  const it = items.find(x=>x.key===key);
+  await scRender(it);
+}
+
+async function scRender(it){
+  const body = $('scbody'), line = $('scline'), prog = $('scprog');
+  if(!it){ body.innerHTML='<div class="scempty">还没有剧本项目。<br>点上方「🎬 剧本」或直接在对话里说「写一个电影剧本」。<br><button onclick="scNewFlow()">＋ 新建剧本项目</button></div>'; line.innerHTML=''; prog.textContent=''; return; }
+  const st = await (await fetch('/api/script/status?key='+encodeURIComponent(it.key))).json();
+  line.innerHTML='🎬 剧本 · <b>'+scEsc(it.name)+'</b> · '+scEsc(it.form||'')+' · '
+    +'<span style="color:var(--accent);font-weight:600">'+scEsc(st.state||'')+'</span>'
+    +' · 场次 <b>'+(st.done||0)+'</b>/'+(st.total||0)+' · 共 <b>'+(st.words||0)+'</b> 字';
+  prog.textContent=(it.form||'')+' · '+(st.total||0)+' 场';
+
+  const acts='<div class="scact">'
+    +'<button onclick="scWriteAll()">✍️ 写全部场次</button>'
+    +'<button onclick="scRevise()">🔍 通读修订 + 评分</button>'
+    +'<button class="ghost" onclick="scExport()">⬇ 导出定稿</button>'
+    +'<button class="ghost" onclick="scReload()">↻ 刷新</button>'
+    +'</div>';
+
+  if(SC_TAB==='scenes'){
+    const d = await (await fetch('/api/script/scenes?key='+encodeURIComponent(it.key))).json();
+    SC_SCENES = d.scenes||[];
+    if(!SC_SCENES.length){ body.innerHTML=acts+'<div class="scempty">还没有场次清单。</div>'; return; }
+    let rows='';
+    for(const s of SC_SCENES){
+      rows+='<tr class="'+scEsc(s.status||'pending')+'" onclick="scScene('+(s.no||0)+')" style="cursor:pointer">'
+        +'<td class="sccell-no">'+scEsc(s.no)+'</td>'
+        +'<td>'+scEsc((s.kind||'')+' '+(s.place||''))+'</td>'
+        +'<td>'+scEsc(s.time||'')+'</td>'
+        +'<td>'+scEsc(s.cast||'')+'</td>'
+        +'<td>'+scEsc(s.obstacle||'')+'</td>'
+        +'<td>'+scEsc(s.outcome||'')+'</td>'
+        +'<td>'+scEsc(s.pages||'')+'</td></tr>';
+    }
+    body.innerHTML=acts+'<table class="scsheet"><thead><tr>'
+      +'<th>场</th><th>场景</th><th>时间</th><th>出场</th><th>阻碍</th><th>结果</th><th>页</th>'
+      +'</tr></thead><tbody>'+rows+'</tbody></table>';
+  }else{
+    const map={bible:'创作圣经',chars:'人物小传',struct:'结构大纲',revisions:'修订记录',quality:'质量报告'};
+    const d = await (await fetch('/api/script/'+(SC_TAB==='bible'?'bible':SC_TAB==='chars'?'chars':SC_TAB==='struct'?'struct':SC_TAB==='revisions'?'revisions':'quality')
+      +'?key='+encodeURIComponent(it.key))).json();
+    const txt = d.text||'';
+    body.innerHTML = txt ? (SC_TAB==='scenes'?'':(SC_TAB==='revisions'||SC_TAB==='quality'?'':'')+'<div class="scdoc">'+scMd(txt)+'</div>')
+      : '<div class="scempty">（这一部分还没有内容）</div>';
+  }
+}
+
+function scMd(md){
+  // 轻量 Markdown → HTML（表格 + 标题 + 粗体 + 列表）
+  let h = scEsc(md);
+  h = h.replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>');
+  h = h.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+  // 表格
+  h = h.replace(/^\|(.+?)\|\s*\n\|[\s:|-]+\|\s*\n((?:\|.*\|\s*\n?)*)/gm, (m,head,rest)=>{
+    const cols = head.split('|').map(c=>c.trim()).filter(Boolean);
+    let t='<table class="scsheet"><thead><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>';
+    rest.split('\n').filter(r=>r.trim().startsWith('|')).forEach(r=>{
+      const cs=r.split('|').map(c=>c.trim()).slice(1,-1);
+      t+='<tr>'+cs.map(c=>'<td>'+c+'</td>').join('')+'</tr>';
+    });
+    return t+'</tbody></table>';
+  });
+  h = h.replace(/\n{2,}/g,'\n\n');
+  return h;
+}
+
+async function scScene(no){
+  const d = await (await fetch('/api/script/scene?key='+encodeURIComponent(SC_KEY)+'&no='+no)).json();
+  const old = $('scbody').innerHTML;
+  $('scbody').innerHTML = '<div class="scact"><button class="ghost" onclick="scBackList()">← 返回场次表</button>'
+    +'<button onclick="scWriteOne('+no+')">✍️ 重写这场</button></div>'
+    +'<div class="scbody">'+(scEsc(d.text||'（这一场还没写）'))+'</div>';
+}
+
+function scBackList(){ scRender(); }
+
+async function scWriteAll(){
+  if(!SC_KEY)return;
+  toast('开始写全部场次…');
+  try{
+    const r = await (await fetch('/api/script/write',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({key:SC_KEY})})).json();
+    toast(r.error?('失败：'+r.error):('已写 '+(r.written||0)+' 场'));
+  }catch(e){toast('失败：'+e);}
+  scRender();
+}
+
+async function scWriteOne(no){
+  if(!SC_KEY)return;
+  toast('重写第 '+no+' 场…');
+  try{
+    await (await fetch('/api/script/write',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({key:SC_KEY,only:[no]})})).json();
+  }catch(e){toast('失败：'+e);}
+  scScene(no);
+}
+
+async function scRevise(){
+  if(!SC_KEY)return;
+  toast('通读修订 + 评分中（较慢）…');
+  try{
+    const r = await (await fetch('/api/script/revise',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({key:SC_KEY})})).json();
+    toast(r.error?('失败：'+r.error):('评分 '+(r.score&&r.score.total||0)));
+  }catch(e){toast('失败：'+e);}
+  SC_TAB='quality'; scRender();
+}
+
+async function scExport(){
+  if(!SC_KEY)return;
+  window.open('/api/script/export?key='+encodeURIComponent(SC_KEY),'_blank');
+}
+
+function scReload(){ scRender(); }
+
+async function scNewFlow(){
+  const forms = await (await fetch('/api/script/forms')).json();
+  const fOpts = forms.forms.map(f=>'<option value="'+f.key+'">'+scEsc(f.label)+'（目标'+f.target+' '+scEsc(f.unit)+'）</option>').join('');
+  const eOpts = forms.entryPaths.map(e=>'<option value="'+e.key+'">'+scEsc(e.label)+'</option>').join('');
+  const dlg = document.createElement('div');
+  dlg.className='modal-mask';
+  dlg.innerHTML='<div class="modal" style="max-width:520px">'
+    +'<h3>🎬 新建剧本项目</h3>'
+    +'<label style="display:block;margin:12px 0 4px;font-size:12.5px;color:var(--muted)">媒介形式</label>'
+    +'<select id="scf_form" style="width:100%;padding:9px 11px;border-radius:9px;background:var(--panel2);'
+    +'border:1px solid var(--line);color:var(--text);font-family:inherit">'+fOpts+'</select>'
+    +'<label style="display:block;margin:12px 0 4px;font-size:12.5px;color:var(--muted)">入口路径</label>'
+    +'<select id="scf_entry" style="width:100%;padding:9px 11px;border-radius:9px;background:var(--panel2);'
+    +'border:1px solid var(--line);color:var(--text);font-family:inherit">'+eOpts+'</select>'
+    +'<label style="display:block;margin:12px 0 4px;font-size:12.5px;color:var(--muted)">剧名（可空）</label>'
+    +'<input id="scf_title" placeholder="例如：退休刑警" style="width:100%;padding:9px 11px;border-radius:9px;'
+    +'background:var(--panel2);border:1px solid var(--line);color:var(--text);font-family:inherit">'
+    +'<label style="display:block;margin:12px 0 4px;font-size:12.5px;color:var(--muted)">故事想法 / 素材</label>'
+    +'<textarea id="scf_idea" rows="4" placeholder="一句话说清：谁，想要什么，被什么挡住" '
+    +'style="width:100%;padding:9px 11px;border-radius:9px;background:var(--panel2);border:1px solid var(--line);'
+    +'color:var(--text);font-family:inherit;resize:vertical"></textarea>'
+    +'<label style="display:block;margin:12px 0 4px;font-size:12.5px;color:var(--muted)">场次数</label>'
+    +'<input id="scf_scenes" type="number" value="30" style="width:120px;padding:9px 11px;border-radius:9px;'
+    +'background:var(--panel2);border:1px solid var(--line);color:var(--text);font-family:inherit">'
+    +'<div style="margin-top:18px;display:flex;gap:9px;justify-content:flex-end">'
+    +'<button class="sbtn" onclick="this.closest(\'.modal-mask\').remove()">取消</button>'
+    +'<button id="scf_go" style="border:none;border-radius:9px;padding:9px 18px;font-weight:600;color:#fff;'
+    +'background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer;font-family:inherit">开始创作</button>'
+    +'</div></div>';
+  document.body.appendChild(dlg);
+  dlg.querySelector('#scf_go').onclick = async ()=>{
+    const payload = {
+      form: dlg.querySelector('#scf_form').value,
+      entryPath: dlg.querySelector('#scf_entry').value,
+      title: dlg.querySelector('#scf_title').value.trim(),
+      idea: dlg.querySelector('#scf_idea').value.trim(),
+      scenes: parseInt(dlg.querySelector('#scf_scenes').value||'30',10),
+    };
+    dlg.remove();
+    toast('正在生成剧本规划（引擎→人物→结构→场次），请稍候…');
+    try{
+      const r = await (await fetch('/api/script/create',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+      if(r.error){toast('创建失败：'+r.error);return;}
+      toast('规划完成');
+      switchView('sc');
+    }catch(e){toast('失败：'+e);}
+  };
+}
+
 window.switchView=switchView;
 document.querySelectorAll('#viewsw button').forEach(b=>b.onclick=()=>switchView(b.dataset.v));
 async function loadManuscript(key){
