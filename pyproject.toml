@@ -5,7 +5,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 120
-target-version = "py314"
+target-version = "py313"
 src = ["bot", "tests"]
 
 [tool.ruff.lint]
@@ -16,6 +16,9 @@ ignore = [
     "E501", "E401", "E402", "E702", "E731", "E741", "E701", "F541",
     "B008", "B006", "B011",
     "UP031", "UP035", "UP037",
+    # UP038：新版 ruff 才有的 isinstance 元组写法规则。基座代码长期用 (int, float)
+    # 风格（Python 3.10+ 运行没问题），改动会造成大面积 churn，故不强制。
+    "UP038",
 ]
 
 [tool.ruff.lint.per-file-ignores]

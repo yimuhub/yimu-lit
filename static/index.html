@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>神笔 · 小说创作机器人</title>
+<title>一幕·YIMU · 神笔文学创作台</title>
 <style>
 :root{
   color-scheme:dark;   /* v0.3.x：原生 select/输入框 弹层走深色底+浅色字，修复「下拉选项看不见没法选」 */
@@ -351,7 +351,7 @@ button:disabled{cursor:not-allowed;opacity:.55}
 <div id="toasts"></div>
 <div id="app">
   <div id="sessions">
-    <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔小说工作台</span></span><span id="verbadge" style="font:10px var(--sans);color:var(--muted);opacity:.75;margin-right:6px;flex:none">v…</span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
+    <div class="shead"><span class="stx">一幕·YIMU<br><span style="font-weight:400;font-size:11px;color:var(--muted)">神笔文学创作台</span></span><span id="verbadge" style="font:10px var(--sans);color:var(--muted);opacity:.75;margin-right:6px;flex:none">v…</span><button class="sbtn" id="sestog" onclick="toggleSess()" title="折叠/展开">«</button></div>
     <div class="snew" id="snew" onclick="newBookFlow()"><span class="txt">＋ 新建一本书</span></div>
     <div id="studioview" class="studioview" style="display:none"></div>
     <div class="slist" id="slist">
@@ -367,7 +367,7 @@ button:disabled{cursor:not-allowed;opacity:.55}
       <div class="logo">🖋</div>
       <div style="flex:1">
         <h1>神笔 · 小说创作机器人</h1>
-        <p>「一幕·神笔 · ShenBi NovelCraft」原创创作系统 —— 说个主题，它把整部小说写完（对标网文排行前列）</p>
+        <p>「一幕·YIMU · 神笔文学创作台」原创创作系统 —— 小说 / 剧本 / 诗词 / 散文，四类文学创作一体</p>
       </div>
       <button id="onbbtn" onclick="openOnb()" style="border:none;border-radius:11px;padding:9px 16px;font-size:13px;font-weight:600;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer;white-space:nowrap">✍ 开书向导</button>
     </div>
@@ -2585,7 +2585,7 @@ document.getElementById('addprov').onclick=openProvModal;
 document.getElementById('mbind').onclick=bindProv;
 document.getElementById('provmodal').addEventListener('click',e=>{if(e.target.id==='provmodal')closeProvModal();});
 document.getElementById('pvmodal').addEventListener('click',e=>{if(e.target.id==='pvmodal')closePvModal();});
-bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·神笔 · ShenBi NovelCraft」原创创作系统（v'+(window.APPVER||'0.8.0')+' 三栏工作台：左·会话=书 / 中·该书对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v'+(window.APPVER||'0.8.0')+'。');
+bubble('bot','👋 你好，我是<b>神笔</b>——「一幕·YIMU · 神笔文学创作台」原创创作系统（v'+(window.APPVER||'0.8.0')+' 三栏工作台：左·会话=项目 / 中·该项目对话 / 右·产物·设置·作品库；并发写多本 · 定时任务 · 题材×风格技能 · 模型规则引擎）。\n直接丢个主题给我，例如：\n「写一部悬疑小说，退休刑警被诬陷杀人，10章」\n「都市爽文，女主，20章，轻松基调」\n「写一个电影剧本，三幕，悬疑」\n「写一首七律，咏梅」\n我会完成 规划（故事圣经/线索账本/时间线+黄金三章门）→逐章创作（题材craft+反AI腔）→确定性引擎+五角色审校+百分制达标→成书 全流程，中途自动报进度；写完后右边可「👁 预览」「📝 审稿」「📊 质量报告」「⬇ 成书」。\n当前版本 v'+(window.APPVER||'0.8.0')+'。');
 </script>
 </body>
 </html>

@@ -1,10 +1,10 @@
-# 一幕·神笔 novel-bot .gitignore
+# 一幕·YIMU 神笔文学创作台 .gitignore
 # 原则：只跟踪「可移植的源码 + 技能 + 测试」；数据/密钥/备份/日志/运行态 一律不入库。
 
 # —— 密钥 / 配置（每台机器自管，含 LLM key，绝不入库） ——
 providers.json
 config.json
-config.example.json
+# config.example.json 需要入库（新用户看格式），故不忽略
 user-preferences.json
 model_rules.json
 usage_global.json

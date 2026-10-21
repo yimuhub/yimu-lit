@@ -1,4 +1,4 @@
-"""novel-bot 主应用：聊天即开写（深绑 「一幕·神笔」创作系统）"""
+"""神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
 import json, os, re, threading, uuid, time
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-app = FastAPI(title="novel-bot")
+app = FastAPI(title="一幕·YIMU 神笔文学创作台")
 
 # ---------- 会话状态机 ----------
 # state: idle → options → planning(忙) → title → writing(后台) → done

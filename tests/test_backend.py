@@ -23,7 +23,9 @@ def _first_key():
 # ---------- 路由 / 版本 ----------
 def test_version_v07():
     # v0.8.0：版本单源 —— 只校验是合法语义化版本（不与具体小版本绑死，升级不红）
-    assert version.VE and version.VE[0].isdigit() and version.VE.startswith("0.")
+    # v1.0.0：项目更名为「神笔文学创作台」，版本进入 1.x，去掉 "0." 前缀硬约束
+    import re
+    assert version.VE and re.match(r"^\d+\.\d+\.\d+", version.VE), f"非法语义化版本: {version.VE}"
 
 
 def test_v07_routes_registered():
@@ -36,8 +38,10 @@ def test_v07_routes_registered():
 
 def test_version_endpoint():
     # v0.8.0：版本单源 —— /api/version 必须与 VERSION 文件（bot.version.VE）一致，全站展示趋向一致
+    # v1.0.0：改为通用语义化版本校验（不与 "0." 前缀绑死）
+    import re
     v = client.get("/api/version").json()
-    assert v.get("version", "").startswith("0.")
+    assert re.match(r"^\d+\.\d+\.\d+", v.get("version", "")), f"非法版本: {v.get('version')}"
     assert v.get("version") == version.VE, f"/api/version={v.get('version')} 与 VERSION 文件({version.VE}) 不一致"
 
 
