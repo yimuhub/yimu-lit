@@ -615,6 +615,16 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
     # 先记一个基线分（原章），重写只保留「真的更高分」，避免 LLM 评分波动把章节改坏
     base_score = score_chapter(proj, ch_no)
     orig_body = open(fp, encoding="utf-8").read()
+    # deslop 定点去味（规则层定位 + LLM 最小改法；LLM 失败自动保留原文）
+    try:
+        ds = workflow.deslop_chapter(orig_body, {"cfg": plan.get("config") or {}})
+        if ds.get("cleaned") and ds["cleaned"] != orig_body:
+            open(fp, "w", encoding="utf-8").write(ds["cleaned"])
+            proj.log(f"🧹 第{ch_no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
+            orig_body = ds["cleaned"]
+            base_score = score_chapter(proj, ch_no) or base_score
+    except Exception:
+        pass
     rounds = 0
     while rounds < max_rounds:
         sc = score_chapter(proj, ch_no)

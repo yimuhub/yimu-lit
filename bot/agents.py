@@ -13,6 +13,8 @@ AGENTS = {
     "reviewer": {"label": "审稿人", "stage": "review",   "desc": "五维评审/逐章评分/终审"},
     "rewriter": {"label": "改写师", "stage": "review",   "desc": "定向重写/自动重写（可独立挂更便宜快的模型）"},
     "title":    {"label": "拟题师", "stage": None,       "desc": "书名/标题生成"},
+    "deslopper": {"label": "去味师", "stage": "review",   "desc": "AI 腔定点改写（slop 报告 → 最小改法逐条修）"},
+    "editor":    {"label": "总编",   "stage": "review",   "desc": "全书终审/跨章一致性/红线扫描"},
 }
 
 def _config_path():

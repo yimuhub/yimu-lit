@@ -293,6 +293,35 @@ def fix_chapter(ch_body, action, ctx):
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="review")
 
+def deslop_chapter(ch_body, ctx, max_findings=15):
+    """AI 腔定点去味（两阶段，不装确定）：
+    1) 纯规则 slop_checker.scan → blocking/advisory findings + top_words（不调 LLM，零误报定位）
+    2) 把 findings 交给 LLM 出「最小改法」定点改写（保留情节/钩子/字数量级，只修被指出的位置）
+    返回 {"report": dict, "cleaned": str, "findings": list}；LLM 失败时 cleaned 保持原文。"""
+    from . import slop_checker
+    report = slop_checker.scan(ch_body)
+    findings = report.get("findings") or []
+    top = slop_checker.top_words(ch_body, n=8)
+    top_txt = "、".join(f"{w}×{c}" for w, c in top) if top else "（无明显重复 2-gram）"
+    if not findings:
+        return {"report": report, "cleaned": ch_body, "findings": []}
+    flines = []
+    for f in findings[:max_findings]:
+        flines.append(f"- [第{f.get('line','?')}行] ({f.get('severity','?')}/{f.get('category','?')}) {f.get('snippet','')[:60]} → {f.get('hint','')[:80]}")
+    sys_p = ("你是「一幕·神笔」去味师（deslopper）。按下列定点诊断做最小改写：只修改被指出的位置，"
+             "保留情节走向、钩子、关键名词与字数量级；用具体细节替换空话，不新增套话；"
+             "【重复高频 2-gram】必须去重。输出整章修正后的 markdown。")
+    user_p = ("【定点诊断（按行定位，行号为准）】\n" + "\n".join(flines) +
+              f"\n\n【重复高频 2-gram】{top_txt}\n\n待修章节：\n{ch_body[:9000]}")
+    try:
+        cleaned = llm.chat([{"role": "system", "content": sys_p},
+                            {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="review")
+        if not cleaned or len(cleaned.strip()) < 200:
+            cleaned = ch_body
+    except Exception:
+        cleaned = ch_body
+    return {"report": report, "cleaned": cleaned, "findings": findings}
+
 # ---------- 排行级质检：五角色审校 + 百分制（对标 90 达标线） ----------
 
 SCORE_WEIGHTS = {"结构": 20, "因果可信": 20, "人物": 15, "连续性": 20, "语言": 15, "读者体验": 10}
@@ -323,6 +352,20 @@ def chapter_review(ch_body, cfg, context=""):
                  '输出 JSON：{"scores":{"结构":0-10,"因果可信":0-10,"人物":0-10,"连续性":0-10,"语言":0-10,"读者体验":0-10},'
                  '"weak":["最弱维度名1","最弱维度名2","最弱维度名3"],"verdict":"一句话本章质量判断与最该修的点"}。只输出 JSON。')
         user_p = f"待审章节（第 ? 章，只评它）：\n{ch_body[:9000]}"
+        # 规则层：slop 定位（语言维证据，不装确定）
+        try:
+            from . import slop_checker
+            _r = slop_checker.scan(ch_body)
+            _top = slop_checker.top_words(ch_body, n=5)
+            _top_txt = "、".join(f"{w}×{c}" for w, c in _top) if _top else "无"
+            _slop = ("【规则层定位】slop 命中 %d 处（blocking %d）；高频 2-gram：%s；"
+                     "以上仅为定位线索，按证据打分，不装确定。" %
+                     (len(_r.get("findings",[])), _r.get("stats",{}).get("blocking",0), _top_txt)
+                     if _r.get("findings") else
+                     "【规则层定位】slop 零命中；零命中不替代人工三层扫描（表达/用笔/故事）。")
+            sys_p += "\n" + _slop
+        except Exception:
+            pass
         out = llm.chat_json([{"role": "system", "content": sys_p},
                              {"role": "user", "content": user_p}], cfg=cfg, stage="review")
         if not isinstance(out, dict) or not out.get("scores"):
@@ -375,6 +418,21 @@ def reader_panel(book_md, cfg):
                  '{"persona":"<人格名>","追读点":"...","弃书点":"...","建议":"..."}。')
         user_p = ("三类人格：\n" + "\n".join(f"- {p}" for p in _READER_PERSONAS)
                   + f"\n\n全书（节选）：\n{book_md[:30000]}")
+        # 规则层：slop 定位（语言维证据，不装确定；全书级）
+        try:
+            from . import slop_checker
+            _cb = book_md or ""
+            _r = slop_checker.scan(_cb)
+            _top = slop_checker.top_words(_cb, n=5)
+            _top_txt = "、".join(f"{w}×{c}" for w, c in _top) if _top else "无"
+            _slop = ("【规则层定位】全书 slop 命中 %d 处（blocking %d）；高频 2-gram：%s；"
+                     "以上仅为定位线索，按证据打分，不装确定。" %
+                     (len(_r.get("findings",[])), _r.get("stats",{}).get("blocking",0), _top_txt)
+                     if _r.get("findings") else
+                     "【规则层定位】全书 slop 零命中；零命中不替代人工三层扫描（表达/用笔/故事）。")
+            sys_p += "\n" + _slop
+        except Exception:
+            pass
         out = llm.chat_json([{"role": "system", "content": sys_p},
                              {"role": "user", "content": user_p}], cfg=cfg, stage="review")
         # 容错：dict→取其 list 值；单对象→包成 list；去 markdown
