@@ -193,13 +193,10 @@ def test_script_missing_key_404():
 # ---------- 前端 ----------
 
 def test_frontend_script_workbench_present():
+    """v1.0 Agent 风格 UI：剧本走 openBench('script',...) 工作台 + 向导 wizardScript。"""
     html = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                              "static", "index.html"), encoding="utf-8").read()
-    assert 'id="scriptw"' in html
-    assert 'data-v="sc"' in html
-    assert "scNewFlow" in html
-    assert "scAutoOpen" in html
-    # switchView 必须接上剧本分支
-    m = re.search(r"function switchView\(v\)\{(.*?)\n\}", html, re.S)
-    assert m
-    assert "sc" in m.group(1)
+    assert "wizardScript" in html          # 剧本向导
+    assert "openBench" in html             # 剧本工作台
+    assert "api/script/create" in html     # 创建调用
+    assert "script/" in html and "tabs" in html   # 场次等工作台页签

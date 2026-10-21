@@ -9,7 +9,7 @@ from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, po
 from bot import prose_writer, slop_checker
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-app = FastAPI(title="一幕·YIMU 神笔文学创作台")
+app = FastAPI(title="神笔文学创作台")
 
 # ---------- 会话状态机 ----------
 # state: idle → options → planning(忙) → title → writing(后台) → done

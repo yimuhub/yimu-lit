@@ -1,4 +1,4 @@
-"""构建「一幕·YIMU 神笔文学创作台」自包含打包 zip。
+"""构建「神笔文学创作台」自包含打包 zip。
 
 产物：dist/yimu-lit-v<VERSION>.zip
 内容：代码 + skillkit + tests + run.py + 启动脚本 + config.example.json + requirements + LICENSE/NOTICE/README
