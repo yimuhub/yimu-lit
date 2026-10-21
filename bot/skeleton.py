@@ -205,7 +205,6 @@ def build(key, stamp=True):
     tl = _section(timeline, "未闭合") or _section(timeline, "待闭合") or _section(timeline, "连续性")
     if tl:
         L.append(f"- **注意连续性**：{_plain(tl, 260)}")
-    bible2 = _rf(pdir, "09-故事圣经.md", 6000)
     world = _section(_rf(pdir, "02b-总架构.md", 6000), "世界观")
     if world:
         L.append(f"- **保持世界观/人物一致**：{_plain(world, 240)}")

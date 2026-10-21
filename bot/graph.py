@@ -37,6 +37,11 @@ def _terms(text):
                 res.append(cells[0])
     return res[:30]
 
+def _ci(cells, idx):
+    """取表格单元格里的数字（章节号）；越界/无数字返回 None。"""
+    m = re.search(r"\d+", cells[idx]) if idx < len(cells) else None
+    return int(m.group()) if m else None
+
 def _threads(text):
     """从 线索账本 抓 线索 → [{id, first_ch, due_ch, status}]"""
     res = []
@@ -46,10 +51,8 @@ def _threads(text):
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) < 2 or cells[0].startswith(("ID", "---")) or set(cells[0]) <= {"-", " "}:
             continue
-        def ci(idx):
-            m = re.search(r"\d+", cells[idx]) if idx < len(cells) else None
-            return int(m.group()) if m else None
-        res.append({"id": cells[0], "first_ch": ci(1), "due_ch": ci(5) if len(cells) > 5 else None,
+        res.append({"id": cells[0], "first_ch": _ci(cells, 1),
+                    "due_ch": _ci(cells, 5) if len(cells) > 5 else None,
                     "status": cells[-1]})
     return res
 
@@ -83,7 +86,7 @@ def active_context(pdir, chapter_no, k=8):
     person_seen = [n for n in g.get("persons", []) if n]
     active_threads = []
     for th in g.get("threads", []):
-        fc, dc = th.get("first_ch"), th.get("due_ch")
+        dc = th.get("due_ch")
         st = (th.get("status") or "").lower()
         closed = ("paid" in st) or ("回收" in (th.get("status") or ""))
         if not closed and ((dc is None) or (dc >= chapter_no)):

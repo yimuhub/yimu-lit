@@ -153,7 +153,7 @@ def create_project(cfg, titles):
         except Exception as e:
             proj.log(f"⚠️ 时间线生成失败（跳过）：{e}")
         _write_cfg_text(pdir, "11-章节摘要.md",
-                        f"# 章节摘要\n\n> 每章写后更新：发生了什么 / 选择与代价 / 线索状态 / 时间线 / 未解决连贯性问题。\n")
+                        "# 章节摘要\n\n> 每章写后更新：发生了什么 / 选择与代价 / 线索状态 / 时间线 / 未解决连贯性问题。\n")
     # P5：构建故事图谱（15-故事图谱.json），可配 p5_pipeline 关
     if _cfg_defaults().get("p5_pipeline", True):
         try:
@@ -1365,7 +1365,7 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     weak2 = sorted([d for d in workflow.SCORE_WEIGHTS if d in (review2.get("scores") or {})],
                    key=lambda d: (review2.get("scores") or {}).get(d, 0))[:3]
     delta = round(after - brief["before_total"], 1)
-    rec = [f"# 重写记录（16）",
+    rec = ["# 重写记录（16）",
            f"> 模式：审查后定向重写 · 改写 {len(changed)} 章 · 百分制 {brief['before_total']} → {after}（{delta:+.1f}）· "
            f"达标线 {brief['pass_line']} · 现{'已达标 ✅' if after >= brief['pass_line'] else '未达标'} · {datetime.datetime.now():%Y-%m-%d %H:%M}", ""]
     rec.append("## 各章改写（注入的要求）")

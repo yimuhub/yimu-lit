@@ -14,17 +14,6 @@ from . import llm
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STYLES_DIR = os.path.join(ROOT, "styles")
 
-# 7 个分析维度（措辞参考 writing-dna L1/L2 + perfectly-replicate 7 维，精简到小说适用）
-_DIMS = [
-    ("句式句长", "句子长短比、断句习惯、长句/短句偏好、是否爱用排比/反问/省略"),
-    ("高频指纹词", "该作者反复出现的 3-8 个特色词/口癖/高频意象（只点词，不复述整句）"),
-    ("节奏与爽点", "章节内转折密度、爽点/钩子节奏、开篇钩子与收尾手法"),
-    ("对话口吻", "对话风格、信息量、潜台词、不同角色说话差异"),
-    ("视角人称", "叙述人称、视角距离、聚焦方式（全知/限制/多视角）"),
-    ("情绪基调", "整体基调弧线、情绪张力、留白/铺陈比例"),
-    ("反AI禁用清单", "该风格下应避免的 AI 腔（堆砌形容词/空洞排比/机械转折/模板化过渡等），给 5-8 条"),
-]
-
 
 def _strip_html(t: str) -> str:
     t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", t)
@@ -63,7 +52,6 @@ def distill(corpus: str, name: str, genre: str = "", source: str = "粘贴文本
     if len(corpus) < 120:
         return {"ok": False, "note": "语料太短（<120 字），至少给 500 字以上才能可靠蒸馏风格"}
     corpus = corpus[:16000]
-    dims_hint = "\n".join(f"- {k}：{v}" for k, v in _DIMS)
     sys_p = ("你是一位写作风格分析专家。请对下面的小说节选做「风格蒸馏」：分析这位作者的写作风格技法（不看剧情内容），"
              "只输出严格 JSON，字段：\n"
              '{"summary":"一句话风格概括","dims":{"句式句长":"...","高频指纹词":"...","节奏与爽点":"...",'

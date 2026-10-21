@@ -1495,7 +1495,7 @@ let ONB=null, TMKEY=null, TMCANDS=[];
 function newBookFlow(){ switchView('chat'); newBookLauncherCard(); setTimeout(()=>{try{$('inp').focus();}catch(e){}},50); }
 function newBookLauncherCard(){
   const old=$('newlauncher'); if(old)old.remove();
-  const b=addMsg('bot'); b.id='newlauncher';
+  const b=bubble('bot',''); b.id='newlauncher';
   const bb=b.querySelector('.bubble');
   bb.innerHTML=
     '<div style="font:600 13px var(--sans);color:var(--text);margin-bottom:6px">🧙 开书向导（可选）</div>'+

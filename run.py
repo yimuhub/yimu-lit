@@ -39,7 +39,6 @@ def _ensure_venv():
     if os.path.exists(os.path.join(VENV, "pyvenv.cfg")) and importlib.util.find_spec("fastapi") \
        and importlib.util.find_spec("httpx"):
         return True
-    py = sys.executable
     _log("首次运行：创建虚拟环境 .venv 并安装依赖（fastapi/uvicorn/httpx）…")
     venv.create(VENV, with_pip=True)
     if os.name == "nt":
@@ -56,7 +55,7 @@ def _ensure_config():
     ex = os.path.join(ROOT, "config.example.json")
     if not os.path.exists(cf) and os.path.exists(ex):
         shutil.copyfile(ex, cf)
-        _log(f"首次运行：已生成 config.json（自包含 skill/、无密钥，请在网页或环境变量里配置 API key）。")
+        _log("首次运行：已生成 config.json（自包含 skill/、无密钥，请在网页或环境变量里配置 API key）。")
     os.makedirs(os.path.join(ROOT, "secrets"), exist_ok=True)
 
 def _pick_python(no_venv=False):

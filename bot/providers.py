@@ -53,7 +53,6 @@ def _valid_base_url(url):
     m = re.match(r"^https?://", u)
     if not m:
         return False
-    host = u.split("://", 1)[1].split("/", 1)[0]
     return True
 
 

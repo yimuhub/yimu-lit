@@ -65,7 +65,7 @@ def run_project(pdir, min_words=3000, dormant=3, absent=5):
     total_done = sum(1 for c in chs if _cn(c[2]) > 0)
 
     # 1) 字数（权威：按文件重数）
-    for no, title, txt, _ in chs:
+    for no, _title, txt, _ in chs:
         if not _cn(txt):
             continue
         w = _cn(txt)
@@ -107,7 +107,7 @@ def run_project(pdir, min_words=3000, dormant=3, absent=5):
         if m0:
             names = [m0.group(1).strip()]
     for nm in names[:2]:
-        miss, seq = 0, []
+        seq = []
         for no, _, txt, _ in chs:
             if _cn(txt) and nm in txt:
                 seq = []
@@ -117,7 +117,7 @@ def run_project(pdir, min_words=3000, dormant=3, absent=5):
             add("主角/关键人物缺席", "warning", f"连续{max(seq)}章", f"「{nm}」自第{min(seq)}章起未出现")
 
     # 5) 爽点/钩子 软信号（非判词，供参考）
-    for no, title, txt, _ in chs:
+    for no, _title, txt, _ in chs:
         if no is None or not txt or no == 1:
             continue
         tail = txt[-200:]
