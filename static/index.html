@@ -75,6 +75,8 @@ body{
 #viewsw button{border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--muted);border-radius:8px;padding:5px 12px;font-size:11.5px;font-weight:600;cursor:pointer}
 #viewsw button.on{background:linear-gradient(135deg,rgba(108,140,255,.22),rgba(160,108,255,.22));border-color:var(--accent);color:var(--text)}
 #viewsw #msprog{font:10.5px var(--muted);margin-left:auto}
+#viewsw #chmode{border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--muted);border-radius:8px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;user-select:none}
+#viewsw #chmode:hover{color:var(--accent);border-color:var(--accent)}
 #manuscript{flex:1;overflow-y:auto;padding:16px 26px 26px}
 #manuscript #msline{position:sticky;top:0;z-index:2;padding:9px 12px;margin-bottom:10px;font:12px/1.7 var(--sans);color:var(--muted);background:var(--card-hi);border:1px solid var(--border);border-radius:12px;backdrop-filter:var(--glass-blur);box-shadow:var(--glass-shadow),inset 0 2px 0 0 var(--grad-accent)}
 #manuscript #msline b{color:var(--text)}
@@ -275,6 +277,16 @@ input,select,textarea{color-scheme:dark}
 .busymsg{font:12px var(--sans);color:var(--muted);line-height:1.5}
 .busymsg b{color:var(--text)}
 button:disabled{cursor:not-allowed;opacity:.55}
+/* v0.7.x 对话区「逐章直播打字机」：章节气泡（与 LLM 聊天区分）+ 逐字光标 */
+.msg.chap .ava{background:linear-gradient(135deg,#2f3e57,#243247);font-size:15px}
+.msg.chap .bubble{border-left:3px solid var(--accent);max-width:92%;white-space:normal}
+.chhead{display:flex;align-items:center;gap:7px;font:600 12px var(--sans);color:var(--text);margin-bottom:4px}
+.chhead .chstat{font:10.5px var(--sans);font-weight:500}
+.chbody{font:13.5px/1.75 var(--sans);color:var(--text);white-space:pre-wrap;word-break:break-word}
+.chbody .twcur{color:var(--accent);font-weight:700;animation:twblip .7s step-end infinite}
+@keyframes twblip{50%{opacity:0}}
+.chmore{font:10.5px var(--muted);cursor:pointer;margin-top:4px}
+.chchapmark{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -299,7 +311,7 @@ button:disabled{cursor:not-allowed;opacity:.55}
     <div id="midctx">📖 未选中书 · 直接对话开新书，或从左侧选一本书</div>
     <div id="booklive" style="display:none"></div>
     <div id="quickacts"></div>
-    <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="msprog" style="margin-left:auto"></span></div>
+    <div id="viewsw"><button data-v="chat" class="on">💬 对话</button><button data-v="ms">📄 稿件</button><span id="chmode" onclick="toggleChatMode()" title="逐字=像大模型一样一个个蹦出来；直显=一次显示整章">🎞 逐字</span><span id="msprog" style="margin-left:auto"></span></div>
     <div id="msgs"></div>
     <div id="manuscript" style="display:none"><div id="msline"></div><div id="mschart"></div><div id="msrw"></div><div id="msbody"></div></div>
     <div id="inputbar">
@@ -746,6 +758,11 @@ function startPolling(){
       $('evts').innerHTML=(j.events||[]).slice(-8).map(e=>'<div>'+esc(e)+'</div>').join('');
       // v0.3.5：中间「稿件」实时刷新 —— 正在写/校验时，小说正文随进度逐章出现（事件仍留右侧）
       if($('manuscript').style.display==='block'){ loadManuscript(curKey); }
+      // v0.7.x：中间「对话」逐章直播 —— 正在写时随轮询逐字推进、写满一章出新气泡；写完后定格一次
+      if($('msgs').style.display!=='none' && window.loadChatLive){
+        const _w=['in_progress','validating','releasing'].includes(j.state);
+        if(_w || loadChatLive._lastW===curKey){ loadChatLive(curKey); loadChatLive._lastW=_w?curKey:null; }
+      }
       // v0.3.5：左侧书行「正在写第X章/校验第N轮」实时刷新
       if(j.state==='in_progress'||j.state==='validating'||j.state==='releasing'){ if(window.renderSessions)renderSessions(); }
       if(j.state==='completed'){refreshProjects();}
@@ -1843,9 +1860,11 @@ window.dispatchBooks=dispatchBooks;
 function switchView(v){
   const ms=$('manuscript'),msgs=$('msgs'),ib=$('inputbar');
   document.querySelectorAll('#viewsw button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
-  if(v==='ms'){ms.style.display='block';msgs.style.display='none';loadManuscript(curSession||curKey);}   // 保留输入框（读稿同时可下令）
-  else{ms.style.display='none';msgs.style.display='';ib.style.display='';stopMs();}
+  if(v==='ms'){ms.style.display='block';msgs.style.display='none';loadManuscript(curSession||curKey);}
+  else{ms.style.display='none';msgs.style.display='';ib.style.display='';stopMs();
+    if(window.loadChatLive)loadChatLive(curSession||curKey);}   // v0.7.x 对话区逐章直播
 }
+window._chatModeBtn=$('chmode');
 window.switchView=switchView;
 document.querySelectorAll('#viewsw button').forEach(b=>b.onclick=()=>switchView(b.dataset.v));
 async function loadManuscript(key){
@@ -2008,6 +2027,103 @@ function startMs(){
   },28);
 }
 window.renderMsBody=renderMsBody; window.startMs=startMs; window.stopMs=stopMs;
+// ===== v0.7.x 对话区「逐章直播打字机」：一章一条气泡 · 逐字往外蹦 · 写满一章自动出新气泡 =====
+const CL={ key:null, chapEls:{}, revealed:{}, mode:'type', tw:null, activeN:null };
+function stopChatTw(){ if(CL.tw){ clearInterval(CL.tw); CL.tw=null; } }
+function _chapBodyHTML(t, cursor){
+  const html=t.split(/(\n+#[^\n]+)/g).map(seg=>{
+    if(/^#[\s]/.test(seg)) return '<div class="chchapmark">'+esc(seg.replace(/^#+\s*/,'').trim())+'</div>';
+    return esc(seg);
+  }).join('');
+  return html + (cursor ? '<span class="twcur">▍</span>' : '');
+}
+function _scrollMsgs(){ const m=msgBox; if(m) m.scrollTop=m.scrollHeight; }
+// 建/取某章气泡（data-chapn 去重，绝不重复建）
+function _chapBubble(n, title, fullText){
+  let rec=CL.chapEls[n];
+  if(rec && rec.root.isConnected){ return rec; }
+  const d=document.createElement('div');
+  d.className='msg chap'; d.dataset.chapn=n;
+  d.innerHTML='<div class="ava">📖</div><div class="bubble" style="max-width:92%">'+
+    '<div class="chhead"><span class="chttl">第 '+n+' 章'+((title&&title!=='续写')?' · '+esc(title):'')+'</span><span class="chstat"></span></div>'+
+    '<div class="chbody"></div><div class="chmore"></div></div>';
+  msgBox.appendChild(d);
+  rec={ root:d, ttl:d.querySelector('.chttl'), stat:d.querySelector('.chstat'), body:d.querySelector('.chbody'), more:d.querySelector('.chmore'), fullText, expanded:false };
+  rec.more.onclick=()=>{ rec.expanded=!rec.expanded; _paintChap(n); };
+  CL.chapEls[n]=rec;
+  return rec;
+}
+// 渲染某章气泡（活跃章=逐字；已完成章=长文折叠）
+function _paintChap(n){
+  const rec=CL.chapEls[n]; if(!rec)return;
+  const full=rec.fullText||'';
+  if(n===CL.activeN && CL._writing){
+    const typing=(CL.mode==='type');
+    const reveal=typing? Math.min(CL.revealed[n]||0, full.length) : full.length;
+    rec.body.innerHTML=_chapBodyHTML(full.slice(0,reveal), typing && reveal<full.length);
+    rec.stat.innerHTML='<span style="color:var(--accent);font-weight:600">✍️ 创作中 '+Math.round((full.length?reveal/full.length:0)*100)+'%</span>';
+    rec.more.textContent=''; rec.more.style.display='none';
+  } else {
+    if(full.length>1500 && !rec.expanded){
+      rec.body.innerHTML=_chapBodyHTML(full.slice(0,500), false);
+      rec.more.textContent='▾ 展开本章全文（'+full.length+' 字）'; rec.more.style.display='';
+    } else {
+      rec.body.innerHTML=_chapBodyHTML(full, false);
+      rec.more.textContent=full.length>1500?'▴ 收起':''; rec.more.style.display=full.length>1500?'':'none';
+    }
+    rec.stat.innerHTML='<span style="color:#3ad29b">✅ 已完成 · '+full.length+' 字</span>';
+  }
+  _scrollMsgs();
+}
+// 逐字引擎：30ms 推进活跃章，写满自动交给下一章
+function startChatTw(){
+  stopChatTw();
+  if(CL.mode!=='type')return;
+  CL.tw=setInterval(()=>{
+    const n=CL.activeN; if(n==null)return;
+    const rec=CL.chapEls[n]; const full=(rec&&rec.fullText||'').length;
+    const r=CL.revealed[n]||0;
+    if(r>=full){ stopChatTw(); return; }        // 本章写满 → 停（等下一轮出新章）
+    CL.revealed[n]=Math.min(full, r+22);
+    _paintChap(n);
+  },30);
+}
+// 拉取并驱动（每轮 startPolling 调；切书/换视图重置）
+async function loadChatLive(key){
+  if(!key)return;
+  const tk=_viewToken;
+  if(CL.key!==key){ CL.key=key; CL.chapEls={}; CL.revealed={}; CL.activeN=null; stopChatTw(); }
+  let st={}, pv={};
+  try{ st=await (await fetch('/api/status?key='+encodeURIComponent(key))).json(); }catch(e){}
+  if(tk!==_viewToken || key!==(curSession||curKey))return;
+  try{ pv=await (await fetch('/api/preview?key='+encodeURIComponent(key))).json(); }catch(e){}
+  if(tk!==_viewToken || key!==(curSession||curKey))return;
+  const writing=['in_progress','validating','releasing'].includes(st.state);
+  CL._writing=writing;
+  const cf=(pv.chapters_full||[]).slice().sort((a,b)=>(a.n||0)-(b.n||0));
+  // 清理已不存在的章节气泡（书被清空等）
+  Object.keys(CL.chapEls).forEach(n=>{ if(!cf.find(c=>c.n==+n)) delete CL.chapEls[n]; });
+  if(!cf.length){
+    if(writing){ const rec=_chapBubble(0, null, '');
+      rec.ttl.textContent='✍️ 《'+(pv.name||key)+'》开写中（正在规划 / 生成第 1 章，逐字稍等）…';
+      rec.body.innerHTML=''; rec.stat.innerHTML=''; rec.more.style.display='none'; }
+    CL.activeN=null; stopChatTw(); return;
+  }
+  cf.forEach(c=>{ const rec=_chapBubble(c.n, c.title, c.text||''); rec.fullText=c.text||''; });
+  // 活跃章 = 正在写时的最后一章；旧章 revealed 直接拉满（不重打）
+  CL.activeN = writing ? cf[cf.length-1].n : null;
+  cf.forEach(c=>{ if(c.n!==CL.activeN){ CL.revealed[c.n]=(c.text||'').length; } });
+  if(CL.activeN!=null && CL.revealed[CL.activeN]===undefined) CL.revealed[CL.activeN]=0;   // 新章从头打
+  cf.forEach(c=>_paintChap(c.n));
+  if(writing && CL.mode==='type') startChatTw(); else stopChatTw();
+}
+window.loadChatLive=loadChatLive;
+// 逐字/直显 开关
+function toggleChatMode(){ CL.mode=(CL.mode==='type'?'instant':'type');
+  if(window._chatModeBtn)_chatModeBtn.textContent=(CL.mode==='type'?'🎞 逐字':'⚡ 直显');
+  if(CL._writing && CL.mode==='type') startChatTw(); else { if(CL.activeN!=null){CL.revealed[CL.activeN]=(CL.chapEls[CL.activeN]||{}).fullText?.length||0;} stopChatTw(); CL.activeN!=null&&_paintChap(CL.activeN); }
+}
+window.toggleChatMode=toggleChatMode;
 async function loadTokenLedger(key){
   const el=$('tkcard');if(!el||!key)return;
   let us={};try{us=await (await fetch('/api/usage?key='+encodeURIComponent(key))).json();}catch(e){el.innerHTML='';return;}

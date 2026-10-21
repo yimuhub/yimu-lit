@@ -1262,6 +1262,16 @@ def api_preview(key: str):
                  "status": c.get("status"), "words": c.get("wordCount"),
                  "continuation": bool(c.get("continuation"))}
                 for c in plan.get("chapters", [])]
+    # v0.7.x：逐章原文（按章序，供对话区「逐章直播打字机」一章一条气泡）——纯读文件，不烧 LLM
+    chapters_full = []
+    for c in plan.get("chapters", []):
+        fp = os.path.join(proj.path, c.get("filePath", ""))
+        if fp and os.path.exists(fp):
+            try:
+                chapters_full.append({"n": c.get("chapterNumber"), "title": c.get("title"),
+                                      "status": c.get("status"), "text": open(fp, encoding="utf-8").read()})
+            except Exception:
+                pass
     # v0.5 M1：逐章评分（meta.chapter_scores）挂到每章 + 单独字段
     cs = (plan.get("meta") or {}).get("chapter_scores", {}) or {}
     pl = _preview_pass_line(plan)
@@ -1273,7 +1283,7 @@ def api_preview(key: str):
                    for k, v in sorted(cs.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 9999)]
     return {"key": key, "name": plan.get("novelName", key), "has_book": has_book,
             "total_words": plan.get("totalWords", 0), "text": text, "chapters": chapters,
-            "per_chapter": per_chapter, "pass_line": pl}
+            "chapters_full": chapters_full, "per_chapter": per_chapter, "pass_line": pl}
 
 # ---------- 分层审稿（五角色 + 百分制）/ 版本 ----------
 @app.post("/api/validate")
