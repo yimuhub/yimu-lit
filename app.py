@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
-from bot import medium as medium_mod, skillkit, script_writer
+from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="一幕·YIMU 神笔文学创作台")
@@ -1527,3 +1527,72 @@ async def api_script_forms():
     return {"forms": [{"key": k, "label": v["label"], "target": v["target_pages"],
                        "unit": v["unit"]} for k, v in script_writer.FORMS.items()],
             "entryPaths": [{"key": k, "label": v} for k, v in script_writer.ENTRY_PATHS.items()]}
+
+
+# ---------- v1.0.0：诗词流水线 ----------
+
+@app.get("/api/poetry/projects")
+async def api_poetry_projects():
+    return {"items": poetry_writer.discover_projects()}
+
+
+@app.post("/api/poetry/create")
+async def api_poetry_create(payload: dict):
+    """建诗词项目。payload: {title?, idea?, form?, rounds?, cfg_overrides?}"""
+    cfg = dict(payload.get("cfg_overrides") or {})
+    for k in ("title", "idea", "form", "rounds"):
+        if payload.get(k) is not None:
+            cfg[k] = payload[k]
+    cfg.setdefault("form", "modern")
+    try:
+        proj = poetry_writer.create_project(cfg)
+    except Exception as e:
+        return JSONResponse({"error": f"创建失败：{e}"}, status_code=500)
+    base = os.path.basename(proj.path)
+    return {"key": base, "pid": base, "project": base, "medium": "poetry",
+            "status": proj.status()}
+
+
+@app.get("/api/poetry/status")
+async def api_poetry_status(key: str):
+    proj = poetry_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return proj.status()
+
+
+@app.get("/api/poetry/part")
+async def api_poetry_part(key: str, part: str = "final"):
+    """读项目部分：note / imagery / draft / check / final"""
+    if not poetry_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "part": part, "text": poetry_writer.read_part(key, part)}
+
+
+@app.post("/api/poetry/recheck")
+async def api_poetry_recheck(payload: dict):
+    """对当前草稿重新做格律校验。"""
+    key = payload.get("key")
+    if not poetry_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    try:
+        return poetry_writer.recheck(key)
+    except Exception as e:
+        return JSONResponse({"error": f"校验失败：{e}"}, status_code=500)
+
+
+@app.get("/api/poetry/rhyme")
+async def api_poetry_rhyme(ch: str = ""):
+    """查字的平水韵（韵部 + 平仄）。"""
+    return poetry_writer.rhyme_info(ch)
+
+
+@app.get("/api/poetry/check")
+async def api_poetry_check(poem: str = "", form: str = ""):
+    """纯校验（不建项目）：给一段诗，返回格律报告。"""
+    return poetry_checker.validate(poem, form)
+
+
+@app.get("/api/poetry/forms")
+async def api_poetry_forms():
+    return {"forms": [{"key": k, "label": v} for k, v in poetry_writer.FORMS.items()]}
