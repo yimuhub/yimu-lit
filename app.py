@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
+from bot import prose_writer, slop_checker
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="一幕·YIMU 神笔文学创作台")
@@ -1596,3 +1597,58 @@ async def api_poetry_check(poem: str = "", form: str = ""):
 @app.get("/api/poetry/forms")
 async def api_poetry_forms():
     return {"forms": [{"key": k, "label": v} for k, v in poetry_writer.FORMS.items()]}
+
+
+# ---------- v1.0.0：散文流水线 + 反 AI 腔检测 ----------
+
+@app.get("/api/prose/projects")
+async def api_prose_projects():
+    return {"items": prose_writer.discover_projects()}
+
+
+@app.post("/api/prose/create")
+async def api_prose_create(payload: dict):
+    """建散文项目。payload: {title?, idea?, genre?, operation?, sourceText?, cfg_overrides?}"""
+    cfg = dict(payload.get("cfg_overrides") or {})
+    for k in ("title", "idea", "genre", "operation", "sourceText"):
+        if payload.get(k) is not None:
+            cfg[k] = payload[k]
+    cfg.setdefault("operation", "write")
+    try:
+        proj = prose_writer.create_project(cfg)
+    except Exception as e:
+        return JSONResponse({"error": f"创建失败：{e}"}, status_code=500)
+    base = os.path.basename(proj.path)
+    return {"key": base, "pid": base, "project": base, "medium": "prose",
+            "status": proj.status()}
+
+
+@app.get("/api/prose/status")
+async def api_prose_status(key: str):
+    proj = prose_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return proj.status()
+
+
+@app.get("/api/prose/part")
+async def api_prose_part(key: str, part: str = "final"):
+    """读项目部分：brief / material / draft / slop / final"""
+    if not prose_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "part": part, "text": prose_writer.read_part(key, part)}
+
+
+@app.get("/api/prose/operations")
+async def api_prose_operations():
+    return {"operations": [{"key": k, "label": v} for k, v in prose_writer.OPERATIONS.items()],
+            "genres": [{"key": k, "label": v} for k, v in prose_writer.GENRES.items()]}
+
+
+@app.post("/api/slop/scan")
+async def api_slop_scan(payload: dict):
+    """反 AI 腔扫描（纯规则，不调 LLM）。payload: {text}"""
+    text = payload.get("text") or ""
+    rep = slop_checker.scan(text)
+    rep["yaml"] = slop_checker.report_yaml(rep)
+    return rep
