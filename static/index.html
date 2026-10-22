@@ -163,11 +163,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .tagpick .tag{border:1px solid var(--border);background:var(--card);color:var(--muted);border-radius:14px;padding:4px 12px;font:12px var(--sans);cursor:pointer}
 .tagpick .tag.on{border-color:var(--accent);color:var(--text);background:rgba(124,92,255,.14)}
 .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-.tcard{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card);cursor:pointer;transition:.12s}
+.tcard{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:#191d27;cursor:pointer;transition:.12s}
 .tcard:hover{border-color:var(--accent)}
 .tcard.on{border-color:var(--accent);background:rgba(124,92,255,.13)}
-.tcard .tt{font:600 12.5px var(--sans)}
-.tcard .tw{font:400 10.5px var(--sans);color:var(--muted);margin-top:3px;line-height:1.6}
+.tcard .tt{font:600 12.5px var(--sans);color:#fff}
+.tcard .tw{font:400 10.5px var(--sans);color:#a7adbf;margin-top:3px;line-height:1.6}
 .dbtns{display:flex;gap:9px;margin-top:18px;justify-content:flex-end}
 .loading{display:flex;align-items:center;gap:10px;padding:14px;color:var(--muted);font:12.5px var(--sans)}
 .spinner{width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
@@ -208,6 +208,48 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .evtl .ev::before{content:"";position:absolute;left:-18.5px;top:11px;width:7px;height:7px;border-radius:50%;background:var(--dim)}
 .evtl .ev:first-child::before{background:var(--accent)}
 
+/* ---------- 右侧配置栏（DSH 式侧滑） ---------- */
+#rpanel{position:fixed;top:0;right:-360px;width:352px;height:100vh;background:var(--panel);border-left:1px solid var(--border2);z-index:90;transition:right .25s ease;overflow-y:auto;padding:18px 16px}
+#rpanel.open{right:0}
+#rpanel h3{font:700 15px var(--sans);margin-bottom:4px;color:#fff}
+#rpanel .rclose{position:absolute;top:12px;right:12px;border:0;background:none;color:var(--muted);font-size:18px;cursor:pointer}
+#rpanel .rclose:hover{color:var(--text)}
+#rmask{position:fixed;inset:0;background:rgba(8,9,12,.5);z-index:85;display:none}
+#rmask.show{display:block}
+.rsec{border:1px solid var(--border);border-radius:11px;padding:11px 12px;margin-bottom:10px;background:var(--card)}
+.rsec .rh{font:600 12px var(--sans);color:var(--accent2);margin-bottom:7px;display:flex;align-items:center;cursor:pointer}
+.rsec .rh .car{margin-left:auto;font-size:9px;color:var(--dim);transition:.2s}
+.rsec.closed .car{transform:rotate(-90deg)}
+.rsec .rbody{font:12px/1.8 var(--sans);color:var(--muted)}
+.rsec.closed .rbody{display:none}
+.rkv{display:flex;gap:8px;font:11.5px/1.7 var(--sans);padding:2px 0}
+.rkv .k{color:var(--dim);flex:none;width:62px}
+.rkv .v{color:var(--text);min-width:0;word-break:break-word}
+#topgear{border:1px solid var(--border);background:var(--card);color:var(--muted);border-radius:8px;padding:5px 11px;font-size:14px;cursor:pointer}
+#topgear:hover{border-color:var(--accent);color:var(--text)}
+#topgear.on{border-color:var(--accent);color:var(--accent2);background:rgba(124,92,255,.14)}
+/* ---------- 侧栏搜索 + 归档区 ---------- */
+#searchrow{margin:0 14px 8px;display:flex;gap:6px}
+#sidsearch{flex:1;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:7px 10px;color:var(--text);font:12px var(--sans);outline:none}
+#sidsearch:focus{border-color:var(--accent)}
+#sidsearch::placeholder{color:var(--dim)}
+#gobtn{flex:none;border:1px solid var(--border);background:var(--card);color:var(--muted);border-radius:9px;padding:0 11px;cursor:pointer;font-size:13px}
+#gobtn:hover{border-color:var(--accent);color:var(--text)}
+/* ---------- 直播流气泡 ---------- */
+.evbub{margin:0 0 8px 40px;font:11.5px/1.7 var(--sans);color:var(--muted);padding:6px 12px;border-left:2px solid var(--accent);background:var(--card);border-radius:0 9px 9px 0;max-width:calc(100% - 60px)}
+.evbub .evline{white-space:pre-wrap;word-break:break-word}
+.chcard{margin:0 0 10px 40px;border:1px solid rgba(124,92,255,.35);background:rgba(124,92,255,.06);border-radius:11px;padding:9px 13px;font:12px var(--sans);cursor:pointer;max-width:calc(100% - 60px)}
+.chcard:hover{border-color:var(--accent)}
+.chcard .cht{color:var(--accent2);font-weight:600}
+.chcard .chm{color:var(--muted);font-size:10.5px;margin-top:2px}
+/* ---------- 弹窗对比度修复 ---------- */
+#dlg{background:#101219;border:1px solid #3a4054}
+#dlg h3{color:#fff}
+#dlg .dsub{color:#a7adbf}
+.selcard{background:#191d27}
+.selcard .st{color:#fff}
+.selcard .sd{color:#a7adbf}
+.flabel{color:#a7adbf}
 #toasts{position:fixed;top:16px;right:16px;z-index:200;display:flex;flex-direction:column;gap:8px}
 .toast{background:var(--card2);border:1px solid var(--border2);border-radius:11px;padding:10px 15px;font:12.5px var(--sans);box-shadow:0 8px 30px -8px rgba(0,0,0,.6);animation:tin .25s;max-width:340px}
 .toast.ok{border-color:rgba(62,207,142,.5)}
@@ -224,7 +266,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
       <div><div class="bn">神笔</div><div class="bv">文学创作台 <span id="verbadge"></span></div></div>
     </div>
     <button id="newbtn">＋ 新建创作</button>
-    <div id="tasklist"><div class="sechead" id="taskhead" onclick="toggleSection('tasks')"><div class="sect">任务</div><span class="car">▼</span></div><div id="tasks"></div></div>
+    <div id="searchrow"><input id="sidsearch" placeholder="🔍 搜任务名/题材/内容…"><button id="gobtn" onclick="openLibrary()" title="全部作品高级搜索">⌕</button></div>
+    <div id="tasklist"><div class="sechead" id="taskhead" onclick="toggleSection('tasks')"><div class="sect">任务</div><span class="car">▼</span></div><div id="tasks"></div>
+      <div class="sechead closed" id="archhead" onclick="toggleArch()"><div class="sect">🗄 归档作品</div><span class="car">▼</span></div><div id="archlist" style="display:none"></div></div>
     <div id="sidefoot">
       <div class="fbtn" id="libbtn">📚 全部作品 <span id="libcar" style="margin-left:auto;font-size:10px;color:var(--dim)">▸</span></div>
       <div class="fbtn" id="setbtn">⚙️ 模型与设置</div>
@@ -239,6 +283,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
       </div>
       <select id="pselect" title="供应商"></select>
       <select id="mselect" title="模型"></select>
+      <button id="topgear" onclick="toggleRPanel()" title="本书设置面板">⚙</button>
     </div>
     <div id="view"></div>
     <div id="composer">
@@ -256,6 +301,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
   </main>
 </div>
 <div id="ovl"><div id="dlg"></div></div>
+<div id="rmask" onclick="toggleRPanel()"></div>
+<aside id="rpanel"></aside>
 <div id="ctxmenu"></div>
 <div id="toasts"></div>
 <script>
@@ -589,17 +636,50 @@ async function pollLive(key,tok){
   const PHASE={plan:"📐 规划中",write:"✍️ 写作中",parallel:"⚡ 并行写作",rewriting:"🔁 重写中",
                releasing:"🔓 放行门禁",one_shot:"✨ 一键完稿",validate:"📝 审稿中",
                done:"✅ 已完成",failed:"⚠️ 失败",idle:"⏸ 待机",paused:"⏸ 已暂停"};
+  let lastEvents=new Set();   // 已展示过的事件（跨轮去重）
+  let lastDone=0;             // 已播报的完成章
   const tick=async()=>{
     if(tok!==VIEWTOK||CUR!=="chat"){clearInterval(POLL);POLL=null;return;}
     try{
       const lv=await api("/api/book-live?key="+encodeURIComponent(key));
       if(tok!==VIEWTOK)return;
       const pct=(lv.progress&&lv.progress.pct)||0;
-      const done=(lv.progress&&lv.progress.done)||0,total=(lv.progress&&lv.total||lv.progress&&lv.progress.total)||0;
+      const done=(lv.progress&&lv.progress.done)||0,total=(lv.progress&&lv.progress.total)||0;
       const log=(lv.live_log||[]),last=log.length?log[log.length-1]:"";
       card.innerHTML=`<span class="ph">${esc(PHASE[lv.phase]||lv.phase||"待机")}</span>
         <div class="pbar"><i style="width:${pct}%"></i></div>
         <div style="color:var(--muted)">${done}/${total} 章 · ${(lv.state||"")}${last?" · "+esc(last.slice(0,90)):""}</div>`;
+      // —— DSH 式逐条直播：/api/status events 增量 → evbub 气泡 ——
+      try{
+        const st=await api("/api/status?key="+encodeURIComponent(key));
+        if(tok!==VIEWTOK)return;
+        const evs=st.events||[];
+        const fresh=evs.filter(e=>!lastEvents.has(e));
+        fresh.slice(-8).forEach(e=>{
+          lastEvents.add(e);
+          const b=document.createElement("div");b.className="evbub";
+          b.innerHTML=`<div class="evline">${esc(e)}</div>`;
+          wrap.appendChild(b);
+        });
+        if(lastEvents.size>400)lastEvents=new Set([...lastEvents].slice(-200));
+        // 新完成章 → 章节卡片
+        if(lastDone&&done>lastDone){
+          const pv2=await api("/api/preview?key="+encodeURIComponent(key));
+          if(tok!==VIEWTOK)return;
+          (pv2.chapters||[]).filter(c=>c.n>lastDone&&c.n<=done).forEach(c=>{
+            const cc=document.createElement("div");cc.className="chcard";
+            cc.innerHTML=`<div class="cht">📄 第${c.n}章 ${(c.title||"").replace(/\*+/g,"")} 完成</div><div class="chm">点击右侧 ⚙ 看逐章评分 · 👁 预览看全文</div>`;
+            cc.onclick=()=>openPreviewModal(key,c.n);
+            wrap.appendChild(cc);
+          });
+        }
+        lastDone=done||lastDone;
+        // 自动滚到底（仅当用户本来就接近底部）
+        const v=$("view");
+        if(v.scrollHeight-v.scrollTop-v.clientHeight<300)v.scrollTop=v.scrollHeight;
+        // 右侧栏开着 → 同步刷新
+        if($("rpanel").classList.contains("open")&&RP_KEY===key)renderRPanel();
+      }catch(e2){}
     }catch(e){}
   };
   await tick();
@@ -724,7 +804,7 @@ async function benchTab(medium,key,tok){
 
 /* ================= 作品库 ================= */
 /* ---- 全部作品大弹窗（分类/搜索/归档/预览/收藏/批量） ---- */
-const LIB={q:"",medium:"",genre:"",status:"",favs:false};
+const LIB={q:"",medium:"",genre:"",status:"",sort:"updated",order:"desc",sel:new Set()};
 async function openLibrary(){
   const dlg=$("dlg");$("ovl").classList.add("show");dlg.className="wide";
   dlg.innerHTML=`<h3>📚 全部作品</h3>
@@ -737,7 +817,18 @@ async function openLibrary(){
       <option value="passing">✅ 达标</option><option value="unrated">未评分</option>
       <option value="in_progress">创作中</option><option value="completed">已完成</option>
       <option value="archived">🗑 回收站</option></select>
+    <select class="fsel" id="lb_sort" style="width:auto"><option value="updated">最近更新</option>
+      <option value="created">创建时间</option><option value="progress">进度</option>
+      <option value="quality">评分</option><option value="words">字数</option><option value="genre">题材</option></select>
+    <button class="pbtn" id="lb_order" title="切换升/降序">↓ 降</button>
     <button class="pbtn" id="lb_refresh">刷新</button>
+  </div>
+  <div id="lb_batch" style="display:none;gap:7px;margin:6px 0;flex-wrap:wrap">
+    <span style="font:11.5px var(--muted);color:var(--muted)">已选 <b id="lb_selcount">0</b> 项：</span>
+    <button class="pbtn" onclick="batchLib('archive')">🗄 批量归档</button>
+    <button class="pbtn" onclick="batchLib('restore')">♻️ 批量恢复</button>
+    <button class="pbtn" onclick="batchLib('delete')">🗑 批量移回收站</button>
+    <button class="pbtn" onclick="LIB.sel.clear();loadLibList()">取消选择</button>
   </div>
   <div id="lb_genres" style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 10px"></div>
   <div class="mbody" id="lb_list"></div>
@@ -747,6 +838,8 @@ async function openLibrary(){
   dlg.querySelector("#lb_medium").onchange=function(){LIB.medium=this.value;LIB.genre="";loadLibList();};
   dlg.querySelector("#lb_status").onchange=function(){LIB.status=this.value;loadLibList();};
   dlg.querySelector("#lb_refresh").onclick=loadLibList;
+  dlg.querySelector("#lb_sort").onchange=function(){LIB.sort=this.value;loadLibList();};
+  dlg.querySelector("#lb_order").onclick=function(){LIB.order=LIB.order==="desc"?"asc":"desc";this.textContent=LIB.order==="desc"?"↓ 降":"↑ 升";loadLibList();};
   loadLibList();
 }
 async function loadLibList(){
@@ -755,7 +848,7 @@ async function loadLibList(){
   list.innerHTML='<div class="loading"><div class="spinner"></div>加载中…</div>';
   try{
     const [lib,sc,po,pr]=await Promise.all([
-      api("/api/library?"+new URLSearchParams({q:LIB.q,status:LIB.status==="passing"||LIB.status==="unrated"||LIB.status==="archived"?LIB.status:"",include_archived:"true"})).catch(()=>({items:[]})),
+      api("/api/library?"+new URLSearchParams({q:LIB.q,status:LIB.status==="passing"||LIB.status==="unrated"||LIB.status==="archived"?LIB.status:"",sort:LIB.sort,order:LIB.order,include_archived:"true"})).catch(()=>({items:[]})),
       api("/api/script/projects").catch(()=>[]),
       api("/api/poetry/projects").catch(()=>[]),
       api("/api/prose/projects").catch(()=>({items:[]})),
@@ -778,12 +871,14 @@ async function loadLibList(){
     const genres=[...new Set((lib.items||[]).map(i=>i.genre).filter(Boolean))];
     if(gbox)gbox.innerHTML=genres.slice(0,12).map(g=>`<span class="tag${LIB.genre===g?" on":""}" onclick="LIB.genre=LIB.genre==='${esc(g)}'?'':'${esc(g)}';loadLibList()" style="cursor:pointer">${esc(g)}</span>`).join("");
     if(stats)stats.textContent=`${flt.length} 件 · 小说 ${(lib.items||[]).length} · 剧本 ${(Array.isArray(sc)?sc:[]).length} · 诗词 ${(Array.isArray(po)?po:[]).length} · 散文 ${((pr&&pr.items)||[]).length}`;
+    updateBatchBar();
     if(!flt.length){list.innerHTML='<div style="color:var(--muted);padding:30px;text-align:center">无匹配作品</div>';return;}
     list.innerHTML=flt.map(r=>{
       const m=MEDIUM[r.medium];
       const qb=r.medium==="novel"?(r.quality==null?'<span class="statechip idle" style="margin-left:6px">未审</span>':`<span class="statechip ${r.raw.passing?"done":"pause"}" style="margin-left:6px">${r.quality}分</span>`):"";
       const rel=r.medium==="novel"&&r.released===true?'<span class="statechip done" style="margin-left:4px">放行✅</span>':(r.medium==="novel"&&r.released===false?'<span class="statechip pause" style="margin-left:4px">未放行</span>':"");
       return `<div class="lrow">
+        ${r.medium==="novel"?`<input type="checkbox" ${LIB.sel.has(r.key)?"checked":""} onclick="event.stopPropagation();LIB.sel.has('${esc(r.key)}')?LIB.sel.delete('${esc(r.key)}'):LIB.sel.add('${esc(r.key)}');updateBatchBar()">`:""}
         <div class="li">${m.icon}</div>
         <div class="lm" style="cursor:pointer" onclick="${r.medium==="novel"?`closeDlg();openBook('${esc(r.key)}')`:`closeDlg();openBench('${r.medium}','${esc(r.key)}')`}">
           <div class="ln">${esc(r.name||r.key)}<span class="mtag ${m.cls}">${m.label}</span>${qb}${rel}</div>
@@ -809,6 +904,21 @@ function delLib(key,name){
   uniConfirm("彻底删除","彻底删除《"+name+"》？目录将删除，不可恢复！","彻底删除",async()=>{
     try{await api("/api/library/"+encodeURIComponent(key)+"?hard=true",{method:"DELETE"});toast("已删除","ok");loadLibList();loadTasks();}catch(e){toast(String(e),"err");}});
 }
+function updateBatchBar(){
+  const bar=$("lb_batch");if(!bar)return;
+  bar.style.display=LIB.sel.size?"flex":"none";
+  const c=$("lb_selcount");if(c)c.textContent=LIB.sel.size;
+}
+async function batchLib(op){
+  if(!LIB.sel.size){toast("先勾选作品","err");return;}
+  const keys=[...LIB.sel];
+  if(op==="delete"&&!confirm("把选中的 "+keys.length+" 件作品移入回收站？（可在归档区恢复）"))return;
+  try{
+    await api("/api/library/batch",{method:"POST",body:JSON.stringify({keys,action:op==="delete"?"delete":op})});
+    toast("批量操作完成","ok");LIB.sel.clear();loadLibList();loadTasks();
+  }catch(e){toast(String(e),"err");}
+}
+window.updateBatchBar=updateBatchBar;window.batchLib=batchLib;
 window.delLib=delLib;window.restoreLib=restoreLib;window.toggleFavLib=toggleFavLib;window.loadLibList=loadLibList;window.LIB=LIB;
 
 /* ---- 作品预览弹窗（章节选择 + 质量报告 + 修订记录） ---- */
@@ -1400,6 +1510,91 @@ window.addSkill=addSkill;window.delSkill=delSkill;window.previewSkill=previewSki
   });
   document.addEventListener("mouseup",()=>{if(dragging){dragging=false;document.body.style.cursor="";localStorage.yimu_sidew=side.style.width;}});
   const saved=localStorage.yimu_sidew;if(saved)side.style.width=saved;
+})();
+
+
+/* ================= v1.2 右侧配置栏 ================= */
+let RP_KEY=null;
+function toggleRPanel(){
+  const p=$("rpanel");
+  if(p.classList.contains("open")){p.classList.remove("open");$("rmask").classList.remove("show");$("topgear").classList.remove("on");return;}
+  if(CUR!=="chat"||!KEY){toast("先打开一本小说，再打开本书设置面板");return;}
+  p.classList.add("open");$("rmask").classList.add("show");$("topgear").classList.add("on");
+  renderRPanel();
+}
+window.toggleRPanel=toggleRPanel;
+async function renderRPanel(){
+  const p=$("rpanel");RP_KEY=KEY;
+  p.innerHTML=`<button class="rclose" onclick="toggleRPanel()">✕</button><h3>⚙ 本书设置</h3><div style="font:11px var(--muted);color:var(--muted);margin-bottom:12px">${esc(KEY)}</div>
+  <div id="rp_body"><div class="loading"><div class="spinner"></div>加载中…</div></div>`;
+  const tok=RP_KEY;
+  let st={},pv={},sty={};
+  try{st=await api("/api/status?key="+encodeURIComponent(KEY));}catch(e){}
+  if(tok!==RP_KEY||!p.classList.contains("open"))return;
+  try{pv=await api("/api/preview?key="+encodeURIComponent(KEY));}catch(e){}
+  try{sty=(await api("/api/style?key="+encodeURIComponent(KEY))).style||{};}catch(e){}
+  if(tok!==RP_KEY||!p.classList.contains("open"))return;
+  const sec=(id,label,inner,open)=>`<div class="rsec${open?"":" closed"}" id="rp_${id}"><div class="rh" onclick="this.parentNode.classList.toggle('closed')">${label}<span class="car">▼</span></div><div class="rbody">${inner}</div></div>`;
+  const pct=st.total?Math.round((st.done||0)/st.total*100):0;
+  const pcs=(pv.per_chapter||[]),pl=pv.pass_line||90;
+  const scoreRows=pcs.length?pcs.map(x=>`<div class="rkv"><span class="k">第${x.ch}章</span><span class="v" style="color:${x.status==="below"?"var(--amber)":"var(--green)"}">${x.score!=null?x.score+" 分":"未评"}${(x.weak||[]).length?" · "+esc(x.weak.join("、")):""}</span></div>`).join(""):"<div>还没有评分。点下方「📝 审稿」。</div>";
+  const chRows=(pv.chapters||[]).slice(0,30).map(c=>`<div class="rkv"><span class="k">第${c.n}章</span><span class="v" style="cursor:pointer" onclick="openPreviewModal('${esc(KEY)}','${c.n}')">${esc((c.title||"").replace(/\*+/g,""))||"—"} <span style="color:var(--dim)">${c.status==="completed"?"✅":(c.words?c.words+"字":"未写")}</span></span></div>`).join("")||"<div>暂无章节</div>";
+  p.innerHTML=`<button class="rclose" onclick="toggleRPanel()">✕</button>
+  <h3>⚙ 《${esc(st.name||KEY)}》</h3>
+  <div style="font:11px var(--muted);color:var(--muted);margin-bottom:10px">${esc(st.state||"")} · 排队指令 ${st.queued||0}</div>
+  <div class="pbar" style="margin-bottom:12px"><i style="width:${pct}%"></i></div>
+  ${sec("st","📊 本书状态",`<div class="rkv"><span class="k">进度</span><span class="v">${st.done||0}/${st.total||0} 章（${pct}%）</span></div><div class="rkv"><span class="k">字数</span><span class="v">${(st.words||0).toLocaleString()}</span></div><div class="rkv"><span class="k">成书</span><span class="v">${pv.has_book?"✅ 已生成":"未生成"}</span></div>`,true)}
+  ${sec("style","🎨 风格技能",`<label class="flabel">金手指</label><select class="fsel" id="rp_hand">${(sty.style&&sty.style["金手指"])?`<option>${esc(sty.style["金手指"])}</option>`:""}<option value="">（未设置）</option></select><label class="flabel">节奏</label><select class="fsel" id="rp_pace">${(sty.style&&sty.style["节奏"])?`<option>${esc(sty.style["节奏"])}</option>`:""}<option value="">（未设置）</option></select><label class="flabel">语言</label><select class="fsel" id="rp_lang">${(sty.style&&sty.style["语言"])?`<option>${esc(sty.style["语言"])}</option>`:""}<option value="">（未设置）</option></select><div class="rowbtns"><button class="pbtn" onclick="saveRPStyle()">💾 保存风格</button></div>`,true)}
+  ${sec("score","📈 逐章评分（达标线 "+pl+"）",scoreRows,true)}
+  ${sec("chs","📑 章节清单（点击看全文）",chRows,false)}
+  ${sec("ops","🛠 快捷操作",`<div class="rowbtns" style="flex-direction:column;align-items:stretch">
+    <button class="pbtn" onclick="openPreviewModal('${esc(KEY)}')">👁 预览全文/单章</button>
+    <button class="pbtn" onclick="novelMenu('${esc(KEY)}',innerWidth-380,80)">⋯ 全部操作菜单</button>
+    <button class="pbtn" onclick="openScheduleModal('${esc(KEY)}')">⏱ 定时写作</button>
+    <button class="pbtn" onclick="openUsageModal('${esc(KEY)}')">📊 Token 统计</button>
+    <button class="pbtn" onclick="window.open('/api/download?key=${encodeURIComponent(KEY)}','_blank')">⬇ 下载成书</button></div>`,false)}`;
+}
+async function saveRPStyle(){
+  const style={金手指:$("rp_hand")?$("rp_hand").value:"",节奏:$("rp_pace")?$("rp_pace").value:"",语言:$("rp_lang")?$("rp_lang").value:""};
+  try{await api("/api/style",{method:"PUT",body:JSON.stringify({key:KEY,style})});toast("🎨 风格已保存，后续章节生效","ok");}catch(e){toast(String(e),"err");}
+}
+window.saveRPStyle=saveRPStyle;
+
+/* ================= v1.2 归档区 + 侧栏搜索 ================= */
+let ARCH_OPEN=false;
+function toggleArch(){
+  ARCH_OPEN=!ARCH_OPEN;
+  $("archlist").style.display=ARCH_OPEN?"":"none";
+  $("archhead").classList.toggle("closed",!ARCH_OPEN);
+  if(ARCH_OPEN)loadArch();
+}
+window.toggleArch=toggleArch;
+async function loadArch(){
+  const el=$("archlist");if(!el)return;
+  el.innerHTML='<div class="loading" style="padding:8px"><div class="spinner"></div></div>';
+  try{
+    const d=await api("/api/library?status=archived&include_archived=true");
+    const items=(d.items||[]).filter(i=>i.archived);
+    if(!items.length){el.innerHTML='<div style="padding:8px 10px;font:11px var(--sans);color:var(--dim)">回收站为空</div>';return;}
+    el.innerHTML=items.map(i=>`<div class="trow"><div class="ticon">🗄</div>
+      <div class="tmain" style="cursor:pointer" onclick="restoreArch('${esc(i.key)}')"><div class="tname">${esc(i.name||i.key)}</div><div class="tsub">${esc(i.genre||"")} · ${i.done||0}/${i.total||0}章</div></div>
+      <button class="tmore" title="恢复" onclick="restoreArch('${esc(i.key)}')">♻️</button></div>`).join("");
+  }catch(e){el.innerHTML='<div style="padding:8px;font:11px;color:var(--red)">加载失败</div>';}
+}
+async function restoreArch(key){
+  try{await api("/api/library/"+encodeURIComponent(key)+"/archive",{method:"POST",body:JSON.stringify({on:false})});toast("♻️ 已恢复到任务列表","ok");loadArch();loadTasks();}catch(e){toast(String(e),"err");}
+}
+window.restoreArch=restoreArch;
+(function(){
+  const inp=document.getElementById("sidsearch");
+  if(!inp)return;
+  inp.addEventListener("input",()=>{
+    const q=inp.value.trim().toLowerCase();
+    document.querySelectorAll("#tasks .trow, #archlist .trow").forEach(r=>{
+      const txt=(r.textContent||"").toLowerCase();
+      r.style.display=(!q||txt.includes(q))?"":"none";
+    });
+  });
 })();
 
 /* ================= 更新任务行渲染（3 点 + 点击） ================= */
