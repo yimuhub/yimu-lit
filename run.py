@@ -71,6 +71,7 @@ def main():
     ap.add_argument("-p", "--port", type=int, default=None, help="端口（默认取 config/46821）")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-venv", action="store_true", help="不建 venv，用当前解释器")
+    ap.add_argument("--reload", action="store_true", help="热更新：改代码/前端后自动重启（开发用）")
     a = ap.parse_args()
     port = a.port or _port_configured()
     if a.port and a.port:
@@ -78,8 +79,10 @@ def main():
 
     _ensure_config()
     py = _pick_python(a.no_venv)
-    # 直接以子进程跑 uvicorn（用选定的解释器）
+    # 直接以子进程跑 uvicorn（用选定的解释器）；--reload 时 uvicorn 监听 app.py/static 变更自动重启
     cmd = [py, "-m", "uvicorn", "app:app", "--host", a.host, "--port", str(port), "--app-dir", ROOT]
+    if a.reload:
+        cmd += ["--reload", "--reload-dir", ROOT, "--reload-include", "*.py", "--reload-include", "static/*"]
     if not _port_free(port):
         _log(f"⚠️ 端口 {port} 已被占用。可用 `-p 其它端口` 或 `NOVEL_BOT_PORT` 覆盖。")
     _log(f"🚀 启动 http://{a.host}:{port}  （python={os.path.basename(py)}）")

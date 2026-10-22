@@ -1399,6 +1399,54 @@ async def api_skillkit_list(medium: str = "", stage: str = ""):
     return {"skills": skillkit.list_skills(medium, stage)}
 
 
+@app.post("/api/skillkit/add")
+async def api_skillkit_add(payload: dict):
+    """自定义添加技能文件（写到 skillkit/custom/ 并热重载索引）。
+    payload: {name, title?, medium: [..], stages: [..], kind?, weight?, content}
+    content 为 markdown 正文（可含自己的 frontmatter；缺省字段自动补）。"""
+    name = re.sub(r"[^\w\-]+", "-", (payload.get("name") or "").strip()).strip("-")
+    if not name:
+        return JSONResponse({"error": "技能名不能为空"}, status_code=400)
+    content = (payload.get("content") or "").strip()
+    if len(content) < 20:
+        return JSONResponse({"error": "正文太短（至少 20 字）"}, status_code=400)
+    media = payload.get("medium") or ["all"]
+    if not isinstance(media, list):
+        media = [str(media)]
+    media = [m for m in media if medium_mod.is_medium(m) or m == "all"] or ["all"]
+    stages = [str(s).upper() for s in (payload.get("stages") or []) if s]
+    kind = payload.get("kind") if payload.get("kind") in ("method", "template", "data") else "method"
+    weight = max(1, min(9, int(payload.get("weight") or 3)))
+    title = (payload.get("title") or name).strip()[:60]
+    fm = ["---", f"name: custom-{name}", f"title: {title}",
+          f"medium: [{', '.join(media)}]",
+          f"stages: [{', '.join(stages)}]" if stages else "stages: []",
+          f"kind: {kind}", f"weight: {weight}",
+          "license: 用户自定义", "source: 用户在本机添加", "---", ""]
+    cdir = os.path.join(skillkit.EXTERNAL_DIR if os.path.isdir(skillkit.EXTERNAL_DIR)
+                        else os.path.join(ROOT, "skillkit"), "custom")
+    # custom 目录放 skillkit/ 下（gitignore 不含它，用户技能随产品走）；EXTERNAL 是第三方语料
+    cdir = os.path.join(ROOT, "skillkit", "custom")
+    os.makedirs(cdir, exist_ok=True)
+    fpath = os.path.join(cdir, f"{name}.md")
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write("\n".join(fm) + "\n" + content + "\n")
+    skillkit.reload()
+    return {"ok": True, "path": os.path.relpath(fpath, ROOT), "name": f"custom-{name}"}
+
+
+@app.delete("/api/skillkit/custom/{name}")
+async def api_skillkit_del(name: str):
+    """删除自定义技能（仅限 skillkit/custom/ 目录）。"""
+    safe = re.sub(r"[^\w\-]+", "", name)
+    fpath = os.path.join(ROOT, "skillkit", "custom", f"{safe}.md")
+    if not os.path.isfile(fpath):
+        return JSONResponse({"error": "自定义技能不存在"}, status_code=404)
+    os.remove(fpath)
+    skillkit.reload()
+    return {"ok": True}
+
+
 @app.get("/api/skillkit/preview")
 async def api_skillkit_preview(stage: str, medium: str = "novel", genre: str = "",
                                include_case: bool = False, max_bytes: int = 26000):
