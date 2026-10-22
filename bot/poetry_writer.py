@@ -280,13 +280,13 @@ def gen_critique(text: str, cfg: dict) -> str:
 
 # ---------------------------------------------------------------- 生命周期
 
-def create_project(cfg: dict) -> PoetryProject:
+def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
     """建诗词项目 + 走完 I→P→C→K→R 循环。"""
     cfg = _merge_cfg(cfg)
     form = normalize_form(cfg.get("form", "modern"))
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = _safe(cfg.get("title") or cfg.get("idea") or "未命名诗")
-    pdir = os.path.join(PROJECTS_DIR, f"p_{ts}-{name}")
+    pdir = os.path.join(PROJECTS_DIR, base_key or f"p_{ts}-{name}")
     os.makedirs(pdir, exist_ok=True)
     proj = PoetryProject(pdir, name)
     llm.book(os.path.basename(pdir), "planning")

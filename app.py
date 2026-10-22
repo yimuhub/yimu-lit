@@ -1479,13 +1479,18 @@ async def api_script_create(payload: dict):
         cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
     if payload.get("model"):
         cfg.setdefault("defaults", {})["model"] = payload["model"]
-    try:
-        proj = script_writer.create_project(cfg)
-    except Exception as e:
-        return JSONResponse({"error": f"创建失败：{e}"}, status_code=500)
-    base = os.path.basename(proj.path)
-    return {"key": base, "pid": base, "project": base, "medium": "script",
-            "status": proj.status()}
+    # v1.2.1：规划放后台线程（async 端点里同步跑 LLM 会阻塞事件循环 → 全站请求卡死、无法并发多创作）
+    import threading as _th
+    from datetime import datetime as _dt
+    _name = script_writer._safe(cfg.get("title") or cfg.get("idea") or "未命名剧本")
+    base = f"s_{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
+    def _bg():
+        try:
+            script_writer.create_project(cfg, base_key=base)
+        except Exception as e:
+            print(f"[bg] 剧本规划失败: {e}", flush=True)
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"key": base, "pid": base, "project": base, "medium": "script", "async": True}
 
 
 @app.get("/api/script/status")
@@ -1609,13 +1614,17 @@ async def api_poetry_create(payload: dict):
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("form", "modern")
-    try:
-        proj = poetry_writer.create_project(cfg)
-    except Exception as e:
-        return JSONResponse({"error": f"创建失败：{e}"}, status_code=500)
-    base = os.path.basename(proj.path)
-    return {"key": base, "pid": base, "project": base, "medium": "poetry",
-            "status": proj.status()}
+    import threading as _th
+    from datetime import datetime as _dt
+    _name = poetry_writer._safe(cfg.get("title") or cfg.get("idea") or "无题")
+    base = f"p_{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
+    def _bg():
+        try:
+            poetry_writer.create_project(cfg, base_key=base)
+        except Exception as e:
+            print(f"[bg] 诗词创作失败: {e}", flush=True)
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"key": base, "pid": base, "project": base, "medium": "poetry", "async": True}
 
 
 @app.get("/api/poetry/status")
@@ -1678,13 +1687,17 @@ async def api_prose_create(payload: dict):
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("operation", "write")
-    try:
-        proj = prose_writer.create_project(cfg)
-    except Exception as e:
-        return JSONResponse({"error": f"创建失败：{e}"}, status_code=500)
-    base = os.path.basename(proj.path)
-    return {"key": base, "pid": base, "project": base, "medium": "prose",
-            "status": proj.status()}
+    import threading as _th
+    from datetime import datetime as _dt
+    _name = prose_writer._safe(cfg.get("title") or cfg.get("idea") or "未命名散文")
+    base = f"e_{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
+    def _bg():
+        try:
+            prose_writer.create_project(cfg, base_key=base)
+        except Exception as e:
+            print(f"[bg] 散文创作失败: {e}", flush=True)
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"key": base, "pid": base, "project": base, "medium": "prose", "async": True}
 
 
 @app.get("/api/prose/status")

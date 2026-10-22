@@ -8,6 +8,7 @@
 import json
 import os
 import shutil
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -239,15 +240,25 @@ def test_poetry_rhyme_api():
 
 
 def test_poetry_create_api():
+    """v1.2.1：create 变异步（立即返回 key，后台跑 LLM）。轮询等后台完成再断言产物。"""
     r = client.post("/api/poetry/create", json={
         "title": "接口测试诗", "idea": "一个想法", "form": "七绝"}).json()
     assert "error" not in r, r
     key = r["key"]
     try:
         assert r["medium"] == "poetry"
+        assert r.get("async") is True
+        # 等后台线程完成（mock LLM 秒回，最多 10s）
+        txt = ""
+        for _ in range(40):
+            time.sleep(0.25)
+            p = client.get("/api/poetry/part", params={"key": key, "part": "final"})
+            if p.status_code == 200:
+                txt = p.json().get("text", "")
+                if txt:
+                    break
+        assert txt, "后台 10s 内未产出定稿"
         assert client.get("/api/poetry/status", params={"key": key}).status_code == 200
-        parts = client.get("/api/poetry/part", params={"key": key, "part": "final"}).json()
-        assert parts["text"]
         items = client.get("/api/poetry/projects").json()["items"]
         assert any(i["key"] == key for i in items)
     finally:

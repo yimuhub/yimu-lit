@@ -388,13 +388,13 @@ def scene_heading(sc: dict) -> str:
 
 # ---------------------------------------------------------------- 项目生命周期
 
-def create_project(cfg: dict) -> ScriptProject:
+def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
     """建剧本项目 + 逐阶段生成。"""
     cfg = _merge_cfg(cfg)
     form = cfg.get("form", "film")
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = _safe(cfg.get("title") or cfg.get("idea") or "未命名剧本")
-    pdir = os.path.join(PROJECTS_DIR, f"s_{ts}-{name}")
+    pdir = os.path.join(PROJECTS_DIR, base_key or f"s_{ts}-{name}")
     os.makedirs(pdir, exist_ok=True)
     proj = ScriptProject(pdir, name)
     llm.book(os.path.basename(pdir), "planning")

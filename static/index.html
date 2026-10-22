@@ -270,7 +270,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
     <div id="tasklist"><div class="sechead" id="taskhead" onclick="toggleSection('tasks')"><div class="sect">任务</div><span class="car">▼</span></div><div id="tasks"></div>
       <div class="sechead closed" id="archhead" onclick="toggleArch()"><div class="sect">🗄 归档作品</div><span class="car">▼</span></div><div id="archlist" style="display:none"></div></div>
     <div id="sidefoot">
-      <div class="fbtn" id="libbtn">📚 全部作品 <span id="libcar" style="margin-left:auto;font-size:10px;color:var(--dim)">▸</span></div>
+      <div class="fbtn" id="libbtn">📚 全部作品</div>
       <div class="fbtn" id="setbtn">⚙️ 模型与设置</div>
     </div>
   </aside>
@@ -530,7 +530,7 @@ async function wizardScript(){
   const dlg=$("dlg");
   dlg.innerHTML=`${wizHead("🎬","剧本","openNew()")}<div class="loading"><div class="spinner"></div>加载媒介形式…</div>`;
   let forms;
-  try{forms=(await api("/api/script/forms")).forms;}catch(e){forms=[{key:"film",label:"电影长片"},{key:"series",label:"电视剧集"},{key:"short",label:"短片"}];}
+  try{forms=(await api("/api/script/forms")).forms||[];}catch(e){forms=[{key:"film",label:"电影长片"},{key:"series",label:"电视剧集"},{key:"short",label:"短片"}];}
   dlg.innerHTML=`${wizHead("🎬","剧本","openNew()")}
   <label class="flabel">媒介形式</label><select class="fsel" id="s_form">${forms.map(f=>`<option value="${esc(f.key)}">${esc(f.label)}${f.target?"（约"+f.target+f.unit+"）":""}</option>`).join("")}</select>
   <label class="flabel">入口路径</label><select class="fsel" id="s_entry">
@@ -547,7 +547,8 @@ async function submitScript(){
   try{
     const r=await api("/api/script/create",{method:"POST",body:JSON.stringify(payload)});
     if(r.error)throw new Error(r.error);
-    toast("剧本规划完成","ok");closeDlg();openBench("script",r.key||r.project);
+    closeDlg();toast("🎬 已开始规划，已跳转工作台（后台运行，可同时开其他创作）","ok");
+    openBench("script",r.key||r.project);
   }catch(e){toast("失败："+esc(String(e)),"err");go.disabled=false;go.textContent="开始创作";}
 }
 
@@ -556,7 +557,7 @@ async function wizardPoetry(){
   const dlg=$("dlg");
   dlg.innerHTML=`${wizHead("🖋","诗词","openNew()")}<div class="loading"><div class="spinner"></div>加载体式…</div>`;
   let forms;
-  try{forms=(await api("/api/poetry/forms")).forms;}catch(e){forms=[{key:"qijue",label:"七绝"},{key:"qilv",label:"七律"},{key:"ci",label:"词"},{key:"modern",label:"现代诗"},{key:"free",label:"自由体"}];}
+  try{forms=(await api("/api/poetry/forms")).forms||[];}catch(e){forms=[{key:"qijue",label:"七绝"},{key:"qilv",label:"七律"},{key:"ci",label:"词"},{key:"modern",label:"现代诗"},{key:"free",label:"自由体"}];}
   dlg.innerHTML=`${wizHead("🖋","诗词","openNew()")}
   <label class="flabel">体式</label><select class="fsel" id="p_form">${forms.map(f=>`<option value="${esc(f.key)}">${esc(f.label)}</option>`).join("")}</select>
   <label class="flabel">题目</label><input class="fin" id="p_title" placeholder="如：秋夜">
@@ -570,7 +571,8 @@ async function submitPoetry(){
   try{
     const r=await api("/api/poetry/create",{method:"POST",body:JSON.stringify(payload)});
     if(r.error)throw new Error(r.error);
-    toast("诗词完成","ok");closeDlg();openBench("poetry",r.key||r.project);
+    closeDlg();toast("🖋 已开始创作，已跳转工作台（后台运行）","ok");
+    openBench("poetry",r.key||r.project);
   }catch(e){toast("失败："+esc(String(e)),"err");go.disabled=false;go.textContent="创作中";}
 }
 
@@ -579,7 +581,7 @@ async function wizardProse(){
   const dlg=$("dlg");
   dlg.innerHTML=`${wizHead("✒️","散文","openNew()")}<div class="loading"><div class="spinner"></div>加载文体…</div>`;
   let ops,genres;
-  try{const j=await api("/api/prose/operations");ops=j.operations;genres=j.genres;}catch(e){
+  try{const j=await api("/api/prose/operations");ops=j.operations||[];genres=j.genres||[];}catch(e){
     ops=[{key:"write",label:"写"},{key:"review",label:"审"},{key:"refactor",label:"改"},{key:"recreate",label:"重写"}];
     genres=[{key:"suibi",label:"随笔"},{key:"shuqing",label:"抒情散文"},{key:"yilun",label:"议论"},{key:"xushi",label:"叙事"},{key:"book",label:"书评"},{key:"profile",label:"特写"}];}
   dlg.innerHTML=`${wizHead("✒️","散文","openNew()")}
@@ -595,7 +597,8 @@ async function submitProse(){
   try{
     const r=await api("/api/prose/create",{method:"POST",body:JSON.stringify(payload)});
     if(r.error)throw new Error(r.error);
-    toast("散文完成","ok");closeDlg();openBench("prose",r.key);
+    closeDlg();toast("✒️ 已开始生成，已跳转工作台（后台运行）","ok");
+    openBench("prose",r.key);
   }catch(e){toast("失败："+esc(String(e)),"err");go.disabled=false;go.textContent="生成中";}
 }
 
@@ -805,8 +808,9 @@ async function benchTab(medium,key,tok){
 /* ================= 作品库 ================= */
 /* ---- 全部作品大弹窗（分类/搜索/归档/预览/收藏/批量） ---- */
 const LIB={q:"",medium:"",genre:"",status:"",sort:"updated",order:"desc",sel:new Set()};
-async function openLibrary(){
+async function openLibrary(initQ){
   const dlg=$("dlg");$("ovl").classList.add("show");dlg.className="wide";
+  if(initQ)LIB.q=initQ;
   dlg.innerHTML=`<h3>📚 全部作品</h3>
   <div style="display:flex;gap:8px;margin:8px 0 4px;flex-wrap:wrap">
     <input class="fin" id="lb_q" placeholder="🔍 搜索名称/题材…" style="flex:1;min-width:160px">
@@ -834,6 +838,7 @@ async function openLibrary(){
   <div class="mbody" id="lb_list"></div>
   <div class="dbtns"><span style="margin-right:auto;font:11.5px var(--muted);color:var(--muted)" id="lb_stats"></span>
   <button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
+  if(initQ)dlg.querySelector("#lb_q").value=initQ;
   dlg.querySelector("#lb_q").addEventListener("input",function(){clearTimeout(this._t);this._t=setTimeout(()=>{LIB.q=this.value;loadLibList();},300);});
   dlg.querySelector("#lb_medium").onchange=function(){LIB.medium=this.value;LIB.genre="";loadLibList();};
   dlg.querySelector("#lb_status").onchange=function(){LIB.status=this.value;loadLibList();};
@@ -972,40 +977,7 @@ function toggleSection(id){
   $("tasks").style.display=TASKS_OPEN?"":"none";
   $("taskhead").classList.toggle("closed",!TASKS_OPEN);
 }
-let LIB_INLINE=null;
-$("libbtn").onclick=()=>{
-  LIB_OPEN=!LIB_OPEN;
-  $("libcar").textContent=LIB_OPEN?"▼":"▸";
-  if(LIB_OPEN){ // 侧栏内嵌展开（轻量列表）
-    if(LIB_INLINE){LIB_INLINE.remove();LIB_INLINE=null;return;}
-    LIB_INLINE=document.createElement("div");LIB_INLINE.id="inlinelib";
-    $("tasklist").appendChild(LIB_INLINE);
-    loadInlineLib();
-  }else if(LIB_INLINE){LIB_INLINE.remove();LIB_INLINE=null;}
-};
-async function loadInlineLib(){
-  const el=LIB_INLINE;if(!el)return;
-  el.innerHTML='<div class="sect" style="padding-top:2px">全部作品</div><div class="loading" style="padding:8px"><div class="spinner"></div></div>';
-  try{
-    const [lib,sc,po,pr]=await Promise.all([
-      api("/api/library").catch(()=>({items:[]})),
-      api("/api/script/projects").catch(()=>[]),
-      api("/api/poetry/projects").catch(()=>[]),
-      api("/api/prose/projects").catch(()=>({items:[]})),
-    ]);
-    const rows=[];
-    (lib.items||[]).forEach(i=>rows.push({medium:"novel",key:i.key,name:i.name,meta:(i.done||0)+"/"+(i.total||0)+"章"}));
-    (Array.isArray(sc)?sc:[]).forEach(i=>rows.push({medium:"script",key:i.key,name:i.name,meta:(i.done||0)+"/"+(i.total||0)+"场"}));
-    (Array.isArray(po)?po:[]).forEach(i=>rows.push({medium:"poetry",key:i.key,name:i.name,meta:i.form||""}));
-    ((pr&&pr.items)||[]).forEach(i=>rows.push({medium:"prose",key:i.key,name:i.name,meta:i.form||""}));
-    if(!LIB_INLINE)return;
-    el.innerHTML=rows.length?rows.map(r=>`<div class="trow" onclick="openTask('${r.medium}','${esc(r.key)}')">
-      <div class="ticon">${MEDIUM[r.medium].icon}</div>
-      <div class="tmain"><div class="tname">${esc(r.name||r.key)}</div></div>
-      <div class="tsub" style="margin-top:0">${esc(r.meta)}</div></div>`).join("")
-      :'<div style="padding:10px;font:11px var(--sans);color:var(--dim)">暂无作品</div>';
-  }catch(e){el.innerHTML='<div style="padding:8px;font:11px;color:var(--red)">加载失败</div>';}
-}
+$("libbtn").onclick=()=>openLibrary();   // v1.2.1：全部作品直接弹筛选中心（不再侧栏内嵌列表）
 window.toggleSection=toggleSection;
 
 /* ================= 3 点菜单 ================= */
@@ -1588,13 +1560,10 @@ window.restoreArch=restoreArch;
 (function(){
   const inp=document.getElementById("sidsearch");
   if(!inp)return;
-  inp.addEventListener("input",()=>{
-    const q=inp.value.trim().toLowerCase();
-    document.querySelectorAll("#tasks .trow, #archlist .trow").forEach(r=>{
-      const txt=(r.textContent||"").toLowerCase();
-      r.style.display=(!q||txt.includes(q))?"":"none";
-    });
-  });
+  const go=()=>{const q=inp.value.trim();openLibrary(q);};
+  inp.addEventListener("keydown",e=>{if(e.key==="Enter")go();});
+  const gob=document.getElementById("gobtn");
+  if(gob)gob.onclick=go;
 })();
 
 /* ================= 更新任务行渲染（3 点 + 点击） ================= */

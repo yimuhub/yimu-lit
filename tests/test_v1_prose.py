@@ -4,6 +4,7 @@
 """
 import os
 import shutil
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -173,15 +174,24 @@ def test_slop_scan_api():
 
 
 def test_prose_create_api():
+    """v1.2.1：create 异步化。轮询等后台完成。"""
     r = client.post("/api/prose/create", json={
         "title": "接口散文2", "idea": "一个想法", "genre": "suibi", "operation": "write"}).json()
     assert "error" not in r, r
     key = r["key"]
     try:
         assert r["medium"] == "prose"
+        assert r.get("async") is True
+        txt = ""
+        for _ in range(40):
+            time.sleep(0.25)
+            p = client.get("/api/prose/part", params={"key": key, "part": "final"})
+            if p.status_code == 200:
+                txt = p.json().get("text", "")
+                if txt:
+                    break
+        assert txt, "后台 10s 内未产出定稿"
         assert client.get("/api/prose/status", params={"key": key}).status_code == 200
-        parts = client.get("/api/prose/part", params={"key": key, "part": "final"}).json()
-        assert parts["text"]
     finally:
         shutil.rmtree(os.path.join(pw.PROJECTS_DIR, key), ignore_errors=True)
 

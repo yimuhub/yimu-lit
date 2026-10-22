@@ -296,14 +296,14 @@ def gen_polish(text: str, cfg: dict) -> str:
 
 # ---------------------------------------------------------------- 生命周期
 
-def create_project(cfg: dict) -> ProseProject:
+def create_project(cfg: dict, base_key: str = "") -> ProseProject:
     """建散文项目并按操作跑完流程。"""
     cfg = _merge_cfg(cfg)
     op = normalize_op(cfg.get("operation", "write"))
     genre = normalize_genre(cfg.get("genre", "suibi"))
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = _safe(cfg.get("title") or cfg.get("idea") or "未命名散文")
-    pdir = os.path.join(PROJECTS_DIR, f"e_{ts}-{name}")
+    pdir = os.path.join(PROJECTS_DIR, base_key or f"e_{ts}-{name}")
     os.makedirs(pdir, exist_ok=True)
     proj = ProseProject(pdir, name)
     llm.book(os.path.basename(pdir), "planning")
