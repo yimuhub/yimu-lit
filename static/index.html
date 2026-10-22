@@ -36,6 +36,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .trow .tmain{flex:1;min-width:0}
 .trow .tname{font:500 12.5px var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trow .tsub{font:400 10.5px var(--sans);color:var(--muted);margin-top:1px}
+.tmore{flex:none;border:0;background:none;color:var(--dim);font-size:15px;cursor:pointer;padding:2px 4px;border-radius:6px;letter-spacing:1px}
+.tmore:hover{background:var(--card2);color:var(--text)}
+.sechead{display:flex;align-items:center;padding:12px 8px 5px;cursor:pointer;user-select:none}
+.sechead:hover .sect{color:var(--muted)}
+.sechead .car{margin-left:auto;font-size:10px;color:var(--dim);transition:.2s}
+.sechead.closed .car{transform:rotate(-90deg)}
 .dot{width:7px;height:7px;border-radius:50%;flex:none}
 .dot.run{background:var(--accent);animation:pulse 1.4s infinite}
 .dot.done{background:var(--green)}
@@ -167,7 +173,41 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .spinner{width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* ---------- toast ---------- */
+/* ---------- 上下文菜单（3 点） ---------- */
+#ctxmenu{position:fixed;z-index:300;background:var(--card2);border:1px solid var(--border2);border-radius:11px;padding:5px;min-width:190px;box-shadow:0 12px 40px -8px rgba(0,0,0,.7);display:none}
+#ctxmenu.show{display:block}
+#ctxmenu .citem{display:block;width:100%;text-align:left;border:0;background:none;color:var(--text);font:500 12.5px var(--sans);padding:8px 11px;border-radius:7px;cursor:pointer}
+#ctxmenu .citem:hover{background:var(--card)}
+#ctxmenu .citem.danger{color:var(--red)}
+#ctxmenu .csep{height:1px;background:var(--border);margin:4px 6px}
+.mwrap{position:relative;display:flex;gap:8px;margin:12px 0;flex-wrap:wrap;align-items:center}
+.mwrap select.fsel{width:auto;min-width:110px}
+/* ---------- 大弹窗（工作/设置） ---------- */
+#dlg.wide{width:860px;max-height:90vh}
+#dlg .mbody{max-height:calc(88vh - 96px);overflow-y:auto;padding-right:4px}
+.kvrow{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font:12.5px var(--sans)}
+.kvrow .k{color:var(--muted)}
+.kvrow .v{color:var(--text);font-weight:500}
+.mgrid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.statchip2{display:inline-block;background:var(--card2);border:1px solid var(--border);border-radius:9px;padding:5px 12px;font:600 12px var(--sans);color:var(--text)}
+.agrow{border:1px solid var(--border);background:var(--card);border-radius:11px;padding:11px;margin-bottom:9px}
+.agrow .aglabel{font:600 12.5px var(--sans)}
+.agrow .agdesc{font:400 10.5px var(--sans);color:var(--muted);margin:2px 0 7px}
+.agrow select{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:5px 8px;font:11.5px var(--sans)}
+.lrnrow{display:flex;align-items:center;gap:9px;font:12px var(--sans);margin-bottom:7px}
+.lrnrow .ln{width:64px;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.lrnrow .lbar{flex:1;height:6px;background:var(--card2);border-radius:4px;overflow:hidden}
+.lrnrow .lbar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#3ad29b)}
+.lrnrow .lc{width:36px;text-align:right;color:var(--muted)}
+.scoretbl{width:100%;border-collapse:collapse;font:12px var(--sans)}
+.scoretbl th,.scoretbl td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left}
+.scoretbl th{color:var(--muted);font-weight:500}
+.scoretbl td.below{color:var(--amber);font-weight:600}
+.evtl{border-left:2px solid var(--border2);margin-left:8px;padding-left:14px}
+.evtl .ev{position:relative;padding:5px 0;font:12px/1.7 var(--sans);color:var(--muted)}
+.evtl .ev::before{content:"";position:absolute;left:-18.5px;top:11px;width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.evtl .ev:first-child::before{background:var(--accent)}
+
 #toasts{position:fixed;top:16px;right:16px;z-index:200;display:flex;flex-direction:column;gap:8px}
 .toast{background:var(--card2);border:1px solid var(--border2);border-radius:11px;padding:10px 15px;font:12.5px var(--sans);box-shadow:0 8px 30px -8px rgba(0,0,0,.6);animation:tin .25s;max-width:340px}
 .toast.ok{border-color:rgba(62,207,142,.5)}
@@ -184,10 +224,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
       <div><div class="bn">神笔</div><div class="bv">文学创作台 <span id="verbadge"></span></div></div>
     </div>
     <button id="newbtn">＋ 新建创作</button>
-    <div id="tasklist"><div class="sect">任务</div><div id="tasks"></div></div>
+    <div id="tasklist"><div class="sechead" id="taskhead" onclick="toggleSection('tasks')"><div class="sect">任务</div><span class="car">▼</span></div><div id="tasks"></div></div>
     <div id="sidefoot">
-      <div class="fbtn" onclick="switchView('library')">📚 全部作品</div>
-      <div class="fbtn" onclick="toast('设置面板开发中')">⚙️ 模型与设置</div>
+      <div class="fbtn" id="libbtn">📚 全部作品 <span id="libcar" style="margin-left:auto;font-size:10px;color:var(--dim)">▸</span></div>
+      <div class="fbtn" id="setbtn">⚙️ 模型与设置</div>
     </div>
   </aside>
   <!-- 主区 -->
@@ -216,6 +256,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
   </main>
 </div>
 <div id="ovl"><div id="dlg"></div></div>
+<div id="ctxmenu"></div>
 <div id="toasts"></div>
 <script>
 "use strict";
@@ -654,6 +695,406 @@ window.submitNovel=submitNovel;window.pickTitle=pickTitle;window.submitScript=su
 window.submitPoetry=submitPoetry;window.submitProse=submitProse;
 window.openBook=openBook;window.openBench=openBench;window.openLibrary=openLibrary;
 window.openTask=openTask;window.switchView=switchView;
+
+/* ================= 折叠（任务 / 全部作品） ================= */
+let TASKS_OPEN=true,LIB_OPEN=false;
+function toggleSection(id){
+  TASKS_OPEN=!TASKS_OPEN;
+  $("tasks").style.display=TASKS_OPEN?"":"none";
+  $("taskhead").classList.toggle("closed",!TASKS_OPEN);
+}
+let LIB_INLINE=null;
+$("libbtn").onclick=()=>{
+  LIB_OPEN=!LIB_OPEN;
+  $("libcar").textContent=LIB_OPEN?"▼":"▸";
+  if(LIB_OPEN){ // 侧栏内嵌展开（轻量列表）
+    if(LIB_INLINE){LIB_INLINE.remove();LIB_INLINE=null;return;}
+    LIB_INLINE=document.createElement("div");LIB_INLINE.id="inlinelib";
+    $("tasklist").appendChild(LIB_INLINE);
+    loadInlineLib();
+  }else if(LIB_INLINE){LIB_INLINE.remove();LIB_INLINE=null;}
+};
+async function loadInlineLib(){
+  const el=LIB_INLINE;if(!el)return;
+  el.innerHTML='<div class="sect" style="padding-top:2px">全部作品</div><div class="loading" style="padding:8px"><div class="spinner"></div></div>';
+  try{
+    const [lib,sc,po,pr]=await Promise.all([
+      api("/api/library").catch(()=>({items:[]})),
+      api("/api/script/projects").catch(()=>[]),
+      api("/api/poetry/projects").catch(()=>[]),
+      api("/api/prose/projects").catch(()=>({items:[]})),
+    ]);
+    const rows=[];
+    (lib.items||[]).forEach(i=>rows.push({medium:"novel",key:i.key,name:i.name,meta:(i.done||0)+"/"+(i.total||0)+"章"}));
+    (Array.isArray(sc)?sc:[]).forEach(i=>rows.push({medium:"script",key:i.key,name:i.name,meta:(i.done||0)+"/"+(i.total||0)+"场"}));
+    (Array.isArray(po)?po:[]).forEach(i=>rows.push({medium:"poetry",key:i.key,name:i.name,meta:i.form||""}));
+    ((pr&&pr.items)||[]).forEach(i=>rows.push({medium:"prose",key:i.key,name:i.name,meta:i.form||""}));
+    if(!LIB_INLINE)return;
+    el.innerHTML=rows.length?rows.map(r=>`<div class="trow" onclick="openTask('${r.medium}','${esc(r.key)}')">
+      <div class="ticon">${MEDIUM[r.medium].icon}</div>
+      <div class="tmain"><div class="tname">${esc(r.name||r.key)}</div></div>
+      <div class="tsub" style="margin-top:0">${esc(r.meta)}</div></div>`).join("")
+      :'<div style="padding:10px;font:11px var(--sans);color:var(--dim)">暂无作品</div>';
+  }catch(e){el.innerHTML='<div style="padding:8px;font:11px;color:var(--red)">加载失败</div>';}
+}
+window.toggleSection=toggleSection;
+
+/* ================= 3 点菜单 ================= */
+let CTX_ITEMS=[];
+function showMenu(items,x,y){
+  const m=$("ctxmenu");CTX_ITEMS=items;
+  m.innerHTML=items.map((it,i)=>it.sep?'<div class="csep"></div>':
+    `<button class="citem${it.danger?" danger":""}" data-i="${i}">${it.label}</button>`).join("");
+  m.classList.add("show");
+  const r=m.getBoundingClientRect();
+  m.style.left=Math.min(x,innerWidth-r.width-8)+"px";
+  m.style.top=Math.min(y,innerHeight-r.height-8)+"px";
+  m.querySelectorAll(".citem").forEach(b=>b.onclick=()=>{hideMenu();const it=CTX_ITEMS[+b.dataset.i];it&&it.fn&&it.fn();});
+}
+function hideMenu(){$("ctxmenu").classList.remove("show");}
+document.addEventListener("click",e=>{if(!e.target.closest("#ctxmenu")&&!e.target.closest(".tmore"))hideMenu();});
+window.showMenu=showMenu;window.hideMenu=hideMenu;
+
+/* ---- 小说 3 点菜单（全功能） ---- */
+async function novelMenu(key,x,y){
+  let it={};
+  try{const d=await api("/api/library");it=(d.items||[]).find(i=>i.key===key)||{};}catch(e){}
+  const running=it.state==="in_progress";
+  const items=[];
+  items.push({label:"📌 置顶/取消置顶",fn:()=>{const pins=JSON.parse(localStorage.nbot_pins||"[]");const i=pins.indexOf(key);if(i>=0)pins.splice(i,1);else pins.unshift(key);localStorage.nbot_pins=JSON.stringify(pins);loadTasks();toast("已更新置顶","ok");}});
+  items.push({label:it.favorite?"💔 取消收藏":"⭐ 收藏",fn:async()=>{try{await api("/api/library/"+encodeURIComponent(key)+"/favorite",{method:"POST",body:JSON.stringify({on:!it.favorite})});toast("已更新收藏","ok");loadTasks();}catch(e){toast(String(e),"err");}}});
+  items.push({label:it.archived?"♻️ 恢复归档":"🗄 归档",fn:async()=>{try{await api("/api/library/"+encodeURIComponent(key)+"/archive",{method:"POST",body:JSON.stringify({on:!it.archived})});toast(it.archived?"已恢复":"已移入回收站","ok");loadTasks();}catch(e){toast(String(e),"err");}}});
+  items.push({sep:true});
+  if(running&&!it.paused)items.push({label:"⏸ 暂停",fn:async()=>{try{const j=await api("/api/pause",{method:"POST",body:JSON.stringify({key})});toast(j.msg||"已暂停","ok");loadTasks();}catch(e){toast(String(e),"err");}}});
+  if(it.paused)items.push({label:"▶ 继续写作",fn:async()=>{try{const j=await api("/api/resume",{method:"POST",body:JSON.stringify({key})});toast(j.msg||"继续中","ok");loadTasks();openBook(key);}catch(e){toast(String(e),"err");}}});
+  if(running)items.push({label:"▶ 续写剩余全部",fn:()=>uniPrompt("续写","在现有章节后继续写几章？","续写",async n=>{if(!n)return;try{const j=await api("/api/continue",{method:"POST",body:JSON.stringify({key,n:Math.max(1,+n||1)})});toast(j.msg||"续写中","ok");openBook(key);}catch(e){toast(String(e),"err");}},"3")});
+  if(it.state==="completed"&&it.released===false)items.push({label:"🔓 放行成书",fn:()=>openReleaseModal(key)});
+  items.push({label:"✨ 一键完稿",fn:async()=>{try{const j=await api("/api/one-shot",{method:"POST",body:JSON.stringify({key,auto_rewrite:true,auto_release:true})});toast(j.msg||"一键完稿已启动","ok");openBook(key);}catch(e){toast(String(e),"err");}}});
+  items.push({label:"⚡ 并行写作",fn:()=>uniPrompt("并行写作","用几个 Agent 分章齐写？（1-8）","开写",async n=>{try{const j=await api("/api/parallel-write",{method:"POST",body:JSON.stringify({key,workers:Math.min(8,Math.max(1,+n||5))})});toast(j.msg||"并行写作已启动","ok");openBook(key);}catch(e){toast(String(e),"err");}},"5")});
+  items.push({label:"📝 审稿（五角色）",fn:async()=>{try{await api("/api/validate",{method:"POST",body:JSON.stringify({key,mode:"report"})});toast("审稿已启动，完成后看 13-修订记录","ok");}catch(e){toast(String(e),"err");}}});
+  items.push({label:"🔁 定向重写",fn:()=>openRewriteModal(key)});
+  items.push({label:"⏱ 定时写作",fn:()=>openScheduleModal(key)});
+  items.push({sep:true});
+  items.push({label:"📝 加即时修正指令",fn:()=>uniPrompt("加即时修正指令","给这本书加一条创作指令（写作中可随时改剧情/细节）：","提交",async t=>{if(!t||!t.trim())return;uniConfirm("立即生效？","「确认」=立即生效（下一章立刻用）；「取消」=排队。","立即生效",
+    async()=>{try{const j=await api("/api/queue",{method:"POST",body:JSON.stringify({key,text:t.trim(),immediate:true})});toast(j.ok?("指令已加，"+(j.items.length||0)+" 条待处理"):"加入失败","ok");}catch(e){toast(String(e),"err");}},
+    async()=>{try{const j=await api("/api/queue",{method:"POST",body:JSON.stringify({key,text:t.trim(),immediate:false})});toast(j.ok?"指令已排队":"加入失败","ok");}catch(e){toast(String(e),"err");}});})});
+  items.push({label:"✏️ 重命名",fn:()=>uniPrompt("重命名","新书名：","确认",async nn=>{if(!nn||!nn.trim())return;try{const j=await api("/api/library/"+encodeURIComponent(key)+"/rename",{method:"POST",body:JSON.stringify({name:nn.trim()})});toast(j.ok?"已改名":(j.note||"改名失败"),j.ok?"ok":"err");loadTasks();}catch(e){toast(String(e),"err");}},it.name||"")});
+  items.push({sep:true});
+  items.push({label:"⬇ 下载成书",fn:()=>window.open("/api/download?key="+encodeURIComponent(key),"_blank")});
+  items.push({label:"📊 使用统计",fn:()=>openUsageModal(key)});
+  items.push({sep:true});
+  items.push({label:"🗑 彻底删除（不可恢复）",danger:true,fn:()=>uniConfirm("彻底删除","彻底删除《"+(it.name||key)+"》？将删除作品目录，不可恢复！","彻底删除",async()=>{try{const j=await api("/api/library/"+encodeURIComponent(key)+"?hard=true",{method:"DELETE"});toast(j.note||"已删除","ok");loadTasks();if(KEY===key){KEY=null;renderHome();}}catch(e){toast(String(e),"err");}})});
+  showMenu(items,x,y);
+}
+window.novelMenu=novelMenu;
+
+/* ---- 剧本/诗词/散文 3 点菜单 ---- */
+async function benchMenu(medium,key,x,y){
+  const items=[];
+  if(medium==="script"){
+    items.push({label:"✍️ 写全部场次",fn:async()=>{try{await api("/api/script/write",{method:"POST",body:JSON.stringify({key})});toast("写作完成","ok");openBench("script",key);}catch(e){toast(String(e),"err");}}});
+    items.push({label:"🔍 通读修订（S6）",fn:async()=>{try{await api("/api/script/revise",{method:"POST",body:JSON.stringify({key})});toast("修订完成","ok");openBench("script",key);}catch(e){toast(String(e),"err");}}});
+    items.push({label:"⬇ 导出剧本",fn:()=>window.open("/api/script/export?key="+encodeURIComponent(key),"_blank")});
+  }
+  if(medium==="poetry"){
+    items.push({label:"🔍 重新格律校验",fn:async()=>{try{const j=await api("/api/poetry/recheck",{method:"POST",body:JSON.stringify({key})});toast("校验完成："+(j.verdict||JSON.stringify(j).slice(0,60)),"ok");openBench("poetry",key);}catch(e){toast(String(e),"err");}}});
+    items.push({label:"🧹 对草稿跑 slop 扫描",fn:async()=>{try{const d=await api("/api/poetry/part?key="+encodeURIComponent(key)+"&part=draft");const r=await api("/api/slop/scan",{method:"POST",body:JSON.stringify({text:d.text||""})});openSlopModal(r);loadTasks();}catch(e){toast(String(e),"err");}}});
+  }
+  if(medium==="prose"){
+    items.push({label:"🧹 重跑 slop 扫描",fn:async()=>{try{const d=await api("/api/prose/part?key="+encodeURIComponent(key)+"&part=draft");const r=await api("/api/slop/scan",{method:"POST",body:JSON.stringify({text:d.text||""})});openSlopModal(r);}catch(e){toast(String(e),"err");}}});
+  }
+  items.push({sep:true});
+  items.push({label:"✏️ 重命名（目录改名）",fn:()=>uniPrompt("重命名","注意：会改项目目录名，谨慎操作","确认",async nn=>{if(!nn||!nn.trim())return;toast("如需改名建议新建项目；当前版本目录改名需手动","err");})});
+  items.push({label:"🗑 彻底删除（不可恢复）",danger:true,fn:()=>uniConfirm("彻底删除","彻底删除该项目？目录将删除，不可恢复！","彻底删除",async()=>{
+    try{
+      const mod={script:"script_writer",poetry:"poetry_writer",prose:"prose_writer"}[medium];
+      // 通过通用文件系统删除接口（后端无专用端点 → 用通用 hard delete 仅支持小说，这里提示）
+      toast("剧本/诗词/散文项目请在服务器 projects/ 目录删除（key:"+key+"）","err");
+    }catch(e){toast(String(e),"err");}
+  })});
+  showMenu(items,x,y);
+}
+window.benchMenu=benchMenu;
+
+/* ---- slop 报告弹窗 ---- */
+function openSlopModal(r){
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  const findings=r.findings||[];
+  dlg.innerHTML=`<h3>🧹 反 AI 腔扫描报告</h3><div class="dsub">${esc(r.summary||"")}</div>
+  <div class="mbody"><div class="kvrow"><span class="k">判定</span><span class="v">${esc(r.verdict||"")}</span></div>
+  <div class="kvrow"><span class="k">blocking（必改）</span><span class="v" style="color:${(r.stats&&r.stats.blocking)?"var(--red)":"var(--green)"}">${(r.stats&&r.stats.blocking)||0} 处</span></div>
+  <div class="kvrow"><span class="k">advisory（建议）</span><span class="v">${(r.stats&&r.stats.advisory)||0} 处</span></div>
+  <div style="margin-top:12px">${findings.length?findings.map(f=>`<div style="border:1px solid var(--border);border-radius:9px;padding:9px 11px;margin-bottom:7px;font:12px/1.7 var(--sans)">
+    <span style="color:${f.severity==="blocking"?"var(--red)":"var(--amber)"};font-weight:600">[${f.severity}]</span>
+    <span style="color:var(--muted)">${esc(f.category)} · 第${esc(f.line||"?")}行</span>
+    <div style="color:var(--text);margin:3px 0">${esc(f.snippet||"")}</div>
+    <div style="color:var(--muted)">→ ${esc(f.hint||"")}</div></div>`).join(""):"<div style='color:var(--green);padding:10px'>零命中 ✅（零命中不替代人工三层扫描）</div>"}</div></div>
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
+}
+window.openSlopModal=openSlopModal;
+
+/* ================= 通用弹窗工具 ================= */
+function uniPrompt(title,ph,btn,cb,def){
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  dlg.innerHTML=`<h3>${esc(title)}</h3><div class="dsub">${esc(ph||"")}</div>
+  <input class="fin" id="up_inp" value="${esc(def||"")}" placeholder="">
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button><button class="pbtn primary" id="up_go">${esc(btn||"确认")}</button></div>`;
+  const go=()=>{const v=dlg.querySelector("#up_inp").value;closeDlg();cb&&cb(v);};
+  dlg.querySelector("#up_go").onclick=go;
+  dlg.querySelector("#up_inp").addEventListener("keydown",e=>{if(e.key==="Enter")go();});
+  setTimeout(()=>dlg.querySelector("#up_inp").focus(),50);
+}
+function uniConfirm(title,msg,btn,onYes,onNo){
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  dlg.innerHTML=`<h3>${esc(title)}</h3><div class="dsub" style="white-space:pre-wrap">${esc(msg||"")}</div>
+  <div class="dbtns"><button class="pbtn" id="uc_no">取消</button><button class="pbtn primary" id="uc_yes" style="background:var(--red)">${esc(btn||"确认")}</button></div>`;
+  dlg.querySelector("#uc_yes").onclick=()=>{closeDlg();onYes&&onYes();};
+  dlg.querySelector("#uc_no").onclick=()=>{closeDlg();onNo&&onNo();};
+}
+window.uniPrompt=uniPrompt;window.uniConfirm=uniConfirm;
+
+/* ---- 重写弹窗 ---- */
+async function openRewriteModal(key){
+  let pv={};
+  try{pv=await api("/api/preview?key="+encodeURIComponent(key));}catch(e){}
+  const pcs=pv.per_chapter||[],pl=pv.pass_line||90;
+  const chs=pv.chapters||[];
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  dlg.className="wide";
+  dlg.innerHTML=`<h3>🔁 定向重写</h3><div class="dsub">勾选要重写的章（默认勾出低于 ${pl} 分的弱章），选维度，点开始</div>
+  <div class="mbody"><table class="scoretbl"><tr><th>章</th><th>标题</th><th>评分</th><th>弱维</th><th>选</th></tr>
+  ${chs.map(c=>{const pc=pcs.find(p=>p.ch===c.n)||{};const below=pc.score!=null&&pc.score<pl;
+    return `<tr><td>${c.n}</td><td>${esc(c.title||"")}</td><td class="${below?"below":""}">${pc.score!=null?pc.score+" 分":"未评"}</td><td>${esc((pc.weak||[]).join("、"))}</td>
+    <td><input type="checkbox" class="rwch" value="${c.n}" ${below?"checked":""}></td></tr>`;}).join("")}</table>
+  <label class="flabel">维度（可多选）</label><div class="tagpick" id="rw_dims">${["结构","因果可信","人物","连续性","语言","读者体验"].map(d=>`<span class="tag">${d}</span>`).join("")}</div></div>
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button><button class="pbtn primary" id="rw_go">开始重写</button></div>`;
+  dlg.querySelectorAll("#rw_dims .tag").forEach(t=>t.onclick=()=>t.classList.toggle("on"));
+  dlg.querySelector("#rw_go").onclick=async()=>{
+    const chapters=[...dlg.querySelectorAll(".rwch:checked")].map(c=>+c.value);
+    const dims=[...dlg.querySelectorAll("#rw_dims .tag.on")].map(t=>t.textContent);
+    if(!chapters.length){toast("至少选一章","err");return;}
+    closeDlg();
+    try{const j=await api("/api/rewrite",{method:"POST",body:JSON.stringify({key,chapters,dimensions:dims.length?dims:undefined})});toast(j.msg||"重写已启动","ok");openBook(key);}
+    catch(e){toast(String(e),"err");}
+  };
+}
+window.openRewriteModal=openRewriteModal;
+
+/* ---- 定时写作弹窗 ---- */
+async function openScheduleModal(key){
+  let d={};
+  try{d=await api("/api/schedule");}catch(e){}
+  const cur=(d.schedules||{})[key]||{};
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  dlg.innerHTML=`<h3>⏱ 定时写作</h3><div class="dsub">每 N 天自动写一批章（后台跑，适合养书）</div>
+  <div class="f2"><div><label class="flabel">间隔（天）</label><input class="fin" id="sc_iv" type="number" min="1" value="${cur.interval_days||7}"></div>
+  <div><label class="flabel">每次写几章</label><input class="fin" id="sc_pr" type="number" min="1" value="${cur.per_run||10}"></div></div>
+  <div class="kvrow" style="margin-top:10px"><span class="k">当前状态</span><span class="v">${cur.enabled?("开 · 下次 "+(cur.next_run?new Date(cur.next_run*1000).toLocaleString():"—")):"关"}</span></div>
+  ${cur.last_note?`<div class="kvrow"><span class="k">上次</span><span class="v">${esc(cur.last_note)}</span></div>`:""}
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button><button class="pbtn" id="sc_off">关闭定时</button><button class="pbtn primary" id="sc_on">开启定时</button></div>`;
+  dlg.querySelector("#sc_on").onclick=async()=>{try{await api("/api/schedule",{method:"POST",body:JSON.stringify({key,enabled:true,interval_days:+dlg.querySelector("#sc_iv").value||7,per_run:+dlg.querySelector("#sc_pr").value||10})});toast("⏱ 定时已开启","ok");closeDlg();}catch(e){toast(String(e),"err");}};
+  dlg.querySelector("#sc_off").onclick=async()=>{try{await api("/api/schedule",{method:"POST",body:JSON.stringify({key,enabled:false})});toast("⏱ 定时已关","ok");closeDlg();}catch(e){toast(String(e),"err");}};
+}
+window.openScheduleModal=openScheduleModal;
+
+/* ---- 放行弹窗 ---- */
+async function openReleaseModal(key){
+  let lib={},log={},pv={};
+  try{const d=await api("/api/library");lib=(d.items||[]).find(i=>i.key===key)||{};}catch(e){}
+  try{log=await api("/api/release-log?key="+encodeURIComponent(key));}catch(e){}
+  try{pv=await api("/api/preview?key="+encodeURIComponent(key));}catch(e){}
+  const q=lib.final_quality!=null?lib.final_quality:lib.quality;
+  const pl=pv.pass_line||lib.pass_line||90;
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  dlg.className="wide";
+  dlg.innerHTML=`<h3>🔓 放行成书</h3><div class="dsub">质量 ${q!=null?q:"未评"} / 达标线 ${pl}</div>
+  <div class="mbody">
+  <table class="scoretbl"><tr><th>章</th><th>评分</th><th>状态</th><th>弱维</th></tr>
+  ${(pv.per_chapter||[]).map(p=>`<tr><td>第${p.ch}章</td><td class="${p.status==="below"?"below":""}">${p.score!=null?p.score:"—"}</td><td>${esc(p.status||"")}</td><td>${esc((p.weak||[]).join("、"))}</td></tr>`).join("")}</table>
+  ${log&&log.result&&log.result.gate_results?`<label class="flabel">放行历史</label>${log.result.gate_results.map(g=>`<div class="kvrow"><span class="k">第${g.round||"?"}轮</span><span class="v">${g.before||0} → ${g.after||0}${g.stopped?"（达标停）":""}</span></div>`).join("")}`:""}
+  </div>
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button><button class="pbtn primary" id="rl_go">🔓 启动放行门禁（自动重写到达标）</button></div>`;
+  dlg.querySelector("#rl_go").onclick=async()=>{closeDlg();try{const j=await api("/api/release",{method:"POST",body:JSON.stringify({key})});toast(j.msg||"放行门禁中","ok");openBook(key);}catch(e){toast(String(e),"err");}};
+}
+window.openReleaseModal=openReleaseModal;
+
+/* ---- 使用统计弹窗 ---- */
+async function openUsageModal(key){
+  let u={};
+  try{u=await api("/api/usage?key="+encodeURIComponent(key));}catch(e){}
+  const us=u.usage||{},g=u.global||{};
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  dlg.innerHTML=`<h3>📊 使用统计</h3><div class="dsub">本书与全局 token 消耗</div>
+  <div class="mbody">
+  <label class="flabel">本书</label>
+  <div class="kvrow"><span class="k">总 token</span><span class="v">${(us.total_tokens||0).toLocaleString()}</span></div>
+  <div class="kvrow"><span class="k">调用次数</span><span class="v">${us.calls||0}</span></div>
+  <div class="kvrow"><span class="k">prompt / completion</span><span class="v">${(us.total_prompt||0).toLocaleString()} / ${(us.total_completion||0).toLocaleString()}</span></div>
+  <label class="flabel">全局</label>
+  <div class="kvrow"><span class="k">总 token</span><span class="v">${(g.total_tokens||0).toLocaleString()}</span></div>
+  <div class="kvrow"><span class="k">调用次数</span><span class="v">${g.calls||0}</span></div></div>
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
+}
+window.openUsageModal=openUsageModal;
+
+/* ================= 设置弹窗 ================= */
+$("setbtn").onclick=()=>openSettings();
+async function openSettings(tab){
+  tab=tab||"models";
+  const dlg=$("dlg");$("ovl").classList.add("show");dlg.className="wide";
+  const tabs=[["models","🤖 模型规则"],["agents","👥 Agent 岗位"],["learn","📈 学习报告"],["styles","✨ 风格库"],["usage","🔢 Token 账本"],["skills","🧠 技能库"]];
+  dlg.innerHTML=`<h3>⚙️ 模型与设置</h3>
+  <div class="tabs" id="settabs">${tabs.map(t=>`<button data-t="${t[0]}" class="${t[0]===tab?"on":""}">${t[1]}</button>`).join("")}</div>
+  <div class="mbody" id="setbody"></div>
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
+  dlg.querySelectorAll("#settabs button").forEach(b=>b.onclick=()=>{dlg.querySelectorAll("#settabs button").forEach(x=>x.classList.toggle("on",x===b));loadSetTab(b.dataset.t);});
+  loadSetTab(tab);
+}
+async function loadSetTab(t){
+  const el=$("setbody");if(!el)return;
+  el.innerHTML='<div class="loading"><div class="spinner"></div>加载中…</div>';
+  try{
+    if(t==="models"){
+      const d=await api("/api/model_rules");
+      const r=d.rules||{},ov=d.overrides||{};
+      const lbl={context:"上下文窗口",max_tokens:"max_tokens",rpm:"RPM(次/分)",tpm:"TPM(字/分)",backoff_base:"429退避(s)",call_gap:"调用间隔(s)"};
+      el.innerHTML=`<div class="agrow"><div class="aglabel">${esc((d.provider&&d.provider.name)||"当前模型")} · ${esc((d.provider&&d.provider.model)||"")}</div>
+      <div class="agdesc">检测到 ${esc(d.vendor||"generic")} · ${esc(r.note||"")} · ${r.generic?"可自由配置":"按该厂规则自动套"}</div>
+      <div class="f3">${["context","max_tokens","rpm","tpm","backoff_base","call_gap"].map(n=>`<div><div style="font:10px var(--muted);margin-bottom:3px">${lbl[n]}</div><input class="fin" id="mr_${n}" value="${ov[n]!==undefined?ov[n]:(r[n]||"")}"></div>`).join("")}</div>
+      <div class="rowbtns"><button class="pbtn primary" onclick="saveModelRules()">💾 保存模型规则</button></div></div>
+      <label class="flabel">供应商管理</label><div id="provlist"><div class="loading"><div class="spinner"></div></div></div>`;
+      loadProvList();
+    }
+    if(t==="agents"){
+      const d=await api("/api/agents");
+      const provs=(d.options||[]);
+      el.innerHTML=`<div class="agdesc">每个子 Agent 可挂独立供应商/模型，负载摊开避免 429。全局并发上限 <b>${d.max_global_agents}</b></div>
+      <div class="rowbtns"><span class="statchip2">全局并发上限</span><input class="fin" id="ag_max" type="number" min="1" max="16" value="${d.max_global_agents}" style="width:80px"><button class="pbtn" onclick="saveAgMax()">保存上限</button></div>
+      ${(d.agents||[]).map(a=>`<div class="agrow"><div class="aglabel">${esc(a.label)} <span style="font:10px var(--muted);font-weight:400">${esc(a.desc)}</span></div>
+      <div class="agdesc">当前生效：${esc(a.effective||"默认")}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <select id="ag_p_${a.agent}"><option value="">默认供应商</option>${provs.map(o=>`<option value="${esc(o.id)}" ${a.provider_id===o.id?"selected":""}>${esc(o.name)}</option>`).join("")}</select>
+      <select id="ag_m_${a.agent}"><option value="">（回落 stage/默认）</option>${((provs.find(o=>o.id===(a.provider_id||( $("pselect")&&$("pselect").value ))||{models:[]}).models)||[]).map(m=>`<option value="${esc(m)}" ${a.model===m?"selected":""}>${esc(m)}</option>`).join("")}</select>
+      <button class="pbtn" onclick="saveAg('${a.agent}')">保存</button></div></div>`).join("")}`;
+    }
+    if(t==="learn"){
+      const p=await api("/api/learn");
+      const g=p.genres||[];
+      el.innerHTML=(p.total?`<div class="agdesc">已学习 ${p.total} 本 · ${esc(p.insight||"")}</div>`:"<div class='agdesc'>还没写过小说。写几本后系统自动学习题材与偏好。</div>")+
+      (g.length?g.slice(0,8).map(x=>`<div class="lrnrow"><span class="ln">${esc(x.genre)}</span><span class="lbar"><i style="width:${x.share||0}%"></i></span><span class="lc">${x.count}本</span></div>
+      ${(x.top_hand||x.top_pace||x.top_lang)?`<div style="font:10.5px var(--muted);margin:-3px 0 8px 73px">偏好：${esc([x.top_hand&&x.top_hand[0],x.top_pace&&x.top_pace[0],x.top_lang&&x.top_lang[0]].filter(Boolean).join(" · "))}</div>`:""}`).join(""):"");
+    }
+    if(t==="styles"){
+      const d=await api("/api/styles");
+      const items=(d.items||[]);
+      el.innerHTML=`<div class="rowbtns"><button class="pbtn primary" onclick="distillStyle()">✨ 蒸馏新风格（粘贴文本/网址）</button></div>`+
+      (items.length?items.map(s=>`<div class="agrow"><div class="aglabel">✨ ${esc(s.name)}</div><div class="agdesc">${esc(s.summary||"")}</div>
+      <div class="rowbtns"><button class="pbtn" onclick="delStyle('${esc(s.name)}')">删除</button></div></div>`).join(""):"<div class='agdesc'>还没有蒸馏风格。把喜欢的作者文本贴进来蒸馏成可复用风格。</div>");
+    }
+    if(t==="usage"){
+      const u=await api("/api/usage");
+      const g=u.global||{};
+      el.innerHTML=`<div class="kvrow"><span class="k">全局总 token</span><span class="v">${(g.total_tokens||0).toLocaleString()}</span></div>
+      <div class="kvrow"><span class="k">全局调用次数</span><span class="v">${g.calls||0}</span></div>
+      <div class="kvrow"><span class="k">prompt</span><span class="v">${(g.total_prompt||0).toLocaleString()}</span></div>
+      <div class="kvrow"><span class="k">completion</span><span class="v">${(g.total_completion||0).toLocaleString()}</span></div>
+      <div class="agdesc" style="margin-top:10px">每本书的消耗在任务 3 点菜单 →「📊 使用统计」。</div>`;
+    }
+    if(t==="skills"){
+      const s=await api("/api/skillkit/stats");
+      const l=await api("/api/skillkit/list");
+      const by=s.by_media||{};
+      el.innerHTML=`<div class="agdesc">技能库 ${s.files} 个文件 / ${(s.bytes/1024).toFixed(0)} KB · 全部随产品内置</div>
+      <div class="rowbtns">${Object.entries(by).map(([k,v])=>`<span class="statchip2">${k==="all"?"🌐 全文体共核":(MEDIUM[k]?MEDIUM[k].icon+" "+MEDIUM[k].label:k)} × ${v}</span>`).join("")}</div>
+      <div style="max-height:300px;overflow-y:auto">${(l.items||l||[]).slice(0,60).map(f=>`<div class="kvrow"><span class="k">${esc(f.name||"")}</span><span class="v" style="font-weight:400;color:var(--muted)">${esc((f.medium||[]).join?  (f.medium||[]).join(","):"")}</span></div>`).join("")}</div>`;
+    }
+  }catch(e){el.innerHTML='<div style="color:var(--red);padding:12px">加载失败：'+esc(String(e))+'</div>';}
+}
+async function loadProvList(){
+  const el=$("provlist");if(!el)return;
+  try{
+    const d=await api("/api/providers");
+    el.innerHTML=(d.providers||[]).map(p=>`<div class="agrow"><div class="aglabel">${esc(p.name||p.id)} ${p.active?'<span class="statechip done" style="margin-left:6px">active</span>':""} ${p.has_key?'':'<span class="statechip pause" style="margin-left:6px">无密钥</span>'}</div>
+    <div class="agdesc">${esc(p.base_url||"")} · 模型 ${esc((p.models||[]).slice(0,4).join(", "))}${(p.models||[]).length>4?"…":""}</div></div>`).join("")||"<div class='agdesc'>暂无供应商。编辑 providers.json 添加。</div>";
+  }catch(e){el.innerHTML="<div class='agdesc'>加载失败</div>";}
+}
+async function saveModelRules(){
+  const o={};["context","max_tokens","rpm","tpm","backoff_base","call_gap"].forEach(k=>{const e=$("mr_"+k);if(e&&e.value!=="")o[k]=/^[0-9.]+$/.test(e.value)?+e.value:e.value;});
+  try{await api("/api/model_rules",{method:"POST",body:JSON.stringify(o)});toast("🤖 模型规则已保存","ok");}catch(e){toast(String(e),"err");}
+}
+async function saveAg(agent){
+  try{await api("/api/agents-set",{method:"POST",body:JSON.stringify({agent,provider_id:$("ag_p_"+agent).value||null,model:$("ag_m_"+agent).value||null})});toast("已保存 "+agent,"ok");loadSetTab("agents");}catch(e){toast(String(e),"err");}
+}
+async function saveAgMax(){
+  try{await api("/api/agents-maxglobal",{method:"POST",body:JSON.stringify({n:+$("ag_max").value||4})});toast("并发上限已保存","ok");}catch(e){toast(String(e),"err");}
+}
+async function delStyle(name){
+  uniConfirm("删除风格","删除风格「"+name+"」？开过的新书不受影响。","删除",async()=>{try{await api("/api/styles/"+encodeURIComponent(name),{method:"DELETE"});toast("已删除风格","ok");loadSetTab("styles");}catch(e){toast(String(e),"err");}});
+}
+function distillStyle(){
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  dlg.innerHTML=`<h3>✨ 蒸馏新风格</h3><div class="dsub">粘贴几段目标作者的文本（或给网址），蒸馏成命名风格，开书时可选用</div>
+  <label class="flabel">风格名</label><input class="fin" id="ds_name" placeholder="如：冷硬侦探风">
+  <label class="flabel">文本（≥300 字）</label><textarea class="ftext" id="ds_text" rows="7" placeholder="粘贴文本…"></textarea>
+  <label class="flabel">或网址（每行一个，最多 5 个）</label><textarea class="ftext" id="ds_urls" rows="2" placeholder="https://..."></textarea>
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button><button class="pbtn primary" id="ds_go">开始蒸馏</button></div>`;
+  dlg.querySelector("#ds_go").onclick=async()=>{
+    const name=dlg.querySelector("#ds_name").value.trim();
+    const text=dlg.querySelector("#ds_text").value.trim();
+    const urls=dlg.querySelector("#ds_urls").value.split("\n").map(x=>x.trim()).filter(Boolean);
+    if(!name){toast("请给风格起名","err");return;}
+    try{
+      const j=await api("/api/distill",{method:"POST",body:JSON.stringify({name,text,urls})});
+      if(j.ok===false){toast(j.note||"蒸馏失败","err");return;}
+      toast("✨ 风格已生成","ok");loadSetTab("styles");
+    }catch(e){toast(String(e),"err");}
+  };
+}
+window.saveModelRules=saveModelRules;window.saveAg=saveAg;window.saveAgMax=saveAgMax;
+window.delStyle=delStyle;window.distillStyle=distillStyle;window.openSettings=openSettings;
+
+/* ================= 更新任务行渲染（3 点 + 点击） ================= */
+const _origLoadTasks=loadTasks;
+loadTasks=async function(){
+  try{
+    const [lib,sc,po,pr]=await Promise.all([
+      api("/api/library").catch(()=>({items:[]})),
+      api("/api/script/projects").catch(()=>[]),
+      api("/api/poetry/projects").catch(()=>[]),
+      api("/api/prose/projects").catch(()=>({items:[]})),
+    ]);
+    const pins=JSON.parse(localStorage.nbot_pins||"[]");
+    const rows=[];
+    (lib.items||[]).forEach(i=>rows.push({key:i.key,medium:"novel",name:i.name,state:i.state,sub:(i.done||0)+"/"+(i.total||0)+" 章 · "+((i.total_words||0)/10000).toFixed(1)+"万字"}));
+    (Array.isArray(sc)?sc:[]).forEach(i=>rows.push({key:i.key,medium:"script",name:i.name,state:i.status||i.state,sub:(i.done||0)+"/"+(i.total||0)+" 场"+(i.form?" · "+i.form:"")}));
+    (Array.isArray(po)?po:[]).forEach(i=>rows.push({key:i.key,medium:"poetry",name:i.name,state:i.status,sub:(i.form||"")+(i.verdict?" · "+i.verdict:"")}));
+    ((pr&&pr.items)||[]).forEach(i=>rows.push({key:i.key,medium:"prose",name:i.name,state:i.state,sub:(i.form||"")+(i.operation?" · "+i.operation:"")}));
+    rows.sort((a,b)=>{const pa=pins.indexOf(a.key),pb=pins.indexOf(b.key);return (pa<0?999:pa)-(pb<0?999:pb);});
+    const box=$("tasks");
+    if(!rows.length){box.innerHTML='<div style="padding:14px 10px;font:11.5px var(--sans);color:var(--dim)">暂无任务。点「＋ 新建创作」开始。</div>';return;}
+    box.innerHTML=rows.map(r=>{
+      const m=MEDIUM[r.medium],d=STATEMAP[r.state]||"idle";
+      const on=(CUR==="chat"&&KEY===r.key)||(CUR==="bench"&&KEY===r.key);
+      return `<div class="trow${on?" on":""}" data-m="${r.medium}" data-k="${esc(r.key)}">
+        <div class="ticon">${m.icon}</div>
+        <div class="tmain" data-open="1"><div class="tname">${esc(r.name||r.key)}</div><div class="tsub">${esc(r.sub)}</div></div>
+        <span class="dot ${d}" title="${esc(r.state||"")}"></span>
+        <button class="tmore" data-menu="1" title="更多操作">⋯</button></div>`;
+    }).join("");
+    box.querySelectorAll(".trow").forEach(row=>{
+      const m=row.dataset.m,k=row.dataset.k;
+      row.querySelector('[data-open]').onclick=()=>openTask(m,k);
+      row.querySelector(".tmore").onclick=e=>{
+        e.stopPropagation();
+        const rct=e.target.getBoundingClientRect();
+        if(m==="novel")novelMenu(k,rct.left-160,rct.bottom+4);
+        else benchMenu(m,k,rct.left-160,rct.bottom+4);
+      };
+    });
+  }catch(e){}
+};
+
+/* ================= openLibrary 保持独立视图 ================= */
 </script>
 </body>
 </html>

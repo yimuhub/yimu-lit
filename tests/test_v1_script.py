@@ -4,7 +4,6 @@
      导出、API 端点结构、前端剧本工作台挂载。
 """
 import os
-import re
 import shutil
 import sys
 
