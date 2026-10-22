@@ -276,7 +276,7 @@ function toast(msg,type){
 const MEDIUM={novel:{icon:"📖",label:"小说",cls:"novel"},script:{icon:"🎬",label:"剧本",cls:"script"},
               poetry:{icon:"🖋",label:"诗词",cls:"poetry"},prose:{icon:"✒️",label:"散文",cls:"prose"}};
 
-loadTasks=async function(){
+let loadTasks=async function(){
   try{
     const [lib,sc,po,pr]=await Promise.all([
       api("/api/library").catch(()=>({items:[]})),
@@ -578,7 +578,7 @@ async function openBook(key){
     if(tok!==VIEWTOK)return;
     (bc.messages||[]).slice(-30).forEach(m=>bubble(m.who==="bot"?"bot":"user",m.text));
   }catch(e){}
-  if(!(await Promise.resolve($("chatwrap").children.length)))
+  if(!($("chatwrap")&&$("chatwrap").children.length))
     bubble("bot","📖 已打开《"+(st.name||key)+"》。直接说话（写/继续/改写），或点右侧 ⋯ 更多操作。");
   pollLive(key,tok);
   loadTasks();
@@ -824,7 +824,8 @@ async function openPreviewModal(key,tab){
   <div class="dbtns"><button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
   let j={};
   try{j=await api("/api/preview?key="+encodeURIComponent(key));}catch(e){}
-  $("pv_title").textContent="《"+(j.name||key)+"》"+(j.has_book?" · 成书":" · 已写 "+((j.chapters||[]).filter(c=>c.status==="completed").length)+" 章");
+  const _t=$("pv_title");if(!_t)return;   // 弹窗已被替换（用户连点）→ 静默退出防串台
+  _t.textContent="《"+(j.name||key)+"》"+(j.has_book?" · 成书":" · 已写 "+((j.chapters||[]).filter(c=>c.status==="completed").length)+" 章");
   $("pv_dow").href="/api/download?key="+encodeURIComponent(key);
   PV.text=j.text||"";
   const haveCh=(j.chapters||[]).filter(c=>(c.words||0)>0||c.status==="completed");
