@@ -556,23 +556,34 @@ async function openBook(key){
   try{st=await api("/api/status?key="+encodeURIComponent(key));}catch(e){}
   if(tok!==VIEWTOK)return;
   $("vsub").textContent="《"+(st.name||key)+"》 · "+(st.done||0)+"/"+(st.total||0)+" 章 · "+((st.words||0)/10000).toFixed(1)+"万字";
-  bubble("bot","📖 已打开《"+(st.name||key)+"》。可以：直接说话（规划/继续/改写），或用下面的快捷操作。");
+  // 加载本书专属历史对话（bkchat），再放欢迎语
+  try{
+    const bc=await api("/api/bkchat?key="+encodeURIComponent(key));
+    if(tok!==VIEWTOK)return;
+    (bc.messages||[]).slice(-30).forEach(m=>bubble(m.who==="bot"?"bot":"user",m.text));
+  }catch(e){}
+  if(!(await Promise.resolve($("chatwrap").children.length)))
+    bubble("bot","📖 已打开《"+(st.name||key)+"》。直接说话（写/继续/改写），或点右侧 ⋯ 更多操作。");
   pollLive(key,tok);
   loadTasks();
 }
 async function pollLive(key,tok){
   const wrap=$("chatwrap");if(!wrap)return;
   const card=document.createElement("div");card.className="livecard";wrap.appendChild(card);
+  const PHASE={plan:"📐 规划中",write:"✍️ 写作中",parallel:"⚡ 并行写作",rewriting:"🔁 重写中",
+               releasing:"🔓 放行门禁",one_shot:"✨ 一键完稿",validate:"📝 审稿中",
+               done:"✅ 已完成",failed:"⚠️ 失败",idle:"⏸ 待机",paused:"⏸ 已暂停"};
   const tick=async()=>{
     if(tok!==VIEWTOK||CUR!=="chat"){clearInterval(POLL);POLL=null;return;}
     try{
       const lv=await api("/api/book-live?key="+encodeURIComponent(key));
       if(tok!==VIEWTOK)return;
-      const pct=lv.total?Math.round((lv.cur_ch||0)/lv.total*100):0;
-      card.innerHTML=`<span class="ph">${esc(lv.phase_label||lv.phase||"待机")}</span>
+      const pct=(lv.progress&&lv.progress.pct)||0;
+      const done=(lv.progress&&lv.progress.done)||0,total=(lv.progress&&lv.total||lv.progress&&lv.progress.total)||0;
+      const log=(lv.live_log||[]),last=log.length?log[log.length-1]:"";
+      card.innerHTML=`<span class="ph">${esc(PHASE[lv.phase]||lv.phase||"待机")}</span>
         <div class="pbar"><i style="width:${pct}%"></i></div>
-        <div style="color:var(--muted)">${esc(lv.cur_ch||0)}/${esc(lv.total||0)} 章${lv.logs&&lv.logs.length?" · "+esc(lv.logs[lv.logs.length-1].slice(0,80)):""}</div>`;
-      if(!lv.running&&!lv.state?.includes("progress")){/* 保持显示但不刷 */}
+        <div style="color:var(--muted)">${done}/${total} 章 · ${(lv.state||"")}${last?" · "+esc(last.slice(0,90)):""}</div>`;
     }catch(e){}
   };
   await tick();
@@ -581,14 +592,47 @@ async function pollLive(key,tok){
 async function sendMsg(){
   const inp=$("inp"),text=inp.value.trim();if(!text)return;
   inp.value="";inp.style.height="auto";
-  if(CUR!=="chat"){toast("先打开或新建一个作品");return;}
+  if(CUR!=="chat"||!KEY){toast("先打开或新建一个作品");return;}
   bubble("user",text);
   try{
-    const r=await api("/api/chat",{method:"POST",body:JSON.stringify({session_id:SID,message:text})});
+    // 中间台指令解析：改写某章/全书/看评分 → 结构化动作
+    let cr={};
+    try{cr=await api("/api/cmd",{method:"POST",body:JSON.stringify({key:KEY,text})});}catch(e){}
+    if(cr&&cr.action&&cr.action!=="chat"){
+      await execCmd(cr,text);
+      return;
+    }
+    const r=await api("/api/chat",{method:"POST",body:JSON.stringify({session_id:SID,message:text,...provPayload()})});
     bubble("bot",r.reply||"（空回复）");
+    // 记入本书专属对话
+    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"user",text})});}catch(e){}
+    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"bot",text:r.reply||""})});}catch(e){}
+    if(r.project&&r.project!==KEY){KEY=r.project;SID="bk-"+r.project;}
     loadTasks();
   }catch(e){bubble("bot","⚠️ "+String(e));}
 }
+async function execCmd(cr,text){
+  const k=cr.key||KEY;
+  if(cr.action==="scores"){
+    bubble("bot","📊 拉取逐章评分…");
+    try{const pv=await api("/api/preview?key="+encodeURIComponent(k));
+      const rows=(pv.per_chapter||[]).map(p=>`第${p.ch}章 ${p.score!=null?p.score+"分":"未评"}${p.status==="below"?" ⚠️低于达标线":""}`).join("\n");
+      bubble("bot","📊 逐章评分（达标线 "+(pv.pass_line||90)+"）：\n"+(rows||"暂无评分，先跑审稿。"));
+    }catch(e){bubble("bot","⚠️ "+String(e));}
+  }else if(cr.action==="rewrite_chapter"){
+    openRewriteModal(k,[cr.chapter]);
+  }else if(cr.action==="rewrite_all"){
+    openRewriteModal(k,null);
+  }else if(cr.action==="rewrite_section"){
+    bubble("bot","✒️ 收到：改写第 "+cr.chapter+" 章里的一小段…");
+    try{
+      const match=(text.replace(/(改写|重写|把|将|第\d+章|那段|那段话|一小段|一段)/g," ").trim()).slice(0,30);
+      const j=await api("/api/rewrite-section",{method:"POST",body:JSON.stringify({key:k,chapter:cr.chapter,match,instruction:"把这一段写得更抓人，去掉 AI 腔，加细节与张力"})});
+      bubble("bot","✒️ 第 "+cr.chapter+" 章该段已改写。\n原："+(j.orig||"").slice(0,120)+"\n新："+(j.new||"").slice(0,120));
+    }catch(e){bubble("bot","⚠️ "+String(e));}
+  }
+}
+window.execCmd=execCmd;
 
 /* ================= 工作台（剧本/诗词/散文） ================= */
 const BENCH={
@@ -663,33 +707,131 @@ async function benchTab(medium,key,tok){
 }
 
 /* ================= 作品库 ================= */
+/* ---- 全部作品大弹窗（分类/搜索/归档/预览/收藏/批量） ---- */
+const LIB={q:"",medium:"",genre:"",status:"",favs:false};
 async function openLibrary(){
-  CUR="library";KEY=null;stopPoll();VIEWTOK++;
-  const tok=VIEWTOK;
-  switchView("library","全部作品","加载中…");
+  const dlg=$("dlg");$("ovl").classList.add("show");dlg.className="wide";
+  dlg.innerHTML=`<h3>📚 全部作品</h3>
+  <div style="display:flex;gap:8px;margin:8px 0 4px;flex-wrap:wrap">
+    <input class="fin" id="lb_q" placeholder="🔍 搜索名称/题材…" style="flex:1;min-width:160px">
+    <select class="fsel" id="lb_medium" style="width:auto"><option value="">全部文体</option>
+      <option value="novel">📖 小说</option><option value="script">🎬 剧本</option>
+      <option value="poetry">🖋 诗词</option><option value="prose">✒️ 散文</option></select>
+    <select class="fsel" id="lb_status" style="width:auto"><option value="">全部状态</option>
+      <option value="passing">✅ 达标</option><option value="unrated">未评分</option>
+      <option value="in_progress">创作中</option><option value="completed">已完成</option>
+      <option value="archived">🗑 回收站</option></select>
+    <button class="pbtn" id="lb_refresh">刷新</button>
+  </div>
+  <div id="lb_genres" style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 10px"></div>
+  <div class="mbody" id="lb_list"></div>
+  <div class="dbtns"><span style="margin-right:auto;font:11.5px var(--muted);color:var(--muted)" id="lb_stats"></span>
+  <button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
+  dlg.querySelector("#lb_q").addEventListener("input",function(){clearTimeout(this._t);this._t=setTimeout(()=>{LIB.q=this.value;loadLibList();},300);});
+  dlg.querySelector("#lb_medium").onchange=function(){LIB.medium=this.value;LIB.genre="";loadLibList();};
+  dlg.querySelector("#lb_status").onchange=function(){LIB.status=this.value;loadLibList();};
+  dlg.querySelector("#lb_refresh").onclick=loadLibList;
+  loadLibList();
+}
+async function loadLibList(){
+  const list=$("lb_list"),stats=$("lb_stats"),gbox=$("lb_genres");
+  if(!list)return;
+  list.innerHTML='<div class="loading"><div class="spinner"></div>加载中…</div>';
   try{
     const [lib,sc,po,pr]=await Promise.all([
-      api("/api/library").catch(()=>({items:[]})),
+      api("/api/library?"+new URLSearchParams({q:LIB.q,status:LIB.status==="passing"||LIB.status==="unrated"||LIB.status==="archived"?LIB.status:"",include_archived:"true"})).catch(()=>({items:[]})),
       api("/api/script/projects").catch(()=>[]),
       api("/api/poetry/projects").catch(()=>[]),
       api("/api/prose/projects").catch(()=>({items:[]})),
     ]);
     const rows=[];
-    (lib.items||[]).forEach(i=>rows.push({medium:"novel",key:i.key,name:i.name,form:i.genre,state:i.state,meta:(i.done||0)+"/"+(i.total||0)+"章",sub:((i.total_words||0)/10000).toFixed(1)+"万字 · 评分"+(i.quality!=null?i.quality:"—")}));
-    (Array.isArray(sc)?sc:[]).forEach(i=>rows.push({medium:"script",key:i.key,name:i.name,form:i.form,state:i.status,meta:(i.done||0)+"/"+(i.total||0)+"场",sub:i.medium||"剧本"}));
-    (Array.isArray(po)?po:[]).forEach(i=>rows.push({medium:"poetry",key:i.key,name:i.name,form:i.form,state:i.status,meta:i.verdict||"",sub:i.medium||"诗词"}));
-    ((pr&&pr.items)||[]).forEach(i=>rows.push({medium:"prose",key:i.key,name:i.name,form:i.form,state:i.state,meta:i.operation||"",sub:i.medium||"散文"}));
-    if(tok!==VIEWTOK)return;
-    $("vsub").textContent=rows.length+" 件作品";
-    $("view").innerHTML=`<div id="libwrap"><h2>全部作品</h2>
-      ${rows.length?rows.map(r=>{const m=MEDIUM[r.medium];return `<div class="lrow" onclick="${r.medium==="novel"?`openBook('${esc(r.key)}')`:`openBench('${r.medium}','${esc(r.key)}')`}">
+    (lib.items||[]).forEach(i=>rows.push({medium:"novel",raw:i,key:i.key,name:i.name,form:i.genre||"",state:i.state,
+      meta:(i.done||0)+"/"+(i.total||0)+"章",words:i.total_words||0,quality:i.quality,progress:i.progress||0,
+      favorite:i.favorite,archived:i.archived,released:i.released,awaiting:i.awaiting_title}));
+    (Array.isArray(sc)?sc:[]).forEach(i=>rows.push({medium:"script",raw:i,key:i.key,name:i.name,form:i.form||"",state:i.status,meta:(i.done||0)+"/"+(i.total||0)+"场",words:0}));
+    (Array.isArray(po)?po:[]).forEach(i=>rows.push({medium:"poetry",raw:i,key:i.key,name:i.name,form:i.form||"",state:i.status,meta:i.verdict||"诗词",words:0}));
+    ((pr&&pr.items)||[]).forEach(i=>rows.push({medium:"prose",raw:i,key:i.key,name:i.name,form:i.form||"",state:i.state,meta:i.operation||"散文",words:0}));
+    // 前端过滤文体 + 状态（剧本/诗词/散文无后端筛选）
+    let flt=rows;
+    if(LIB.medium)flt=flt.filter(r=>r.medium===LIB.medium);
+    if(LIB.status==="in_progress")flt=flt.filter(r=>(r.state||"").includes("progress")||r.raw.running);
+    if(LIB.status==="completed")flt=flt.filter(r=>r.state==="completed"&&r.medium==="novel");
+    if(LIB.q)flt=flt.filter(r=>((r.name||"")+(r.form||"")).toLowerCase().includes(LIB.q.toLowerCase()));
+    if(LIB.genre)flt=flt.filter(r=>r.form===LIB.genre);
+    // 题材 facets（小说）
+    const genres=[...new Set((lib.items||[]).map(i=>i.genre).filter(Boolean))];
+    if(gbox)gbox.innerHTML=genres.slice(0,12).map(g=>`<span class="tag${LIB.genre===g?" on":""}" onclick="LIB.genre=LIB.genre==='${esc(g)}'?'':'${esc(g)}';loadLibList()" style="cursor:pointer">${esc(g)}</span>`).join("");
+    if(stats)stats.textContent=`${flt.length} 件 · 小说 ${(lib.items||[]).length} · 剧本 ${(Array.isArray(sc)?sc:[]).length} · 诗词 ${(Array.isArray(po)?po:[]).length} · 散文 ${((pr&&pr.items)||[]).length}`;
+    if(!flt.length){list.innerHTML='<div style="color:var(--muted);padding:30px;text-align:center">无匹配作品</div>';return;}
+    list.innerHTML=flt.map(r=>{
+      const m=MEDIUM[r.medium];
+      const qb=r.medium==="novel"?(r.quality==null?'<span class="statechip idle" style="margin-left:6px">未审</span>':`<span class="statechip ${r.raw.passing?"done":"pause"}" style="margin-left:6px">${r.quality}分</span>`):"";
+      const rel=r.medium==="novel"&&r.released===true?'<span class="statechip done" style="margin-left:4px">放行✅</span>':(r.medium==="novel"&&r.released===false?'<span class="statechip pause" style="margin-left:4px">未放行</span>':"");
+      return `<div class="lrow">
         <div class="li">${m.icon}</div>
-        <div class="lm"><div class="ln">${esc(r.name||r.key)}<span class="mtag ${m.cls}">${m.label}</span></div>
-        <div class="ls">${esc(r.form||"")} · ${esc(r.sub||"")}</div></div>
-        <div class="lmeta">${esc(r.meta||"")}</div></div>`;}).join("")
-      :'<div style="color:var(--muted);padding:30px;text-align:center">还没有作品。点左侧「＋ 新建创作」开始。</div>'}</div>`;
-  }catch(e){$("view").innerHTML='<div style="padding:40px;color:var(--red)">加载失败：'+esc(String(e))+'</div>';}
+        <div class="lm" style="cursor:pointer" onclick="${r.medium==="novel"?`closeDlg();openBook('${esc(r.key)}')`:`closeDlg();openBench('${r.medium}','${esc(r.key)}')`}">
+          <div class="ln">${esc(r.name||r.key)}<span class="mtag ${m.cls}">${m.label}</span>${qb}${rel}</div>
+          <div class="ls">${esc(r.form||"")} · ${esc(r.meta||"")}${r.words?" · "+(r.words/10000).toFixed(1)+"万字":""}</div>
+          <div class="pbar" style="max-width:200px;margin-top:5px"><i style="width:${r.progress||0}%"></i></div></div>
+        <div class="rowbtns" style="margin:0;flex:none">
+          ${r.medium==="novel"?`<button class="pbtn" onclick="event.stopPropagation();novelMenu('${esc(r.key)}',event.clientX-260,event.clientY+6)">⋯</button>
+          <button class="pbtn" onclick="event.stopPropagation();openPreviewModal('${esc(r.key)}')">👁 预览</button>
+          <button class="pbtn" onclick="event.stopPropagation();toggleFavLib('${esc(r.key)}',${!r.favorite})">${r.favorite?"★":"☆"}</button>
+          ${r.archived?`<button class="pbtn" onclick="event.stopPropagation();restoreLib('${esc(r.key)}')">♻️ 恢复</button>`:""}
+          <button class="pbtn" style="color:var(--red)" onclick="event.stopPropagation();delLib('${esc(r.key)}','${esc(r.name||r.key)}')">🗑</button>`:""}
+        </div></div>`;
+    }).join("");
+  }catch(e){list.innerHTML='<div style="color:var(--red);padding:20px">加载失败：'+esc(String(e))+'</div>';}
 }
+async function toggleFavLib(key,on){
+  try{await api("/api/library/"+encodeURIComponent(key)+"/favorite",{method:"POST",body:JSON.stringify({on})});loadLibList();}catch(e){toast(String(e),"err");}
+}
+async function restoreLib(key){
+  try{await api("/api/library/"+encodeURIComponent(key)+"/archive",{method:"POST",body:JSON.stringify({on:false})});toast("已恢复","ok");loadLibList();loadTasks();}catch(e){toast(String(e),"err");}
+}
+function delLib(key,name){
+  uniConfirm("彻底删除","彻底删除《"+name+"》？目录将删除，不可恢复！","彻底删除",async()=>{
+    try{await api("/api/library/"+encodeURIComponent(key)+"?hard=true",{method:"DELETE"});toast("已删除","ok");loadLibList();loadTasks();}catch(e){toast(String(e),"err");}});
+}
+window.delLib=delLib;window.restoreLib=restoreLib;window.toggleFavLib=toggleFavLib;window.loadLibList=loadLibList;window.LIB=LIB;
+
+/* ---- 作品预览弹窗（章节选择 + 质量报告 + 修订记录） ---- */
+let PV={key:null,text:""};
+async function openPreviewModal(key,tab){
+  PV.key=key;
+  const dlg=$("dlg");$("ovl").classList.add("show");dlg.className="wide";
+  dlg.innerHTML=`<h3 id="pv_title">加载中…</h3>
+  <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
+    <select class="fsel" id="pv_sel" style="flex:1"><option>加载中…</option></select>
+    <a class="pbtn" id="pv_dow" target="_blank">⬇ 下载</a></div>
+  <div class="mbody"><div class="doc" id="pv_body" style="max-height:56vh"></div></div>
+  <div class="dbtns"><button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
+  let j={};
+  try{j=await api("/api/preview?key="+encodeURIComponent(key));}catch(e){}
+  $("pv_title").textContent="《"+(j.name||key)+"》"+(j.has_book?" · 成书":" · 已写 "+((j.chapters||[]).filter(c=>c.status==="completed").length)+" 章");
+  $("pv_dow").href="/api/download?key="+encodeURIComponent(key);
+  PV.text=j.text||"";
+  const haveCh=(j.chapters||[]).filter(c=>(c.words||0)>0||c.status==="completed");
+  const sel=$("pv_sel");
+  sel.innerHTML='<option value="all">'+(j.has_book?"全文（成书）":"全部已写")+"</option>"+
+    haveCh.map(c=>`<option value="${c.n}">第${c.n}章 ${esc(c.title&&c.title!=="续写"?c.title:"")}</option>`).join("")+
+    (j.has_book?'<option value="quality">📊 质量报告</option><option value="review">📋 修订记录</option>':"");
+  sel.onchange=()=>showPv(sel.value);
+  if(tab&&[...sel.options].some(o=>o.value===tab))sel.value=tab;
+  showPv(tab||"all");
+}
+async function showPv(sel){
+  const body=$("pv_body");if(!body)return;
+  if(sel==="all"){body.textContent=PV.text||"（暂无内容）";}
+  else if(sel==="quality"){
+    try{const j=await api("/api/quality?key="+encodeURIComponent(PV.key));body.textContent=j.text||"尚未质检（3 点菜单 → 📝 审稿）";}catch(e){body.textContent=String(e);}
+  }else if(sel==="review"){
+    try{const j=await api("/api/review?key="+encodeURIComponent(PV.key));body.textContent=j.text||"尚未审稿（3 点菜单 → 📝 审稿）";}catch(e){body.textContent=String(e);}
+  }else{
+    try{const j=await api("/api/chapter?key="+encodeURIComponent(PV.key)+"&n="+sel);body.textContent=j.text||"（该章尚未生成）";}catch(e){body.textContent=String(e);}
+  }
+}
+window.openPreviewModal=openPreviewModal;window.showPv=showPv;
 window.openNew=openNew;window.renderWizard=renderWizard;window.closeDlg=closeDlg;
 window.submitNovel=submitNovel;window.pickTitle=pickTitle;window.submitScript=submitScript;
 window.submitPoetry=submitPoetry;window.submitProse=submitProse;
@@ -854,18 +996,19 @@ function uniConfirm(title,msg,btn,onYes,onNo){
 window.uniPrompt=uniPrompt;window.uniConfirm=uniConfirm;
 
 /* ---- 重写弹窗 ---- */
-async function openRewriteModal(key){
+async function openRewriteModal(key,focusChapter){
   let pv={};
   try{pv=await api("/api/preview?key="+encodeURIComponent(key));}catch(e){}
   const pcs=pv.per_chapter||[],pl=pv.pass_line||90;
   const chs=pv.chapters||[];
   const dlg=$("dlg");$("ovl").classList.add("show");
   dlg.className="wide";
-  dlg.innerHTML=`<h3>🔁 定向重写</h3><div class="dsub">勾选要重写的章（默认勾出低于 ${pl} 分的弱章），选维度，点开始</div>
+  dlg.innerHTML=`<h3>🔁 定向重写</h3><div class="dsub">勾选要重写的章（默认勾出低于 ${pl} 分的弱章），选维度，点开始。开始后自动回到对话页看直播。</div>
   <div class="mbody"><table class="scoretbl"><tr><th>章</th><th>标题</th><th>评分</th><th>弱维</th><th>选</th></tr>
   ${chs.map(c=>{const pc=pcs.find(p=>p.ch===c.n)||{};const below=pc.score!=null&&pc.score<pl;
+    const checked=(focusChapter&&focusChapter===c.n)||below;
     return `<tr><td>${c.n}</td><td>${esc(c.title||"")}</td><td class="${below?"below":""}">${pc.score!=null?pc.score+" 分":"未评"}</td><td>${esc((pc.weak||[]).join("、"))}</td>
-    <td><input type="checkbox" class="rwch" value="${c.n}" ${below?"checked":""}></td></tr>`;}).join("")}</table>
+    <td><input type="checkbox" class="rwch" value="${c.n}" ${checked?"checked":""}></td></tr>`;}).join("")}</table>
   <label class="flabel">维度（可多选）</label><div class="tagpick" id="rw_dims">${["结构","因果可信","人物","连续性","语言","读者体验"].map(d=>`<span class="tag">${d}</span>`).join("")}</div></div>
   <div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button><button class="pbtn primary" id="rw_go">开始重写</button></div>`;
   dlg.querySelectorAll("#rw_dims .tag").forEach(t=>t.onclick=()=>t.classList.toggle("on"));
@@ -1003,10 +1146,11 @@ async function loadSetTab(t){
     if(t==="skills"){
       const s=await api("/api/skillkit/stats");
       const l=await api("/api/skillkit/list");
+      const list=Array.isArray(l)?l:(l.skills||[]);
       const by=s.by_media||{};
       el.innerHTML=`<div class="agdesc">技能库 ${s.files} 个文件 / ${(s.bytes/1024).toFixed(0)} KB · 全部随产品内置</div>
       <div class="rowbtns">${Object.entries(by).map(([k,v])=>`<span class="statchip2">${k==="all"?"🌐 全文体共核":(MEDIUM[k]?MEDIUM[k].icon+" "+MEDIUM[k].label:k)} × ${v}</span>`).join("")}</div>
-      <div style="max-height:300px;overflow-y:auto">${(l.items||l||[]).slice(0,60).map(f=>`<div class="kvrow"><span class="k">${esc(f.name||"")}</span><span class="v" style="font-weight:400;color:var(--muted)">${esc((f.medium||[]).join?  (f.medium||[]).join(","):"")}</span></div>`).join("")}</div>`;
+      <div style="max-height:300px;overflow-y:auto">${list.slice(0,80).map(f=>`<div class="kvrow"><span class="k">${esc(f.relpath||f.name||"")}</span><span class="v" style="font-weight:400;color:var(--muted)">${esc((f.media||[]).join(", "))} · ${(f.size/1024).toFixed(1)}KB</span></div>`).join("")}</div>`;
     }
   }catch(e){el.innerHTML='<div style="color:var(--red);padding:12px">加载失败：'+esc(String(e))+'</div>';}
 }
@@ -1014,10 +1158,80 @@ async function loadProvList(){
   const el=$("provlist");if(!el)return;
   try{
     const d=await api("/api/providers");
-    el.innerHTML=(d.providers||[]).map(p=>`<div class="agrow"><div class="aglabel">${esc(p.name||p.id)} ${p.active?'<span class="statechip done" style="margin-left:6px">active</span>':""} ${p.has_key?'':'<span class="statechip pause" style="margin-left:6px">无密钥</span>'}</div>
-    <div class="agdesc">${esc(p.base_url||"")} · 模型 ${esc((p.models||[]).slice(0,4).join(", "))}${(p.models||[]).length>4?"…":""}</div></div>`).join("")||"<div class='agdesc'>暂无供应商。编辑 providers.json 添加。</div>";
-  }catch(e){el.innerHTML="<div class='agdesc'>加载失败</div>";}
+    el.innerHTML=`<div class="rowbtns"><button class="pbtn primary" onclick="addProvider()">＋ 新增供应商</button></div>`+
+    ((d.providers||[]).map(p=>`<div class="agrow"><div class="aglabel">${esc(p.name||p.id)} ${p.id===d.default_provider?'<span class="statechip done" style="margin-left:6px">默认</span>':""} ${p.active?'<span class="statechip run" style="margin-left:6px">active</span>':'<span class="statechip pause" style="margin-left:6px">停用</span>'} ${p.has_key?'':'<span class="statechip err" style="margin-left:6px">无密钥</span>'}</div>
+    <div class="agdesc">${esc(p.base_url||"")} · 默认模型 ${esc(p.default_model||"—")} · 模型 ${esc((p.models||[]).slice(0,4).join(", "))}${(p.models||[]).length>4?"…":""}</div>
+    <div class="rowbtns" style="margin:8px 0 0">
+      <button class="pbtn" onclick="editProvider('${esc(p.id)}')">✏️ 编辑</button>
+      <button class="pbtn" onclick="testProvider('${esc(p.id)}')">🔍 测试连通</button>
+      ${p.id===d.default_provider?"":`<button class="pbtn" onclick="setDefaultProvider('${esc(p.id)}')">设为默认</button>`}
+      <button class="pbtn" onclick="toggleActive('${esc(p.id)}',${!p.active})">${p.active?"停用":"启用"}</button>
+      <button class="pbtn" style="color:var(--red)" onclick="delProvider('${esc(p.id)}','${esc(p.name||p.id)}')">🗑 删除</button>
+    </div></div>`).join(""))||"<div class='agdesc'>暂无供应商。</div>";
+  }catch(e){el.innerHTML="<div class='agdesc'>加载失败："+esc(String(e))+"</div>";}
 }
+const PROV_PRESETS=[["agnes","Agnes AI"],["openai","OpenAI"],["deepseek","DeepSeek"],["qwen","通义千问"],["glm","智谱 GLM"],["kimi","Moonshot Kimi"],["ollama","Ollama 本地"]];
+function providerForm(pid){
+  const dlg=$("dlg");$("ovl").classList.add("show");
+  const title=pid?"✏️ 编辑供应商":"＋ 新增供应商";
+  dlg.innerHTML=`<h3>${title}</h3><div class="dsub">OpenAI 兼容接口。预设会自动填 base_url 和模型清单；自定义就全部手填。</div>
+  ${pid?"":`<label class="flabel">预设（可选，一键填）</label><select class="fsel" id="pf_preset"><option value="">（自定义）</option>${PROV_PRESETS.map(p=>`<option value="${p[0]}">${p[1]}</option>`).join("")}</select>`}
+  <label class="flabel">ID（英文标识，唯一）</label><input class="fin" id="pf_id" value="${pid||""}" ${pid?"readonly style=opacity:.6":""} placeholder="如 myprovider">
+  <label class="flabel">名称</label><input class="fin" id="pf_name" placeholder="如 我的供应商">
+  <label class="flabel">Base URL</label><input class="fin" id="pf_url" placeholder="https://api.xxx.com/v1">
+  <label class="flabel">API Key（留空=不修改）</label><input class="fin" id="pf_key" type="password" placeholder="sk-...">
+  <label class="flabel">模型清单（逗号分隔）</label><input class="fin" id="pf_models" placeholder="model-a, model-b">
+  <div class="f2"><div><label class="flabel">默认模型</label><input class="fin" id="pf_defm" placeholder="model-a"></div>
+  <div><label class="flabel">温度</label><input class="fin" id="pf_temp" type="number" step="0.05" value="0.85"></div></div>
+  <div class="dbtns"><button class="pbtn" onclick="loadSetTab('models');openSettings('models')">取消</button><button class="pbtn primary" id="pf_go">保存</button></div>`;
+  if(!pid){
+    dlg.querySelector("#pf_preset").onchange=async function(){
+      if(!this.value)return;
+      try{const d=await api("/api/providers");
+        // 预设只做前端提示填 base_url/models；真正落地靠后端 preset 字段
+        const map={agnes:["https://api.agnesai.cn/v1","agnes-3.0-flash"],openai:["https://api.openai.com/v1","gpt-4o"],deepseek:["https://api.deepseek.com/v1","deepseek-chat"],qwen:["https://dashscope.aliyuncs.com/compatible-mode/v1","qwen-plus"],glm:["https://open.bigmodel.cn/api/paas/v4","glm-4-plus"],kimi:["https://api.moonshot.cn/v1","moonshot-v1-8k"],ollama:["http://127.0.0.1:11434/v1","llama3"]};
+        const m=map[this.value]||["",""];
+        dlg.querySelector("#pf_url").value=m[0];dlg.querySelector("#pf_models").value="";dlg.querySelector("#pf_defm").value=m[1];
+        dlg.dataset.preset=this.value;
+      }catch(e){}
+    };
+  }
+  dlg.querySelector("#pf_go").onclick=async()=>{
+    const g=id=>dlg.querySelector(id).value.trim();
+    const payload={id:g("#pf_id"),name:g("#pf_name"),base_url:g("#pf_url"),
+      models:g("#pf_models")?g("#pf_models").split(",").map(x=>x.trim()).filter(Boolean):undefined,
+      default_model:g("#pf_defm")||undefined,temperature:parseFloat(g("#pf_temp"))||0.85};
+    if(g("#pf_key"))payload.api_key=g("#pf_key");
+    if(!pid&&dlg.dataset.preset)payload.preset=dlg.dataset.preset;
+    try{
+      if(pid)await api("/api/providers/"+encodeURIComponent(pid),{method:"PUT",body:JSON.stringify(payload)});
+      else await api("/api/providers",{method:"POST",body:JSON.stringify(payload)});
+      toast(pid?"供应商已更新":"供应商已添加","ok");
+      openSettings("models");
+    }catch(e){toast("保存失败："+String(e),"err");}
+  };
+}
+function addProvider(){providerForm(null);}
+function editProvider(pid){providerForm(pid);}
+async function testProvider(pid){
+  toast("测试中…");
+  try{const j=await api("/api/providers/"+encodeURIComponent(pid)+"/test",{method:"POST",body:JSON.stringify({probe_chat:true})});
+    const ok=j.ok||j.reachable||(j.models&&j.models.length);
+    toast(ok?("✅ 连通"+(j.models?(" · "+j.models.length+" 个模型"):"")):("⚠️ "+(j.error||j.note||"响应异常")),ok?"ok":"err");
+  }catch(e){toast("测试失败："+String(e),"err");}
+}
+async function setDefaultProvider(pid){
+  try{await api("/api/providers/"+encodeURIComponent(pid)+"/default",{method:"POST"});toast("已设为默认","ok");openSettings("models");loadProv();}catch(e){toast(String(e),"err");}
+}
+async function toggleActive(pid,on){
+  try{await api("/api/providers/"+encodeURIComponent(pid)+"/active",{method:"POST",body:JSON.stringify({active:on})});toast(on?"已启用":"已停用","ok");openSettings("models");}catch(e){toast(String(e),"err");}
+}
+function delProvider(pid,name){
+  uniConfirm("删除供应商","删除「"+name+"」？正在使用它的创作任务会回落到默认供应商。","删除",async()=>{
+    try{await api("/api/providers/"+encodeURIComponent(pid),{method:"DELETE"});toast("已删除","ok");openSettings("models");loadProv();}catch(e){toast(String(e),"err");}});
+}
+window.addProvider=addProvider;window.editProvider=editProvider;window.testProvider=testProvider;
+window.setDefaultProvider=setDefaultProvider;window.toggleActive=toggleActive;window.delProvider=delProvider;
 async function saveModelRules(){
   const o={};["context","max_tokens","rpm","tpm","backoff_base","call_gap"].forEach(k=>{const e=$("mr_"+k);if(e&&e.value!=="")o[k]=/^[0-9.]+$/.test(e.value)?+e.value:e.value;});
   try{await api("/api/model_rules",{method:"POST",body:JSON.stringify(o)});toast("🤖 模型规则已保存","ok");}catch(e){toast(String(e),"err");}
