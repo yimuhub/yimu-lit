@@ -250,6 +250,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .selcard .st{color:#fff}
 .selcard .sd{color:#a7adbf}
 .flabel{color:#a7adbf}
+/* ---------- v1.3 消息操作条 + 思考态 ---------- */
+.msgacts{display:flex;gap:2px;margin-top:7px;padding-top:6px;border-top:1px solid var(--border);opacity:0;transition:.15s;flex-wrap:wrap}
+.bub:hover .msgacts{opacity:1}
+.msgacts .act{border:0;background:none;color:var(--dim);font:11px var(--sans);padding:3px 7px;border-radius:6px;cursor:pointer}
+.msgacts .act:hover{background:var(--card2);color:var(--text)}
+.msgacts .act.on{color:var(--accent2)}
+.fbnote{color:var(--green);font:10.5px var(--sans);margin-top:4px}
+.think{display:inline-flex;gap:4px;align-items:center}
+.think i{width:6px;height:6px;border-radius:50%;background:var(--accent2);animation:thb 1.2s infinite}
+.think i:nth-child(2){animation-delay:.2s}
+.think i:nth-child(3){animation-delay:.4s}
+@keyframes thb{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+.waitmsg{font:11px var(--sans);color:var(--muted)}
+.brmark{font:10.5px var(--sans);color:var(--amber);margin:2px 0 8px 40px}
 #toasts{position:fixed;top:16px;right:16px;z-index:200;display:flex;flex-direction:column;gap:8px}
 .toast{background:var(--card2);border:1px solid var(--border2);border-radius:11px;padding:10px 15px;font:12.5px var(--sans);box-shadow:0 8px 30px -8px rgba(0,0,0,.6);animation:tin .25s;max-width:340px}
 .toast.ok{border-color:rgba(62,207,142,.5)}
@@ -621,13 +635,68 @@ async function submitProse(){
 }
 
 /* ================= 对话流（小说） ================= */
-function bubble(role,text){
+function bubble(role,text,opts){
+  opts=opts||{};
   const wrap=$("chatwrap")||createChatWrap();
   const b=document.createElement("div");b.className="bub "+role;
-  b.innerHTML=`<div class="av">${role==="bot"?"笔":"我"}</div><div class="bb">${esc(text)}</div>`;
-  wrap.appendChild(b);$("view").scrollTop=$("view").scrollHeight;
+  const ts=opts.ts||Date.now();
+  let inner=`<div class="av">${role==="bot"?"笔":"我"}</div><div class="bb" data-ts="${ts}">${esc(text)}`;
+  if(role==="bot"&&!opts.noacts){
+    inner+=`<div class="msgacts">
+      <button class="act" data-a="copy" title="复制全文">📋 复制</button>
+      <button class="act" data-a="up" title="有帮助">👍</button>
+      <button class="act" data-a="down" title="没帮助">👎</button>
+      <button class="act" data-a="issue" title="指出问题（写修正意见，汇入自我学习）">⚠️ 有问题</button>
+      <button class="act" data-a="branch" title="从这里分支探索另一条思路">🌿 分支</button>
+    </div>`;
+  }
+  inner+=`</div>`;
+  b.innerHTML=inner;
+  b.dataset.ts=ts;
+  // 事件绑定
+  b.querySelectorAll(".msgacts .act").forEach(btn=>btn.onclick=()=>msgAct(btn.dataset.a,b,ts,text));
+  wrap.appendChild(b);
+  const v=$("view");
+  if(v.scrollHeight-v.scrollTop-v.clientHeight<300)v.scrollTop=v.scrollHeight;
   return b;
 }
+/* ---- DSH 式消息动作 ---- */
+function msgAct(action,bub,ts,text){
+  if(action==="copy"){
+    (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject()).then(
+      ()=>toast("📋 已复制到剪贴板","ok"),
+      ()=>{ // 剪贴板失败兜底
+        const ta=document.createElement("textarea");ta.value=text;document.body.appendChild(ta);
+        ta.select();try{document.execCommand("copy");toast("📋 已复制","ok");}catch(e){toast("复制失败，请手动选择","err");}
+        ta.remove();});
+    return;
+  }
+  if(action==="up"||action==="down"||action==="issue"){
+    const note=action==="issue"?prompt_js("指出这条回答的问题（会汇入自我学习，帮助改进写作辅助）："):"";
+    if(action==="issue"&&note===null)return;
+    api("/api/bkchat/"+encodeURIComponent(KEY)+"/feedback",{method:"POST",
+      body:JSON.stringify({ts,rating:action,note})}).then(()=>{
+        const bar=bub.querySelector(".msgacts");
+        bar.querySelectorAll(".act").forEach(x=>x.classList.remove("on"));
+        bub.querySelector(`[data-a="${action}"]`).classList.add("on");
+        const old=bub.querySelector(".fbnote");if(old)old.remove();
+        const n=document.createElement("div");n.className="fbnote";
+        n.textContent=action==="up"?"👍 已记录（有帮助）":action==="down"?"👎 已记录（没帮助）":"⚠️ 已记录，将汇入自我学习";
+        bub.querySelector(".bb").appendChild(n);
+      }).catch(e=>toast(String(e),"err"));
+    return;
+  }
+  if(action==="branch"){
+    api("/api/bkchat/"+encodeURIComponent(KEY)+"/branch",{method:"POST",body:JSON.stringify({ts})}).then(r=>{
+      toast("🌿 分支已创建（"+r.messages+" 条），主对话保留","ok");
+      const m=document.createElement("div");m.className="brmark";
+      m.textContent="🌿 已从此处分支（"+r.branch_id+"）——原对话继续，分支另存";
+      bub.after(m);
+    }).catch(e=>toast(String(e),"err"));
+  }
+}
+function prompt_js(msg){return window.prompt(msg)||"";}
+window.bubble=bubble;window.msgAct=msgAct;
 function createChatWrap(){
   const v=$("view");v.innerHTML='<div id="chatwrap"></div>';return $("chatwrap");
 }
@@ -644,7 +713,16 @@ async function openBook(key){
   try{
     const bc=await api("/api/bkchat?key="+encodeURIComponent(key));
     if(tok!==VIEWTOK)return;
-    (bc.messages||[]).slice(-30).forEach(m=>bubble(m.who==="bot"?"bot":"user",m.text));
+    (bc.messages||[]).slice(-30).forEach(m=>{
+      const b=bubble(m.who==="bot"?"bot":"user",m.text,{ts:m.ts,noacts:m.who!=="bot"});
+      if(m.feedback){const bar=b.querySelector(".msgacts");
+        if(bar){bar.querySelectorAll(".act").forEach(x=>{if(x.dataset.a===m.feedback.rating)x.classList.add("on");});
+          const n=document.createElement("div");n.className="fbnote";
+          n.textContent=m.feedback.rating==="up"?"👍 已记录":m.feedback.rating==="down"?"👎 已记录":"⚠️ 已记录"+(m.feedback.note?"："+m.feedback.note:"");
+          b.querySelector(".bb").appendChild(n);}}
+      if(m.branched){const mk=document.createElement("div");mk.className="brmark";
+        mk.textContent="🌿 此处有分支（"+m.branched+"）";b.after(mk);}
+    });
   }catch(e){}
   if(!($("chatwrap")&&$("chatwrap").children.length))
     bubble("bot","📖 已打开《"+(st.name||key)+"》。直接说话（写/继续/改写），或点右侧 ⋯ 更多操作。");
@@ -711,35 +789,50 @@ async function sendMsg(){
   inp.value="";inp.style.height="auto";
   if(CUR!=="chat"||!KEY){toast("先打开或新建一个作品");return;}
   bubble("user",text);
+  // v1.3 即时反馈：思考动画 + 阶段文案（绝不让用户干等无反馈）
+  const th=bubble("bot","",{noacts:true});
+  th.querySelector(".bb").innerHTML=`<span class="think"><i></i><i></i><i></i></span> <span class="waitmsg" id="waitmsg">正在理解你的要求…</span>`;
+  const waitPhases=["正在理解你的要求…","正在检索本书设定与技能…","模型正在思考与生成…","模型正在等待响应（长任务可到 1-3 分钟）…","仍在生成中——复杂请求需要更多时间…"];
+  let phaseN=0;
+  const phaseTimer=setInterval(()=>{phaseN++;const wm=$("waitmsg");if(wm&&phaseN<waitPhases.length)wm.textContent=waitPhases[phaseN];},6000);
   try{
-    // 中间台指令解析：改写某章/全书/看评分 → 结构化动作
     let cr={};
     try{cr=await api("/api/cmd",{method:"POST",body:JSON.stringify({key:KEY,text})});}catch(e){}
     if(cr&&cr.action&&cr.action!=="chat"){
+      clearInterval(phaseTimer);th.remove();
       await execCmd(cr,text);
+      try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"user",text})});}catch(e){}
       return;
     }
     const r=await api("/api/chat",{method:"POST",body:JSON.stringify({session_id:SID,message:text,...provPayload()})});
-    bubble("bot",r.reply||"（空回复）");
-    // 记入本书专属对话
-    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"user",text})});}catch(e){}
-    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"bot",text:r.reply||""})});}catch(e){}
+    clearInterval(phaseTimer);th.remove();
+    const ts=Date.now();
+    bubble("bot",r.reply||"（空回复）",{ts});
+    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"user",text,ts:ts-1})});}catch(e){}
+    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"bot",text:r.reply||"",ts})});}catch(e){}
     if(r.project&&r.project!==KEY){KEY=r.project;SID="bk-"+r.project;}
     loadTasks();
-  }catch(e){bubble("bot","⚠️ "+String(e));}
+  }catch(e){
+    clearInterval(phaseTimer);th.remove();
+    bubble("bot","⚠️ 请求失败："+String(e)+"\n（直接重新发送即可重试）");
+  }
 }
 async function execCmd(cr,text){
   const k=cr.key||KEY;
+  const th=bubble("bot","",{noacts:true});
+  th.querySelector(".bb").innerHTML=`<span class="think"><i></i><i></i><i></i></span> <span class="waitmsg">正在执行指令…</span>`;
+  const done=()=>{th.remove();};
   if(cr.action==="scores"){
     bubble("bot","📊 拉取逐章评分…");
     try{const pv=await api("/api/preview?key="+encodeURIComponent(k));
       const rows=(pv.per_chapter||[]).map(p=>`第${p.ch}章 ${p.score!=null?p.score+"分":"未评"}${p.status==="below"?" ⚠️低于达标线":""}`).join("\n");
       bubble("bot","📊 逐章评分（达标线 "+(pv.pass_line||90)+"）：\n"+(rows||"暂无评分，先跑审稿。"));
     }catch(e){bubble("bot","⚠️ "+String(e));}
+    done();
   }else if(cr.action==="rewrite_chapter"){
-    openRewriteModal(k,[cr.chapter]);
+    done();openRewriteModal(k,[cr.chapter]);
   }else if(cr.action==="rewrite_all"){
-    openRewriteModal(k,null);
+    done();openRewriteModal(k,null);
   }else if(cr.action==="rewrite_section"){
     bubble("bot","✒️ 收到：改写第 "+cr.chapter+" 章里的一小段…");
     try{
@@ -747,7 +840,8 @@ async function execCmd(cr,text){
       const j=await api("/api/rewrite-section",{method:"POST",body:JSON.stringify({key:k,chapter:cr.chapter,match,instruction:"把这一段写得更抓人，去掉 AI 腔，加细节与张力"})});
       bubble("bot","✒️ 第 "+cr.chapter+" 章该段已改写。\n原："+(j.orig||"").slice(0,120)+"\n新："+(j.new||"").slice(0,120));
     }catch(e){bubble("bot","⚠️ "+String(e));}
-  }
+    done();
+  }else{done();}
 }
 window.execCmd=execCmd;
 
@@ -1239,8 +1333,17 @@ async function loadSetTab(t){
     }
     if(t==="learn"){
       const p=await api("/api/learn");
+      let fb={};
+      try{fb=await api("/api/feedback");}catch(e){}
       const g=p.genres||[];
-      el.innerHTML=(p.total?`<div class="agdesc">已学习 ${p.total} 本 · ${esc(p.insight||"")}</div>`:"<div class='agdesc'>还没写过小说。写几本后系统自动学习题材与偏好。</div>")+
+      const fbHtml=(fb.total?`<div class="rsec" style="margin-bottom:12px"><div class="rh">💬 对话反馈账本（自我改进素材）</div><div class="rbody">
+        <div class="kvrow"><span class="k">总反馈</span><span class="v">${fb.total}</span></div>
+        <div class="kvrow"><span class="k">👍 有帮助</span><span class="v" style="color:var(--green)">${fb.up||0}</span></div>
+        <div class="kvrow"><span class="k">👎 没帮助</span><span class="v" style="color:var(--amber)">${fb.down||0}</span></div>
+        <div class="kvrow"><span class="k">⚠️ 指出问题</span><span class="v" style="color:var(--red)">${fb.issue||0}</span></div>
+        ${(fb.notes||[]).slice(-6).reverse().map(n=>`<div style="border-left:2px solid var(--border2);padding:4px 9px;margin-top:5px;font:11px/1.7 var(--sans)"><span style="color:var(--muted)">${esc(n.rating==="issue"?"⚠️":"👎")} ${esc(n.note)}</span></div>`).join("")}
+      </div></div>`:"");
+      el.innerHTML=fbHtml+(p.total?`<div class="agdesc">已学习 ${p.total} 本 · ${esc(p.insight||"")}</div>`:"<div class='agdesc'>还没写过小说。写几本后系统自动学习题材与偏好。</div>")+
       (g.length?g.slice(0,8).map(x=>`<div class="lrnrow"><span class="ln">${esc(x.genre)}</span><span class="lbar"><i style="width:${x.share||0}%"></i></span><span class="lc">${x.count}本</span></div>
       ${(x.top_hand||x.top_pace||x.top_lang)?`<div style="font:10.5px var(--muted);margin:-3px 0 8px 73px">偏好：${esc([x.top_hand&&x.top_hand[0],x.top_pace&&x.top_pace[0],x.top_lang&&x.top_lang[0]].filter(Boolean).join(" · "))}</div>`:""}`).join(""):"");
     }

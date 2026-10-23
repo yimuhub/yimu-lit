@@ -1055,6 +1055,110 @@ def api_bkchat_post(payload: dict):
     open(p, "w", encoding="utf-8").write(json.dumps(msgs[-400:], ensure_ascii=False))
     return {"ok": True, "count": len(msgs)}
 
+
+@app.post("/api/bkchat/{key}/feedback")
+def api_bkchat_feedback(key: str, payload: dict):
+    """v1.3：对某条 AI 回复打分（DSH 式 👍/👎/有问题），写入 chat.json 对应消息 +
+    汇入反馈账本（设置→学习报告展示，自我改进素材）。
+    payload: {ts, rating: "up"|"down"|"issue", note?}"""
+    p = _bkchat_path(key)
+    if not os.path.exists(p):
+        return JSONResponse({"error": "该作品还没有对话记录"}, status_code=404)
+    ts = int(payload.get("ts") or 0)
+    rating = payload.get("rating")
+    if rating not in ("up", "down", "issue"):
+        return JSONResponse({"error": "rating 必须是 up/down/issue"}, status_code=400)
+    try:
+        msgs = json.loads(open(p, encoding="utf-8").read())
+    except Exception:
+        return JSONResponse({"error": "对话记录损坏"}, status_code=500)
+    hit = None
+    for m in msgs:
+        if m.get("ts") == ts and m.get("who") == "bot":
+            m["feedback"] = {"rating": rating, "note": (payload.get("note") or "").strip()[:500],
+                             "at": int(time.time() * 1000)}
+            hit = m
+            break
+    if not hit:
+        return JSONResponse({"error": "未找到该条回复"}, status_code=404)
+    open(p, "w", encoding="utf-8").write(json.dumps(msgs[-400:], ensure_ascii=False))
+    try:
+        fb_path = os.path.join(writer.PROJECTS_DIR, "_feedback.json")
+        fb = json.load(open(fb_path, encoding="utf-8")) if os.path.exists(fb_path) else {"total": 0, "up": 0, "down": 0, "issue": 0, "notes": []}
+        fb["total"] = int(fb.get("total") or 0) + 1
+        fb[rating] = int(fb.get(rating) or 0) + 1
+        if payload.get("note"):
+            fb.setdefault("notes", []).append({"key": key, "note": (payload.get("note") or "")[:200],
+                                               "rating": rating, "at": int(time.time() * 1000)})
+            fb["notes"] = fb["notes"][-50:]
+        json.dump(fb, open(fb_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+    return {"ok": True, "rating": rating}
+
+
+@app.post("/api/bkchat/{key}/branch")
+def api_bkchat_branch(key: str, payload: dict):
+    """v1.3：从某条消息分支（DSH 式）：以该消息为界另存分支文件，主对话保留并标记。
+    payload: {ts}"""
+    p = _bkchat_path(key)
+    if not os.path.exists(p):
+        return JSONResponse({"error": "该作品还没有对话记录"}, status_code=404)
+    ts = int(payload.get("ts") or 0)
+    try:
+        msgs = json.loads(open(p, encoding="utf-8").read())
+    except Exception:
+        return JSONResponse({"error": "对话记录损坏"}, status_code=500)
+    idx = next((i for i, m in enumerate(msgs) if m.get("ts") == ts), None)
+    if idx is None:
+        return JSONResponse({"error": "未找到该条消息"}, status_code=404)
+    branch_id = f"b{int(time.time())}"
+    bp = os.path.join(writer.PROJECTS_DIR, key, f"chat-{branch_id}.json")
+    os.makedirs(os.path.dirname(bp), exist_ok=True)
+    open(bp, "w", encoding="utf-8").write(json.dumps(msgs[:idx + 1], ensure_ascii=False))
+    for m in msgs:
+        if m.get("ts") == ts:
+            m["branched"] = branch_id
+            break
+    open(p, "w", encoding="utf-8").write(json.dumps(msgs[-400:], ensure_ascii=False))
+    return {"ok": True, "branch_id": branch_id, "messages": idx + 1}
+
+
+@app.get("/api/bkchat/{key}/branches")
+def api_bkchat_branches(key: str):
+    pdir = os.path.join(writer.PROJECTS_DIR, key)
+    out = []
+    if os.path.isdir(pdir):
+        for f in sorted(os.listdir(pdir)):
+            if f.startswith("chat-b") and f.endswith(".json"):
+                bid = f[5:-5]
+                try:
+                    n = len(json.loads(open(os.path.join(pdir, f), encoding="utf-8").read()))
+                except Exception:
+                    n = 0
+                out.append({"branch_id": bid, "messages": n})
+    return {"branches": out}
+
+
+@app.get("/api/bkchat/{key}/branch/{bid}")
+def api_bkchat_branch_get(key: str, bid: str):
+    bp = os.path.join(writer.PROJECTS_DIR, key, f"chat-{bid}.json")
+    if not os.path.isfile(bp):
+        return JSONResponse({"error": "分支不存在"}, status_code=404)
+    return {"branch_id": bid, "messages": json.loads(open(bp, encoding="utf-8").read())}
+
+
+@app.get("/api/feedback")
+def api_feedback_stats():
+    """反馈总账（设置→学习报告用）。"""
+    fb_path = os.path.join(writer.PROJECTS_DIR, "_feedback.json")
+    if os.path.exists(fb_path):
+        try:
+            return json.load(open(fb_path, encoding="utf-8"))
+        except Exception:
+            pass
+    return {"total": 0, "up": 0, "down": 0, "issue": 0, "notes": []}
+
 @app.get("/api/status")
 def api_status(key: str):
     proj = _get_project(key)
