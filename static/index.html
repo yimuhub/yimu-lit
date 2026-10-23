@@ -468,7 +468,7 @@ async function wizardNovel(){
   dlg.innerHTML=`${wizHead("📖","小说","openNew()")}<div class="loading"><div class="spinner"></div>加载配置…</div>`;
   let onb;
   try{onb=await api("/api/onboarding");}catch(e){onb={genres:["都市爽文"],tones:["爽文"],sells:[],perspectives:["男主","女主"],chapter_options:[10,20,50],style:{金手指:[],节奏:[],语言:[]},defaults:{}};}
-  const sty=onb.style||{},g0=onb.genres[0],pre=(sty.preset||{})[g0]||{};
+  const sty=onb.style||{},g0=(onb.genres&&onb.genres[0])||"都市爽文",pre=((sty.preset||{})[g0])||{};
   const opts=(a,d)=>(a||[]).map(v=>`<option>${esc(v)}</option>`).join("");
   dlg.innerHTML=`${wizHead("📖","小说","openNew()")}
   <div class="f2"><div><label class="flabel">题材</label><select class="fsel" id="n_genre">${opts(onb.genres)}</select></div>
@@ -508,7 +508,25 @@ async function submitNovel(){
 }
 function showTitlePicker(r){
   const dlg=$("dlg");
-  const cands=r.candidates||[];
+  let cands=(r.candidates||[]).filter(c=>c.title&&c.title!=="候选生成中…");
+  // v1.2.2：候选后台生成中 → 轮询 /api/titles 直到真实候选就绪（最多 60s）
+  if(!cands.length&&r.key){
+    dlg.innerHTML=`<h3>选书名</h3><div class="loading"><div class="spinner"></div>AI 正在出候选书名…（最长 60 秒）</div>`;
+    let n=0;
+    const t=setInterval(async()=>{
+      n++;
+      try{
+        const j=await api("/api/titles?key="+encodeURIComponent(r.key));
+        const cs=(j.candidates||[]).filter(c=>c.title&&c.title!=="候选生成中…");
+        if(cs.length){clearInterval(t);r.candidates=cs;showTitlePicker(r);return;}
+      }catch(e){}
+      if(n>24){clearInterval(t);dlg.innerHTML=`<h3>选书名</h3><div class="dsub">候选生成超时，可直接输入书名</div><input class="fin" id="tp_custom" placeholder="自定义书名"><div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button></div>`;
+        const ci=dlg.querySelector("#tp_custom");
+        ci.addEventListener("keydown",e=>{if(e.key==="Enter"&&ci.value.trim())pickTitle(r.key,ci.value.trim());});
+      }
+    },2500);
+    return;
+  }
   dlg.innerHTML=`${wizHead("📖","小说","openNew()")}
   <h3>选书名</h3><div class="dsub">AI 出了 ${cands.length} 个候选，选一个立即开写</div>
   <div class="tgrid">${cands.map((c,i)=>`<div class="tcard" data-t="${esc(c.title)}"><div class="tt">${esc(c.title)}</div><div class="tw">${esc(c.technique||"")} — ${esc(c.why||"")}</div></div>`).join("")}</div>

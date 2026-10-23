@@ -396,29 +396,55 @@ def api_create(payload: dict):
     cfg["chapters"] = total
     style_id = (payload.get("style_id") or "").strip()   # v0.3.4：蒸馏风格 id → 注入该书 craft
     cfg = workflow.fill_defaults(cfg)
-    try:
-        n = int((cfg.get("defaults") or {}).get("title_count", 8))
-        if title:
-            titles = [{"title": title, "technique": "指定书名", "why": "用户指定"}] + workflow.gen_titles(cfg, n=n)
+    # v1.2.2：/api/create 全程后台化——writer.create_project 内部有 5-8 次 LLM 调用（1-3 分钟），
+    # 同步返回会把 async 事件循环卡死。这里只做轻量占位（写 02-写作计划.json 骨架 + 注册 PROJECT_INDEX），
+    # 规划/书名候选全部后台线程跑；前端轮询 /api/status、/api/titles。
+    import threading as _th
+    from datetime import datetime as _dt
+    base = f"{_dt.now().strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[/:*?"<>|\s]+', '', title or (payload.get('idea') or '未命名'))[:24]}" or f"bk_{_dt.now().strftime('%Y%m%d-%H%M%S')}"
+    pdir = os.path.join(writer.PROJECTS_DIR, base)
+    os.makedirs(pdir, exist_ok=True)
+    skeleton_plan = {"version": 1, "novelName": title or (payload.get("idea") or "未命名"),
+                     "projectPath": pdir, "status": "planning",
+                     "chapters": [], "totalChapters": total, "totalWords": 0,
+                     "config": {k: v for k, v in cfg.items() if k != "api_key"},
+                     "meta": {"awaiting_title": bool(not title), "title_candidates": [],
+                              "planning_running": True},
+                     "createdAt": _dt.now().isoformat()}
+    open(os.path.join(pdir, "02-写作计划.json"), "w", encoding="utf-8").write(
+        json.dumps(skeleton_plan, ensure_ascii=False, indent=1))
+    _st = cfg.get("style") or {}
+    learn.record_book(_st.get("题材", ""), _st.get("金手指", ""), _st.get("节奏", ""), _st.get("语言", ""))
+    def _bg():
+        try:
+            n = int((cfg.get("defaults") or {}).get("title_count", 8))
+            if title:
+                titles = [{"title": title, "technique": "指定书名", "why": "用户指定"}] + (workflow.gen_titles(cfg, n=n) or [])
+            else:
+                cands = workflow.gen_titles(cfg, n=n) or [{"title": "未命名", "technique": "", "why": ""}]
+                titles = [{"title": (payload.get("idea") or "未命名")[:20], "technique": "占位", "why": ""}]
             proj = writer.create_project(cfg, titles)
             _attach_style_ref(proj, style_id)
-            _st = cfg.get("style") or {}
-            learn.record_book(_st.get("题材", ""), _st.get("金手指", ""), _st.get("节奏", ""), _st.get("语言", ""))
-            writer.start_writing(proj)
-            base = os.path.basename(proj.path)
-            return {"project": base, "pid": base, "key": base, "awaiting_title": False}
-        cands = workflow.gen_titles(cfg, n=n) or [{"title": "未命名", "technique": "", "why": ""}]
-        proj = writer.create_project(cfg, cands)
-        _attach_style_ref(proj, style_id)
-        _st = cfg.get("style") or {}
-        learn.record_book(_st.get("题材", ""), _st.get("金手指", ""), _st.get("节奏", ""), _st.get("语言", ""))
-        plan = proj.plan(); meta = plan.get("meta") or {}
-        meta["title_candidates"] = cands; meta["awaiting_title"] = True
-        plan["meta"] = meta; plan["status"] = "awaiting_title"; proj.save_plan(plan)
-        base = os.path.basename(proj.path)
-        return {"project": base, "pid": base, "key": base, "awaiting_title": True, "candidates": cands}
-    except Exception as e:
-        return JSONResponse({"error": f"创建失败：{e}"}, status_code=500)
+            if title:
+                writer.start_writing(proj)
+            else:
+                plan = proj.plan(); meta = plan.get("meta") or {}
+                meta["title_candidates"] = cands; meta["awaiting_title"] = True
+                meta["planning_running"] = False
+                plan["meta"] = meta; plan["status"] = "awaiting_title"; proj.save_plan(plan)
+        except Exception as e:
+            print(f"[bg] 小说创建失败: {e}", flush=True)
+            try:
+                pl = json.load(open(os.path.join(pdir, "02-写作计划.json"), encoding="utf-8"))
+                pl["status"] = "failed"; pl.setdefault("meta", {})["planning_running"] = False
+                pl["meta"]["error"] = str(e)[:200]
+                json.dump(pl, open(os.path.join(pdir, "02-写作计划.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+            except Exception:
+                pass
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"project": base, "pid": base, "key": base,
+            "awaiting_title": bool(not title), "async": True,
+            "candidates": [] if title else [{"title": "候选生成中…", "technique": "", "why": ""}]}
 
 # ---------- v0.2：作品库管理 + 审查后重写 ----------
 _REWRITING = {}  # key -> {"running":bool,"result":dict}
@@ -1542,15 +1568,21 @@ async def api_script_scene(key: str, no: int):
 
 @app.post("/api/script/write")
 async def api_script_write(payload: dict):
-    """按场次清单写正文。payload: {key, only?: [场次号]}"""
+    """按场次清单写正文。payload: {key, only?: [场次号]}
+    v1.2.2：改后台线程（写 30 场是分钟级 LLM 任务，async 内同步跑会阻塞事件循环）。"""
+    import threading as _th
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    try:
-        return script_writer.write_scenes(proj, only=payload.get("only"))
-    except Exception as e:
-        return JSONResponse({"error": f"写作失败：{e}"}, status_code=500)
+    only = payload.get("only")
+    def _bg():
+        try:
+            script_writer.write_scenes(proj, only=only)
+        except Exception as e:
+            print(f"[bg] 剧本写作失败: {e}", flush=True)
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "async": True, "key": key, "msg": "写作已后台启动，工作台轮询可见进度"}
 
 
 @app.get("/api/script/revisions")
@@ -1569,15 +1601,19 @@ async def api_script_quality(key: str):
 
 @app.post("/api/script/revise")
 async def api_script_revise(payload: dict):
-    """S6 通读修订 + 评分。"""
+    """S6 通读修订 + 评分。v1.2.2：后台线程。"""
+    import threading as _th
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    try:
-        return script_writer.run_revision(proj)
-    except Exception as e:
-        return JSONResponse({"error": f"修订失败：{e}"}, status_code=500)
+    def _bg():
+        try:
+            script_writer.run_revision(proj)
+        except Exception as e:
+            print(f"[bg] 剧本修订失败: {e}", flush=True)
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "async": True, "key": key, "msg": "修订已后台启动"}
 
 
 @app.get("/api/script/export")

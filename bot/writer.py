@@ -733,15 +733,18 @@ def _write_chapter(proj, ch, min_words, max_retries):
             pass
     with proj.lock:   # v0.6 B：并行下读改写 02-写作计划.json 原子化，避免多 worker 互踩
         plan = proj.plan()
+        # v1.2.2：扩写 3 轮仍不足 min_words，但有实质内容（≥60% 目标）→ 视为完成（soft pass），
+        # 不再把整章标 failed（真实 LLM 常给 2600-2900 字；标 failed 会误导用户以为没写出来）
+        soft_ok = ok or words >= int(min_words * 0.6)
         for c in plan["chapters"]:
             if c["chapterNumber"] == no:
-                c["status"] = "completed" if ok else "failed"
+                c["status"] = "completed" if soft_ok else "failed"
                 c["wordCount"] = words
                 c["wordCountPass"] = ok
                 c["retryCount"] = i
         proj.save_plan(plan)
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
-             if ok else f"❌ 第{no}章未达标（{words}字）")
+             if (ok or words >= int(min_words * 0.6)) else f"❌ 第{no}章未达标（{words}字）")
     # v0.5 M1：逐章评分 + 低于 90 自动局部重写（可配关，失败不阻断主流程）
     if ok:
         try:

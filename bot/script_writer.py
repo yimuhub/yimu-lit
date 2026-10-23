@@ -448,6 +448,14 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
         _write(os.path.join(pdir, F_SEASON), f"# {name} 季弧与分集\n\n" + (struct or ""))
 
     proj.log(f"✅ 规划就绪：《{name}》{len(scenes)} 场")
+    # v1.2.2：规划完成后自动开写全部场次（后台线程），状态 planning → writing
+    import threading as _th
+    def _auto():
+        try:
+            write_scenes(proj)
+        except Exception as e:
+            print(f"[bg] 剧本自动写作失败: {e}", flush=True)
+    _th.Thread(target=_auto, daemon=True).start()
     return proj
 
 
@@ -499,7 +507,12 @@ def write_scenes(proj: ScriptProject, only: list[int] | None = None) -> dict:
         done += 1
         proj.save_plan(plan)
 
-    plan["status"] = "in_progress" if done else plan.get("status", "planning")
+    # v1.2.2：全部场次完成 → 状态 completed（否则一直 in_progress，用户以为没写完）
+    if done and done >= len(scenes):
+        plan["status"] = "completed"
+        plan.setdefault("meta", {})["stage"] = "S7"
+    else:
+        plan["status"] = "in_progress" if done else plan.get("status", "planning")
     proj.save_plan(plan)
     proj.log(f"✅ 本轮写完 {done} 场")
     return {"ok": True, "written": done, "total": len(scenes)}
