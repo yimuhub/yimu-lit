@@ -552,8 +552,9 @@ function showTitlePicker(r){
 async function pickTitle(key,title){
   toast("《"+esc(title)+"》开写中…","ok");closeDlg();
   try{
-    await api("/api/pick-title",{method:"POST",body:JSON.stringify({project:key,title})});
-    openBook(key);
+    const r=await api("/api/pick-title",{method:"POST",body:JSON.stringify({key,title})});
+    openBook(r.key||key);   // 后端按书名重命名目录 → 用新 key
+    loadTasks();
   }catch(e){toast("失败："+esc(String(e)),"err");}
 }
 

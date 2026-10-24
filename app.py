@@ -1680,6 +1680,8 @@ async def api_script_write(payload: dict):
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     only = payload.get("only")
+    if not only and payload.get("sceneNo"):
+        only = [int(payload["sceneNo"])]
     def _bg():
         try:
             script_writer.write_scenes(proj, only=only)
@@ -1726,9 +1728,10 @@ async def api_script_export(key: str):
     txt = script_writer.export_text(key)
     if not txt:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
+    from urllib.parse import quote as _q
     return Response(txt, media_type="text/plain; charset=utf-8",
                     headers={"Content-Disposition":
-                             f'attachment; filename="{key}.txt"'})
+                             f"attachment; filename=\"script.txt\"; filename*=UTF-8''{_q(key)}.txt"})
 
 
 @app.get("/api/script/forms")
