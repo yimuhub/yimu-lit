@@ -40,6 +40,8 @@ class SkillFile:
     size: int = 0
     text: str = ""
     external: bool = False
+    #: 反馈进化产出的技能：frontmatter 标 evolved: true，或位于 _evolved/ 目录。
+    evolved: bool = False
 
     def header(self) -> str:
         """文件头注释：来源与许可要能随内容一起被 LLM 看到，避免误引。"""
@@ -143,6 +145,8 @@ def _load_one(path: str, relpath: str, external: bool = False) -> SkillFile | No
         weight = int(weight)
     except Exception:
         weight = 3
+    evolved = str(fm.get("evolved") or "").strip().lower() in ("true", "1", "yes") \
+        or "_evolved" in relpath.split(os.sep)
     return SkillFile(
         relpath=relpath,
         name=str(fm.get("name") or os.path.splitext(os.path.basename(relpath))[0]),
@@ -156,6 +160,7 @@ def _load_one(path: str, relpath: str, external: bool = False) -> SkillFile | No
         size=len(text),
         text=text,
         external=external,
+        evolved=evolved,
     )
 
 
@@ -166,6 +171,8 @@ def index(rebuild: bool = False) -> list[SkillFile]:
         return _INDEX
     items: list[SkillFile] = []
     for rel in _iter_md(SKILLKIT_DIR):
+        if rel == "README.md":
+            continue  # 顶层说明文档不是技能，避免被当成通用技能注入每个阶段
         sf = _load_one(os.path.join(SKILLKIT_DIR, rel), rel)
         if sf:
             items.append(sf)
@@ -202,10 +209,15 @@ def read(relpath: str) -> str:
 
 
 def by_name(name: str) -> SkillFile | None:
+    """按 name 取技能；同名时 evolved 版本优先（进化覆盖原稿）。"""
+    fallback = None
     for sf in index():
-        if sf.name == name:
+        if sf.name != name:
+            continue
+        if sf.evolved:
             return sf
-    return None
+        fallback = fallback or sf
+    return fallback
 
 
 # ---------------------------------------------------------------- 注入
@@ -238,12 +250,20 @@ def pick(med: str, stage: str, include_case: bool = False,
             continue
         cand.append(sf)
 
+    # 同名只留一个：evolved 覆盖原文件，避免同一套方法被注入两遍。
+    unique: dict[str, SkillFile] = {}
+    for sf in cand:
+        cur = unique.get(sf.name)
+        if cur is None or (sf.evolved and not cur.evolved):
+            unique[sf.name] = sf
+    cand = list(unique.values())
+
     def sort_key(sf: SkillFile):
-        # 命中的题材排最前；其它题材排最后（数量不够时才补位）
-        if gkey and gen_dir in sf.relpath:
-            if sf.relpath.endswith(os.path.join(gen_dir, gkey + ".md")):
+        # 命中题材排最前；未指定题材时题材文件垫底（先用通用方法，缺额再补题材）
+        if gen_dir in sf.relpath:
+            if gkey and sf.relpath.endswith(os.path.join(gen_dir, gkey + ".md")):
                 return (0, -sf.weight, sf.relpath)      # 命中题材：最高优先
-            return (2, -sf.weight, sf.relpath)          # 其它题材：垫底
+            return (2, -sf.weight, sf.relpath)          # 其它/未指定题材：垫底
         return (1, -sf.weight, sf.relpath)              # 非题材文件：中间
 
     cand.sort(key=sort_key)
@@ -288,30 +308,42 @@ def stage_inject(stage: str, med: str, extra: list[str] | None = None,
     files = pick(med, stage, include_case=include_case, limit=limit, genre=genre)
     if extra:
         chosen = {sf.relpath for sf in files}
+        chosen_names = {sf.name for sf in files}
         for nm in extra:
             sf = by_name(nm)
-            if sf and sf.relpath not in chosen:
+            if sf and sf.relpath not in chosen and sf.name not in chosen_names:
                 files.append(sf)
                 chosen.add(sf.relpath)
+                chosen_names.add(sf.name)
 
-    parts: list[str] = []
+    header = f"【{medium_mod.label(med)} · {stage} 阶段参考】"
+    entries: list[tuple[SkillFile, str]] = []
     total = 0
     dropped: list[str] = []
     for sf in sorted(files, key=lambda s: -s.weight):
         head = sf.header()
         body = sf.text
         piece = f"\n\n===== 技能：{sf.title or sf.name}（{sf.relpath}）=====\n{head}{body}"
-        if total + len(piece) > max_bytes and parts:
+        if total + len(piece) > max_bytes and entries:
             dropped.append(sf.relpath)
             continue
-        parts.append(piece)
+        entries.append((sf, piece))
         total += len(piece)
 
-    if not parts:
+    def _assemble() -> str:
+        out = header + "".join(piece for _sf, piece in entries)
+        if dropped:
+            out += f"\n\n（本次因篇幅限制未注入：{', '.join(dropped)}）"
+        return out
+
+    if not entries:
         return ""
-    out = f"【{medium_mod.label(med)} · {stage} 阶段参考】" + "".join(parts)
-    if dropped:
-        out += f"\n\n（本次因篇幅限制未注入：{', '.join(dropped)}）"
+    out = _assemble()
+    # 头部与「未注入」尾注也占额度：超了就从最低权重（列表末尾）继续丢。
+    while len(out) > max_bytes and len(entries) > 1:
+        sf, _piece = entries.pop()
+        dropped.append(sf.relpath)
+        out = _assemble()
     return out
 
 
@@ -335,23 +367,119 @@ def list_skills(med: str = "", stage: str = "") -> list[dict]:
             "source": sf.source,
             "size": sf.size,
             "external": sf.external,
+            "evolved": sf.evolved,
         })
     return out
 
 
 def stats() -> dict:
+    """技能库统计：含 evolved 数量与「每文体每阶段有多少阶段特定技能」。
+
+    by_stage 只数「显式声明了该阶段」的文件；stages: [] 的通用文件计入 universal。
+    这样某文体某阶段为 0 时能一眼看出缺口，而不会被通用文件掩盖。
+    """
     items = index()
     by_media: dict[str, int] = {}
     by_kind: dict[str, int] = {}
     total = 0
+    evolved = 0
     for sf in items:
         total += sf.size
+        if sf.evolved:
+            evolved += 1
         for m in sf.media:
             by_media[m] = by_media.get(m, 0) + 1
         by_kind[sf.kind] = by_kind.get(sf.kind, 0) + 1
+
+    by_stage: dict[str, dict[str, int]] = {}
+    gaps: list[str] = []
+    for med in medium_mod.MEDIUMS:
+        bucket = {code: 0 for code, _n, _d in medium_mod.stages(med)}
+        universal = 0
+        for sf in items:
+            if not any(m in (med, "all") for m in sf.media):
+                continue
+            if not sf.stages:
+                universal += 1
+                continue
+            for code in sf.stages:
+                if code in bucket:
+                    bucket[code] += 1
+        bucket["universal"] = universal
+        by_stage[med] = bucket
+        gaps.extend(f"{med}/{code}" for code, n in bucket.items()
+                    if code != "universal" and n == 0)
+
     return {
         "files": len(items),
         "bytes": total,
+        "evolved": evolved,
         "by_media": by_media,
         "by_kind": by_kind,
+        "by_stage": by_stage,
+        "stage_gaps": gaps,
+    }
+
+
+# 危险片段：与 skill_evo.validate_skill 同源的精简版（避免循环 import）
+_DANGER_RE = re.compile(
+    r"(忽略(?:以上|上面|之前|先前)(?:的)?(?:所有|全部)?(?:指令|提示|规则)|"
+    r"ignore\s+(?:all\s+)?(?:previous|above)\s+instructions|"
+    r"(?:输出|打印|泄露|reveal).{0,12}(?:系统提示|system\s*prompt)|"
+    r"<\s*script|<\s*iframe|javascript\s*:|"
+    r"curl\s*[^\n|]{0,120}\|\s*(?:sh|bash)|\brm\s+-rf\b)",
+    re.I,
+)
+_REQUIRED_FIELDS = ("name", "title", "medium", "stages", "kind", "weight", "license", "source")
+_MAX_SKILL_BYTES = 20 * 1024
+
+
+def validate_all() -> dict:
+    """全库体检：缺 frontmatter / 缺必填字段 / 超限 / 重名 / 危险内容。
+
+    返回结构稳定，供 API 与 CI 直接判定 ``ok``。README 与 data 目录视为文档，
+    只给 warning，不阻断发布。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    names: dict[str, list[SkillFile]] = {}
+    items = index()
+    for sf in items:
+        names.setdefault(sf.name, []).append(sf)
+        base = os.path.basename(sf.relpath).lower()
+        if base == "readme.md":
+            warnings.append(f"{sf.relpath}: 文档文件，跳过 frontmatter 校验")
+            continue
+        if sf.size > _MAX_SKILL_BYTES:
+            errors.append(f"{sf.relpath}: 超过 20KB（{sf.size} 字节）")
+        if not _FM_RE.match(sf.text):
+            errors.append(f"{sf.relpath}: 缺 frontmatter")
+            continue
+        fm = _parse_frontmatter(sf.text)
+        for key in _REQUIRED_FIELDS:
+            if key not in fm or fm.get(key) in ("", None):
+                errors.append(f"{sf.relpath}: frontmatter 缺字段 {key}")
+        if not sf.media:
+            errors.append(f"{sf.relpath}: medium 为空")
+        if _DANGER_RE.search(sf.text):
+            errors.append(f"{sf.relpath}: 含危险片段（提示注入/脚本/外链）")
+
+    for name, group in names.items():
+        if len(group) <= 1:
+            continue
+        evolved_group = [sf for sf in group if sf.evolved]
+        rest = [sf for sf in group if not sf.evolved]
+        if evolved_group and not rest:
+            errors.append(f"重名：{name} 对应多个 evolved 文件")
+        elif evolved_group and rest:
+            warnings.append(f"重名：{name} 由 evolved 覆盖原文件（{rest[0].relpath}）")
+        else:
+            errors.append(f"重名：{name} → " + ", ".join(sf.relpath for sf in group))
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "files": len(items),
+        "evolved": sum(1 for sf in items if sf.evolved),
     }

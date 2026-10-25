@@ -41,6 +41,32 @@
     "token_budget": 0,
     "lorebook": true,
     "llm_trace": true,
-    "llm_cache": false
+    "llm_cache": false,
+    "longform": {
+      "enabled": true,
+      "scale": "3m",
+      "mode": "rolling",
+      "replan_every": 10,
+      "context_budget": 24000,
+      "volume_chapters": 40,
+      "arc_chapters": 10,
+      "window_chapters": 12
+    },
+    "references": {
+      "enabled": true,
+      "max_refs": 200,
+      "max_chars_per_ref": 2000000,
+      "chunk_size": 1200,
+      "chunk_overlap": 150,
+      "retrieve_k": 6,
+      "context_chars": 4000,
+      "overlap_n": 12
+    },
+    "skill_evolution": {
+      "enabled": true,
+      "auto_propose": false,
+      "require_approval": true,
+      "eval_min_gain": 2
+    }
   }
 }

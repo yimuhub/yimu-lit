@@ -151,7 +151,7 @@ def test_novel_skill_still_loadable():
     assert len(skill.golden3()) > 50
 
 
-def test_version_is_v1_line():
+def test_version_is_semver_line():
     import re
     from bot import version
-    assert re.match(r"^1\.\d+\.\d+", version.VE), f"版本应为 1.x：{version.VE}"
+    assert re.match(r"^\d+\.\d+\.\d+", version.VE), f"版本应为 x.y.z 语义版本：{version.VE}"

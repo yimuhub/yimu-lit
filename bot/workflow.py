@@ -134,6 +134,12 @@ def _writing_system(ctx):
     ]
     if no and no <= 3:
         parts.append("【黄金三章门（本章在前 3 章）】\n" + skill.golden3()[:800])
+    if ctx.get("longform_card"):
+        parts.append("【长篇章卡纪律】本章只推进章卡列出的目标/冲突/转折/兑现与章末钩子；"
+                     "不提前消费后续卷弧事件；人物已知信息以权威状态为准；新事实若与状态冲突，以状态为准。")
+    if ctx.get("references_block") or cfg.get("_reference_block"):
+        parts.append("【参考资料纪律】只吸收事实、结构与风格，禁止连续复制原文 12 字以上；"
+                     "引用须标注来源；与用户设定冲突时以用户设定为准。")
     parts += [
         "硬性要求：正文 3000-5000 汉字；章首引子 50-150 字；对话占比 30%+；全章≥2个爽点/张力波峰；"
         "≥1个意外转折；结尾必留钩子；严守人物性格与知情范围一致性；动笔前先消化上一章结尾语态。",
@@ -160,6 +166,26 @@ def _continuity_block(ctx):
             "\n【连续性纪律】动笔前核对：人物姓名/称谓/身份、谁此刻知道什么、时间/伤势/物品/规则是否前后一致；"
             "本章开头承接上一章结尾的即时状态，不复述已发生内容。")
 
+def _longform_block(ctx):
+    """长篇内核：本章章卡 + 权威状态 + 连续性警告 + 参考资料（缺失自动省略）。"""
+    from . import longform as _lf
+    parts = []
+    card = ctx.get("longform_card")
+    if isinstance(card, dict) and (card.get("goal") or card.get("conflict") or card.get("turn")):
+        parts.append("【本章章卡（最高优先级：只写卡内事件，不提前消费后续剧情）】\n"
+                     + _lf.render_card(card))
+    if ctx.get("state_excerpt"):
+        parts.append("【权威状态（本章相关；与人物档案冲突时以此为准）】\n"
+                     + str(ctx["state_excerpt"])[:5000])
+    warns = ctx.get("continuity_warnings") or []
+    if warns:
+        parts.append("【连续性警告（动笔前处理）】\n" + "\n".join(f"- {w}" for w in warns[:10]))
+    refs = ctx.get("references_block") or (ctx.get("cfg") or {}).get("_reference_block")
+    if refs:
+        parts.append(str(refs)[:4500])
+    return "\n\n".join(parts)
+
+
 def _p5_block(ctx):
     """P5：故事图谱相关实体 + 语义检索的既往片段（防长篇遗忘设定）；缺失则省略。"""
     g, r = ctx.get("graph_ctx") or {}, ctx.get("retrieval_ctx") or []
@@ -179,6 +205,7 @@ def _p5_block(ctx):
 def write_chapter(ctx):
     cont = _continuity_block(ctx)
     p5 = _p5_block(ctx)
+    lf = _longform_block(ctx)
     # v0.4：读者即时修正指令（运行中随时插一条，标 immediate 立即生效 / 否则下一条生效）
     qnote = (ctx.get("queue_note") or "").strip()
     qblock = ("\n【读者即时指令（本章必须优先满足，不破坏既有剧情设定）】\n" + qnote) if qnote else ""
@@ -188,6 +215,7 @@ def write_chapter(ctx):
     if ctx.get("continuation"):
         user_p = (
             f"{bblock}"
+            f"{lf}\n"
             f"【本书文风基准】\n{ctx['style_text']}\n"
             f"【人物档案】\n{ctx['characters_text']}\n"
             f"【全书大纲要点】\n{ctx.get('outline_text','')[:3000]}\n"
@@ -203,6 +231,7 @@ def write_chapter(ctx):
                          {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
     user_p = (
         f"{bblock}"
+        f"{lf}\n"
         f"【本书文风基准】\n{ctx['style_text']}\n"
         f"【人物档案】\n{ctx['characters_text']}\n"
         f"【大纲】\n{ctx['outline_text']}\n"

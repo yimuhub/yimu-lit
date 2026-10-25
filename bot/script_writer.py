@@ -161,9 +161,14 @@ def _merge_cfg(cfg: dict | None) -> dict:
     return base
 
 
-def _ctx(stage: str, extra: list[str] | None = None, include_case: bool = False) -> str:
-    """剧本阶段的最小上下文注入。"""
-    return skillkit.stage_inject(stage, "script", extra=extra, include_case=include_case)
+def _ctx(stage: str, extra: list[str] | None = None, include_case: bool = False,
+         cfg: dict | None = None) -> str:
+    """剧本阶段的最小上下文注入；创作前上传的参考资料随 cfg 一并进入。"""
+    text = skillkit.stage_inject(stage, "script", extra=extra, include_case=include_case)
+    block = (cfg or {}).get("_reference_block")
+    if block:
+        text += "\n\n" + str(block)
+    return text
 
 
 # ---------------------------------------------------------------- 阶段生成
@@ -201,7 +206,7 @@ def gen_premise(cfg: dict) -> str:
         f"用户给的素材/想法：{cfg.get('idea') or '（用户未给，请基于给定前提自行设计）'}\n"
         f"补充说明：{cfg.get('notes') or '无'}"
     )
-    return _gen("剧本 · 引擎", task, _ctx("S0"), cfg, "planning")
+    return _gen("剧本 · 引擎", task, _ctx("S0", cfg=cfg), cfg, "planning")
 
 
 def gen_characters(cfg: dict) -> str:
@@ -218,7 +223,7 @@ def gen_characters(cfg: dict) -> str:
         "4. **人物关系网**：每两人之间一件未结的事\n\n"
         f"已知素材：{cfg.get('idea') or '（见引擎部分）'}"
     )
-    return _gen("剧本 · 人物", task, _ctx("S1"), cfg, "planning")
+    return _gen("剧本 · 人物", task, _ctx("S1", cfg=cfg), cfg, "planning")
 
 
 def gen_structure(cfg: dict) -> str:
@@ -247,7 +252,7 @@ def gen_structure(cfg: dict) -> str:
             "5. **第二幕「对手赢的戏」清单**（第三幕要原样奉还的场次）\n"
             "6. **结尾一句话**（最后一场戏的新平衡是什么）\n"
         )
-    return _gen("剧本 · 结构", task, _ctx("S3"), cfg, "planning")
+    return _gen("剧本 · 结构", task, _ctx("S3", cfg=cfg), cfg, "planning")
 
 
 def gen_scenes(cfg: dict, total_scenes: int) -> str:
@@ -262,7 +267,7 @@ def gen_scenes(cfg: dict, total_scenes: int) -> str:
         "4. 主要角色的戏占比 50-60%，留出 B 故事线与轻喜剧线的位置\n"
         "5. 场景数与总页数要能对上（中文剧本 1 页约 1 分钟）\n"
     )
-    return _gen("剧本 · 场次", task, _ctx("S4"), cfg, "planning")
+    return _gen("剧本 · 场次", task, _ctx("S4", cfg=cfg), cfg, "planning")
 
 
 def gen_scene_body(scene: dict, ctx_extra: str, cfg: dict) -> str:
@@ -289,7 +294,7 @@ def gen_scene_body(scene: dict, ctx_extra: str, cfg: dict) -> str:
         f"9. 只输出这一场的正文，不要写场次编号、页码或任何说明\n\n"
         f"上下文材料：\n{ctx_extra}"
     )
-    return _gen("剧本 · 写作", task, _ctx("S5"), cfg, "writing", max_tokens=4000)
+    return _gen("剧本 · 写作", task, _ctx("S5", cfg=cfg), cfg, "writing", max_tokens=4000)
 
 
 def gen_revision(full_text: str, cfg: dict) -> str:
@@ -306,7 +311,7 @@ def gen_revision(full_text: str, cfg: dict) -> str:
         "4. 如果某方面没问题，写「无重大问题」即可\n\n"
         f"初稿：\n{full_text[:12000]}"
     )
-    return _gen("剧本 · 修订", task, _ctx("S6"), cfg, "review")
+    return _gen("剧本 · 修订", task, _ctx("S6", cfg=cfg), cfg, "review")
 
 
 def score_script(text: str, cfg: dict) -> dict:

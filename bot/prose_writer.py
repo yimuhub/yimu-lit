@@ -134,8 +134,12 @@ def _merge_cfg(cfg: dict | None) -> dict:
     return base
 
 
-def _ctx(stage: str) -> str:
-    return skillkit.stage_inject(stage, "prose")
+def _ctx(stage: str, cfg: dict | None = None) -> str:
+    text = skillkit.stage_inject(stage, "prose")
+    block = (cfg or {}).get("_reference_block")
+    if block:
+        text += "\n\n" + str(block)
+    return text
 
 
 def _gen(stage_label: str, task: str, ctx: str, cfg: dict,
@@ -196,7 +200,7 @@ def gen_brief(cfg: dict) -> str:
         f"7. **事实清单**（要写到的具体事实、数字、事件、引文；不确定的列出来）\n\n"
         f"用户给的内容：{cfg.get('idea') or '（未给，请拟定一个可行的 brief 并标注哪些是待确认）'}"
     )
-    return _gen("散文 · Brief", task, _ctx("B"), cfg, "planning")
+    return _gen("散文 · Brief", task, _ctx("B", cfg=cfg), cfg, "planning")
 
 
 def gen_material(cfg: dict, brief: str) -> str:
@@ -210,7 +214,7 @@ def gen_material(cfg: dict, brief: str) -> str:
         "5. **文风参考**（若用户给了样本，说明要采样的维度）\n\n"
         f"Brief：\n{brief[:2500]}"
     )
-    return _gen("散文 · 素材", task, _ctx("S"), cfg, "planning")
+    return _gen("散文 · 素材", task, _ctx("S", cfg=cfg), cfg, "planning")
 
 
 def gen_draft(cfg: dict, brief: str, material: str, operation: str,
@@ -231,7 +235,7 @@ def gen_draft(cfg: dict, brief: str, material: str, operation: str,
             "4. 最后列出「优先改的三处」\n\n"
             f"原文：\n{source_text[:10000]}"
         )
-        return _gen("散文 · 审稿", task, _ctx("A"), cfg, "review", max_tokens=4000)
+        return _gen("散文 · 审稿", task, _ctx("A", cfg=cfg), cfg, "review", max_tokens=4000)
 
     if operation == "refactor":
         task = (
@@ -245,7 +249,7 @@ def gen_draft(cfg: dict, brief: str, material: str, operation: str,
             f"素材：\n{material[:1200]}\n\n"
             f"原文：\n{source_text[:10000]}"
         )
-        return _gen("散文 · 修改", task, _ctx("A"), cfg, "review", max_tokens=6000)
+        return _gen("散文 · 修改", task, _ctx("A", cfg=cfg), cfg, "review", max_tokens=6000)
 
     if operation == "recreate":
         task = (
@@ -258,7 +262,7 @@ def gen_draft(cfg: dict, brief: str, material: str, operation: str,
             f"素材：\n{material[:1200]}\n\n"
             f"原文：\n{source_text[:8000]}"
         )
-        return _gen("散文 · 重写", task, _ctx("D"), cfg, "writing", max_tokens=6000)
+        return _gen("散文 · 重写", task, _ctx("D", cfg=cfg), cfg, "writing", max_tokens=6000)
 
     task = (
         f"按下面的 brief 与素材，写一篇{genre}。\n\n"
@@ -272,7 +276,7 @@ def gen_draft(cfg: dict, brief: str, material: str, operation: str,
         f"Brief：\n{brief[:2000]}\n\n"
         f"素材：\n{material[:1800]}"
     )
-    return _gen("散文 · 起草", task, _ctx("D"), cfg, "writing", max_tokens=6000)
+    return _gen("散文 · 起草", task, _ctx("D", cfg=cfg), cfg, "writing", max_tokens=6000)
 
 
 def gen_polish(text: str, cfg: dict) -> str:
@@ -289,7 +293,7 @@ def gen_polish(text: str, cfg: dict) -> str:
         "有未过的写明原因。\n\n"
         f"稿件：\n{text[:10000]}"
     )
-    return _gen("散文 · 精修", task, _ctx("P"), cfg, "review", max_tokens=7000)
+    return _gen("散文 · 精修", task, _ctx("P", cfg=cfg), cfg, "review", max_tokens=7000)
 
 
 # ---------------------------------------------------------------- 生命周期

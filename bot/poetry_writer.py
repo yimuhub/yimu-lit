@@ -125,8 +125,12 @@ def _merge_cfg(cfg: dict | None) -> dict:
     return base
 
 
-def _ctx(stage: str) -> str:
-    return skillkit.stage_inject(stage, "poetry")
+def _ctx(stage: str, cfg: dict | None = None) -> str:
+    text = skillkit.stage_inject(stage, "poetry")
+    block = (cfg or {}).get("_reference_block")
+    if block:
+        text += "\n\n" + str(block)
+    return text
 
 
 def normalize_form(form: str) -> str:
@@ -171,7 +175,7 @@ def gen_note(cfg: dict) -> str:
         f"5. **难点预判**（写这首诗最可能卡住的地方）\n\n"
         f"用户输入：{cfg.get('idea') or '（未给，请自行拟定题目）'}"
     )
-    return _gen("诗词 · 释读", task, _ctx("I"), cfg, "planning")
+    return _gen("诗词 · 释读", task, _ctx("I", cfg=cfg), cfg, "planning")
 
 
 def gen_plan(cfg: dict) -> str:
@@ -196,7 +200,7 @@ def gen_plan(cfg: dict) -> str:
             "5. **对仗设计**（律诗）：颔联、颈联各准备什么对子\n"
             "6. **难点预判**\n"
         )
-    return _gen("诗词 · 规划", task, _ctx("P"), cfg, "planning")
+    return _gen("诗词 · 规划", task, _ctx("P", cfg=cfg), cfg, "planning")
 
 
 def gen_draft(cfg: dict, plan_text: str) -> str:
@@ -221,7 +225,7 @@ def gen_draft(cfg: dict, plan_text: str) -> str:
         f"4. 结尾要落得住，不要用套话收尾。\n\n"
         f"创作规划：\n{plan_text[:3000]}"
     )
-    return _gen("诗词 · 起草", task, _ctx("C"), cfg, stage_code="writing", max_tokens=1500)
+    return _gen("诗词 · 起草", task, _ctx("C", cfg=cfg), cfg, stage_code="writing", max_tokens=1500)
 
 
 def check_draft(text: str, form: str) -> dict:
@@ -254,7 +258,7 @@ def gen_revise(text: str, report: dict, cfg: dict) -> str:
         "4. 「待定」类问题（多音字）按句义选读音，自己定夺。\n"
         "5. 只输出改后的诗本身，不要说明改了什么。\n"
     )
-    return _gen("诗词 · 评改", task, _ctx("R"), cfg, stage_code="review", max_tokens=1500)
+    return _gen("诗词 · 评改", task, _ctx("R", cfg=cfg), cfg, stage_code="review", max_tokens=1500)
 
 
 def gen_critique(text: str, cfg: dict) -> str:

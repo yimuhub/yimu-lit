@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-theme-preference="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff">
+  <title>神笔 · 创作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%234176E6'/%3E%3Cpath d='M9 22.5c4.2-.4 7.6-2.2 10.2-5.4 1.6-2 2.6-4.3 3-6.9-2.6.4-4.9 1.4-6.9 3-3.2 2.6-5 6-5.4 10.2z' fill='none' stroke='white' stroke-width='1.7' stroke-linejoin='round'/%3E%3Cpath d='M9.5 22.5l4.6-4.6' stroke='white' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./css/tokens.css?v=24">
+  <link rel="stylesheet" href="./css/shell.css?v=24">
+  <link rel="stylesheet" href="./css/chat.css?v=24">
+  <link rel="stylesheet" href="./css/composer.css?v=24">
+  <link rel="stylesheet" href="./css/panels.css?v=24">
+  <link rel="stylesheet" href="./css/settings.css?v=24">
+</head>
+<body>
+  <a class="skip-link" href="#view">跳到主要内容</a>
+
+  <div class="app" id="app" data-sidebar="expanded" data-right="closed">
+    <aside class="sidebar-col" id="sidebar" aria-label="作品导航"></aside>
+
+    <div class="center-col">
+      <header class="topbar" id="topbar"></header>
+      <main class="center-main" id="view" tabindex="-1"></main>
+    </div>
+
+    <aside class="right-col" id="rightbar" aria-label="工作台面板"></aside>
+
+    <div class="resize-handle resize-left" id="handleLeft" role="separator"
+         aria-orientation="vertical" aria-label="调整侧栏宽度" tabindex="0"></div>
+    <div class="resize-handle resize-right" id="handleRight" role="separator"
+         aria-orientation="vertical" aria-label="调整右侧面板宽度" tabindex="0"></div>
+    <div class="right-backdrop" id="rightBackdrop" hidden></div>
+    <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  </div>
+
+  <div class="overlay-layer" id="overlays"></div>
+  <div class="toast-stack" id="toasts" role="status" aria-live="polite"></div>
+
+  <script type="module" src="./js/app.js?v=24"></script>
+</body>
+</html>

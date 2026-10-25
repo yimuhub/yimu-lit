@@ -121,6 +121,38 @@ def _write_cfg_text(pdir, fname, body):
     with open(os.path.join(pdir, fname), "w", encoding="utf-8") as f:
         f.write(body)
 
+def _plan_references(proj=None, cfg=None, limit=8):
+    """给总规划/卷弧规划用的参考资料摘要；只读 meta，不触发 LLM。"""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    try:
+        from . import references as _refs
+        ids = [str(x) for x in (cfg.get("reference_ids") or []) if str(x).strip()]
+        key = os.path.basename(proj.path) if proj is not None else ""
+        if key:
+            for rid in _refs.project_ref_ids(key):
+                if rid not in ids:
+                    ids.append(rid)
+        out = []
+        for rid in ids[:limit]:
+            meta = _refs.get_ref(rid) or {}
+            if not meta or meta.get("usage_mode") == "disabled":
+                continue
+            a = meta.get("analysis") if isinstance(meta.get("analysis"), dict) else {}
+            bits = [str(a.get("summary") or meta.get("summary") or "").strip()]
+            if a.get("structure"):
+                bits.append("结构：" + str(a["structure"]))
+            if a.get("style_traits"):
+                bits.append("风格：" + "；".join(str(x) for x in a["style_traits"][:6]))
+            if a.get("key_facts"):
+                bits.append("事实：" + "；".join(str(x) for x in a["key_facts"][:8]))
+            if a.get("caution"):
+                bits.append("注意：" + "；".join(str(x) for x in a["caution"][:4]))
+            out.append({"id": rid, "title": meta.get("title") or rid,
+                        "excerpt": " ".join(b for b in bits if b)[:900]})
+        return out
+    except Exception:
+        return []
+
 def create_project(cfg, titles, pdir=None, name=None):
     """生成项目目录 + 00人物/01大纲/03文风 + 02-写作计划.json（按选定标题命名）
     ShenBi：另生成 09故事圣经/10线索账本/11章节摘要/12时间线（可配 v3_pipeline 关）。
@@ -147,7 +179,12 @@ def create_project(cfg, titles, pdir=None, name=None):
         total = 10
     cfg2 = dict(cfg)
     cfg2["chapters"] = total
-    outline = workflow.gen_outline(cfg2)
+    # 百万字规模下不让一次 LLM 输出上千章细纲：先生成前 40 章的“开卷细纲”，
+    # 其余结构交给 longform 的卷/弧/章卡分层规划按窗口滚动补齐。
+    cfg_outline = dict(cfg2)
+    if total > 60:
+        cfg_outline["chapters"] = 40
+    outline = workflow.gen_outline(cfg_outline)
     open(os.path.join(pdir, "01-大纲.md"), "w", encoding="utf-8").write(
         f"# {name} 大纲\n\n" + outline)
 
@@ -202,6 +239,20 @@ def create_project(cfg, titles, pdir=None, name=None):
                      for i, t in enumerate(chapter_titles)]}
     proj.save_plan(plan)
     proj.log(f"📐 阶段2 完成：《{name}》{total}章规划就绪")
+    # v2 长篇分层规划：卷 → 弧 → 章卡（支持百万字规模与后续滚动重规划）
+    _lf = (cfg.get("longform") if isinstance(cfg.get("longform"), dict)
+           else (_cfg_defaults().get("longform") or {}))
+    if _lf.get("enabled", True):
+        try:
+            from . import longform as _longform
+            proj.log("📚 阶段2：生成分层规划（卷 / 弧 / 章卡）…")
+            _longform.ensure_plan(proj, cfg)
+            _longform.plan_book(proj, cfg, references=_plan_references(proj, cfg))
+            d = _longform.plan_digest(proj)
+            proj.log(f"📚 分层规划就绪：{d.get('chapters_planned')} 章 / "
+                     f"{d.get('volumes')} 卷；目标 {d.get('scale', {}).get('target_words', 0)} 字")
+        except Exception as e:
+            proj.log(f"⚠️ 分层规划失败（可稍后重建，不影响开写）：{e}")
     return proj
 
 # ---------- 阶段3/4 ----------
@@ -343,6 +394,42 @@ def _chapter_file_path(proj, ch):
     return os.path.join(proj.path, ch["filePath"])
 
 def _build_ctx(proj, ch):
+    """v2：优先用分层上下文编译器（章卡/状态库/伏笔/预算/参考资料）；
+    任何异常都退回旧版拼装，保证老项目与弱环境仍可写。"""
+    plan = proj.plan() or {}
+    cfg = plan.get("config") if isinstance(plan.get("config"), dict) else {}
+    _lf = cfg.get("longform") if isinstance(cfg.get("longform"), dict) else None
+    _lf = _lf or (_cfg_defaults().get("longform") or {})
+    if _lf.get("enabled", True):
+        try:
+            from . import context as _context
+            ctx = _context.build(proj, ch, cfg, None)
+            # 每章按本章问题动态检索参考资料，覆盖建档时的静态摘要
+            try:
+                from . import references as _refs
+                ids = _refs.project_ref_ids(os.path.basename(proj.path))
+                if ids:
+                    q = " ".join(str(x) for x in (
+                        ch.get("title") or "",
+                        (ctx.get("longform_card") or {}).get("goal") or "",
+                        (ctx.get("prev_tail") or "")[-500:]) if x)
+                    block = _refs.context_block(q, ids,
+                                                max_chars=int(_lf.get("context_chars", 4000)))
+                    if block:
+                        ctx["references_block"] = block
+            except Exception:
+                pass
+            ctx["queue_note"] = ""
+            return ctx
+        except Exception as e:
+            try:
+                proj.log(f"⚠️ 分层上下文不可用，已回退旧版：{e}")
+            except Exception:
+                pass
+    return _build_ctx_legacy(proj, ch)
+
+
+def _build_ctx_legacy(proj, ch):
     plan = proj.plan()
     cfg = plan["config"]
     def _rf(fname):
@@ -563,12 +650,145 @@ def blueprint_block(proj, ch_no):
         L.append("· 下一章（预告对齐）：" + _bt(ch_no + 1))
     return "\n".join(L)[:3500]
 
+_LF_GUARD: dict[str, int] = {}
+_LF_GUARD_LOCK = threading.Lock()
+
+
+def _longform_cfg(proj):
+    plan = proj.plan() or {}
+    cfg = plan.get("config") if isinstance(plan.get("config"), dict) else {}
+    lf = cfg.get("longform") if isinstance(cfg.get("longform"), dict) else None
+    return cfg, (lf or (_cfg_defaults().get("longform") or {}))
+
+
+def _ensure_layered_plan(proj):
+    """老项目开写前迁移成卷/弧/章卡；纯文件操作，不花 LLM，失败不阻断。"""
+    cfg, lf = _longform_cfg(proj)
+    if not lf.get("enabled", True):
+        return
+    try:
+        from . import longform as _lfmod
+        _lfmod.ensure_plan(proj, cfg)
+    except Exception as e:
+        try:
+            proj.log(f"⚠️ 分层规划迁移失败（沿用扁平大纲）：{e}")
+        except Exception:
+            pass
+
+
+def _maybe_replan(proj, next_no):
+    """每 N 章 / 弧卷边界 / 伏笔逾期时，滚动规划未来窗口的章卡。"""
+    cfg, lf = _longform_cfg(proj)
+    if not lf.get("enabled", True):
+        return
+    try:
+        from . import longform as _lfmod
+        need, reason = _lfmod.should_replan(proj, next_no, cfg)
+        if not need:
+            return
+        with _LF_GUARD_LOCK:
+            if _LF_GUARD.get(proj.path, 0) >= next_no:
+                return
+            _LF_GUARD[proj.path] = next_no
+        window = max(4, int(cfg.get("window_chapters") or lf.get("window_chapters") or 12))
+        start, end = int(next_no), int(next_no) + window - 1
+        proj.log(f"🧭 滚动重规划：{reason}（第{start}–{end}章）")
+        res = _lfmod.plan_window(proj, start, end, reason=reason)
+        if isinstance(res, dict) and res.get("updated"):
+            proj.log(f"🧭 已更新 {res['updated']} 张章卡（{res.get('source')}）")
+    except Exception as e:
+        with _LF_GUARD_LOCK:
+            if _LF_GUARD.get(proj.path) == next_no:
+                _LF_GUARD.pop(proj.path, None)
+        try:
+            proj.log(f"⚠️ 滚动重规划失败（继续按现有规划写）：{e}")
+        except Exception:
+            pass
+
+
+def _audit_at_boundary(proj, cfg, no):
+    """弧/卷收束时做确定性体检，把问题写进 22-规划体检.json，供下一轮重规划参考。"""
+    lf = (cfg or {}).get("longform") if isinstance((cfg or {}).get("longform"), dict) else None
+    lf = lf or (_cfg_defaults().get("longform") or {})
+    if not lf.get("enabled", True):
+        return
+    try:
+        from . import longform as _lfmod
+        plan = _lfmod.ensure_plan(proj) or {}
+        no = int(no)
+        vol_end = None
+        arc_end = None
+        for v in plan.get("volumes") or []:
+            if not isinstance(v, dict):
+                continue
+            if int(v.get("end_chapter") or 0) == no:
+                vol_end = int(v.get("no") or 0)
+            for a in v.get("arcs") or []:
+                if isinstance(a, dict) and int(a.get("end_chapter") or 0) == no:
+                    arc_end = int(a.get("no") or 0)
+        if vol_end:
+            scope, issues = f"volume:{vol_end}", _lfmod.audit_volume(proj, vol_end)
+        elif arc_end:
+            scope, issues = f"arc:{arc_end}", _lfmod.audit_arc(proj, arc_end)
+        else:
+            return
+        total = int((plan.get("scale") or {}).get("chapters") or 0)
+        if total and no >= total:
+            scope = "book"
+            issues = _lfmod.audit_book(proj) or issues
+        if issues:
+            proj.log(f"🩺 规划体检（{scope}）：{len(issues)} 项待关注，已记录")
+            atomic_write_json(os.path.join(proj.path, "22-规划体检.json"),
+                              {"at": datetime.datetime.now().isoformat(),
+                               "scope": scope, "chapter": no, "issues": issues[:50]})
+    except Exception as e:
+        try:
+            proj.log(f"⚠️ 规划体检失败（不阻断）：{e}")
+        except Exception:
+            pass
+
+
+def _index_chapter_continuity(proj, ch, cfg):
+    """成章定稿后写状态库：摘要/伏笔/知情范围；参考重合只告警。绝不阻断成章。"""
+    lf = (cfg or {}).get("longform") if isinstance((cfg or {}).get("longform"), dict) else None
+    lf = lf or (_cfg_defaults().get("longform") or {})
+    if not lf.get("enabled", True):
+        return
+    no = ch["chapterNumber"]
+    fp = _chapter_file_path(proj, ch)
+    if not os.path.exists(fp):
+        return
+    try:
+        text = open(fp, encoding="utf-8").read()
+    except OSError:
+        return
+    try:
+        from . import longform as _lfmod
+        res = _lfmod.summarize_and_extract(proj, no, text, cfg)
+        proj.log(f"🧠 第{no}章连续性入库：摘要 {len(res.get('summary') or '')} 字，"
+                 f"伏笔操作 {len(res.get('foreshadow_ops') or [])} 条，"
+                 f"问题 {len(res.get('issues') or [])} 条")
+    except Exception as e:
+        proj.log(f"⚠️ 第{no}章连续性提取失败（不阻断）：{e}")
+    try:
+        from . import references as _refs
+        ids = _refs.project_ref_ids(os.path.basename(proj.path))
+        if ids:
+            ov = _refs.overlap_check(text, ids)
+            if ov.get("matches"):
+                proj.log(f"⚠️ 第{no}章与参考资料存在 {len(ov['matches'])} 处长句重合，建议改为转述")
+    except Exception:
+        pass
+    _audit_at_boundary(proj, cfg, no)
+
+
 def _write_loop_parallel(proj, n_workers=5):
     """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）。
     先熔炼『总架构』，各 worker 领 1..N 章，写完一个立即取下一未完成章；
     真 LLM 并发由 providers.ConcurrencyGuard 兜底防 429。"""
     n_workers = max(1, int(n_workers or 5))
     ensure_blueprint(proj)                       # 写任何一章前先读总架构
+    _ensure_layered_plan(proj)
     plan = proj.plan(); plan["status"] = "in_progress"; proj.save_plan(plan)
     pend = [c.get("chapterNumber") for c in plan["chapters"] if c.get("status") != "completed"]
     q = queue.Queue()
@@ -595,6 +815,7 @@ def _write_loop_parallel(proj, n_workers=5):
                 q.task_done(); continue
             try:
                 proj.log(f"🧵 Agent#{wid} 领第{no}章（总架构已注入，写完立即取下一章）")
+                _maybe_replan(proj, no)
                 _write_chapter(proj, ch, min_words, 3)   # 内部 LLM 走 ConcurrencyGuard
             except llm.BudgetExceeded as e:
                 _pause_for_budget(proj, str(e))
@@ -828,6 +1049,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 proj.log(f"📊 第{no}章 {fin if fin is not None else '?'} 分（{_st}）")
         except Exception as e:
             proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
+    _index_chapter_continuity(proj, ch, ctx.get("cfg"))
 
 def _validate_and_finish(proj):
     llm.book(os.path.basename(proj.path), "review")   # v0.3.x：五角色审校 token 归集
@@ -1009,6 +1231,7 @@ def _write_loop(proj: Project):
         plan = proj.plan()
         plan["status"] = "in_progress"
         proj.save_plan(plan)
+        _ensure_layered_plan(proj)
         for ch in plan["chapters"]:
             if is_paused(proj):
                 break
@@ -1017,6 +1240,7 @@ def _write_loop(proj: Project):
                 _pause_for_budget(proj, _msg)
                 break
             if ch["status"] != "completed":
+                _maybe_replan(proj, ch["chapterNumber"])
                 _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3)
                 _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：每写完一章即刷新写作骨架
                 if is_paused(proj):

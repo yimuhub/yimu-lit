@@ -2,7 +2,7 @@
 import json, os, re, shutil, threading, uuid, time, secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -251,6 +251,9 @@ def _rename_project(proj, new_name):
 
 @app.get("/")
 def index(request: Request):
+    """默认进入 v2 创作台；旧版保留在 /classic。"""
+    if os.path.exists(os.path.join(ROOT, "static", "v2", "index.html")):
+        return _serve_ui(os.path.join("v2", "index.html"))
     resp = FileResponse(os.path.join(ROOT, "static", "index.html"))
     resp.set_cookie(security.COOKIE_NAME, security.TOKEN, max_age=7 * 86400,
                     httponly=True, samesite="strict", path="/")
@@ -404,6 +407,29 @@ def _attach_style_ref(proj, style_id):
     except Exception:
         pass
 
+
+def _reference_block(ref_ids, query=""):
+    """创作前上传的参考资料 → 带引用标记的注入块（模块缺失/未选时为空串）。"""
+    if not ref_ids:
+        return ""
+    try:
+        from bot import references as _refs
+        return _refs.context_block(query or "", ref_ids, max_chars=4000)
+    except Exception:
+        return ""
+
+
+def _link_references(key, ref_ids):
+    """把本次创建使用的参考关联到作品目录；失败不影响创作。"""
+    if not key or not ref_ids:
+        return
+    try:
+        from bot import references as _refs
+        for rid in ref_ids:
+            _refs.link_to_project(key, rid, "facts")
+    except Exception:
+        pass
+
 @app.post("/api/create")
 def api_create(payload: dict):
     """REST 直接开书。{title?, genre?, tone?, sells?, perspective?, idea?, total_chapters?, provider_id?, model?, cfg_overrides?}。
@@ -432,6 +458,26 @@ def api_create(payload: dict):
         cfg.setdefault("defaults", {})["model"] = payload["model"]
     total = int(payload.get("total_chapters") or cfg.get("chapters") or (cfg.get("defaults") or {}).get("total_chapters") or 10)
     cfg["chapters"] = total
+    # v2：长篇规模 / 写作模式 / 参考资料。字符串规模（1m/3m/5m）折算为章数目标。
+    for k in ("scale", "writing_mode", "mode", "medium"):
+        if payload.get(k):
+            cfg[k if k != "writing_mode" else "mode"] = payload[k]
+    if isinstance(cfg.get("scale"), str):
+        try:
+            from bot import longform as _lf
+            _sc = _lf.resolve_scale({"scale": cfg["scale"], "chapters": total})
+            cfg["scale"] = {"target_words": _sc["target_words"], "chapters": _sc["chapters"],
+                            "volumes": _sc["volumes"], "label": payload["scale"]}
+            if not payload.get("total_chapters"):
+                total = _sc["chapters"]
+                cfg["chapters"] = total
+        except Exception:
+            pass
+    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
+    if ref_ids:
+        cfg["reference_ids"] = ref_ids
+        cfg["_reference_block"] = _reference_block(
+            ref_ids, " ".join(str(payload.get(k) or "") for k in ("title", "idea", "genre", "tone")))
     style_id = (payload.get("style_id") or "").strip()   # v0.3.4：蒸馏风格 id → 注入该书 craft
     # v1.2.2：/api/create 全程后台化——writer.create_project 内部有 5-8 次 LLM 调用（1-3 分钟），
     # 同步返回会把 async 事件循环卡死。这里只做轻量占位（写 02-写作计划.json 骨架 + 注册 PROJECT_INDEX），
@@ -469,6 +515,7 @@ def api_create(payload: dict):
             # 关键：把 create_project 写到同一个骨架目录，避免“接口返回 key A、实际建了目录 B”
             proj = writer.create_project(cfg2, titles, pdir=pdir)
             _attach_style_ref(proj, style_id)
+            _link_references(os.path.basename(proj.path), ref_ids)
             plan = proj.plan() or {}
             meta = plan.get("meta") or {}
             if title:
@@ -1680,6 +1727,40 @@ def _chapter_entry(proj, n):
     return chs[n - 1], plan
 
 
+_EDIT_FB_AT: dict[tuple, float] = {}
+
+
+def _project_medium(proj) -> str:
+    cfg = (proj.plan() or {}).get("config") or {}
+    med = str(cfg.get("medium") or "").strip()
+    if medium_mod.is_medium(med):
+        return med
+    for name, mod in (("script", script_writer), ("poetry", poetry_writer), ("prose", prose_writer)):
+        if os.path.exists(os.path.join(proj.path, mod.F_PLAN)):
+            return name
+    return "novel"
+
+
+def _capture_edit_feedback(proj, n: int, before: str, after: str) -> None:
+    """把改稿差异沉淀为反馈（去抖 90 秒/章），供技能自我蒸馏。"""
+    if not before or not after or before == after:
+        return
+    if abs(len(after) - len(before)) < 20 and before[:120] == after[:120]:
+        return
+    key = (proj.path, int(n))
+    now = time.time()
+    if now - _EDIT_FB_AT.get(key, 0) < 90:
+        return
+    _EDIT_FB_AT[key] = now
+    try:
+        from bot import feedback
+        feedback.capture_edit(os.path.basename(proj.path), n, before, after,
+                              medium=_project_medium(proj), stage="edit",
+                              tags=["manual_edit"])
+    except Exception:
+        pass
+
+
 def _apply_chapter_text(proj, n, text: str, label: str = "编辑前") -> int:
     """写章节正文：先留版本快照，再原子落盘，最后同步词数与成书。返回汉字数。"""
     ch, plan = _chapter_entry(proj, n)
@@ -1690,6 +1771,7 @@ def _apply_chapter_text(proj, n, text: str, label: str = "编辑前") -> int:
     if old != text:
         versions.snapshot(proj.path, n, old, label=label)
         atomic_write_text(fp, text)
+        _capture_edit_feedback(proj, n, old, text)
     words = len(re.findall(r"[\u4e00-\u9fff]", text))
     with proj.lock:
         latest = proj.plan() or plan
@@ -1998,6 +2080,11 @@ async def api_script_create(payload: dict):
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("form", "film")
+    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
+    if ref_ids:
+        cfg["reference_ids"] = ref_ids
+        cfg["_reference_block"] = _reference_block(
+            ref_ids, " ".join(str(payload.get(k) or "") for k in ("title", "idea", "form")))
     if payload.get("provider_id"):
         cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
     if payload.get("model"):
@@ -2010,6 +2097,7 @@ async def api_script_create(payload: dict):
     def _bg():
         try:
             script_writer.create_project(cfg, base_key=base)
+            _link_references(base, ref_ids)
         except Exception as e:
             print(f"[bg] 剧本规划失败: {e}", flush=True)
     _th.Thread(target=_bg, daemon=True).start()
@@ -2150,6 +2238,11 @@ async def api_poetry_create(payload: dict):
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("form", "modern")
+    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
+    if ref_ids:
+        cfg["reference_ids"] = ref_ids
+        cfg["_reference_block"] = _reference_block(
+            ref_ids, " ".join(str(payload.get(k) or "") for k in ("title", "idea", "form")))
     import threading as _th
     from datetime import datetime as _dt
     _name = poetry_writer._safe(cfg.get("title") or cfg.get("idea") or "无题")
@@ -2157,6 +2250,7 @@ async def api_poetry_create(payload: dict):
     def _bg():
         try:
             poetry_writer.create_project(cfg, base_key=base)
+            _link_references(base, ref_ids)
         except Exception as e:
             print(f"[bg] 诗词创作失败: {e}", flush=True)
     _th.Thread(target=_bg, daemon=True).start()
@@ -2223,6 +2317,11 @@ async def api_prose_create(payload: dict):
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("operation", "write")
+    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
+    if ref_ids:
+        cfg["reference_ids"] = ref_ids
+        cfg["_reference_block"] = _reference_block(
+            ref_ids, " ".join(str(payload.get(k) or "") for k in ("title", "idea", "genre")))
     import threading as _th
     from datetime import datetime as _dt
     _name = prose_writer._safe(cfg.get("title") or cfg.get("idea") or "未命名散文")
@@ -2230,6 +2329,7 @@ async def api_prose_create(payload: dict):
     def _bg():
         try:
             prose_writer.create_project(cfg, base_key=base)
+            _link_references(base, ref_ids)
         except Exception as e:
             print(f"[bg] 散文创作失败: {e}", flush=True)
     _th.Thread(target=_bg, daemon=True).start()
@@ -2265,3 +2365,50 @@ async def api_slop_scan(payload: dict):
     rep = slop_checker.scan(text)
     rep["yaml"] = slop_checker.report_yaml(rep)
     return rep
+
+
+# ---------------------------------------------------------------- v2.0 界面与接口
+# 默认 `/` 进入 v2；旧版保留在 `/classic`。静态资源由挂载提供。
+# 新内核模块全部在 bot/v2api.py 内延迟导入，缺失时返回 501，旧功能不受影响。
+def _serve_ui(filename: str):
+    resp = FileResponse(os.path.join(ROOT, "static", filename))
+    resp.set_cookie(security.COOKIE_NAME, security.TOKEN, max_age=7 * 86400,
+                    httponly=True, samesite="strict", path="/")
+    return resp
+
+
+@app.get("/classic")
+def classic(request: Request):
+    return _serve_ui("index.html")
+
+
+@app.get("/v2")
+def v2_root():
+    return RedirectResponse("/v2/", status_code=307)
+
+
+@app.get("/v2/")
+def v2_index():
+    path = os.path.join(ROOT, "static", "v2", "index.html")
+    if not os.path.exists(path):
+        return JSONResponse({"error": "v2 界面尚未构建，请先使用 /classic"},
+                            status_code=404)
+    return _serve_ui(os.path.join("v2", "index.html"))
+
+
+_V2_DIR = os.path.join(ROOT, "static", "v2")
+if os.path.isdir(_V2_DIR):
+    app.mount("/v2", StaticFiles(directory=_V2_DIR), name="v2-static")
+
+
+@app.post("/api/export")
+def api_export_post(payload: dict):
+    """兼容 v2 前端的 POST 调用；实际导出仍复用 GET /api/export。"""
+    return api_export(str(payload.get("key") or ""),
+                      str(payload.get("format") or payload.get("fmt") or "docx"))
+
+
+from bot.v2api import register_v2_routes  # noqa: E402  (需在 _get_project/chat 定义后注册)
+
+register_v2_routes(app, _get_project, chat)
+
