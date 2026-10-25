@@ -79,6 +79,10 @@ def main():
 
     _ensure_config()
     py = _pick_python(a.no_venv)
+    if a.host not in ("127.0.0.1", "localhost", "::1"):
+        _log(f"⚠️ 正在监听 {a.host}（非回环地址）。默认 Host 白名单只放行本机，"
+             f"如需局域网访问请显式设置 SHENBI_TRUSTED_HOSTS=<你的域名或IP>；"
+             f"本应用只做单机本地鉴权，不建议直接暴露公网。")
     # 直接以子进程跑 uvicorn（用选定的解释器）；--reload 时 uvicorn 监听 app.py/static 变更自动重启
     cmd = [py, "-m", "uvicorn", "app:app", "--host", a.host, "--port", str(port), "--app-dir", ROOT]
     if a.reload:

@@ -5,6 +5,7 @@
 这里提供「宇宙」语义层：AGENTS 注册表、每岗位绑定的读写、批量分发多书并发创作。
 """
 from . import providers
+from .safeio import atomic_write_json
 
 # 岗位注册表：每个子 Agent 可单独配 provider/model；缺省回落到 stage_models / 默认供应商。
 AGENTS = {
@@ -46,7 +47,7 @@ def set_binding(agent, provider_id=None, model=None):
         am[agent] = {}      # 全空 → 清空绑定
     else:
         am[agent] = cur
-    json.dump(c, open(p, "w"), ensure_ascii=False, indent=2)
+    atomic_write_json(p, c)
     return am
 
 def view():
@@ -76,7 +77,7 @@ def set_max_global(n):
     except Exception:
         c = {}
     c.setdefault("defaults", {})["max_global_agents"] = max(1, int(n))
-    json.dump(c, open(p, "w"), ensure_ascii=False, indent=2)
+    atomic_write_json(p, c)
     return c["defaults"]["max_global_agents"]
 
 

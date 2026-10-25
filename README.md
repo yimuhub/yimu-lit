@@ -9,6 +9,10 @@ pip install -r requirements.txt
 python run.py          # 默认 http://127.0.0.1:46821
 ```
 
+> **第一次用、还没有模型？** 打开首页后点左侧空状态里的「🎁 加载示例书」，
+> 会复制一本完整的 3 章悬疑短篇（约 5000 字）到作品库，可直接阅读、编辑、看评分、导出 DOCX/EPUB。
+> 再按「九、用户快速上手 → 9.7 用 Ollama 本地模型」配置一个免费本地模型即可开写。
+
 ---
 
 ## 一、这是什么
@@ -92,11 +96,11 @@ source: 方法借鉴自 jtydhr88/screenwriting-skills (MIT)，原创重写
 
 ```
 yimu-lit/
-├── app.py                  FastAPI 入口（~80 端点，含剧本/诗词/散文/slop 端点）
+├── app.py                  FastAPI 入口（~90 端点，含剧本/诗词/散文/slop/编辑/版本/导出）
 ├── bot/                    引擎层
-│   ├── llm.py              LLM 层：缓存/超时/重试/stage→agent 路由
+│   ├── llm.py              LLM 层：缓存/超时/重试/stage→agent 路由/预算/调用日志
 │   ├── providers.py        多供应商 + 全局并发闸
-│   ├── writer.py           小说主引擎（自动 deslop 去味）
+│   ├── writer.py           小说主引擎（自动 deslop 去味 / 预算暂停 / 成书重建）
 │   ├── workflow.py         小说流程编排 + deslop_chapter（两阶段）
 │   ├── medium.py           文体注册表（阶段表/评估维度/目录规范/自动路由）
 │   ├── skillkit.py         技能库索引 + stage_inject（genre 定向）
@@ -106,6 +110,12 @@ yimu-lit/
 │   ├── prose_writer.py     散文流水线（四操作）
 │   ├── poetry_checker.py   诗词格律校验器（平水韵 105 部）
 │   ├── slop_checker.py     反 AI 腔检测器（纯标准库零依赖）
+│   ├── safeio.py           路径安全（safe_join）+ 原子写（tmp+fsync+replace）
+│   ├── security.py         启动令牌鉴权 + TrustedHost 白名单
+│   ├── jobs.py             可查询/可持久化的后台任务表
+│   ├── versions.py         章节版本快照 / 差异 / 回滚
+│   ├── export.py           DOCX / EPUB3 / 打印 HTML / Fountain / FDX 导出
+│   ├── lorebook.py         设定词典关键词检索（按章精准注入）
 │   └── ...                 骨架/图谱/检索/蒸馏/学习/连续性/模型规则
 ├── skillkit/               多文体技能库（58 文件）
 │   ├── _core/              全文体共核：反AI腔总纲 / 文体总则 / 文风指纹与校准 / 组合协议
@@ -114,9 +124,13 @@ yimu-lit/
 │   ├── poetry/             诗词（近体诗/词/现代诗/平水韵数据/词牌表）
 │   └── prose/              散文（总纲/随笔/抒情/议论/叙事）
 ├── static/index.html       SPA 外壳（对话 / 稿件 / 剧本 / 散文 四视图）
-├── tests/                  pytest（100 项）
+├── samples/示例书-雨夜出租车/  内置示例书（3 章，可一键加载）
+├── tools/check_frontend_js.py  前端内联 JS 语法门禁（CI 用）
+├── tests/                  pytest（133 项）+ jsdom 回归
+├── .github/workflows/ci.yml   CI：ruff / pytest / 前端语法 / pip-audit
+├── Dockerfile / docker-compose.yml  非 root 容器 + 健康检查
 ├── data/  providers.json  config.json  secrets/  projects/   ← 运行时数据，不入库
-└── VERSION                 版本号单一来源（v1.0.0）
+└── VERSION                 版本号单一来源（v1.4.0）
 ```
 
 ---
@@ -142,6 +156,12 @@ cp config.example.json config.json
 | `defaults.llm_timeout` / `planning_timeout` | 超时秒数（默认 300） |
 | `defaults.chapter_workers` | 并行写章并发数 |
 | `defaults.max_global_agents` | 全局 Agent 并发上限 |
+| `defaults.token_budget` | 单本 token 预算（0=不限；超限自动暂停，可在设置页热改） |
+| `defaults.lorebook` | 是否按章检索设定词典并注入（默认开） |
+| `defaults.llm_trace` | 是否写结构化调用日志 `llm_calls.jsonl`（不含 prompt/密钥） |
+| `defaults.llm_cache` | 是否启用确定性 prompt 内容缓存（默认关） |
+
+以上开关也可以在界面「⚙ 设置 → 🧪 质量·预算·日志」里改，保存到本机 `config.json`。
 
 ---
 
@@ -151,7 +171,20 @@ cp config.example.json config.json
 python run.py            # 启动
 ./start.sh               # macOS/Linux 启动脚本
 start.bat / start.ps1    # Windows 启动脚本
+
+# 开发与验证
+pip install -r requirements-dev.txt
+ruff check app.py bot tests run.py tools build.py
+python -m pytest -q
+python tools/check_frontend_js.py    # 校验前端内联 script 语法（需要 node）
+
+# Docker
+docker build -t yimu-lit .
+docker compose up -d                 # http://127.0.0.1:46821
 ```
+
+Docker 镜像以非 root 用户运行，内置 `/api/version` 健康检查；`projects/`、`secrets/`、
+`config.json`、`providers.json` 通过 volume 挂载，不写进镜像。CI 见 `.github/workflows/ci.yml`。
 
 ---
 
@@ -172,6 +205,7 @@ start.bat / start.ps1    # Windows 启动脚本
 
 | 版本 | 内容 |
 |---|---|
+| v1.4.0 | 安全与可靠性整改：路径穿越 / SSRF / 存储型 XSS / 启动令牌与 Host 白名单；异步分发 + 持久化任务表 + SSE 实时；章节编辑器 + 版本快照 / 差异 / 回滚；DOCX / EPUB / 打印 / Fountain / FDX 导出；单本 token 预算暂停；Lorebook 设定检索；逐章评分证据；结构化 LLM 调用日志；全局设置页；内置示例书；Docker / CI / 前端语法门禁 |
 | v1.0.0 | 立项 + PR1–PR6 全部完成：四文体路由 / 剧本+诗词+散文流水线 / 58 文件技能库 / 7 Agent 岗位 / deslop 定点去味 / 文体自动分流 / 散文 UI |
 | v0.9.2 | 神笔小说 v0.9.2：大厂级代码终极审查（基座） |
 
@@ -198,3 +232,53 @@ start.bat / start.ps1    # Windows 启动脚本
 ### 9.5 去 AI 腔
 `POST /api/slop/scan` 纯规则扫描（零 LLM 调用）；
 小说每章审校自动注入 slop 定位；定稿前手动跑一次 slop/scan 确认。
+
+### 9.6 看示例书（零配置）
+左侧任务区为空时，点「🎁 加载示例书」→ 复制《雨夜出租车》到作品库 →
+自动打开对话区，可直接预览、编辑、看评分证据、导出。示例书不依赖任何模型。
+也可以用 `POST /api/sample` 在脚本里加载。
+
+### 9.7 用 Ollama 本地模型（不需要 API Key）
+1. 安装 [Ollama](https://ollama.com/) 并运行 `ollama serve`；
+2. 下载模型：`ollama pull qwen2.5:7b`（7B 约 4.7 GB，机器较弱可换 `qwen2.5:3b`）；
+3. 打开「⚙ 设置 → 🤖 模型规则 → ＋ 新增供应商」，预设选「Ollama 本地」；
+4. Base URL 保持 `http://127.0.0.1:11434/v1`，API Key 留空，默认模型 `qwen2.5:7b`；
+5. 保存 →「🔍 测试连通」→「设为默认」，即可开写。
+
+### 9.8 编辑、版本与导出
+- 预览弹窗里点「✏️ 编辑」进入章节编辑器，停止输入 1.2 秒自动保存，`Ctrl/Cmd+S` 立即保存；
+- 「🕘 版本」查看历史快照、逐行差异、一键回滚（每次改写/编辑/修复前自动留快照，保留 30 份）；
+- 导出支持 Markdown / DOCX / EPUB3 / 打印 HTML；剧本支持 Fountain / Final Draft XML（`.fdx`）；
+- 长任务在后台跑，任务面板显示排队/运行/完成/失败；对话区通过 SSE `/api/live/{key}` 实时刷新，断线自动回落轮询。
+
+---
+
+## 十、安全、可靠性与可观测性（v1.4.0）
+
+### 10.1 默认只对本机开放
+- 启动时生成一次性访问令牌，首页下发 `HttpOnly + SameSite=Strict` Cookie；没有令牌的 `/api/*` 请求返回 401。
+- `TrustedHostMiddleware` 默认只接受 `127.0.0.1` / `localhost` / `::1`；需要局域网访问时设置
+  `SHENBI_TRUSTED_HOSTS=192.168.1.10,myhost.local`，并自行评估暴露风险。
+- 追求极致方便可在可信环境设置 `SHENBI_AUTH=0` 关闭令牌（不建议在共享网络上使用）。
+
+### 10.2 文件与网络边界
+- 所有作品 key、章节文件名、版本 id 都经过 `safe_join` / basename 校验，拒绝 `../`、绝对路径、NUL。
+- 章节/计划写盘统一走 `atomic_write_json/text`（临时文件 + fsync + 原子替换），断电或并发不会留下半截 JSON。
+- 风格蒸馏抓取网址走 SSRF 防护：拒绝回环、私网、云元数据地址与非 http(s) 协议。
+- 前端所有动态文本经 `esc` / `escAttr` 转义；错误信息按文本渲染，避免存储型 XSS。
+- `providers.json` / `secrets/` / `config.json` / `projects/` / `jobs.json` / `llm_calls.jsonl` 全部 gitignore；
+  LLM 日志只记录阶段、模型、token、耗时、错误，字段白名单，不写 prompt 正文与密钥。
+
+### 10.3 成本与质量
+- `defaults.token_budget`：单本累计 token 达上限后，写作线程在下一章前自动暂停并标记 `paused`，
+  调高预算或设为 0 后点继续即可恢复。
+- `defaults.lorebook`：写每章前从 `09-故事圣经.md` 的「设定词典」按关键词挑 3–6 条注入，
+  比整本设定塞进上下文更省 token，也降低设定冲突。
+- 逐章评分新增「评分证据」：每条低分项附原文引句与理由，可在预览弹窗查看 tooltip。
+- 「⚙ 设置 → 🧪 质量·预算·日志」可热改审稿强度、预算、Lorebook、调用日志，无需重启。
+
+### 10.4 可观测性
+- `GET /api/jobs?key=&kind=` 查询后台任务生命周期；`GET /api/live/{key}` 订阅 SSE。
+- `GET /api/llm-calls?limit=50` 查看最近的模型、阶段、token、耗时、缓存命中。
+- `GET /api/usage?key=` 查看单本用量、预算、剩余额度；不带 key 查看全局。
+- 运行日志、质量报告、修订记录仍在每本书目录内，便于事后复盘。

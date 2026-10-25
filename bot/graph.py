@@ -3,6 +3,7 @@
 存 15-故事图谱.json；提供"按章取相关实体"的邻域检索，注入写作上下文。
 全部 best-effort：文件缺失/格式异常都降级，绝不 crash。"""
 import json, os, re
+from .safeio import atomic_write_json
 
 PDIR_FILE = "15-故事图谱.json"
 
@@ -69,8 +70,7 @@ def build_graph(pdir, total_chapters=10):
              "threads": threads,
              "persons": persons,
              "total_chapters": total_chapters}
-    with open(os.path.join(pdir, PDIR_FILE), "w", encoding="utf-8") as f:
-        json.dump(graph, f, ensure_ascii=False, indent=2)
+    atomic_write_json(os.path.join(pdir, PDIR_FILE), graph)
     return graph
 
 def load(pdir):

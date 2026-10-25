@@ -43,3 +43,7 @@ Thumbs.db
 
 # 运行时任务调度（本地）
 schedules.json
+# 后台任务表 / 结构化 LLM 调用日志（含模型与耗时，属运行态数据）
+jobs.json
+llm_calls.jsonl
+llm_calls.jsonl.*

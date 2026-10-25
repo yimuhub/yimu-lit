@@ -1,6 +1,7 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 import json, os, re, datetime, threading, queue
-from . import workflow, skill, continuity, llm, providers
+from . import workflow, skill, continuity, llm, providers, versions
+from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECTS_DIR = os.path.join(ROOT, "projects")
@@ -45,8 +46,7 @@ class Project:
     def save_plan(self, plan):
         plan["updatedAt"] = datetime.datetime.now().isoformat()
         with self.lock:   # v0.6 B：并行写作串行化 02-写作计划.json 写盘（RLock，可被读改写临界区复用）
-            with open(os.path.join(self.path, "02-写作计划.json"), "w", encoding="utf-8") as f:
-                json.dump(plan, f, ensure_ascii=False, indent=2)
+            atomic_write_json(os.path.join(self.path, "02-写作计划.json"), plan)
 
     def status(self):
         plan = self.plan()
@@ -61,6 +61,25 @@ class Project:
                 "paused": bool(meta.get("paused")),
                 "queued": len([q for q in meta.get("queued_msgs", []) if not q.get("consumed")]),
                 "name": plan.get("novelName", self.name)}
+
+def rebuild_book(proj) -> str:
+    """按当前章节文件重建「成书-*.md」（编辑/回滚后调用；无成书文件则不动）。"""
+    plan = proj.plan() or {}
+    name = plan.get("novelName") or proj.name
+    book_path = os.path.join(proj.path, f"成书-{name}.md")
+    if not os.path.exists(book_path):
+        return ""
+    parts, total = [], 0
+    for ch in plan.get("chapters") or []:
+        fp = _chapter_file_path(proj, ch)
+        if os.path.exists(fp):
+            parts.append(_clean_chapter_text(open(fp, encoding="utf-8").read()))
+            total += int(ch.get("wordCount") or 0)
+    atomic_write_text(book_path,
+                      f"# {name}\n\n> 共 {len(plan.get('chapters') or [])} 章 · 约 {total} 字\n\n"
+                      + "\n\n---\n\n".join(parts))
+    return book_path
+
 
 # ---------- 阶段2 落盘 ----------
 
@@ -102,12 +121,17 @@ def _write_cfg_text(pdir, fname, body):
     with open(os.path.join(pdir, fname), "w", encoding="utf-8") as f:
         f.write(body)
 
-def create_project(cfg, titles):
+def create_project(cfg, titles, pdir=None, name=None):
     """生成项目目录 + 00人物/01大纲/03文风 + 02-写作计划.json（按选定标题命名）
-    ShenBi：另生成 09故事圣经/10线索账本/11章节摘要/12时间线（可配 v3_pipeline 关）。"""
+    ShenBi：另生成 09故事圣经/10线索账本/11章节摘要/12时间线（可配 v3_pipeline 关）。
+
+    pdir 由调用方传入时（例如 /api/create 的骨架目录），规划结果写回同一个目录，
+    避免“接口返回 key A、后台却创建目录 B”的双项目问题。
+    """
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    name = re.sub(r'[\\/:*?"<>|\s]+', "", titles[0]["title"]) or "未命名"
-    pdir = os.path.join(PROJECTS_DIR, f"{ts}-{name}")
+    name = re.sub(r'[\\/:*?"<>|\s]+', "", name or titles[0]["title"]) or "未命名"
+    if not pdir:
+        pdir = os.path.join(PROJECTS_DIR, f"{ts}-{name}")
     os.makedirs(pdir, exist_ok=True)
     proj = Project(pdir, name)
     llm.book(os.path.basename(pdir), "planning")     # v0.3.x：规划阶段 token 归集到该书
@@ -135,7 +159,7 @@ def create_project(cfg, titles):
     import json as _json
     _sk = {"genre": cfg.get("genre", ""), "tone": cfg.get("tone", ""),
            "perspective": cfg.get("perspective", ""), "style": cfg.get("style") or {}}
-    open(os.path.join(pdir, "style.json"), "w", encoding="utf-8").write(_json.dumps(_sk, ensure_ascii=False, indent=2))
+    atomic_write_json(os.path.join(pdir, "style.json"), _sk)
 
     # ---------- 连续性结构（加法，单个失败不阻断规划） ----------
     if _cfg_defaults().get("v3_pipeline", True):
@@ -201,6 +225,27 @@ def append_chapters(proj: Project, extra):
     proj.save_plan(plan)
     proj.log(f"➕ 续写：追加 {int(extra)} 章（第{base+1}–{base+int(extra)}章）")
 
+def budget_blocked(proj) -> str:
+    """返回预算耗尽提示（空串=未超）。单本预算来自全局 config.defaults.token_budget。"""
+    cap = llm.budget_tokens()
+    if not cap:
+        return ""
+    used = llm.book_tokens(os.path.basename(proj.path))
+    if used < cap:
+        return ""
+    return f"已达 token 预算上限（已用 {used}/{cap}），写作暂停；调高预算或关闭上限后可继续"
+
+
+def _pause_for_budget(proj, msg: str) -> None:
+    plan = proj.plan() or {}
+    meta = plan.setdefault("meta", {})
+    meta["paused"] = True
+    meta["budget_exceeded"] = msg
+    plan["status"] = "paused"
+    proj.save_plan(plan)
+    proj.log("💰 " + msg)
+
+
 def start_writing(proj: Project):
     if proj.running:
         return
@@ -209,7 +254,7 @@ def start_writing(proj: Project):
 
 # ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
 def _project_dir(key):
-    return os.path.join(PROJECTS_DIR, key)
+    return safe_join(PROJECTS_DIR, key, label="作品 key")
 
 def is_paused(proj):
     return bool((proj.plan() or {}).get("meta", {}).get("paused"))
@@ -277,19 +322,21 @@ def queue_action(key, index, action):
     return [q for q in qm if not q.get("consumed")]
 
 def _pop_queue_note(proj, ch_no):
-    qs = (proj.plan() or {}).get("meta", {}).get("queued_msgs") or []
-    if not qs:
-        return ""
-    active = [q for q in qs if not q.get("consumed")]
-    if not active:
-        return ""
-    imm = [q for q in active if q.get("immediate")]
-    pick = imm[-1] if imm else active[-1]
-    pick["consumed"] = True   # 无论「立即」还是「排队」，本章用一次即消，避免同一指令重复注入后续每章
-    try:
-        proj.save_plan(proj.plan())
-    except Exception:
-        pass
+    with proj.lock:
+        plan = proj.plan() or {}
+        qs = (plan.get("meta") or {}).get("queued_msgs") or []
+        if not qs:
+            return ""
+        active = [q for q in qs if not q.get("consumed")]
+        if not active:
+            return ""
+        imm = [q for q in active if q.get("immediate")]
+        pick = imm[-1] if imm else active[-1]
+        pick["consumed"] = True   # 无论「立即」还是「排队」，本章用一次即消，避免同一指令重复注入后续每章
+        try:
+            proj.save_plan(plan)   # 必须保存被修改的这一份；重新 plan() 会丢掉 consumed 标记
+        except Exception:
+            pass
     return (pick.get("text") or "").strip()
 
 def _chapter_file_path(proj, ch):
@@ -346,6 +393,15 @@ def _build_ctx(proj, ch):
            # 连续性结构（旧项目缺失则为空串，_continuity_block 自动省略）
            "story_bible": _rf("09-故事圣经.md"), "clue_ledger": _rf("10-线索账本.md"),
            "chapter_summaries": _rf("11-章节摘要.md"), "timeline": _rf("12-时间线与连续性.md")}
+    # Lorebook：只注入本章相关的设定词条（避免整本圣经塞满上下文）
+    ctx["lore_relevant"] = ""
+    if _cfg_defaults().get("lorebook", True):
+        try:
+            from . import lorebook
+            q = f"{ch['title']} {chapter_plan[:300]} {prev_tail[-500:]}"
+            ctx["lore_relevant"] = lorebook.relevant(proj.path, q)
+        except Exception:
+            pass
     # P5：故事图谱相关实体 + 语义检索既往片段（可配 p5_pipeline 关；旧项目无 15 文件则降级为空）
     ctx["graph_ctx"], ctx["retrieval_ctx"] = {}, []
     if _cfg_defaults().get("p5_pipeline", True):
@@ -437,7 +493,7 @@ def ensure_blueprint(proj):
             bp = None
     if not bp:
         bp = _rule_blueprint(proj, plan)
-    open(jpath, "w", encoding="utf-8").write(json.dumps(bp, ensure_ascii=False, indent=2))
+    atomic_write_json(jpath, bp)
     open(os.path.join(proj.path, BLUEPRINT_MD), "w", encoding="utf-8").write(_blueprint_md(bp))
     proj.log("🧩 总架构就绪（02b-总架构，写任何一章前先读它）")
     return bp
@@ -525,6 +581,10 @@ def _write_loop_parallel(proj, n_workers=5):
         while True:
             if is_paused(proj):
                 break
+            _msg = budget_blocked(proj)
+            if _msg:
+                _pause_for_budget(proj, _msg)
+                break
             try:
                 no = q.get_nowait()
             except queue.Empty:
@@ -536,6 +596,9 @@ def _write_loop_parallel(proj, n_workers=5):
             try:
                 proj.log(f"🧵 Agent#{wid} 领第{no}章（总架构已注入，写完立即取下一章）")
                 _write_chapter(proj, ch, min_words, 3)   # 内部 LLM 走 ConcurrencyGuard
+            except llm.BudgetExceeded as e:
+                _pause_for_budget(proj, str(e))
+                break
             except Exception as e:
                 proj.log(f"⚠️ Agent#{wid} 第{no}章异常：{e}")
             q.task_done()
@@ -594,6 +657,7 @@ def score_chapter(proj, ch_no):
         pl = _pass_line()
         cs[str(ch_no)] = {"score": total, "dims": r.get("scores", {}) if r else {},
                           "weak": (r.get("weak", []) if r else []), "verdict": (r.get("verdict", "") if r else ""),
+                          "evidence": (r.get("evidence") or [])[:6] if r else [],
                           "status": "unscored" if total is None else ("pass" if total >= pl else "below"),
                           "ts": int(datetime.datetime.now().timestamp())}
         proj.save_plan(plan)
@@ -615,11 +679,12 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
     # 先记一个基线分（原章），重写只保留「真的更高分」，避免 LLM 评分波动把章节改坏
     base_score = score_chapter(proj, ch_no)
     orig_body = open(fp, encoding="utf-8").read()
+    versions.snapshot(proj.path, ch_no, orig_body, label="自动重写前")
     # deslop 定点去味（规则层定位 + LLM 最小改法；LLM 失败自动保留原文）
     try:
         ds = workflow.deslop_chapter(orig_body, {"cfg": plan.get("config") or {}})
         if ds.get("cleaned") and ds["cleaned"] != orig_body:
-            open(fp, "w", encoding="utf-8").write(ds["cleaned"])
+            atomic_write_text(fp, ds["cleaned"])
             proj.log(f"🧹 第{ch_no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
             orig_body = ds["cleaned"]
             base_score = score_chapter(proj, ch_no) or base_score
@@ -645,19 +710,20 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
         new = workflow.guided_rewrite(body, fix, cons, cfg)
         new = _clean_chapter_text(new or "")
         if new and new.strip():
-            open(fp, "w", encoding="utf-8").write(new)
+            versions.snapshot(proj.path, ch_no, body, label="重写前")
+            atomic_write_text(fp, new)
             sc2 = score_chapter(proj, ch_no)
             if (sc2 is not None and sc is not None and sc2 > sc):
                 proj.log(f"🔁 第{ch_no}章 {sc}→{sc2}（提分，保留），按[{','.join(weak[:3])}]局部重写（第{rounds+1}/{max_rounds}轮）")
             else:
-                open(fp, "w", encoding="utf-8").write(body)   # 没提分 → 还原原章，防改坏
+                atomic_write_text(fp, body)   # 没提分 → 还原原章，防改坏
                 sc2 = sc
                 proj.log(f"↩️ 第{ch_no}章重写未提分（{sc2}），已还原原章（防 LLM 波动改坏）")
         rounds += 1
     final = score_chapter(proj, ch_no)
     # 若最终分低于最初基线，还原到原章基线（保守：只进不退）
     if (final or 0) < (base_score or 0):
-        open(fp, "w", encoding="utf-8").write(orig_body)
+        atomic_write_text(fp, orig_body)
         final = base_score
     return final
 
@@ -669,19 +735,23 @@ def per_chapter_scores(proj):
         v = cs[k]
         out.append({"ch": int(k) if str(k).isdigit() else k, "score": v.get("score"),
                     "weak": v.get("weak", []), "status": v.get("status", "unscored"),
-                    "verdict": v.get("verdict", "")})
+                    "verdict": v.get("verdict", ""), "evidence": v.get("evidence") or []})
     return out
 
 def _write_chapter(proj, ch, min_words, max_retries):
     no = ch["chapterNumber"]
     proj.log(f"✍️ 开始第{no}章「{ch['title']}」")
-    if is_paused(proj):
-        ch["status"] = "in_progress"
-        proj.save_plan(proj.plan())
+    paused = is_paused(proj)
+    if paused:
         proj.log(f"⏸ 第{no}章未开写即暂停")
         return
-    ch["status"] = "in_progress"
-    proj.save_plan(proj.plan())
+    with proj.lock:   # 必须读最新计划再改；ch 是调用方手里的旧快照，直接 save 会覆盖并发写入
+        plan0 = proj.plan() or {}
+        for c in plan0.get("chapters", []):
+            if c.get("chapterNumber") == no:
+                c["status"] = "in_progress"
+        if plan0:
+            proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
     qn = _pop_queue_note(proj, no)
     if qn:
@@ -689,11 +759,14 @@ def _write_chapter(proj, ch, min_words, max_retries):
         proj.log(f"📌 第{no}章注入读者即时指令：「{qn[:30]}」")
     body = workflow.write_chapter(ctx)
     fp = _chapter_file_path(proj, ch)
+    if os.path.exists(fp):
+        try:
+            versions.snapshot(proj.path, no, open(fp, encoding="utf-8").read(), label="重新生成前")
+        except OSError:
+            pass
     words, ok, i = 0, False, 0
     for i in range(max_retries + 1):
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write(f"# 第{no:02d}章 {ch['title']}\n\n")
-            f.write(body)
+        atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
         ok, words = skill.check_words(fp, min_words)
         if ok:
             break
@@ -727,8 +800,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
             cal = workflow.style_calibrate(open(fp, encoding="utf-8").read(), cfg=ctx.get("cfg"))
             sp = os.path.join(proj.path, "03-文风基准.md")
             txt = open(sp, encoding="utf-8").read()
-            open(sp, "w", encoding="utf-8").write(
-                txt.rstrip() + f"\n\n## 本书校准段落（第1章定稿回填）\n{cal.strip()}\n")
+            atomic_write_text(sp, txt.rstrip() + f"\n\n## 本书校准段落（第1章定稿回填）\n{cal.strip()}\n")
         except Exception:
             pass
     with proj.lock:   # v0.6 B：并行下读改写 02-写作计划.json 原子化，避免多 worker 互踩
@@ -790,9 +862,9 @@ def _validate_and_finish(proj):
             parts.append(_clean_chapter_text(open(fp, encoding="utf-8").read()))
             total += ch.get("wordCount") or 0
     book_path = os.path.join(proj.path, f"成书-{plan['novelName']}.md")
-    with open(book_path, "w", encoding="utf-8") as f:
-        f.write(f"# {plan['novelName']}\n\n> 共 {len(plan['chapters'])} 章 · 约 {total} 字\n\n")
-        f.write("\n\n---\n\n".join(parts))
+    atomic_write_text(book_path,
+                      f"# {plan['novelName']}\n\n> 共 {len(plan['chapters'])} 章 · 约 {total} 字\n\n"
+                      + "\n\n---\n\n".join(parts))
     plan["status"] = "completed"
     plan["totalWords"] = total
     proj.save_plan(plan)
@@ -844,7 +916,8 @@ def _run_layered(proj, mode, max_rounds):
             old = open(fp, encoding="utf-8").read()
             new = re.sub(r"```[a-zA-Z]*\n?", "", workflow.fix_chapter(old, act.get("action", ""), {"cfg": cfg})).strip()
             if new:
-                open(fp, "w", encoding="utf-8").write(new)
+                versions.snapshot(proj.path, cno, old, label="审稿修复前")
+                atomic_write_text(fp, new)
                 fixed += 1
         if fixed:
             book_text = _book()
@@ -869,8 +942,7 @@ def _write_revision_log(proj, review, mode, fixed, total):
     items = [f"{i}. 第{a.get('chapter','?')}章：{a.get('action','')}" for i, a in enumerate((review.get("fix_actions") or [])[:8], 1)]
     lines.append("\n## 待改进清单（按优先级）\n" + "\n".join(items) if items else "\n## 待改进清单（按优先级）\n（无 high 项）")
     lines.append("\n_百分制合计见 14-质量报告（权重：结构20/因果20/人物15/连续性20/语言15/读者体验10）。_")
-    with open(os.path.join(proj.path, "13-修订记录.md"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    atomic_write_text(os.path.join(proj.path, "13-修订记录.md"), "\n".join(lines) + "\n")
 
 def _write_quality_report(proj, l1, review, total, mode, fixed, pass_line, reader_data=None):
     """写 14-质量报告.md（L1 + 五角色 + 百分制 + 达标判定 + P5 读者人格）。"""
@@ -896,17 +968,19 @@ def _write_quality_report(proj, l1, review, total, mode, fixed, pass_line, reade
             f"| 第{c['ch']}章 | **{c['score'] if c['score'] is not None else '—'}** | {'、'.join(c['weak'] or []) or '—'} "
             f"| {'⚠️ 未达标' if (c['status'] == 'below') else ('✅ 达标' if c['status']=='pass' else '未评')} |"
             + (f" {c['verdict'][:30]}" if c.get('verdict') else "") + " |"
+            + ("<br>".join(f"「{e.get('quote','')[:40]}」{e.get('why','')[:30]}" for e in (c.get("evidence") or [])[:2])
+               or "—") + " |"
             for c in pcs)
         body += (f"\n## 4) 逐章评分（M1 · <{pass_line} 自动/手动重写）\n"
-                 f"| 章节 | 百分制 | 薄弱维度 | 达标 | 判定 |\n|---|---|---|---|---|\n{_rows}\n")
+                 f"| 章节 | 百分制 | 薄弱维度 | 达标 | 判定 | 评分证据 |\n|---|---|---|---|---|---|\n{_rows}\n")
     if reader_data:
         body += ("\n## P5 读者人格 beta 读（3 类读者试读）\n"
                  + "".join(f"- **{r.get('persona','读者')}**：追读「{str(r.get('追读点',''))[:50]}」｜弃书「{str(r.get('弃书点',''))[:50]}」｜建议「{str(r.get('建议',''))[:70]}」\n"
                            for r in reader_data[:3]))
     elif _cfg_defaults().get("reader_panel"):
         body += "\n## P5 读者人格 beta 读\n- （本次未产生数据）\n"
-    with open(os.path.join(proj.path, "14-质量报告.md"), "w", encoding="utf-8") as f:
-        f.write(body + "\n_模板：quality-report（一幕·神笔 · ShenBi NovelCraft）。_")
+    atomic_write_text(os.path.join(proj.path, "14-质量报告.md"),
+                      body + "\n_模板：quality-report（一幕·神笔 · ShenBi NovelCraft）。_")
 
 def validate_project(proj, mode="report", max_rounds=2):
     """端点用：对已完成/任意项目按需跑分层审稿（report 或 autofix），返回 JSON 摘要。"""
@@ -938,6 +1012,10 @@ def _write_loop(proj: Project):
         for ch in plan["chapters"]:
             if is_paused(proj):
                 break
+            _msg = budget_blocked(proj)
+            if _msg:
+                _pause_for_budget(proj, _msg)
+                break
             if ch["status"] != "completed":
                 _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3)
                 _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：每写完一章即刷新写作骨架
@@ -950,6 +1028,8 @@ def _write_loop(proj: Project):
             return
         _validate_and_finish(proj)
         _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：全书写完 → 刷新写作骨架
+    except llm.BudgetExceeded as e:
+        _pause_for_budget(proj, str(e))
     except Exception as e:
         proj.log(f"💥 写作异常中断（说「继续」可续写）：{e}")
         plan = proj.plan()
@@ -979,7 +1059,7 @@ def load_schedules():
     except Exception:
         return {}
 def save_schedules(d):
-    open(SCHEDULES_FILE, "w", encoding="utf-8").write(json.dumps(d, ensure_ascii=False, indent=2))
+    atomic_write_json(SCHEDULES_FILE, d)
 
 def start_writing_batch(proj, limit):
     """v0.3 P3：只写最多 limit 章（定时批次用），写完停在 in_progress，供下次续。默认并发受限。"""
@@ -1056,7 +1136,10 @@ def _meta(proj):
 
 def library_item(key, with_quality=True):
     """单个作品富元数据（作品库管理用）。"""
-    pdir = os.path.join(PROJECTS_DIR, key)
+    try:
+        pdir = _project_dir(key)
+    except ValueError:
+        return {}
     plan = {}
     pj = os.path.join(pdir, "02-写作计划.json")
     if os.path.exists(pj):
@@ -1122,7 +1205,10 @@ def library_stats(items):
 
 def set_meta(key, **fields):
     """收藏/标签/归档 等写入 02 计划 meta。"""
-    pdir = os.path.join(PROJECTS_DIR, key)
+    try:
+        pdir = _project_dir(key)
+    except ValueError:
+        return {}
     pj = os.path.join(pdir, "02-写作计划.json")
     plan = json.load(open(pj, encoding="utf-8")) if os.path.exists(pj) else {}
     plan["meta"] = plan.get("meta") or {}
@@ -1132,7 +1218,7 @@ def set_meta(key, **fields):
         else:
             plan["meta"][k] = v
     plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
-    json.dump(plan, open(pj, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    atomic_write_json(pj, plan)
     return library_item(key)
 
 def rename_book(key, new_name):
@@ -1140,13 +1226,18 @@ def rename_book(key, new_name):
     new_name = (new_name or "").strip()
     if not new_name:
         return {"ok": False, "note": "书名不能为空"}
-    pdir = os.path.join(PROJECTS_DIR, key)
+    if any(ch in new_name for ch in '/\\\x00'):
+        return {"ok": False, "note": "书名不能包含路径分隔符"}
+    try:
+        pdir = _project_dir(key)
+    except ValueError:
+        return {"ok": False, "note": "作品 key 非法"}
     pj = os.path.join(pdir, "02-写作计划.json")
     plan = json.load(open(pj, encoding="utf-8")) if os.path.exists(pj) else {}
     old = plan.get("novelName")
     plan["novelName"] = new_name
     plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
-    json.dump(plan, open(pj, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    atomic_write_json(pj, plan)
     if old and old != new_name:
         oldf, newf = os.path.join(pdir, f"成书-{old}.md"), os.path.join(pdir, f"成书-{new_name}.md")
         if os.path.exists(oldf) and not os.path.exists(newf):
@@ -1156,7 +1247,10 @@ def rename_book(key, new_name):
 
 def delete_book(key, hard=False):
     """v0.3.3：删除。soft（默认）=归档进回收站可恢复；hard=彻底删除（删目录+清 schedules，不可逆）。"""
-    pdir = os.path.join(PROJECTS_DIR, key)
+    try:
+        pdir = _project_dir(key)
+    except ValueError:
+        return {"ok": False, "note": "作品 key 非法"}
     if not os.path.isdir(pdir):
         return {"ok": False, "note": "该作品不存在"}
     if hard:
@@ -1165,7 +1259,7 @@ def delete_book(key, hard=False):
         try:
             sc = json.load(open(SCHEDULES_FILE, encoding="utf-8")) if os.path.exists(SCHEDULES_FILE) else {}
             if isinstance(sc, dict) and sc.pop(key, None) is not None:
-                json.dump(sc, open(SCHEDULES_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+                atomic_write_json(SCHEDULES_FILE, sc)
         except Exception: pass
         return {"ok": True, "hard": True, "note": "已彻底删除（不可恢复）"}
     return {"ok": True, "hard": False, "archived": True, "note": "已移入回收站（可恢复）", "item": set_meta(key, archived=True)}
@@ -1269,8 +1363,7 @@ def rewrite_brief(proj, cfg, pass_line=None):
             lines += [f"- {r}" for r in c["requirements"]]
     else:
         lines.append("- （无定位到章的高严重度问题）")
-    with open(os.path.join(proj.path, "16-重写要求书.md"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    atomic_write_text(os.path.join(proj.path, "16-重写要求书.md"), "\n".join(lines))
     return brief
 
 def _top_targets(brief, max_rounds):
@@ -1307,7 +1400,7 @@ def _pch_before(proj, ch_no):
 def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_over=None):
     """执行『审查后定向重写』：把要求书逐条带进目标章重写，重评出前后对比，写 16-重写记录.md。
     v0.7 R2：逐章实时进度写 _RW_PROGRESS[key]（供 /api/rewrite-progress 轮询）+ 支持取消（_RW_CANCEL）。"""
-    proj = Project(os.path.join(PROJECTS_DIR, key), key)
+    proj = Project(_project_dir(key), key)
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
     _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
     plan = proj.plan()
@@ -1351,7 +1444,8 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
             continue
         # ---- v0.7 R3：逐章『保留更好』守护：写新稿→逐章评分→新稿分低于该章原分则回滚原稿（绝不把书改差）----
         before_sc = _pch_before(proj, n)
-        open(fp, "w", encoding="utf-8").write(new)
+        versions.snapshot(proj.path, n, orig, label="定向重写前")
+        atomic_write_text(fp, new)
         new_sc = None
         try:
             new_sc = score_chapter(proj, n)          # 评新稿（读=新稿）
@@ -1359,7 +1453,7 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
             new_sc = None
         reverted = bool(before_sc is not None and new_sc is not None and new_sc < before_sc)
         if reverted:
-            open(fp, "w", encoding="utf-8").write(orig)      # 回滚原稿
+            atomic_write_text(fp, orig)      # 回滚原稿
             if p: p.update(status="reverted", ok=False, orig_words=len(orig), new_words=len(new),
                            before=before_sc, after=before_sc, keep_better=True,
                            note=f"新稿 {new_sc} < 原稿 {before_sc} → 保留原稿（守护）")
@@ -1387,8 +1481,7 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
         rec += [f"- {r}" for r in c["injected"][:8]]
     rec.append("\n## 改写后仍弱维度")
     rec += [f"- **{d}**：{_DIM_ADVICE.get(d, '')}" for d in weak2] or ["- （无明显短板）"]
-    with open(os.path.join(proj.path, "16-重写记录.md"), "w", encoding="utf-8") as f:
-        f.write("\n".join(rec))
+    atomic_write_text(os.path.join(proj.path, "16-重写记录.md"), "\n".join(rec))
     # v0.5 M1 + v0.7 R2：改写后逐章重评（刷新 meta + 回填进度 after）
     for c in changed:
         try:
@@ -1427,13 +1520,12 @@ def _write_gate_report(proj, before, after, released, pass_line, rounds, gate_re
     for g in gate_results:
         sec.append(f"  - 第{g['round']}轮：{g['before']} → {g['after']}{'（已达标停）' if g.get('stopped') else ''}")
     sec.append(f"- 成书状态：{tail}")
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(base + "\n".join(sec))
+    atomic_write_text(p, base + "\n".join(sec))
 
 @_serialize_book
 def run_release_gate(key, cfg_over=None):
     """放行门禁：循环「重评→未达标则带要求书定向重写→再评」，直到 ≥pass_line 或到轮数上限。写 02.meta + 14 放行判定。"""
-    proj = Project(os.path.join(PROJECTS_DIR, key), key)
+    proj = Project(_project_dir(key), key)
     llm.book(key, "gate")               # v0.3.x：门禁重写 token 归集
     plan = proj.plan()
     cfg = dict(plan.get("config") or {}); cfg.update(cfg_over or {})
@@ -1470,7 +1562,13 @@ def run_release_gate(key, cfg_over=None):
     meta["final_quality"] = final; meta["gate_rounds"] = len(gate_results); meta["gate_results"] = gate_results
     if cancelled:
         meta["gate_cancelled"] = True
-    proj.save_plan({**plan, "meta": meta})
+    with proj.lock:   # 重读最新计划再合并 meta：门禁跑几分钟，期间收藏/暂停/指令可能已写入
+        latest = proj.plan() or plan
+        latest_meta = latest.get("meta") or {}
+        latest_meta.update(meta)
+        latest["meta"] = latest_meta
+        proj.save_plan(latest)
+    meta = latest_meta
     _write_gate_report(proj, before, final, meta["released"], pl, len(gate_results), gate_results, cancelled=cancelled)
     _GATE_CANCEL.discard(key)
     proj.log(f"🔓 放行门禁 {before} → {final}：{'取消' if cancelled else ('放行✅' if meta['released'] else '未放行⚠️')}（{len(gate_results)} 轮）")
@@ -1485,13 +1583,21 @@ def cancel_release_gate(key):
 
 def pick_title(key, title):
     """选定书名：改名（同步 02.meta.name + 成书文件名）并开写。用于 awaiting_title 项目。"""
-    proj = Project(os.path.join(PROJECTS_DIR, key), key)
+    try:
+        proj = Project(_project_dir(key), key)
+    except ValueError:
+        return None
     plan = proj.plan()
+    if not plan:
+        return None
     meta = plan.get("meta") or {}; meta["awaiting_title"] = False; meta["selected_title"] = title
     newdir = _safe_dir_name(title)
     base = os.path.basename(proj.path)
     _parts = base.split("-", 2); prefix = "-".join(_parts[:2]) + "-" if len(_parts) >= 2 else base + "-"
-    target = os.path.join(PROJECTS_DIR, prefix + newdir)
+    try:
+        target = safe_join(PROJECTS_DIR, prefix + newdir, label="目录名")
+    except ValueError:
+        target = proj.path
     if target != proj.path and not os.path.exists(target):
         os.rename(proj.path, target); proj.path = target
     plan["novelName"] = title; proj.save_plan({**plan, "meta": meta, "novelName": title})

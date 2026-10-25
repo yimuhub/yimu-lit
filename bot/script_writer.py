@@ -28,6 +28,7 @@ import threading
 
 from . import llm, medium, skillkit
 from . import writer as novel_writer
+from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = novel_writer.ROOT
 PROJECTS_DIR = novel_writer.PROJECTS_DIR
@@ -99,8 +100,7 @@ class ScriptProject:
     def save_plan(self, plan: dict) -> None:
         plan["updatedAt"] = datetime.datetime.now().isoformat()
         with self.lock:
-            with open(os.path.join(self.path, F_PLAN), "w", encoding="utf-8") as f:
-                json.dump(plan, f, ensure_ascii=False, indent=2)
+            atomic_write_json(os.path.join(self.path, F_PLAN), plan)
 
     def status(self) -> dict:
         plan = self.plan() or {}
@@ -129,9 +129,7 @@ def _safe(name: str) -> str:
 
 
 def _write(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    atomic_write_text(path, text)
 
 
 def _read(path: str) -> str:
@@ -394,7 +392,7 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
     form = cfg.get("form", "film")
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = _safe(cfg.get("title") or cfg.get("idea") or "未命名剧本")
-    pdir = os.path.join(PROJECTS_DIR, base_key or f"s_{ts}-{name}")
+    pdir = safe_join(PROJECTS_DIR, base_key or f"s_{ts}-{name}", label="项目 key")
     os.makedirs(pdir, exist_ok=True)
     proj = ScriptProject(pdir, name)
     llm.book(os.path.basename(pdir), "planning")

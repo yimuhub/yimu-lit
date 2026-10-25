@@ -8,8 +8,10 @@ quill 的"风格 prompt + 强度 + 校准原文"思路），**自研精简实现
 
 版权红线：只提风格/技法，不复述、不搬运原文文字；产物标注来源；网址抓取只取节选做分析、不留全文。
 """
-import os, re, json, datetime, html
+import os, re, json, datetime, html, ipaddress, socket
+from urllib.parse import urljoin, urlparse
 from . import llm
+from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STYLES_DIR = os.path.join(ROOT, "styles")
@@ -26,16 +28,67 @@ def _strip_html(t: str) -> str:
     return "\n".join(lines)
 
 
+def _host_forbidden(host: str) -> bool:
+    """拒绝回环/内网/链路本地/保留地址，防 SSRF（含 DNS 解析后的结果）。"""
+    h = (host or "").strip().lower().strip("[]")
+    if not h or h == "localhost" or h.endswith(".local") or h.endswith(".internal"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        return (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(h, None)
+    except Exception:
+        return True
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return True
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+def _url_allowed(url: str) -> bool:
+    try:
+        u = urlparse(url)
+    except Exception:
+        return False
+    if u.scheme not in ("http", "https") or not u.hostname:
+        return False
+    if u.username or u.password:
+        return False
+    return not _host_forbidden(u.hostname)
+
+
 def fetch_url_text(url: str, max_chars: int = 12000) -> str:
-    """抓取小说网址正文（best-effort，纯 httpx；JS 渲染站抓不到会返回空 → 提示改粘贴）。"""
+    """抓取小说网址正文（best-effort）。手动跟随重定向，每一跳都复查地址，防 SSRF。"""
     import httpx
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
-        with httpx.Client(timeout=25, follow_redirects=True, headers=headers) as c:
-            r = c.get(url)
-            r.raise_for_status()
-            body = _strip_html(r.text)
+        cur = url
+        with httpx.Client(timeout=25, follow_redirects=False, headers=headers) as c:
+            for _ in range(4):
+                if not _url_allowed(cur):
+                    return ""
+                r = c.get(cur)
+                if r.is_redirect:
+                    loc = r.headers.get("location")
+                    if not loc:
+                        return ""
+                    cur = urljoin(cur, loc)
+                    continue
+                r.raise_for_status()
+                body = _strip_html(r.text)
+                break
+            else:
+                return ""
         seen, out = set(), []
         for ln in body.splitlines():
             if not ln or ln in seen:
@@ -76,10 +129,13 @@ def distill(corpus: str, name: str, genre: str = "", source: str = "粘贴文本
         + "\n- 善用高频指纹词：" + "、".join((card.get("fingerprint_words") or [])[:8])
         + "\n- 务必避免（反 AI 腔）：" + "；".join((card.get("anti_ai") or [])[:8])
     )
-    sdir = os.path.join(STYLES_DIR, name)
+    try:
+        sdir = safe_join(STYLES_DIR, name, label="风格名")
+    except ValueError:
+        return {"ok": False, "note": "风格名非法"}
     os.makedirs(sdir, exist_ok=True)
-    json.dump(card, open(os.path.join(sdir, "style.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    open(os.path.join(sdir, "samples.txt"), "w", encoding="utf-8").write(corpus[:6000])
+    atomic_write_json(os.path.join(sdir, "style.json"), card)
+    atomic_write_text(os.path.join(sdir, "samples.txt"), corpus[:6000])
     card["path"] = sdir
     return {"ok": True, "name": name, "summary": card.get("summary", ""), "style": card}
 
@@ -102,13 +158,19 @@ def list_styles():
 
 
 def get_style(name: str):
-    p = os.path.join(STYLES_DIR, name, "style.json")
+    try:
+        p = os.path.join(safe_join(STYLES_DIR, name, label="风格名"), "style.json")
+    except ValueError:
+        return None
     return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
 
 
 def delete_style(name: str):
     import shutil
-    p = os.path.join(STYLES_DIR, name)
+    try:
+        p = safe_join(STYLES_DIR, name, label="风格名")
+    except ValueError:
+        return {"ok": False, "note": "风格名非法"}
     if os.path.isdir(p):
         shutil.rmtree(p, ignore_errors=True)
         return {"ok": True}

@@ -1,5 +1,5 @@
 {
-  "version": "0.1.0",
+  "version": "1.4.0",
   "port": 46821,
   "skill_path": "skill",
   "llm": {
@@ -35,6 +35,12 @@
     "release_gate": true,
     "max_release_rounds": 3,
     "title_count": 8,
-    "max_release_rewrite": 3
+    "max_release_rewrite": 3,
+    "chapter_workers": 2,
+    "max_global_agents": 4,
+    "token_budget": 0,
+    "lorebook": true,
+    "llm_trace": true,
+    "llm_cache": false
   }
 }

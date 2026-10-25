@@ -1,0 +1,16 @@
+services:
+  shenbi:
+    build: .
+    ports:
+      - "46821:46821"
+    environment:
+      # 局域网/反代访问时改成实际域名或 IP（逗号分隔）
+      SHENBI_TRUSTED_HOSTS: "localhost,127.0.0.1"
+      SHENBI_AUTH: "1"
+    volumes:
+      # 作品与密钥落在宿主机；首次请先 `cp config.example.json config.json`
+      - ./projects:/app/projects
+      - ./secrets:/app/secrets
+      - ./config.json:/app/config.json
+      - ./providers.json:/app/providers.json
+    restart: unless-stopped

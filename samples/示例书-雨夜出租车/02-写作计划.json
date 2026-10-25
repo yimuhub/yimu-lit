@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "novelName": "雨夜出租车",
+  "projectPath": "",
+  "totalChapters": 3,
+  "minWordsPerChapter": 1200,
+  "createdAt": "2026-10-25T10:00:00",
+  "updatedAt": "2026-10-25T10:10:00",
+  "status": "completed",
+  "writingMode": "serial",
+  "genre": "悬疑",
+  "totalWords": 4667,
+  "config": {
+    "version": "1.3.1",
+    "genre": "悬疑",
+    "theme": "雨夜出租车",
+    "chapters": 3,
+    "worldview": "南方沿江城市的雨季。老城区青石巷进入拆迁末期，出租车、旧车票、磁带录音机仍在日常里使用。故事不依赖超自然设定，所有悬念都能在现实逻辑里落地。",
+    "perspective": "第三人称限制视角，紧贴周望。只写他看见、听见、想到的；其他人物通过对话与物件呈现。",
+    "tone": "克制的悬疑与迟到的亲情。短句为主，用具体物件承接情绪。",
+    "readers": "喜欢现实向家庭悬疑、城市文学与短篇连读的读者。",
+    "defaults": {
+      "chapters": 3,
+      "min_words": 1200,
+      "max_expand_retries": 2,
+      "v3_pipeline": true,
+      "validation": {
+        "enabled": true,
+        "mode": "report",
+        "max_fix_rounds": 2,
+        "pass_line": 90
+      },
+      "stage_models": {
+        "planning": {},
+        "writing": {},
+        "review": {}
+      },
+      "use_prefix_cache": true,
+      "p5_pipeline": true,
+      "reader_panel": false,
+      "call_gap": 2,
+      "llm_timeout": 900,
+      "planning_timeout": 1200,
+      "release_gate": false,
+      "max_release_rounds": 3,
+      "title_count": 8,
+      "max_release_rewrite": 3
+    }
+  },
+  "titles": [
+    {
+      "title": "雨夜出租车",
+      "technique": "意象型",
+      "why": "雨夜与出租车既是故事发生的场景，也是父子两代人沉默的容器。"
+    },
+    {
+      "title": "后座左边那扇门",
+      "technique": "悬念钩子型",
+      "why": "父亲的遗言直接制造疑问：门后到底有什么。"
+    }
+  ],
+  "chapters": [
+    {
+      "chapterNumber": 1,
+      "title": "红雨衣",
+      "filePath": "第01章-红雨衣.md",
+      "status": "completed",
+      "wordCount": 1473,
+      "wordCountPass": true,
+      "retryCount": 0
+    },
+    {
+      "chapterNumber": 2,
+      "title": "青石巷",
+      "filePath": "第02章-青石巷.md",
+      "status": "completed",
+      "wordCount": 1544,
+      "wordCountPass": true,
+      "retryCount": 0
+    },
+    {
+      "chapterNumber": 3,
+      "title": "副驾驶",
+      "filePath": "第03章-副驾驶.md",
+      "status": "completed",
+      "wordCount": 1650,
+      "wordCountPass": true,
+      "retryCount": 0
+    }
+  ],
+  "meta": {
+    "released": true,
+    "final_quality": 90.0,
+    "paused": false,
+    "chapter_scores": {
+      "1": {
+        "score": 90,
+        "weak": ["语言"],
+        "status": "pass",
+        "verdict": "开篇三句进入情境，章末钩子具体可视。",
+        "evidence": [
+          {
+            "dimension": "语言",
+            "quote": "你开得比你爸稳。",
+            "why": "一句台词同时完成身份暗示、关系铺垫与悬念投放。"
+          },
+          {
+            "dimension": "结构",
+            "quote": "照片背面是周望的名字和 1999.7.14。",
+            "why": "在章末把日常搭载转为私人谜题，驱动下一章。"
+          }
+        ]
+      },
+      "2": {
+        "score": 91,
+        "weak": [],
+        "status": "pass",
+        "verdict": "信息推进扎实，铁盒与旧照片完成互证。",
+        "evidence": [
+          {
+            "dimension": "连续性",
+            "quote": "每年七月十四，他会把车停在巷口，坐一晚上。",
+            "why": "用行为细节回收父亲遗言，避免直接解释人物心理。"
+          },
+          {
+            "dimension": "人物",
+            "quote": "他抱着你，在巷口坐了一夜，谁劝都不走。",
+            "why": "通过旁观者证词重塑父亲形象，与周望的怨形成张力。"
+          }
+        ]
+      },
+      "3": {
+        "score": 89,
+        "weak": ["读者体验"],
+        "status": "pass",
+        "verdict": "情绪落点克制，结尾以动作收束，未过度解释。",
+        "evidence": [
+          {
+            "dimension": "读者体验",
+            "quote": "这次坐前面。",
+            "why": "用座位变化完成关系修复，比直接写和解更具体。"
+          },
+          {
+            "dimension": "因果可信",
+            "quote": "岚岚……岚岚你应一声……",
+            "why": "录音带作为硬证据，回应周岚二十年的疑问。"
+          }
+        ]
+      }
+    }
+  }
+}

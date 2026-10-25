@@ -4,6 +4,7 @@
 """数据存 data/learn_profiles.json。记录维度：题材分布、各题材下最常用的金手指/节奏/语言、
 平均成书质量（P5 质量分）。"""
 import json, os
+from .safeio import atomic_write_json
 
 _DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 _P = os.path.join(_DATA, "learn_profiles.json")
@@ -18,7 +19,7 @@ def _load():
 
 def _save(d):
     os.makedirs(_DATA, exist_ok=True)
-    json.dump(d, open(_P, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    atomic_write_json(_P, d)
 
 
 def record_book(genre, hand="", pace="", lang=""):

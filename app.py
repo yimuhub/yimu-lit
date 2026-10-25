@@ -1,15 +1,37 @@
 """神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
-import json, os, re, threading, uuid, time
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, Response
+import json, os, re, shutil, threading, uuid, time, secrets
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
-from bot import prose_writer, slop_checker
+from bot import prose_writer, slop_checker, security, jobs, versions
+from bot import export as export_mod
+from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-app = FastAPI(title="神笔文学创作台")
+SAMPLE_DIR = os.path.join(ROOT, "samples", "示例书-雨夜出租车")
+
+@asynccontextmanager
+async def _lifespan(_app):
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
+    yield
+
+app = FastAPI(title="神笔文学创作台", lifespan=_lifespan)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=security.trusted_hosts())
+
+@app.middleware("http")
+async def _auth_guard(request: Request, call_next):
+    """只保护 /api/*：本机网页若没有启动时下发的一次性令牌，就不能调用写操作。"""
+    if security.AUTH_ENABLED and request.url.path.startswith("/api/"):
+        got = request.cookies.get(security.COOKIE_NAME) or request.headers.get("x-shenbi-token") or ""
+        if not got or not secrets.compare_digest(got, security.TOKEN):
+            return JSONResponse({"error": "未授权：请通过 http://127.0.0.1 打开首页获取访问令牌"},
+                                status_code=401)
+    return await call_next(request)
 
 # ---------- 会话状态机 ----------
 # state: idle → options → planning(忙) → title → writing(后台) → done
@@ -20,10 +42,20 @@ def _get_project(key):
     if not isinstance(key, str) or not key:
         return None   # 缺 key / 非 str → 交调用方 404，不再 500（os.path.join(dir, None) 会 TypeError）
     if key not in PROJECT_INDEX:
-        pdir = os.path.join(writer.PROJECTS_DIR, key)
+        try:
+            pdir = writer._project_dir(key)
+        except ValueError:
+            return None
         if os.path.isdir(pdir):
             PROJECT_INDEX[key] = writer.Project(pdir, key)
     return PROJECT_INDEX.get(key)
+
+def _chapter_path(proj, ch):
+    """章节文件名只允许纯文件名，挡住计划文件被篡改后的 ../ 越界。"""
+    name = os.path.basename((ch or {}).get("filePath") or "")
+    if not name:
+        return None
+    return os.path.join(proj.path, name)
 
 def _pick_title(plan, picked):
     """按用户选择回写 novelName"""
@@ -203,20 +235,26 @@ def _rename_project(proj, new_name):
     base = os.path.basename(proj.path)
     _p = base.split("-", 2)
     prefix = "-".join(_p[:2]) + "-" if len(_p) >= 2 else base + "-"
-    target = os.path.join(writer.PROJECTS_DIR, prefix + new_name)
+    try:
+        target = safe_join(writer.PROJECTS_DIR, prefix + new_name, label="目录名")
+    except ValueError:
+        return
     if target != proj.path and not os.path.exists(target):
         os.rename(proj.path, target)
         proj.path = target
         proj.name = new_name
-        plan = proj.plan()
+        plan = proj.plan() or {}
         plan["novelName"] = new_name
         proj.save_plan(plan)
 
 # ---------- 路由 ----------
 
 @app.get("/")
-def index():
-    return FileResponse(os.path.join(ROOT, "static", "index.html"))
+def index(request: Request):
+    resp = FileResponse(os.path.join(ROOT, "static", "index.html"))
+    resp.set_cookie(security.COOKIE_NAME, security.TOKEN, max_age=7 * 86400,
+                    httponly=True, samesite="strict", path="/")
+    return resp
 
 @app.post("/api/chat")
 def api_chat(payload: dict):
@@ -360,9 +398,9 @@ def _attach_style_ref(proj, style_id):
     if not card:
         return
     try:
-        open(os.path.join(proj.path, "style_ref.json"), "w", encoding="utf-8").write(
-            json.dumps({"name": style_id, "style_prompt": card.get("style_prompt", ""),
-                        "summary": card.get("summary", "")}, ensure_ascii=False, indent=2))
+        atomic_write_json(os.path.join(proj.path, "style_ref.json"),
+                          {"name": style_id, "style_prompt": card.get("style_prompt", ""),
+                           "summary": card.get("summary", "")})
     except Exception:
         pass
 
@@ -395,14 +433,17 @@ def api_create(payload: dict):
     total = int(payload.get("total_chapters") or cfg.get("chapters") or (cfg.get("defaults") or {}).get("total_chapters") or 10)
     cfg["chapters"] = total
     style_id = (payload.get("style_id") or "").strip()   # v0.3.4：蒸馏风格 id → 注入该书 craft
-    cfg = workflow.fill_defaults(cfg)
     # v1.2.2：/api/create 全程后台化——writer.create_project 内部有 5-8 次 LLM 调用（1-3 分钟），
     # 同步返回会把 async 事件循环卡死。这里只做轻量占位（写 02-写作计划.json 骨架 + 注册 PROJECT_INDEX），
     # 规划/书名候选全部后台线程跑；前端轮询 /api/status、/api/titles。
     import threading as _th
     from datetime import datetime as _dt
     base = f"{_dt.now().strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[/:*?"<>|\s]+', '', title or (payload.get('idea') or '未命名'))[:24]}" or f"bk_{_dt.now().strftime('%Y%m%d-%H%M%S')}"
-    pdir = os.path.join(writer.PROJECTS_DIR, base)
+    # 去掉路径分隔符/空白，书名不参与目录命名以外的用途
+    try:
+        pdir = safe_join(writer.PROJECTS_DIR, base, label="作品 key")
+    except ValueError:
+        return JSONResponse({"error": "书名包含非法字符"}, status_code=400)
     os.makedirs(pdir, exist_ok=True)
     skeleton_plan = {"version": 1, "novelName": title or (payload.get("idea") or "未命名"),
                      "projectPath": pdir, "status": "planning",
@@ -411,40 +452,84 @@ def api_create(payload: dict):
                      "meta": {"awaiting_title": bool(not title), "title_candidates": [],
                               "planning_running": True},
                      "createdAt": _dt.now().isoformat()}
-    open(os.path.join(pdir, "02-写作计划.json"), "w", encoding="utf-8").write(
-        json.dumps(skeleton_plan, ensure_ascii=False, indent=1))
+    atomic_write_json(os.path.join(pdir, "02-写作计划.json"), skeleton_plan)
     _st = cfg.get("style") or {}
     learn.record_book(_st.get("题材", ""), _st.get("金手指", ""), _st.get("节奏", ""), _st.get("语言", ""))
     def _bg():
+        plan_path = os.path.join(pdir, "02-写作计划.json")
         try:
-            n = int((cfg.get("defaults") or {}).get("title_count", 8))
+            cfg2 = workflow.fill_defaults(cfg)   # 内部含 LLM 调用，必须留在后台线程
+            n = int((cfg2.get("defaults") or {}).get("title_count", 8))
             if title:
-                titles = [{"title": title, "technique": "指定书名", "why": "用户指定"}] + (workflow.gen_titles(cfg, n=n) or [])
+                titles = [{"title": title, "technique": "指定书名", "why": "用户指定"}]
+                cands = []
             else:
-                cands = workflow.gen_titles(cfg, n=n) or [{"title": "未命名", "technique": "", "why": ""}]
+                cands = workflow.gen_titles(cfg2, n=n) or [{"title": "未命名", "technique": "", "why": ""}]
                 titles = [{"title": (payload.get("idea") or "未命名")[:20], "technique": "占位", "why": ""}]
-            proj = writer.create_project(cfg, titles)
+            # 关键：把 create_project 写到同一个骨架目录，避免“接口返回 key A、实际建了目录 B”
+            proj = writer.create_project(cfg2, titles, pdir=pdir)
             _attach_style_ref(proj, style_id)
+            plan = proj.plan() or {}
+            meta = plan.get("meta") or {}
             if title:
+                plan["meta"] = meta
+                proj.save_plan(plan)
                 writer.start_writing(proj)
             else:
-                plan = proj.plan(); meta = plan.get("meta") or {}
-                meta["title_candidates"] = cands; meta["awaiting_title"] = True
+                meta["title_candidates"] = cands
+                meta["awaiting_title"] = True
                 meta["planning_running"] = False
-                plan["meta"] = meta; plan["status"] = "awaiting_title"; proj.save_plan(plan)
+                plan["meta"] = meta
+                plan["status"] = "awaiting_title"
+                proj.save_plan(plan)
         except Exception as e:
             print(f"[bg] 小说创建失败: {e}", flush=True)
             try:
-                pl = json.load(open(os.path.join(pdir, "02-写作计划.json"), encoding="utf-8"))
+                pl = json.load(open(plan_path, encoding="utf-8"))
                 pl["status"] = "failed"; pl.setdefault("meta", {})["planning_running"] = False
                 pl["meta"]["error"] = str(e)[:200]
-                json.dump(pl, open(os.path.join(pdir, "02-写作计划.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+                atomic_write_json(plan_path, pl)
             except Exception:
                 pass
     _th.Thread(target=_bg, daemon=True).start()
     return {"project": base, "pid": base, "key": base,
             "awaiting_title": bool(not title), "async": True,
             "candidates": [] if title else [{"title": "候选生成中…", "technique": "", "why": ""}]}
+
+# ---------- 新手指引：加载内置示例书 ----------
+@app.post("/api/sample")
+def api_sample():
+    """把内置示例书复制成一本可编辑的作品，让新用户不配置模型也能先看到成品。"""
+    src = os.path.realpath(SAMPLE_DIR)
+    if not os.path.isdir(src):
+        return JSONResponse({"error": "内置示例书缺失，请重新安装完整发行包"}, status_code=404)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    base = f"{ts}-示例-雨夜出租车"
+    dest = ""
+    for i in range(20):
+        key = base if i == 0 else f"{base}-{i + 1}"
+        cand = os.path.join(writer.PROJECTS_DIR, key)
+        if not os.path.exists(cand):
+            dest, final_key = cand, key
+            break
+    if not dest:
+        final_key = f"{base}-{uuid.uuid4().hex[:6]}"
+        dest = os.path.join(writer.PROJECTS_DIR, final_key)
+    try:
+        shutil.copytree(src, dest)
+        pj = os.path.join(dest, "02-写作计划.json")
+        plan = json.load(open(pj, encoding="utf-8"))
+        plan["projectPath"] = dest
+        plan["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        meta = plan.setdefault("meta", {})
+        meta["sample"] = True
+        meta["sample_loaded_at"] = plan["updatedAt"]
+        atomic_write_json(pj, plan)
+    except Exception as e:
+        shutil.rmtree(dest, ignore_errors=True)
+        return JSONResponse({"error": f"加载示例书失败：{e}"}, status_code=500)
+    return {"ok": True, "key": final_key, "name": plan.get("novelName", "雨夜出租车"),
+            "chapters": len(plan.get("chapters") or [])}
 
 # ---------- v0.2：作品库管理 + 审查后重写 ----------
 _REWRITING = {}  # key -> {"running":bool,"result":dict}
@@ -713,7 +798,9 @@ def api_rewrite_section(payload: dict):
     ch = next((c for c in plan.get("chapters", []) if c.get("chapterNumber") == ch_no), None)
     if not ch:
         return JSONResponse({"error": f"第{ch_no}章不存在"}, status_code=404)
-    fp = os.path.join(proj.path, ch["filePath"])
+    fp = _chapter_path(proj, ch)
+    if not fp or not os.path.exists(fp):
+        return JSONResponse({"error": "章节文件不存在"}, status_code=404)
     body = open(fp, encoding="utf-8").read()
     mm = re.search(r"(##\s*正文[^\n]*\n)(.*?)(\n##|\Z)", body, re.S)
     sec = mm.group(2) if mm else body
@@ -729,13 +816,17 @@ def api_rewrite_section(payload: dict):
     new = workflow.guided_rewrite(target, instr, "全书约束：保持人物/设定一致，只改这一段", cfg)
     new = (new or "").strip()
     if new:
-        open(fp, "w", encoding="utf-8").write(body.replace(target, new, 1))
+        versions.snapshot(proj.path, ch_no, body, label="局部改写前")
+        atomic_write_text(fp, body.replace(target, new, 1))
         proj.log(f"✒️ 第{ch_no}章改写一段（{instr[:24]}…）")
     return {"ok": True, "chapter": ch_no, "orig": target, "new": new}
 
 @app.get("/api/rewrite-log")
 def api_rewrite_log(key: str):
-    p = os.path.join(writer.PROJECTS_DIR, key, "16-重写记录.md")
+    try:
+        p = os.path.join(writer._project_dir(key), "16-重写记录.md")
+    except ValueError:
+        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
     w = _REWRITING.get(key, {})
     return {"running": bool(w.get("running")), "result": w.get("result"),
             "text": open(p, encoding="utf-8").read() if os.path.exists(p) else ""}
@@ -809,7 +900,7 @@ def api_style_put(payload: dict):
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     st = {"genre": _plan_genre(proj) or payload.get("genre") or "",
           "style": payload.get("style") or {}}
-    open(os.path.join(proj.path, "style.json"), "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False, indent=2))
+    atomic_write_json(os.path.join(proj.path, "style.json"), st)
     return {"ok": True, "style": st}
 
 # ---------- v0.3 P3：定时任务 调度器 + /api/schedule（默认关；每 60s 巡检到期批次） ----------
@@ -866,10 +957,6 @@ def _scheduler_loop():
             pass
         time.sleep(60)
 
-@app.on_event("startup")
-def _start_scheduler():
-    threading.Thread(target=_scheduler_loop, daemon=True).start()
-
 # ---------- v0.3 P4：模型规则引擎 /api/model_rules ----------
 @app.get("/api/model_rules")
 def api_model_rules():
@@ -907,21 +994,69 @@ def api_usage(key: str = ""):
         proj = _get_project(key)
         if not proj:
             return JSONResponse({"error": "项目不存在"}, status_code=404)
-        p = os.path.join(proj.path, "usage.json")
-        u = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {"total_tokens": 0, "calls": 0, "total_prompt": 0, "total_completion": 0}
-        return {"key": key, "usage": u, "global": g}
-    return {"key": "", "usage": {}, "global": g}
+        u = llm.read_usage(os.path.basename(proj.path))
+        used, cap = int(u.get("total_tokens") or 0), llm.budget_tokens()
+        return {"key": key, "usage": u, "global": g, "budget": cap,
+                "remaining": (max(0, cap - used) if cap else None), "exceeded": bool(cap and used >= cap)}
+    return {"key": "", "usage": {}, "global": g, "budget": llm.budget_tokens()}
+
+
+@app.get("/api/llm-calls")
+def api_llm_calls(limit: int = 50):
+    """结构化 LLM 调用日志（不含 prompt/密钥），用于排查慢调用与花费。"""
+    return {"items": llm.recent_calls(limit)}
+
+
+@app.get("/api/settings")
+def api_settings():
+    d = llm._global_defaults()
+    val = d.get("validation") or {}
+    mode = "off" if val.get("enabled") is False else ("auto" if val.get("mode") == "autofix" else "report")
+    return {"quality_mode": mode, "token_budget": llm.budget_tokens(),
+            "lorebook": bool(d.get("lorebook", True)), "llm_trace": bool(d.get("llm_trace", True)),
+            "call_gap": d.get("call_gap", 2), "max_global_agents": d.get("max_global_agents", 4)}
+
+
+@app.post("/api/settings")
+def api_settings_save(payload: dict):
+    """收口关键开关：审稿强度、token 预算、Lorebook 检索、调用日志。"""
+    cf = os.path.join(ROOT, "config.json")
+    try:
+        cfg = json.load(open(cf, encoding="utf-8")) if os.path.exists(cf) else {}
+    except Exception:
+        cfg = {}
+    d = cfg.setdefault("defaults", {})
+    if "quality_mode" in payload:
+        qm = str(payload.get("quality_mode"))
+        if qm not in ("off", "report", "auto"):
+            return JSONResponse({"error": "quality_mode 只能是 off/report/auto"}, status_code=400)
+        v = d.setdefault("validation", {})
+        v["enabled"] = qm != "off"
+        v["mode"] = "autofix" if qm == "auto" else "report"
+    if "token_budget" in payload:
+        try:
+            d["token_budget"] = max(0, int(payload.get("token_budget") or 0))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "token_budget 必须是整数"}, status_code=400)
+    if "lorebook" in payload:
+        d["lorebook"] = bool(payload.get("lorebook"))
+    if "llm_trace" in payload:
+        d["llm_trace"] = bool(payload.get("llm_trace"))
+    atomic_write_json(cf, cfg)
+    return api_settings()
 
 @app.get("/api/titles")
 def api_titles(key: str):
+    """只读返回书名候选；候选项由 /api/create 的后台规划生成，避免轮询时反复触发 LLM。"""
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     plan = proj.plan() or {}
-    cands = (plan.get("meta") or {}).get("title_candidates") or []
-    if not cands:
-        cands = workflow.gen_titles(plan.get("config") or {}, int(writer._cfg_defaults().get("title_count", 8)))
-    return {"key": key, "candidates": cands, "selected": (plan.get("meta") or {}).get("selected_title")}
+    meta = plan.get("meta") or {}
+    return {"key": key, "candidates": meta.get("title_candidates") or [],
+            "selected": meta.get("selected_title"),
+            "planning_running": bool(meta.get("planning_running")),
+            "status": plan.get("status"), "error": meta.get("error")}
 
 @app.post("/api/pick-title")
 def api_pick_title(payload: dict):
@@ -941,24 +1076,25 @@ def api_release(payload: dict):
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    if _RELEASE_RUNNING.get(key):
+    if (_RELEASE_RUNNING.get(key) or {}).get("running"):
         return {"ok": True, "running": True, "msg": "放行门禁进行中…"}
-    _RELEASE_RUNNING[key] = True
-    def _job():
-        try:
-            res = writer.run_release_gate(key)
-            _RELEASE_RUNNING[key] = res
-        except Exception as e:
-            _RELEASE_RUNNING[key] = {"error": str(e)}
-    threading.Thread(target=_job, daemon=True).start()
+    def _run_gate():
+        res = writer.run_release_gate(key)
+        _RELEASE_RUNNING[key] = {"running": False, "result": res}
+        return res
+    job = jobs.run("release_gate", _run_gate, key=key, title="放行门禁")
+    _RELEASE_RUNNING[key] = {"running": True, "started_at": int(time.time()), "job_id": job["id"]}
     return {"ok": True, "running": True, "msg": "🔓 放行门禁中（自动带要求重写到 ≥90，约几分钟）…"}
 
 @app.get("/api/release-log")
 def api_release_log(key: str):
-    p = os.path.join(writer.PROJECTS_DIR, key, "14-质量报告.md")
-    r = _RELEASE_RUNNING.get(key)
-    running = isinstance(r, bool) and r
-    res = (r if (isinstance(r, dict) and "before" in r) else None)
+    try:
+        p = os.path.join(writer._project_dir(key), "14-质量报告.md")
+    except ValueError:
+        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
+    r = _RELEASE_RUNNING.get(key) or {}
+    running = bool(r.get("running"))
+    res = r.get("result")
     gate = ""
     if os.path.exists(p):
         t = open(p, encoding="utf-8").read()
@@ -1018,7 +1154,10 @@ def api_queue_action(payload: dict):
 
 # ===== v0.4.1：每本书独立的对话记录（会话隔离，点击书只显示它自己的聊天）=====
 def _bkchat_path(key: str):
-    return os.path.join(writer.PROJECTS_DIR, key, "chat.json")
+    try:
+        return os.path.join(writer._project_dir(key), "chat.json")
+    except ValueError:
+        return None
 
 
 @app.get("/api/bkchat")
@@ -1026,6 +1165,8 @@ def api_bkchat_get(key: str = ""):
     if not key:
         return {"messages": []}
     p = _bkchat_path(key)
+    if not p:
+        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
     if not os.path.exists(p):
         return {"messages": []}
     try:
@@ -1049,11 +1190,21 @@ def api_bkchat_post(payload: dict):
             msgs = json.loads(open(p, encoding="utf-8").read())
         except Exception:
             msgs = []
-    msgs.append({"who": who, "text": text, "ts": int(time.time() * 1000)})
+    # 采用前端传来的 ts（前端拿它标反馈按钮）；缺失/异常时才用服务器时间
+    now_ms = int(time.time() * 1000)
+    try:
+        ts = int(payload.get("ts") or 0)
+    except (ValueError, TypeError):
+        ts = 0
+    if ts <= 0 or ts > now_ms + 86400_000:
+        ts = now_ms
+    while any(m.get("ts") == ts for m in msgs):
+        ts += 1
+    msgs.append({"who": who, "text": text, "ts": ts})
     # 每本书只保留最近 400 条，防止无限膨胀
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    open(p, "w", encoding="utf-8").write(json.dumps(msgs[-400:], ensure_ascii=False))
-    return {"ok": True, "count": len(msgs)}
+    atomic_write_text(p, json.dumps(msgs[-400:], ensure_ascii=False))
+    return {"ok": True, "count": len(msgs), "ts": ts}
 
 
 @app.post("/api/bkchat/{key}/feedback")
@@ -1062,6 +1213,8 @@ def api_bkchat_feedback(key: str, payload: dict):
     汇入反馈账本（设置→学习报告展示，自我改进素材）。
     payload: {ts, rating: "up"|"down"|"issue", note?}"""
     p = _bkchat_path(key)
+    if not p:
+        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
     if not os.path.exists(p):
         return JSONResponse({"error": "该作品还没有对话记录"}, status_code=404)
     ts = int(payload.get("ts") or 0)
@@ -1081,7 +1234,7 @@ def api_bkchat_feedback(key: str, payload: dict):
             break
     if not hit:
         return JSONResponse({"error": "未找到该条回复"}, status_code=404)
-    open(p, "w", encoding="utf-8").write(json.dumps(msgs[-400:], ensure_ascii=False))
+    atomic_write_text(p, json.dumps(msgs[-400:], ensure_ascii=False))
     try:
         fb_path = os.path.join(writer.PROJECTS_DIR, "_feedback.json")
         fb = json.load(open(fb_path, encoding="utf-8")) if os.path.exists(fb_path) else {"total": 0, "up": 0, "down": 0, "issue": 0, "notes": []}
@@ -1091,7 +1244,7 @@ def api_bkchat_feedback(key: str, payload: dict):
             fb.setdefault("notes", []).append({"key": key, "note": (payload.get("note") or "")[:200],
                                                "rating": rating, "at": int(time.time() * 1000)})
             fb["notes"] = fb["notes"][-50:]
-        json.dump(fb, open(fb_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        atomic_write_json(fb_path, fb, indent=1)
     except Exception:
         pass
     return {"ok": True, "rating": rating}
@@ -1102,6 +1255,8 @@ def api_bkchat_branch(key: str, payload: dict):
     """v1.3：从某条消息分支（DSH 式）：以该消息为界另存分支文件，主对话保留并标记。
     payload: {ts}"""
     p = _bkchat_path(key)
+    if not p:
+        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
     if not os.path.exists(p):
         return JSONResponse({"error": "该作品还没有对话记录"}, status_code=404)
     ts = int(payload.get("ts") or 0)
@@ -1113,20 +1268,23 @@ def api_bkchat_branch(key: str, payload: dict):
     if idx is None:
         return JSONResponse({"error": "未找到该条消息"}, status_code=404)
     branch_id = f"b{int(time.time())}"
-    bp = os.path.join(writer.PROJECTS_DIR, key, f"chat-{branch_id}.json")
+    bp = os.path.join(os.path.dirname(p), f"chat-{branch_id}.json")
     os.makedirs(os.path.dirname(bp), exist_ok=True)
-    open(bp, "w", encoding="utf-8").write(json.dumps(msgs[:idx + 1], ensure_ascii=False))
+    atomic_write_text(bp, json.dumps(msgs[:idx + 1], ensure_ascii=False))
     for m in msgs:
         if m.get("ts") == ts:
             m["branched"] = branch_id
             break
-    open(p, "w", encoding="utf-8").write(json.dumps(msgs[-400:], ensure_ascii=False))
+    atomic_write_text(p, json.dumps(msgs[-400:], ensure_ascii=False))
     return {"ok": True, "branch_id": branch_id, "messages": idx + 1}
 
 
 @app.get("/api/bkchat/{key}/branches")
 def api_bkchat_branches(key: str):
-    pdir = os.path.join(writer.PROJECTS_DIR, key)
+    try:
+        pdir = writer._project_dir(key)
+    except ValueError:
+        return {"branches": []}
     out = []
     if os.path.isdir(pdir):
         for f in sorted(os.listdir(pdir)):
@@ -1142,7 +1300,12 @@ def api_bkchat_branches(key: str):
 
 @app.get("/api/bkchat/{key}/branch/{bid}")
 def api_bkchat_branch_get(key: str, bid: str):
-    bp = os.path.join(writer.PROJECTS_DIR, key, f"chat-{bid}.json")
+    if not re.fullmatch(r"b\d{1,20}", bid or ""):
+        return JSONResponse({"error": "分支 id 非法"}, status_code=400)
+    try:
+        bp = os.path.join(writer._project_dir(key), f"chat-{bid}.json")
+    except ValueError:
+        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
     if not os.path.isfile(bp):
         return JSONResponse({"error": "分支不存在"}, status_code=404)
     return {"branch_id": bid, "messages": json.loads(open(bp, encoding="utf-8").read())}
@@ -1193,6 +1356,58 @@ def api_continue(payload: dict):
     writer.start_writing(proj)
     return {"ok": True, "msg": f"继续写作《{proj.name}》…"}
 
+@app.get("/api/jobs")
+def api_jobs(key: str = "", kind: str = "", limit: int = 50):
+    """后台任务表（排队/运行/完成/失败），支持按作品/类型过滤。"""
+    return {"items": jobs.list_jobs(limit=limit, key=key, kind=kind)}
+
+
+@app.get("/api/live/{key}")
+def api_live(key: str):
+    """SSE：把写作/审稿/门禁的进程日志与状态变化实时推给前端（替代高频轮询）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+
+    def _active():
+        for table in (_RELEASE_RUNNING, _ONESHOT_RUNNING, _PARALLEL_RUNNING, _REWRITING):
+            v = table.get(key)
+            if isinstance(v, dict) and v.get("running"):
+                return True
+        return False
+
+    def _gen():
+        import time as _t
+        # 连接建立时先补发最近日志（进程重启后内存事件为空，文件里仍有历史）
+        try:
+            hist = open(os.path.join(proj.path, "运行日志.txt"), encoding="utf-8").read().splitlines()[-50:]
+        except Exception:
+            hist = []
+        for line in hist:
+            yield "event: log\ndata: " + json.dumps({"line": line}, ensure_ascii=False) + "\n\n"
+        seen = len(list(proj.events))
+        last = None
+        deadline = _t.time() + 1800   # 单连接最长 30 分钟，前端会自动重连
+        while _t.time() < deadline:
+            evs = list(proj.events)
+            for e in evs[seen:]:
+                yield "event: log\ndata: " + json.dumps({"line": e}, ensure_ascii=False) + "\n\n"
+            seen = len(evs)
+            st = proj.status()
+            snap = {"state": st.get("state"), "done": st.get("done"), "total": st.get("total"),
+                    "words": st.get("words"), "running": st.get("running")}
+            if snap != last:
+                last = snap
+                yield "event: status\ndata: " + json.dumps(snap, ensure_ascii=False) + "\n\n"
+            if snap["state"] in ("completed", "failed", "awaiting_title") and not snap["running"] and not _active():
+                yield "event: done\ndata: " + json.dumps(snap, ensure_ascii=False) + "\n\n"
+                break
+            yield ": ping\n\n"
+            _t.sleep(1)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
 @app.get("/api/download")
 def api_download(key: str):
     proj = _get_project(key)
@@ -1216,6 +1431,55 @@ def api_download(key: str):
     disp = f"attachment; filename=\"novel.md\"; filename*=UTF-8''{quote(fname)}"
     return Response(text.encode("utf-8"), media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": disp})
+
+@app.get("/api/export")
+def api_export(key: str, fmt: str = "docx"):
+    """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。"""
+    from urllib.parse import quote
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    fmt = (fmt or "docx").lower()
+    novel = not os.path.exists(os.path.join(proj.path, script_writer.F_PLAN))
+    plan = proj.plan() or {}
+    if novel:
+        title = plan.get("novelName") or proj.name
+        chapters = export_mod.novel_chapters(proj)
+        blocks = []
+        for c in chapters:
+            blocks.append((1, f"第{c['n']}章 {export_mod._strip_md(c['title'])}"))
+            blocks.extend(export_mod._md_blocks(c["text"]))
+    else:
+        sproj = script_writer.ScriptProject(proj.path, proj.name)
+        plan = sproj.plan() or plan
+        title = plan.get("scriptName") or proj.name
+        chapters = [{"n": sc["no"], "title": sc["heading"], "text": sc["text"]}
+                    for sc in export_mod.script_scenes(sproj)]
+    if not chapters:
+        return JSONResponse({"error": "还没有可导出的正文"}, status_code=400)
+    author = ((plan.get("meta") or {}).get("author") or "").strip()
+
+    if fmt in ("md", "markdown"):
+        data, media, ext = export_mod.markdown(proj).encode("utf-8"), "text/markdown; charset=utf-8", "md"
+    elif fmt == "docx":
+        data = export_mod.docx_bytes(title, author, blocks)
+        media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ext = "docx"
+    elif fmt == "epub":
+        data, media, ext = export_mod.epub_bytes(title, author, chapters), "application/epub+zip", "epub"
+    elif fmt in ("print", "html"):
+        data = export_mod.print_html(title, author, chapters).encode("utf-8")
+        media, ext = "text/html; charset=utf-8", "html"
+    elif fmt == "fountain" and not novel:
+        data, media, ext = export_mod.fountain(sproj).encode("utf-8"), "text/plain; charset=utf-8", "fountain"
+    elif fmt == "fdx" and not novel:
+        data, media, ext = export_mod.fdx_bytes(sproj), "application/xml", "fdx"
+    else:
+        return JSONResponse({"error": f"不支持的格式：{fmt}"}, status_code=400)
+
+    fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
+    disp = f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname + '.' + ext)}"
+    return Response(data, media_type=media, headers={"Content-Disposition": disp})
 
 @app.get("/api/agents")
 def api_agents():
@@ -1248,8 +1512,12 @@ def api_agents_dispatch(payload: dict):
         if not p or not p.plan():
             raise Exception(f"《{k}》不存在或未创建")
         return p
-    res = agents.dispatch_write(keys[:8], _get, lambda p: writer._write_loop(p))
-    return {"ok": True, "results": res}
+    keys = [k for k in keys if isinstance(k, str) and k][:8]
+    job = jobs.run("dispatch", lambda: agents.dispatch_write(keys, _get, lambda p: writer._write_loop(p)),
+                   key=",".join(keys), title="批量并发创作", keys=keys)
+    # 兼容旧前端：立即返回已受理（不再同步等所有书跑完）
+    return {"ok": True, "async": True, "job_id": job["id"],
+            "results": {k: {"ok": True, "message": "已进入后台队列"} for k in keys}}
 
 # ---------- v0.6 B：并行章节创作（单本书内 N 个 Agent 分章齐写 + 总架构对齐） ----------
 _PARALLEL_RUNNING = {}
@@ -1399,18 +1667,141 @@ def api_skeleton_regen(payload: dict):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+def _chapter_entry(proj, n):
+    """按 1-based 章序取章节记录与最新计划；越界返回 (None, plan)。"""
+    plan = proj.plan() or {}
+    chs = plan.get("chapters") or []
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None, plan
+    if n < 1 or n > len(chs):
+        return None, plan
+    return chs[n - 1], plan
+
+
+def _apply_chapter_text(proj, n, text: str, label: str = "编辑前") -> int:
+    """写章节正文：先留版本快照，再原子落盘，最后同步词数与成书。返回汉字数。"""
+    ch, plan = _chapter_entry(proj, n)
+    if ch is None:
+        raise ValueError("章节不存在")
+    fp = _chapter_path(proj, ch)
+    old = open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
+    if old != text:
+        versions.snapshot(proj.path, n, old, label=label)
+        atomic_write_text(fp, text)
+    words = len(re.findall(r"[\u4e00-\u9fff]", text))
+    with proj.lock:
+        latest = proj.plan() or plan
+        chs = latest.get("chapters") or []
+        if not (1 <= n <= len(chs)):
+            raise ValueError("章节不存在")
+        target = chs[n - 1]
+        target["wordCount"] = words
+        target["editedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if text.strip() and target.get("status") != "completed":
+            target["status"] = "completed"
+        latest["totalWords"] = sum(int(c.get("wordCount") or 0) for c in chs)
+        proj.save_plan(latest)
+    try:
+        writer.rebuild_book(proj)
+    except Exception:
+        pass
+    return words
+
+
 @app.get("/api/chapter")
 def api_chapter(key: str, n: int):
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    plan = proj.plan()
-    if not plan or n < 1 or n > len(plan["chapters"]):
+    ch, _plan = _chapter_entry(proj, n)
+    if ch is None:
         return JSONResponse({"error": "章节不存在"}, status_code=404)
-    fp = os.path.join(proj.path, plan["chapters"][n - 1]["filePath"])
-    if not os.path.exists(fp):
-        return {"chapter": n, "text": ""}
-    return {"chapter": n, "text": open(fp, encoding="utf-8").read()}
+    fp = _chapter_path(proj, ch)
+    text = open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
+    return {"chapter": n, "title": ch.get("title") or "", "text": text,
+            "words": ch.get("wordCount") or 0,
+            "updatedAt": ch.get("editedAt") or "",
+            "versions": len(versions.list_versions(proj.path, n))}
+
+
+@app.put("/api/chapter")
+def api_chapter_save(payload: dict):
+    """手动编辑 / 自动保存：写正文 + 词数 + 重建成书 + 版本快照。"""
+    proj = _get_project(payload.get("key"))
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return JSONResponse({"error": "正文必须是字符串"}, status_code=400)
+    if len(text) > 2_000_000:
+        return JSONResponse({"error": "单章超过 200 万字符，请分段保存"}, status_code=413)
+    try:
+        words = _apply_chapter_text(proj, payload.get("n"), text)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return {"ok": True, "chapter": int(payload.get("n")), "words": words,
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S")}
+
+
+@app.get("/api/chapter/versions")
+def api_chapter_versions(key: str, n: int):
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    ch, _ = _chapter_entry(proj, n)
+    if ch is None:
+        return JSONResponse({"error": "章节不存在"}, status_code=404)
+    return {"chapter": n, "items": versions.list_versions(proj.path, n)}
+
+
+@app.get("/api/chapter/version")
+def api_chapter_version(key: str, n: int, id: str):
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    try:
+        text = versions.read_version(proj.path, n, id)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return {"chapter": n, "id": id, "text": text}
+
+
+@app.get("/api/chapter/diff")
+def api_chapter_diff(key: str, n: int, id: str):
+    """历史版本 → 当前正文 的 unified diff。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    ch, _ = _chapter_entry(proj, n)
+    if ch is None:
+        return JSONResponse({"error": "章节不存在"}, status_code=404)
+    try:
+        old = versions.read_version(proj.path, n, id)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    fp = _chapter_path(proj, ch)
+    cur = open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
+    return {"diff": versions.diff_text(old, cur)}
+
+
+@app.post("/api/chapter/restore")
+def api_chapter_restore(payload: dict):
+    """回滚到某个历史版本（当前内容会先自动存一份快照，可再滚回来）。"""
+    proj = _get_project(payload.get("key"))
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    n = payload.get("n")
+    try:
+        text = versions.read_version(proj.path, n, payload.get("id"))
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    try:
+        words = _apply_chapter_text(proj, n, text, label="回滚前")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return {"ok": True, "chapter": int(n), "words": words}
 
 def _preview_pass_line(plan):
     try:
@@ -1432,7 +1823,7 @@ def api_preview(key: str):
     else:
         parts = []
         for ch in plan.get("chapters", []):
-            fp = os.path.join(proj.path, ch.get("filePath", ""))
+            fp = _chapter_path(proj, ch)
             if os.path.exists(fp):
                 parts.append(open(fp, encoding="utf-8").read())
         text = "\n\n---\n\n".join(parts)
@@ -1443,7 +1834,7 @@ def api_preview(key: str):
     # v0.7.x：逐章原文（按章序，供对话区「逐章直播打字机」一章一条气泡）——纯读文件，不烧 LLM
     chapters_full = []
     for c in plan.get("chapters", []):
-        fp = os.path.join(proj.path, c.get("filePath", ""))
+        fp = _chapter_path(proj, c)
         if fp and os.path.exists(fp):
             try:
                 chapters_full.append({"n": c.get("chapterNumber"), "title": c.get("title"),
@@ -1456,8 +1847,10 @@ def api_preview(key: str):
     for c in chapters:
         rec = cs.get(str(c["n"])) or {}
         c["score"] = rec.get("score"); c["weak"] = rec.get("weak", []); c["ch_status"] = rec.get("status", "unscored")
+        c["evidence"] = rec.get("evidence") or []
     per_chapter = [{"ch": int(k), "score": v.get("score"), "weak": v.get("weak", []),
-                    "status": v.get("status", "unscored"), "verdict": v.get("verdict", "")}
+                    "status": v.get("status", "unscored"), "verdict": v.get("verdict", ""),
+                    "evidence": v.get("evidence") or []}
                    for k, v in sorted(cs.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 9999)]
     return {"key": key, "name": plan.get("novelName", key), "has_book": has_book,
             "total_words": plan.get("totalWords", 0), "text": text, "chapters": chapters,

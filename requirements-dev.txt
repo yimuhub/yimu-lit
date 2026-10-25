@@ -1,0 +1,4 @@
+# 开发/CI 依赖（生产只需 requirements.txt）
+pytest>=8.0
+ruff>=0.6
+pip-audit>=2.7

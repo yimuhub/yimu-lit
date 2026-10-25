@@ -3,6 +3,7 @@
 """
 import json, os, re, datetime
 from . import llm, skill
+from .safeio import atomic_write_json
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PREFS_FILE = os.path.join(ROOT, "user-preferences.json")
@@ -21,8 +22,7 @@ def load_prefs():
 
 def save_prefs(p):
     p["updatedAt"] = datetime.date.today().isoformat()
-    with open(PREFS_FILE, "w", encoding="utf-8") as f:
-        json.dump(p, f, ensure_ascii=False, indent=2)
+    atomic_write_json(PREFS_FILE, p)
 
 # ---------- 阶段1：主题提取（快车道） ----------
 
@@ -145,7 +145,9 @@ def _continuity_block(ctx):
     """把 连续性结构（故事圣经/线索账本/章节摘要/时间线）拼成写前上下文；旧项目缺失则自动省略。"""
     parts = []
     if ctx.get("story_bible"):
-        parts.append(f"【故事圣经（事实来源）】\n{ctx['story_bible'][:2000]}")
+        parts.append(f"【故事圣经（事实来源）】\n{ctx['story_bible'][:1600]}")
+    if ctx.get("lore_relevant"):
+        parts.append(f"【本章相关设定（关键词检索，写错=崩设定）】\n{ctx['lore_relevant']}")
     if ctx.get("clue_ledger"):
         parts.append(f"【线索账本（须兑现/不得乱揭的谜团）】\n{ctx['clue_ledger'][:1500]}")
     if ctx.get("chapter_summaries"):
@@ -350,7 +352,10 @@ def chapter_review(ch_body, cfg, context=""):
                  + (f"【参照上下文(文风/人物/前后章)】\n{context[:4000]}\n" if context else "")
                  + "评分纪律：就事论事、按证据打分；找出最弱的 3 个维度。"
                  '输出 JSON：{"scores":{"结构":0-10,"因果可信":0-10,"人物":0-10,"连续性":0-10,"语言":0-10,"读者体验":0-10},'
-                 '"weak":["最弱维度名1","最弱维度名2","最弱维度名3"],"verdict":"一句话本章质量判断与最该修的点"}。只输出 JSON。')
+                 '"weak":["最弱维度名1","最弱维度名2","最弱维度名3"],'
+                 '"evidence":[{"dimension":"维度名","quote":"必须引用本章原文一句","why":"为何扣分"}],'
+                 '"verdict":"一句话本章质量判断与最该修的点"}。'
+                 'evidence 至少 2 条，quote 必须是原文片段，不得编造。只输出 JSON。')
         user_p = f"待审章节（第 ? 章，只评它）：\n{ch_body[:9000]}"
         # 规则层：slop 定位（语言维证据，不装确定）
         try:
@@ -376,8 +381,10 @@ def chapter_review(ch_body, cfg, context=""):
         if not isinstance(weak, list) or not weak:
             weak = [k for k, _ in sorted(((k, scores.get(k)) for k in SCORE_WEIGHTS),
                                           key=lambda kv: (kv[1] if isinstance(kv[1], (int, float)) else 99))[:3]]
+        ev = [e for e in (out.get("evidence") or [])
+              if isinstance(e, dict) and e.get("quote")][:6]
         return {"scores": scores, "weak": [w for w in weak if w in SCORE_WEIGHTS][:3] or weak[:3],
-                "verdict": (out.get("verdict") or "").strip()[:200]}
+                "evidence": ev, "verdict": (out.get("verdict") or "").strip()[:200]}
     except Exception:
         return {}
 

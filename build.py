@@ -1,7 +1,7 @@
 """构建「神笔文学创作台」自包含打包 zip。
 
 产物：dist/yimu-lit-v<VERSION>.zip
-内容：代码 + skillkit + tests + run.py + 启动脚本 + config.example.json + requirements + LICENSE/NOTICE/README
+内容：代码 + skillkit + samples + tests + run.py + 启动脚本 + config.example.json + requirements + LICENSE/NOTICE/README
 不包：config.json / providers.json / secrets/ / projects/ / data/ / styles/ / skillkit/_external/ / __pycache__ / .git
 
 用法：python build.py   （可选：python build.py --out /tmp）
@@ -23,7 +23,7 @@ def _version() -> str:
 
 
 # 整目录打包（相对 ROOT）
-DIRS = ["bot", "skillkit", "tests", "static", "tools"]
+DIRS = ["bot", "skillkit", "tests", "static", "tools", "samples"]
 # 单文件
 FILES = ["app.py", "run.py", "requirements.txt", "pyproject.toml",
          "package.json", "LICENSE", "NOTICE.md", "README.md", "VERSION",

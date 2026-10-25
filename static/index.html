@@ -113,6 +113,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 .tabs button{border:0;background:none;color:var(--muted);font:500 12.5px var(--sans);padding:9px 14px;cursor:pointer;border-bottom:2px solid transparent}
 .tabs button.on{color:var(--text);border-bottom-color:var(--accent)}
 .panel{display:none}.panel.on{display:block}
+#ed_text{width:100%;min-height:52vh;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;font:13px/1.85 var(--sans);color:var(--text);resize:vertical;outline:none}
+#ed_text:focus{border-color:var(--accent)}
 .doc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;font:12.5px/1.9 var(--sans);white-space:pre-wrap;word-break:break-word;color:var(--text);max-height:62vh;overflow-y:auto}
 .doc:empty::before{content:"（暂无内容）";color:var(--dim)}
 .doc .find-blk{color:var(--red)}
@@ -323,15 +325,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 "use strict";
 /* ================= 工具 ================= */
 const $=id=>document.getElementById(id);
-const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&","<":"<",">":">",'"':'"',"'":"&#39;"}[c]));
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const escAttr=s=>esc(s).replace(/`/g,"&#96;");
 async function api(url,opt){
   const r=await fetch(url,Object.assign({headers:{"Content-Type":"application/json"}},opt||{}));
   let j={};try{j=await r.json();}catch(e){}
+  if(r.status===401){
+    // 启动令牌缺失/过期：首页会重新下发 Cookie；只自动刷新一次，避免死循环
+    if(!sessionStorage.getItem("shenbi_auth_retry")){
+      sessionStorage.setItem("shenbi_auth_retry","1");location.reload();
+    }
+    throw new Error("未授权：请通过 http://127.0.0.1 打开首页");
+  }
   if(!r.ok||j.error)throw new Error(j.error||("HTTP "+r.status));
+  sessionStorage.removeItem("shenbi_auth_retry");
   return j;
 }
 function toast(msg,type){
-  const t=document.createElement("div");t.className="toast "+(type||"");t.innerHTML=msg;
+  const t=document.createElement("div");t.className="toast "+(type||"");t.textContent=String(msg==null?"":msg);
   $("toasts").appendChild(t);setTimeout(()=>{t.style.opacity="0";t.style.transition=".3s";setTimeout(()=>t.remove(),320);},3200);
 }
 const MEDIUM={novel:{icon:"📖",label:"小说",cls:"novel"},script:{icon:"🎬",label:"剧本",cls:"script"},
@@ -353,7 +364,7 @@ let loadTasks=async function(){
     ((pr&&pr.items)||[]).forEach(i=>rows.push({key:i.key,medium:"prose",name:i.name,state:i.state,sub:(i.form||"")+(i.operation?" · "+i.operation:"")}));
     rows.sort((a,b)=>{const pa=pins.indexOf(a.key),pb=pins.indexOf(b.key);return (pa<0?999:pa)-(pb<0?999:pb);});
     const box=$("tasks");
-    if(!rows.length){box.innerHTML='<div style="padding:14px 10px;font:11.5px var(--sans);color:var(--dim)">暂无任务。点「＋ 新建创作」开始。</div>';return;}
+    if(!rows.length){box.innerHTML='<div style="padding:14px 10px;font:11.5px var(--sans);color:var(--dim)">暂无任务。点「＋ 新建创作」开始。<div style="margin-top:10px"><button class="pbtn primary" onclick="loadSample()" title="复制一本内置的 3 章悬疑短篇，可直接阅读、编辑、导出，不需要配置模型">🎁 加载示例书</button></div><div style="margin-top:8px;font-size:11px">不用配置模型，先看一本约 5000 字的成品。</div></div>';return;}
     box.innerHTML=rows.map(r=>{
       const m=MEDIUM[r.medium],d=STATEMAP[r.state]||"idle";
       const on=(CUR==="chat"&&KEY===r.key)||(CUR==="bench"&&KEY===r.key);
@@ -375,6 +386,16 @@ let loadTasks=async function(){
     });
   }catch(e){}
 };
+
+async function loadSample(){
+  try{
+    toast("正在复制示例书…");
+    const r=await api("/api/sample",{method:"POST",body:"{}"});
+    await loadTasks();
+    toast("已加载《"+(r.name||"示例书")+"》");
+    openTask("novel",r.key);
+  }catch(e){toast(e.message||"加载示例书失败","err");}
+}
 
 /* ================= 状态 ================= */
 let PROV={},CUR="chat",KEY=null,SID=("s"+Date.now().toString(36)),POLL=null,VIEWTOK=0;
@@ -455,7 +476,7 @@ function openNew(pre){ // pre: 预选文体
     <div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button></div>`;
   }
 }
-function closeDlg(){$("ovl").classList.remove("show");}
+function closeDlg(){if(ED.key&&ED.dirty)saveEditor(true);ED={key:null,n:0,dirty:false,timer:null,saving:false};$("ovl").classList.remove("show");}
 $("ovl").addEventListener("click",e=>{if(e.target.id==="ovl")closeDlg();});
 document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDlg();});
 
@@ -517,7 +538,7 @@ async function submitNovel(){
     const r=await api("/api/create",{method:"POST",body:JSON.stringify(payload)});
     if(r.error){toast("创建失败："+r.error,"err");go.disabled=false;go.textContent="开始创作";return;}
     if(r.awaiting_title)return showTitlePicker(r);
-    toast("《》开写中","ok");closeDlg();openBook(r.key);
+    toast("《"+(payload.title||"新书")+"》开写中","ok");closeDlg();openBook(r.key);
   }catch(e){toast("创建失败："+esc(String(e)),"err");go.disabled=false;go.textContent="开始创作";}
 }
 function showTitlePicker(r){
@@ -640,7 +661,7 @@ function bubble(role,text,opts){
   opts=opts||{};
   const wrap=$("chatwrap")||createChatWrap();
   const b=document.createElement("div");b.className="bub "+role;
-  const ts=opts.ts||Date.now();
+  const ts=Number(opts.ts)||Date.now();
   let inner=`<div class="av">${role==="bot"?"笔":"我"}</div><div class="bb" data-ts="${ts}">${esc(text)}`;
   if(role==="bot"&&!opts.noacts){
     inner+=`<div class="msgacts">
@@ -738,8 +759,9 @@ async function pollLive(key,tok){
                done:"✅ 已完成",failed:"⚠️ 失败",idle:"⏸ 待机",paused:"⏸ 已暂停"};
   let lastEvents=new Set();   // 已展示过的事件（跨轮去重）
   let lastDone=0;             // 已播报的完成章
+  let es=null;
   const tick=async()=>{
-    if(tok!==VIEWTOK||CUR!=="chat"){clearInterval(POLL);POLL=null;return;}
+    if(tok!==VIEWTOK||CUR!=="chat"){if(es){try{es.close();}catch(e){}}es=null;clearInterval(POLL);POLL=null;return;}
     try{
       const lv=await api("/api/book-live?key="+encodeURIComponent(key));
       if(tok!==VIEWTOK)return;
@@ -748,7 +770,7 @@ async function pollLive(key,tok){
       const log=(lv.live_log||[]),last=log.length?log[log.length-1]:"";
       card.innerHTML=`<span class="ph">${esc(PHASE[lv.phase]||lv.phase||"待机")}</span>
         <div class="pbar"><i style="width:${pct}%"></i></div>
-        <div style="color:var(--muted)">${done}/${total} 章 · ${(lv.state||"")}${last?" · "+esc(last.slice(0,90)):""}</div>`;
+        <div class="live-meta" style="color:var(--muted)">${done}/${total} 章 · ${(lv.state||"")}${last?" · "+esc(last.slice(0,90)):""}</div>`;
       // —— DSH 式逐条直播：/api/status events 增量 → evbub 气泡 ——
       try{
         const st=await api("/api/status?key="+encodeURIComponent(key));
@@ -768,7 +790,7 @@ async function pollLive(key,tok){
           if(tok!==VIEWTOK)return;
           (pv2.chapters||[]).filter(c=>c.n>lastDone&&c.n<=done).forEach(c=>{
             const cc=document.createElement("div");cc.className="chcard";
-            cc.innerHTML=`<div class="cht">📄 第${c.n}章 ${(c.title||"").replace(/\*+/g,"")} 完成</div><div class="chm">点击右侧 ⚙ 看逐章评分 · 👁 预览看全文</div>`;
+            cc.innerHTML=`<div class="cht">📄 第${Number(c.n)||""}章 ${esc((c.title||"").replace(/\*+/g,""))} 完成</div><div class="chm">点击右侧 ⚙ 看逐章评分 · 👁 预览看全文</div>`;
             cc.onclick=()=>openPreviewModal(key,c.n);
             wrap.appendChild(cc);
           });
@@ -783,7 +805,39 @@ async function pollLive(key,tok){
     }catch(e){}
   };
   await tick();
-  POLL=setInterval(tick,2500);
+  // SSE 实时推送：日志逐条到达（比轮询快）；断线自动降级为更快轮询
+  let sseOk=false;
+  if(window.EventSource){
+    try{
+      es=new EventSource("/api/live/"+encodeURIComponent(key));
+      es.addEventListener("log",ev=>{
+        try{
+          const line=JSON.parse(ev.data).line;
+          if(!line||lastEvents.has(line))return;
+          lastEvents.add(line);
+          const b=document.createElement("div");b.className="evbub";
+          b.innerHTML=`<div class="evline">${esc(line)}</div>`;
+          wrap.appendChild(b);
+          const v=$("view");
+          if(v.scrollHeight-v.scrollTop-v.clientHeight<300)v.scrollTop=v.scrollHeight;
+        }catch(e){}
+      });
+      es.addEventListener("status",ev=>{
+        try{
+          const st=JSON.parse(ev.data);
+          const total=Number(st.total)||0,done=Number(st.done)||0;
+          const bar=card.querySelector(".pbar i");if(bar)bar.style.width=(total?Math.round(100*done/total):0)+"%";
+          const meta=card.querySelector(".live-meta");
+          if(meta)meta.textContent=done+"/"+total+" 章 · "+(st.state||"");
+          lastDone=done||lastDone;
+        }catch(e){}
+      });
+      es.addEventListener("done",()=>{try{es.close();}catch(e){}es=null;tick();});
+      es.onerror=()=>{try{es.close();}catch(e){}es=null;};
+      sseOk=true;
+    }catch(e){sseOk=false;}
+  }
+  POLL=setInterval(tick,sseOk?10000:2500);
 }
 async function sendMsg(){
   const inp=$("inp"),text=inp.value.trim();if(!text)return;
@@ -807,10 +861,13 @@ async function sendMsg(){
     }
     const r=await api("/api/chat",{method:"POST",body:JSON.stringify({session_id:SID,message:text,...provPayload()})});
     clearInterval(phaseTimer);th.remove();
-    const ts=Date.now();
+    let ts=Date.now();
+    try{
+      await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"user",text,ts:ts-1})});
+      const saved=await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"bot",text:r.reply||"",ts})});
+      if(saved&&saved.ts)ts=saved.ts;
+    }catch(e){}
     bubble("bot",r.reply||"（空回复）",{ts});
-    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"user",text,ts:ts-1})});}catch(e){}
-    try{await api("/api/bkchat",{method:"POST",body:JSON.stringify({key:KEY,who:"bot",text:r.reply||"",ts})});}catch(e){}
     if(r.project&&r.project!==KEY){KEY=r.project;SID="bk-"+r.project;}
     loadTasks();
   }catch(e){
@@ -987,7 +1044,11 @@ async function loadLibList(){
     if(LIB.genre)flt=flt.filter(r=>r.form===LIB.genre);
     // 题材 facets（小说）
     const genres=[...new Set((lib.items||[]).map(i=>i.genre).filter(Boolean))];
-    if(gbox)gbox.innerHTML=genres.slice(0,12).map(g=>`<span class="tag${LIB.genre===g?" on":""}" onclick="LIB.genre=LIB.genre==='${esc(g)}'?'':'${esc(g)}';loadLibList()" style="cursor:pointer">${esc(g)}</span>`).join("");
+    if(gbox){
+      gbox.innerHTML=genres.slice(0,12).map(g=>`<span class="tag${LIB.genre===g?" on":""}" data-genre="${escAttr(g)}" style="cursor:pointer">${esc(g)}</span>`).join("");
+      gbox.onclick=ev=>{const t=ev.target.closest("[data-genre]");if(!t)return;
+        LIB.genre=LIB.genre===t.dataset.genre?"":t.dataset.genre;loadLibList();};
+    }
     if(stats)stats.textContent=`${flt.length} 件 · 小说 ${(lib.items||[]).length} · 剧本 ${(Array.isArray(sc)?sc:[]).length} · 诗词 ${(Array.isArray(po)?po:[]).length} · 散文 ${((pr&&pr.items)||[]).length}`;
     updateBatchBar();
     if(!flt.length){list.innerHTML='<div style="color:var(--muted);padding:30px;text-align:center">无匹配作品</div>';return;}
@@ -995,21 +1056,37 @@ async function loadLibList(){
       const m=MEDIUM[r.medium];
       const qb=r.medium==="novel"?(r.quality==null?'<span class="statechip idle" style="margin-left:6px">未审</span>':`<span class="statechip ${r.raw.passing?"done":"pause"}" style="margin-left:6px">${r.quality}分</span>`):"";
       const rel=r.medium==="novel"&&r.released===true?'<span class="statechip done" style="margin-left:4px">放行✅</span>':(r.medium==="novel"&&r.released===false?'<span class="statechip pause" style="margin-left:4px">未放行</span>':"");
-      return `<div class="lrow">
-        ${r.medium==="novel"?`<input type="checkbox" ${LIB.sel.has(r.key)?"checked":""} onclick="event.stopPropagation();LIB.sel.has('${esc(r.key)}')?LIB.sel.delete('${esc(r.key)}'):LIB.sel.add('${esc(r.key)}');updateBatchBar()">`:""}
+      return `<div class="lrow" data-key="${escAttr(r.key)}" data-medium="${escAttr(r.medium)}" data-fav="${r.favorite?1:0}" data-name="${escAttr(r.name||r.key)}">
+        ${r.medium==="novel"?`<input type="checkbox" data-act="sel" ${LIB.sel.has(r.key)?"checked":""}>`:""}
         <div class="li">${m.icon}</div>
-        <div class="lm" style="cursor:pointer" onclick="${r.medium==="novel"?`closeDlg();openBook('${esc(r.key)}')`:`closeDlg();openBench('${r.medium}','${esc(r.key)}')`}">
+        <div class="lm" style="cursor:pointer" data-act="open">
           <div class="ln">${esc(r.name||r.key)}<span class="mtag ${m.cls}">${m.label}</span>${qb}${rel}</div>
           <div class="ls">${esc(r.form||"")} · ${esc(r.meta||"")}${r.words?" · "+(r.words/10000).toFixed(1)+"万字":""}</div>
-          <div class="pbar" style="max-width:200px;margin-top:5px"><i style="width:${r.progress||0}%"></i></div></div>
+          <div class="pbar" style="max-width:200px;margin-top:5px"><i style="width:${Number(r.progress)||0}%"></i></div></div>
         <div class="rowbtns" style="margin:0;flex:none">
-          ${r.medium==="novel"?`<button class="pbtn" onclick="event.stopPropagation();novelMenu('${esc(r.key)}',event.clientX-260,event.clientY+6)">⋯</button>
-          <button class="pbtn" onclick="event.stopPropagation();openPreviewModal('${esc(r.key)}')">👁 预览</button>
-          <button class="pbtn" onclick="event.stopPropagation();toggleFavLib('${esc(r.key)}',${!r.favorite})">${r.favorite?"★":"☆"}</button>
-          ${r.archived?`<button class="pbtn" onclick="event.stopPropagation();restoreLib('${esc(r.key)}')">♻️ 恢复</button>`:""}
-          <button class="pbtn" style="color:var(--red)" onclick="event.stopPropagation();delLib('${esc(r.key)}','${esc(r.name||r.key)}')">🗑</button>`:""}
+          ${r.medium==="novel"?`<button class="pbtn" data-act="menu">⋯</button>
+          <button class="pbtn" data-act="preview">👁 预览</button>
+          <button class="pbtn" data-act="fav">${r.favorite?"★":"☆"}</button>
+          ${r.archived?`<button class="pbtn" data-act="restore">♻️ 恢复</button>`:""}
+          <button class="pbtn" style="color:var(--red)" data-act="del">🗑</button>`:""}
         </div></div>`;
     }).join("");
+    list.onclick=ev=>{
+      const row=ev.target.closest(".lrow");if(!row)return;
+      const key=row.dataset.key,medium=row.dataset.medium;
+      const actEl=ev.target.closest("[data-act]"),act=actEl&&actEl.dataset.act;
+      if(act==="sel"){
+        if(LIB.sel.has(key))LIB.sel.delete(key);else LIB.sel.add(key);
+        updateBatchBar();return;
+      }
+      if(act==="open"){closeDlg();medium==="novel"?openBook(key):openBench(medium,key);return;}
+      ev.stopPropagation();
+      if(act==="menu")novelMenu(key,ev.clientX-260,ev.clientY+6);
+      else if(act==="preview")openPreviewModal(key);
+      else if(act==="fav")toggleFavLib(key,row.dataset.fav!=="1");
+      else if(act==="restore")restoreLib(key);
+      else if(act==="del")delLib(key,row.dataset.name);
+    };
   }catch(e){list.innerHTML='<div style="color:var(--red);padding:20px">加载失败：'+esc(String(e))+'</div>';}
 }
 async function toggleFavLib(key,on){
@@ -1048,7 +1125,14 @@ async function openPreviewModal(key,tab){
   <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
     <select class="fsel" id="pv_sel" style="flex:1"><option>加载中…</option></select>
     <a class="pbtn" id="pv_dow" target="_blank">⬇ 下载</a></div>
-  <div class="mbody"><div class="doc" id="pv_body" style="max-height:56vh"></div></div>
+  <div style="display:flex;gap:6px;margin:0 0 8px;flex-wrap:wrap">
+    <button class="pbtn" id="pv_edit">✏️ 编辑本章</button>
+    <button class="pbtn" id="pv_ver">🕘 版本</button>
+    <button class="pbtn" data-x="docx">📄 DOCX</button>
+    <button class="pbtn" data-x="epub">📚 EPUB</button>
+    <button class="pbtn" data-x="print">🖨 打印版</button>
+    <button class="pbtn" data-x="md">📝 Markdown</button></div>
+  <div class="mbody"><div class="doc" id="pv_body" style="max-height:52vh"></div></div>
   <div class="dbtns"><button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
   let j={};
   try{j=await api("/api/preview?key="+encodeURIComponent(key));}catch(e){}
@@ -1063,6 +1147,17 @@ async function openPreviewModal(key,tab){
     (j.has_book?'<option value="quality">📊 质量报告</option><option value="review">📋 修订记录</option>':"");
   sel.onchange=()=>showPv(sel.value);
   if(tab&&[...sel.options].some(o=>o.value===tab))sel.value=tab;
+  $("pv_edit").onclick=()=>{
+    const v=$("pv_sel").value;
+    if(!/^\d+$/.test(v)){toast("请先在左侧选择具体章节","err");return;}
+    openEditor(key,+v);
+  };
+  $("pv_ver").onclick=()=>{
+    const v=$("pv_sel").value;
+    if(!/^\d+$/.test(v)){toast("请先在左侧选择具体章节","err");return;}
+    openVersions(key,+v);
+  };
+  dlg.querySelectorAll("[data-x]").forEach(b=>b.onclick=()=>exportBook(key,b.dataset.x));
   showPv(tab||"all");
 }
 async function showPv(sel){
@@ -1077,6 +1172,91 @@ async function showPv(sel){
   }
 }
 window.openPreviewModal=openPreviewModal;window.showPv=showPv;
+
+/* ---- 章节编辑器（自动保存 + 历史版本 + 回滚） ---- */
+let ED={key:null,n:0,dirty:false,timer:null,saving:false};
+async function openEditor(key,n){
+  ED={key,n,dirty:false,timer:null,saving:false};
+  $("ovl").classList.add("show");
+  const dlg=$("dlg");dlg.className="wide";
+  dlg.innerHTML=`<h3>✏️ 编辑 第${n}章</h3><div class="dsub" id="ed_status">加载中…</div>
+   <textarea id="ed_text" spellcheck="false" placeholder="本章正文…"></textarea>
+   <div class="dbtns">
+     <button class="pbtn" id="ed_ver">🕘 历史版本</button>
+     <button class="pbtn" id="ed_save">💾 立刻保存</button>
+     <button class="pbtn" id="ed_close">关闭</button>
+   </div>`;
+  let j={};
+  try{j=await api("/api/chapter?key="+encodeURIComponent(key)+"&n="+n);}catch(e){}
+  const ta=$("ed_text");if(!ta)return;
+  ta.value=j.text||"";
+  $("ed_status").textContent="字数 "+(j.words||0)+" · 已载入 · 最新版本 "+((j.versions||0))+" 份";
+  ta.oninput=()=>{
+    ED.dirty=true;$("ed_status").textContent="编辑中…（1.2 秒后自动保存）";
+    clearTimeout(ED.timer);ED.timer=setTimeout(()=>saveEditor(true),1200);
+  };
+  ta.onkeydown=e=>{if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();saveEditor();}};
+  $("ed_save").onclick=()=>saveEditor();
+  $("ed_close").onclick=()=>closeDlg();
+  $("ed_ver").onclick=()=>openVersions(key,n);
+  ta.focus();
+}
+async function saveEditor(silent){
+  if(!ED.key||!ED.dirty||ED.saving)return;
+  const ta=$("ed_text");if(!ta)return;
+  const st=$("ed_status"),text=ta.value;
+  ED.saving=true;if(st)st.textContent="保存中…";
+  try{
+    const j=await api("/api/chapter",{method:"PUT",body:JSON.stringify({key:ED.key,n:ED.n,text})});
+    ED.dirty=(ta.value!==text);
+    if(st)st.textContent="已保存 · "+j.words+" 字 · "+new Date().toLocaleTimeString();
+    if(!silent)toast("已保存","ok");
+  }catch(e){
+    if(st)st.textContent="保存失败："+e;toast(String(e),"err");
+  }finally{ED.saving=false;}
+}
+async function openVersions(key,n){
+  $("ovl").classList.add("show");
+  const dlg=$("dlg");dlg.className="wide";
+  dlg.innerHTML=`<h3>🕘 第${n}章 · 历史版本</h3><div class="dsub">每次保存/回滚前自动留底，最多保留 30 份</div>
+   <div class="mbody"><table class="scoretbl" id="ver_tbl"><tr><th>时间</th><th>大小</th><th>操作</th></tr></table>
+   <div class="doc" id="ver_body" style="max-height:34vh;display:none"></div></div>
+   <div class="dbtns"><button class="pbtn" id="ver_back">← 返回编辑</button><button class="pbtn" onclick="closeDlg()">关闭</button></div>`;
+  let j={items:[]};
+  try{j=await api("/api/chapter/versions?key="+encodeURIComponent(key)+"&n="+n);}catch(e){}
+  const tb=$("ver_tbl");if(!tb)return;
+  if(!(j.items||[]).length)tb.insertAdjacentHTML("beforeend","<tr><td colspan=3>还没有历史版本（首次编辑保存后生成）</td></tr>");
+  (j.items||[]).forEach(v=>{
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${esc(v.ts)}</td><td>${v.size} B</td><td>
+      <button class="pbtn" data-a="diff">对比</button>
+      <button class="pbtn" data-a="restore">回滚</button></td>`;
+    tr.querySelector('[data-a="diff"]').onclick=()=>showVersion(key,n,v.id,"diff");
+    tr.querySelector('[data-a="restore"]').onclick=async()=>{
+      if(!confirm("确定回滚到 "+v.ts+" 的版本？当前内容会先自动备份。"))return;
+      try{
+        await api("/api/chapter/restore",{method:"POST",body:JSON.stringify({key,n,id:v.id})});
+        toast("已回滚","ok");openEditor(key,n);
+      }catch(e){toast(String(e),"err");}
+    };
+    tb.appendChild(tr);
+  });
+  $("ver_back").onclick=()=>openEditor(key,n);
+}
+async function showVersion(key,n,id,mode){
+  const box=$("ver_body");if(!box)return;
+  box.style.display="block";box.textContent="加载中…";
+  try{
+    const q=`key=${encodeURIComponent(key)}&n=${n}&id=${encodeURIComponent(id)}`;
+    const j=await api((mode==="diff"?"/api/chapter/diff?":"/api/chapter/version?")+q);
+    box.textContent=mode==="diff"?j.diff:j.text;
+  }catch(e){box.textContent=String(e);}
+}
+function exportBook(key,fmt){
+  toast("正在生成 "+fmt.toUpperCase()+" …（大文件可能需要几秒）");
+  window.open("/api/export?key="+encodeURIComponent(key)+"&fmt="+fmt,"_blank");
+}
+window.openEditor=openEditor;window.openVersions=openVersions;window.exportBook=exportBook;
 window.openNew=openNew;window.renderWizard=renderWizard;window.closeDlg=closeDlg;
 window.submitNovel=submitNovel;window.pickTitle=pickTitle;window.submitScript=submitScript;
 window.submitPoetry=submitPoetry;window.submitProse=submitProse;
@@ -1285,6 +1465,7 @@ async function openUsageModal(key){
   <div class="kvrow"><span class="k">总 token</span><span class="v">${(us.total_tokens||0).toLocaleString()}</span></div>
   <div class="kvrow"><span class="k">调用次数</span><span class="v">${us.calls||0}</span></div>
   <div class="kvrow"><span class="k">prompt / completion</span><span class="v">${(us.total_prompt||0).toLocaleString()} / ${(us.total_completion||0).toLocaleString()}</span></div>
+  <div class="kvrow"><span class="k">预算</span><span class="v">${u.budget?(u.budget.toLocaleString()+"（剩余 "+((u.remaining!=null?u.remaining:0)).toLocaleString()+"）"):"不限"}${u.exceeded?' <span style="color:var(--red)">已达上限</span>':""}</span></div>
   <label class="flabel">全局</label>
   <div class="kvrow"><span class="k">总 token</span><span class="v">${(g.total_tokens||0).toLocaleString()}</span></div>
   <div class="kvrow"><span class="k">调用次数</span><span class="v">${g.calls||0}</span></div></div>
@@ -1297,7 +1478,7 @@ $("setbtn").onclick=()=>openSettings();
 async function openSettings(tab){
   tab=tab||"models";
   const dlg=$("dlg");$("ovl").classList.add("show");dlg.className="wide";
-  const tabs=[["models","🤖 模型规则"],["agents","👥 Agent 岗位"],["learn","📈 学习报告"],["styles","✨ 风格库"],["usage","🔢 Token 账本"],["skills","🧠 技能库"]];
+  const tabs=[["models","🤖 模型规则"],["agents","👥 Agent 岗位"],["quality","🧪 质量·预算·日志"],["learn","📈 学习报告"],["styles","✨ 风格库"],["usage","🔢 Token 账本"],["skills","🧠 技能库"]];
   dlg.innerHTML=`<h3>⚙️ 模型与设置</h3>
   <div class="tabs" id="settabs">${tabs.map(t=>`<button data-t="${t[0]}" class="${t[0]===tab?"on":""}">${t[1]}</button>`).join("")}</div>
   <div class="mbody" id="setbody"></div>
@@ -1313,9 +1494,13 @@ async function loadSetTab(t){
       const d=await api("/api/model_rules");
       const r=d.rules||{},ov=d.overrides||{};
       const lbl={context:"上下文窗口",max_tokens:"max_tokens",rpm:"RPM(次/分)",tpm:"TPM(字/分)",backoff_base:"429退避(s)",call_gap:"调用间隔(s)"};
-      el.innerHTML=`<div class="agrow"><div class="aglabel">${esc((d.provider&&d.provider.name)||"当前模型")} · ${esc((d.provider&&d.provider.model)||"")}</div>
+      const tip={context:"供应商支持的最大上下文 token 数；超出会被截断或报错。",max_tokens:"单次回复的最大 token 数；长篇章节建议 8000–16000。",rpm:"每分钟最多请求次数；按供应商限流填写，越小越稳。",tpm:"每分钟最多 token 数；不确定可留空，只靠 RPM 限流。",backoff_base:"遇到 429 后等待的基准秒数，系统会按指数退避重试。",call_gap:"两次 LLM 调用之间的最小间隔秒数；0 表示不等待。"};
+      el.innerHTML=`<div class="agdesc" style="line-height:1.8;border-left:3px solid var(--accent);padding:8px 10px;margin-bottom:10px">
+      <b>第一次使用？</b>先在下方「供应商管理」点「＋ 新增供应商」→ 选一个预设 → 填 API Key → 保存 → 点「🔍 测试连通」→ 设为默认。<br>
+      <b>没有 API Key？</b>可用 Ollama 本地模型：安装 Ollama 后运行 <b>ollama serve</b>，预设选「Ollama 本地」，Base URL 保持 <b>http://127.0.0.1:11434/v1</b>，API Key 留空，模型填 <b>qwen2.5:7b</b>（先运行 <b>ollama pull qwen2.5:7b</b> 下载）。</div>
+      <div class="agrow"><div class="aglabel">${esc((d.provider&&d.provider.name)||"当前模型")} · ${esc((d.provider&&d.provider.model)||"")}</div>
       <div class="agdesc">检测到 ${esc(d.vendor||"generic")} · ${esc(r.note||"")} · ${r.generic?"可自由配置":"按该厂规则自动套"}</div>
-      <div class="f3">${["context","max_tokens","rpm","tpm","backoff_base","call_gap"].map(n=>`<div><div style="font:10px var(--muted);margin-bottom:3px">${lbl[n]}</div><input class="fin" id="mr_${n}" value="${ov[n]!==undefined?ov[n]:(r[n]||"")}"></div>`).join("")}</div>
+      <div class="f3">${["context","max_tokens","rpm","tpm","backoff_base","call_gap"].map(n=>`<div><div style="font:10px var(--muted);margin-bottom:3px" title="${esc(tip[n])}">${lbl[n]}</div><input class="fin" id="mr_${n}" title="${esc(tip[n])}" value="${ov[n]!==undefined?ov[n]:(r[n]||"")}"></div>`).join("")}</div>
       <div class="rowbtns"><button class="pbtn primary" onclick="saveModelRules()">💾 保存模型规则</button></div></div>
       <label class="flabel">供应商管理</label><div id="provlist"><div class="loading"><div class="spinner"></div></div></div>`;
       loadProvList();
@@ -1364,6 +1549,27 @@ async function loadSetTab(t){
       <div class="kvrow"><span class="k">completion</span><span class="v">${(g.total_completion||0).toLocaleString()}</span></div>
       <div class="agdesc" style="margin-top:10px">每本书的消耗在任务 3 点菜单 →「📊 使用统计」。</div>`;
     }
+    if(t==="quality"){
+      const d=await api("/api/settings");
+      el.innerHTML=`<div class="agdesc">全局默认，对后续创作/审稿生效；正在跑的任务在下一检查点读取新值。</div>
+      <label class="flabel" title="报告=只审不修，最省 token；自动修=报告后自动重写 high 风险段落，质量更高但更贵">审稿强度</label>
+      <select class="fsel" id="st_qm" title="报告=只审不修，最省 token；自动修=报告后自动重写 high 风险段落，质量更高但更贵">
+        <option value="off">关闭（最省 token，只写不审）</option>
+        <option value="report">只出质量报告（默认）</option>
+        <option value="auto">报告 + 自动修 high 项（最贵）</option></select>
+      <label class="flabel" title="按单本书累计的 prompt+completion token 计算；达到上限后写作线程会在下一章前自动暂停，可在任务面板恢复">单本 token 预算（0 = 不限；超限自动暂停写作）</label>
+      <input class="fin" id="st_budget" type="number" min="0" step="100000" title="按单本书累计 token 计算；达到上限后下一章前自动暂停，调高预算或设为 0 后点继续即可恢复" value="${d.token_budget||0}">
+      <label class="flabel">上下文与可观测性</label>
+      <div class="rowbtns" style="gap:16px">
+        <label style="font:12px var(--sans)" title="写每一章前，从故事圣经的设定词典里按关键词挑 3–6 条相关设定注入，减少设定冲突和上下文成本"><input type="checkbox" id="st_lore" ${d.lorebook!==false?"checked":""}> Lorebook 关键词注入</label>
+        <label style="font:12px var(--sans)" title="把每次 LLM 调用的阶段、模型、token、耗时写到 llm_calls.jsonl；不记录 prompt 正文和密钥"><input type="checkbox" id="st_trace" ${d.llm_trace!==false?"checked":""}> 结构化调用日志</label>
+      </div>
+      <div class="rowbtns"><button class="pbtn primary" onclick="saveSettings()">💾 保存全局设置</button></div>
+      <label class="flabel">最近 LLM 调用（不含 prompt/密钥）</label>
+      <div id="st_calls" class="doc" style="max-height:220px;font:11px/1.6 ui-monospace,monospace"></div>`;
+      $("st_qm").value=d.quality_mode||"report";
+      loadLlmCalls();
+    }
     if(t==="skills"){
       const s=await api("/api/skillkit/stats");
       const l=await api("/api/skillkit/list");
@@ -1382,6 +1588,30 @@ async function loadSetTab(t){
     }
   }catch(e){el.innerHTML='<div style="color:var(--red);padding:12px">加载失败：'+esc(String(e))+'</div>';}
 }
+async function loadLlmCalls(){
+  const el=$("st_calls");if(!el)return;
+  try{
+    const d=await api("/api/llm-calls?limit=15");
+    const items=d.items||[];
+    el.textContent=items.length?items.map(x=>
+      `${x.ts} ${x.ok?"✅":"❌"} ${x.stage||"-"} · ${x.model||"-"} · ${x.cached?"缓存":((x.total_tokens||0)+" tok")} · ${x.latency_ms||0}ms${x.error?" · "+x.error:""}`
+    ).join("\n"):"暂无调用记录（执行一次创作/审稿后这里会出现结构化日志）。";
+  }catch(e){el.textContent=String(e);}
+}
+async function saveSettings(){
+  try{
+    const body={
+      quality_mode:$("st_qm").value,
+      token_budget:Math.max(0,+$("st_budget").value||0),
+      lorebook:$("st_lore").checked,
+      llm_trace:$("st_trace").checked
+    };
+    await api("/api/settings",{method:"POST",body:JSON.stringify(body)});
+    toast("全局设置已保存","ok");loadLlmCalls();
+  }catch(e){toast(String(e),"err");}
+}
+window.saveSettings=saveSettings;
+
 async function loadProvList(){
   const el=$("provlist");if(!el)return;
   try{
@@ -1403,26 +1633,43 @@ function providerForm(pid){
   const dlg=$("dlg");$("ovl").classList.add("show");
   const title=pid?"✏️ 编辑供应商":"＋ 新增供应商";
   dlg.innerHTML=`<h3>${title}</h3><div class="dsub">OpenAI 兼容接口。预设会自动填 base_url 和模型清单；自定义就全部手填。</div>
-  ${pid?"":`<label class="flabel">预设（可选，一键填）</label><select class="fsel" id="pf_preset"><option value="">（自定义）</option>${PROV_PRESETS.map(p=>`<option value="${p[0]}">${p[1]}</option>`).join("")}</select>`}
-  <label class="flabel">ID（英文标识，唯一）</label><input class="fin" id="pf_id" value="${pid||""}" ${pid?"readonly style=opacity:.6":""} placeholder="如 myprovider">
+  ${pid?"":`<label class="flabel">预设（可选，一键填）</label><select class="fsel" id="pf_preset"><option value="">（自定义）</option>${PROV_PRESETS.map(p=>`<option value="${p[0]}">${p[1]}</option>`).join("")}</select>
+  <div class="agdesc" id="pf_hint" style="display:none;line-height:1.8;border-left:3px solid var(--accent);padding:6px 10px;margin:8px 0"></div>`}
+  <label class="flabel" title="OpenAI 兼容的根地址，通常以 /v1 结尾；不要填到 /chat/completions">ID（英文标识，唯一）</label><input class="fin" id="pf_id" title="仅用于内部识别，建议用小写英文，如 myprovider" value="${pid||""}" ${pid?"readonly style=opacity:.6":""} placeholder="如 myprovider">
   <label class="flabel">名称</label><input class="fin" id="pf_name" placeholder="如 我的供应商">
-  <label class="flabel">Base URL</label><input class="fin" id="pf_url" placeholder="https://api.xxx.com/v1">
-  <label class="flabel">API Key（留空=不修改）</label><input class="fin" id="pf_key" type="password" placeholder="sk-...">
-  <label class="flabel">模型清单（可手动填，或点「拉取」自动获取）</label>
+  <label class="flabel" title="OpenAI 兼容接口地址，通常以 /v1 结尾；Ollama 本地为 http://127.0.0.1:11434/v1">Base URL</label><input class="fin" id="pf_url" title="通常以 /v1 结尾；Ollama 本地为 http://127.0.0.1:11434/v1" placeholder="https://api.xxx.com/v1">
+  <label class="flabel" title="密钥只保存在本机 gitignored 的 providers.json 或 secrets/ 中；Ollama 等本地服务可留空">API Key（留空=不修改）</label><input class="fin" id="pf_key" type="password" title="只保存在本机，不会写进作品或日志；本地 Ollama 可留空" placeholder="sk-...">
+  <label class="flabel" title="逗号分隔。可手动填，或点右侧「拉取模型」自动获取；Ollama 填 ollama list 中的名称，如 qwen2.5:7b">模型清单（可手动填，或点「拉取」自动获取）</label>
   <div style="display:flex;gap:8px"><input class="fin" id="pf_models" placeholder="model-a, model-b" style="flex:1">
-  <button class="pbtn" id="pf_fetch" type="button">🔄 拉取模型</button></div>
-  <label class="flabel">默认模型（下拉选择）</label><select class="fsel" id="pf_defm"><option value="">（先填/拉取模型清单）</option></select>
-  <div class="f2"><div><label class="flabel">温度</label><input class="fin" id="pf_temp" type="number" step="0.05" value="0.85"></div>
-  <div style="align-self:end"><label class="flabel">&nbsp;</label><button class="pbtn" id="pf_probe" type="button" style="width:100%">🔍 测试连通</button></div></div>
+  <button class="pbtn" id="pf_fetch" type="button" title="调用供应商的 /models 接口获取可用模型；部分供应商不开放，可手动填">🔄 拉取模型</button></div>
+  <label class="flabel" title="新建任务默认使用的模型；每个 Agent 还可以在「Agent 岗位」里单独覆盖">默认模型（下拉选择）</label><select class="fsel" id="pf_defm" title="新建任务默认使用的模型"><option value="">（先填/拉取模型清单）</option></select>
+  <div class="f2"><div><label class="flabel" title="越高越发散，小说建议 0.7–0.9；审稿/规划可设 0.2–0.5">温度</label><input class="fin" id="pf_temp" type="number" step="0.05" value="0.85" title="小说建议 0.7–0.9；审稿/规划可设 0.2–0.5"></div>
+  <div style="align-self:end"><label class="flabel">&nbsp;</label><button class="pbtn" id="pf_probe" type="button" style="width:100%" title="保存后测试接口是否可达、密钥是否有效">🔍 测试连通</button></div></div>
   <div class="dbtns"><button class="pbtn" onclick="loadSetTab('models');openSettings('models')">取消</button><button class="pbtn primary" id="pf_go">保存</button></div>`;
   if(!pid){
     dlg.querySelector("#pf_preset").onchange=async function(){
       if(!this.value)return;
       try{
-        const map={agnes:["https://api.agnesai.cn/v1","agnes-3.0-flash"],openai:["https://api.openai.com/v1","gpt-4o"],deepseek:["https://api.deepseek.com/v1","deepseek-chat"],qwen:["https://dashscope.aliyuncs.com/compatible-mode/v1","qwen-plus"],glm:["https://open.bigmodel.cn/api/paas/v4","glm-4-plus"],kimi:["https://api.moonshot.cn/v1","moonshot-v1-8k"],ollama:["http://127.0.0.1:11434/v1","llama3"]};
-        const m=map[this.value]||["",""];
-        dlg.querySelector("#pf_url").value=m[0];dlg.querySelector("#pf_defm").value=m[1];
-        dlg.dataset.preset=this.value;
+        const map={agnes:["https://api.agnesai.cn/v1","agnes-3.0-flash"],openai:["https://api.openai.com/v1","gpt-4o"],deepseek:["https://api.deepseek.com/v1","deepseek-chat"],qwen:["https://dashscope.aliyuncs.com/compatible-mode/v1","qwen-plus"],glm:["https://open.bigmodel.cn/api/paas/v4","glm-4-plus"],kimi:["https://api.moonshot.cn/v1","moonshot-v1-8k"],ollama:["http://127.0.0.1:11434/v1","qwen2.5:7b"]};
+        const preset=this.value;
+        const m=map[preset]||["",""];
+        dlg.querySelector("#pf_url").value=m[0];
+        const models=(preset==="ollama")?["qwen2.5:7b","qwen2.5:14b","llama3.1:8b"]:[m[1]];
+        if(m[1]&&!models.includes(m[1]))models.unshift(m[1]);
+        dlg.querySelector("#pf_models").value=models.join(", ");
+        pfFillModels(models);
+        if(m[1])dlg.querySelector("#pf_defm").value=m[1];
+        dlg.dataset.preset=preset;
+        const hint=dlg.querySelector("#pf_hint");
+        if(hint){
+          if(preset==="ollama"){
+            hint.style.display="block";
+            hint.innerHTML="<b>Ollama 本地模型</b><br>1) 安装 Ollama 后运行 <b>ollama serve</b>；<br>2) 先下载模型：<b>ollama pull qwen2.5:7b</b>；<br>3) Base URL 保持 <b>http://127.0.0.1:11434/v1</b>，API Key 留空；<br>4) 模型名填 <b>ollama list</b> 里的名称，默认 <b>qwen2.5:7b</b>。";
+            dlg.querySelector("#pf_key").placeholder="本地 Ollama 可留空";
+          }else{
+            hint.style.display="none";
+          }
+        }
       }catch(e){}
     };
   }else{
@@ -1631,7 +1878,7 @@ async function renderRPanel(){
   const sec=(id,label,inner,open)=>`<div class="rsec${open?"":" closed"}" id="rp_${id}"><div class="rh" onclick="this.parentNode.classList.toggle('closed')">${label}<span class="car">▼</span></div><div class="rbody">${inner}</div></div>`;
   const pct=st.total?Math.round((st.done||0)/st.total*100):0;
   const pcs=(pv.per_chapter||[]),pl=pv.pass_line||90;
-  const scoreRows=pcs.length?pcs.map(x=>`<div class="rkv"><span class="k">第${x.ch}章</span><span class="v" style="color:${x.status==="below"?"var(--amber)":"var(--green)"}">${x.score!=null?x.score+" 分":"未评"}${(x.weak||[]).length?" · "+esc(x.weak.join("、")):""}</span></div>`).join(""):"<div>还没有评分。点下方「📝 审稿」。</div>";
+  const scoreRows=pcs.length?pcs.map(x=>`<div class="rkv"><span class="k">第${x.ch}章</span><span class="v" title="${esc((x.evidence||[]).map(e=>e.quote+" → "+(e.why||"")).join("\n"))}" style="color:${x.status==="below"?"var(--amber)":"var(--green)"}">${x.score!=null?x.score+" 分":"未评"}${(x.weak||[]).length?" · "+esc(x.weak.join("、")):""}${(x.evidence||[]).length?" 🔍":""}</span></div>`).join(""):"<div>还没有评分。点下方「📝 审稿」。</div>";
   const chRows=(pv.chapters||[]).slice(0,30).map(c=>`<div class="rkv"><span class="k">第${c.n}章</span><span class="v" style="cursor:pointer" onclick="openPreviewModal('${esc(KEY)}','${c.n}')">${esc((c.title||"").replace(/\*+/g,""))||"—"} <span style="color:var(--dim)">${c.status==="completed"?"✅":(c.words?c.words+"字":"未写")}</span></span></div>`).join("")||"<div>暂无章节</div>";
   p.innerHTML=`<button class="rclose" onclick="toggleRPanel()">✕</button>
   <h3>⚙ 《${esc(st.name||KEY)}》</h3>

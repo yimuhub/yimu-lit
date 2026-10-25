@@ -12,6 +12,7 @@ import re
 import datetime
 
 from bot import writer
+from bot.safeio import atomic_write_text, safe_join
 
 SKELETON = "17-写作骨架.md"
 
@@ -101,7 +102,10 @@ def _blueprint_beats(pdir):
 
 def build(key, stamp=True):
     """生成/刷新 `17-写作骨架.md`，返回绝对路径；书不存在返回 None。"""
-    pdir = os.path.join(writer.PROJECTS_DIR, key)
+    try:
+        pdir = safe_join(writer.PROJECTS_DIR, key, label="作品 key")
+    except ValueError:
+        return None
     if not os.path.isdir(pdir):
         return None
     li = writer.library_item(key, with_quality=True)
@@ -213,8 +217,7 @@ def build(key, stamp=True):
     L.append("_（本文件由一幕·神笔自动生成，改写完会自动刷新；人可读，也可直接粘贴给 LLM 作为总体状态上下文。）_")
 
     out = os.path.join(pdir, SKELETON)
-    with open(out, "w", encoding="utf-8") as f:
-        f.write("\n".join(L) + "\n")
+    atomic_write_text(out, "\n".join(L) + "\n")
     # 记到 02-写作计划.json.meta.skeleton（供进度/时间戳展示）
     try:
         writer.set_meta(key, skeleton=now, skeleton_words=len("\n".join(L)))
@@ -225,7 +228,11 @@ def build(key, stamp=True):
 
 def read(key, cap=6000):
     """读取现有骨架（供前端展示 / Agent 上下文注入）。"""
-    p = os.path.join(writer.PROJECTS_DIR, key, SKELETON)
+    try:
+        p = safe_join(writer.PROJECTS_DIR, key, label="作品 key")
+    except ValueError:
+        return ""
+    p = os.path.join(p, SKELETON)
     if not os.path.exists(p):
         return ""
     try:

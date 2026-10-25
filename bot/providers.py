@@ -9,6 +9,8 @@
 """
 import json, os, re, threading, httpx
 
+from .safeio import atomic_write_json
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROVIDERS_FILE = os.path.join(ROOT, "providers.json")
 CONFIG_FILE = os.path.join(ROOT, "config.json")
@@ -180,8 +182,7 @@ def load_data():
 
 
 def _write(data):
-    with open(PROVIDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_json(PROVIDERS_FILE, data)
 
 
 def _next_id(data, name):
