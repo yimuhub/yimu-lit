@@ -1662,6 +1662,60 @@
   margin-bottom: 16px;
 }
 
+/* 全部 / 归档 / 回收站 三档视图 */
+.lib-views {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.lib-tab-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-chip);
+  color: var(--ink-tertiary);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.seg-btn[aria-pressed="true"] .lib-tab-count {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* 批量操作条 */
+.lib-batch {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+}
+
+.lib-batch-count {
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 单条选择框：网格卡片在名称行，列表行在封面左侧 */
+.lib-check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .stat-card {
   flex: 1 1 130px;
   display: flex;
@@ -2222,4 +2276,69 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+
+/* v2.2.0 · 剧本时代体检：按场列违规词，点段落设为对话改稿目标。 */
+.mb-check {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mb-check-scene {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  background: var(--bg-1);
+}
+
+.mb-check-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.mb-check-issue {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px dashed var(--line-2);
+  font-size: 12.5px;
+}
+
+.mb-check-term {
+  flex: none;
+  color: var(--danger, #d14343);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mb-check-snip {
+  color: var(--fg-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mb-paused {
+  color: var(--danger, #d14343);
+  font-weight: 600;
+}
+
+.mb-par {
+  cursor: text;
+  border-radius: var(--radius-sm);
+  transition: background .12s ease, box-shadow .12s ease;
+}
+
+.mb-par:hover {
+  background: var(--bg-2);
+}
+
+.mb-par[data-chat-target="true"] {
+  background: var(--accent-soft, rgba(65, 118, 230, .1));
+  box-shadow: inset 3px 0 0 var(--accent, #4176e6);
+  padding-left: 8px;
 }

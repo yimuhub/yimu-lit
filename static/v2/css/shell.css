@@ -627,19 +627,26 @@
   box-shadow: inset 0.5px 0 0 var(--line-2);
 }
 
-.app[data-right="overlay"] .resize-right {
-  display: none;
-}
-
 .app[data-right="overlay"] .right-col {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
   z-index: 30;
-  width: min(440px, 94vw);
+  width: var(--overlay-w, min(440px, 94vw));
   box-shadow: var(--elev-panel);
   animation: right-slide-in var(--dur-slow) var(--ease-out);
+}
+
+/* 浮层模式下右栏仍可拖左边缘改宽：手柄固定在浮层左侧，并抬到遮罩之上。 */
+.app[data-right="overlay"] .resize-right {
+  display: block;
+  position: fixed;
+  left: auto;
+  right: var(--overlay-w, min(440px, 94vw));
+  margin-left: 0;
+  margin-right: -5px;
+  z-index: 31;
 }
 
 @keyframes right-slide-in {
@@ -689,13 +696,19 @@
 
 .resize-handle:hover::after,
 .resize-handle:focus-visible::after,
+.resize-handle[data-active="true"]::after,
 .app[data-dragging="true"] .resize-handle::after {
   background: var(--accent);
   opacity: 0.5;
 }
 
+.resize-handle:focus-visible {
+  outline: none;
+}
+
+/* 图标条不再藏手柄：从这里往右拖即可连续展开，不再只有两档。 */
 .app[data-sidebar="rail"] .resize-left {
-  display: none;
+  display: block;
 }
 
 /* Mobile drawer ---------------------------------------------------------- */

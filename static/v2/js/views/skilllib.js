@@ -1,12 +1,13 @@
 /* 技能库：按文体与题材浏览全部风格技能，预览正文，检查「这本书到底用没用上」，
    并管理自定义技能（上传 / 删除）。不同风格的技能从这里重新露出来。 */
 
-import { h, icon, iconEl, fmtNum } from '../core/dom.js';
+import { h, icon, iconEl, fmtNum, fmtDate } from '../core/dom.js';
 import { store } from '../core/state.js';
-import { api, errorText, IS_MOCK } from '../core/api.js';
+import { api, errorText, IS_MOCK, request } from '../core/api.js';
 import { toast, confirmDialog, openModal } from '../core/ui.js';
 import { renderMarkdownInto } from '../core/markdown.js';
 import { navigate } from '../core/router.js';
+import { openDistillModal, distillMediumLabel } from '../components/distill.js';
 
 const MEDIUM_FILTERS = [
   { value: '', label: '全部' },
@@ -67,7 +68,10 @@ export function renderSkillLib(container, ctx) {
     file: null,
     fileLoading: false,
     fileError: '',
-    uploading: false
+    uploading: false,
+    styles: [],
+    stylesLoading: true,
+    stylesError: ''
   };
   let destroyed = false;
 
@@ -106,7 +110,9 @@ export function renderSkillLib(container, ctx) {
   const listWrap = h('div', { class: 'skill-list' });
   listCol.append(preview, listWrap);
 
+  let distillList = null;
   const customPanel = buildCustomPanel();
+  const distillPanel = buildDistillPanel();
 
   pad.append(
     h(
@@ -117,6 +123,7 @@ export function renderSkillLib(container, ctx) {
     )
   );
   pad.append(customPanel);
+  pad.append(distillPanel);
 
   /* -------------------------------------------------------------- stats */
 
@@ -848,10 +855,245 @@ export function renderSkillLib(container, ctx) {
     }
   }
 
+  /* ------------------------------------------------------- 蒸馏风格区 */
+
+  function buildDistillPanel() {
+    distillList = h('div', { class: 'skill-distill-list' });
+    return h(
+      'div',
+      { class: 'skill-distill' },
+      h(
+        'div',
+        { class: 'skill-distill-head' },
+        h(
+          'div',
+          { style: { flex: '1', minWidth: '0' } },
+          h('h2', { text: '蒸馏风格' }),
+          h('p', {
+            class: 'hint-text',
+            text: '把喜欢的作者文本蒸馏成可复用风格，开书与创作时都能选它。'
+          })
+        ),
+        h('button', {
+          class: 'btn btn-primary btn-sm',
+          type: 'button',
+          html: `${icon('sparkles', 13)}<span>蒸馏新风格</span>`,
+          on: {
+            click: () => {
+              openDistillModal({ onDone: () => loadStyles() });
+            }
+          }
+        })
+      ),
+      distillList
+    );
+  }
+
+  async function loadStyles() {
+    model.stylesLoading = true;
+    model.stylesError = '';
+    paintStyles();
+    try {
+      const res = await api.styles();
+      const items = Array.isArray(res) ? res : (res && (res.items || res.styles)) || [];
+      model.styles = items.filter(Boolean);
+    } catch (err) {
+      model.stylesError = errorText(err, '风格列表加载失败');
+      model.styles = [];
+      toast(model.stylesError, { tone: 'danger' });
+    }
+    model.stylesLoading = false;
+    if (destroyed) return;
+    paintStyles();
+  }
+
+  function paintStyles() {
+    if (!distillList) return;
+    distillList.textContent = '';
+    if (model.stylesLoading) {
+      const loading = h('div', { class: 'skill-loading' });
+      for (let i = 0; i < 2; i += 1) {
+        loading.append(
+          h('div', { class: 'skeleton skeleton-line', style: { width: `${40 + i * 28}%` } })
+        );
+      }
+      distillList.append(loading);
+      return;
+    }
+    if (model.stylesError) {
+      distillList.append(
+        h(
+          'div',
+          { class: 'skill-apply-error', role: 'alert' },
+          h('span', { class: 'error-text', text: model.stylesError }),
+          h('button', {
+            class: 'btn btn-sm',
+            type: 'button',
+            text: '重试',
+            on: { click: () => loadStyles() }
+          })
+        )
+      );
+      return;
+    }
+    if (!model.styles.length) {
+      distillList.append(
+        h('div', {
+          class: 'hint-text',
+          text: '还没有蒸馏风格。点右上角「蒸馏新风格」，粘一段目标作者的文本就能生成一张风格卡片。'
+        })
+      );
+      return;
+    }
+    for (const st of model.styles) distillList.append(styleCard(st));
+  }
+
+  function styleCard(st) {
+    const words = Array.isArray(st.fingerprint_words) ? st.fingerprint_words.filter(Boolean) : [];
+    return h(
+      'div',
+      { class: 'style-card' },
+      h(
+        'div',
+        { class: 'style-card-main' },
+        h(
+          'div',
+          { class: 'style-card-title' },
+          h('span', { class: 'style-card-name', text: st.name || '' }),
+          st.medium ? h('span', { class: 'badge', text: distillMediumLabel(st.medium) }) : null,
+          st.genre ? h('span', { class: 'badge', text: st.genre }) : null
+        ),
+        h('p', { class: 'style-card-summary', text: st.summary || '（这张卡片没有写概括）' }),
+        h(
+          'div',
+          { class: 'style-card-meta' },
+          h('span', { text: st.created_at ? `创建于 ${fmtDate(st.created_at, true)}` : '创建时间未知' })
+        ),
+        words.length
+          ? h(
+              'div',
+              { class: 'style-card-words' },
+              ...words.slice(0, 10).map((w) => h('span', { class: 'chip chip-muted style-word', text: String(w) }))
+            )
+          : null
+      ),
+      h(
+        'div',
+        { class: 'style-card-actions' },
+        h('button', {
+          class: 'btn btn-sm',
+          type: 'button',
+          html: `${icon('eye', 13)}<span>查看</span>`,
+          on: { click: () => viewStyle(st) }
+        }),
+        h('button', {
+          class: 'icon-btn icon-btn-sm',
+          type: 'button',
+          'aria-label': `删除风格 ${st.name}`,
+          title: '删除风格',
+          html: icon('trash', 14),
+          on: { click: () => removeStyle(st) }
+        })
+      )
+    );
+  }
+
+  async function viewStyle(st) {
+    const body = h('div', { class: 'style-detail' });
+    openModal({
+      title: `风格：${st.name}`,
+      subtitle: st.summary || '',
+      body,
+      size: 'md'
+    });
+    body.append(
+      h(
+        'div',
+        { class: 'session-loading' },
+        h('div', { class: 'skeleton skeleton-line', style: { width: '58%' } }),
+        h('div', { class: 'skeleton skeleton-line', style: { width: '82%' } })
+      )
+    );
+    let card = null;
+    try {
+      card = await fetchStyleDetail(st.name);
+    } catch (err) {
+      body.textContent = '';
+      body.append(h('div', { class: 'error-text', text: errorText(err, '风格详情读取失败') }));
+      return;
+    }
+    body.textContent = '';
+    const dims = (card && card.dims) || {};
+    const keys = Object.keys(dims);
+    if (keys.length) {
+      const grid = h('div', { class: 'style-dims' });
+      for (const k of keys) {
+        grid.append(
+          h(
+            'div',
+            { class: 'style-dim' },
+            h('span', { class: 'style-dim-k', text: k }),
+            h('span', { class: 'style-dim-v', text: String(dims[k] == null ? '' : dims[k]) })
+          )
+        );
+      }
+      body.append(grid);
+    }
+    const words = (card && card.fingerprint_words) || st.fingerprint_words || [];
+    if (words.length) {
+      body.append(
+        h(
+          'div',
+          { class: 'field' },
+          h('span', { class: 'field-label', text: '高频指纹词' }),
+          h(
+            'div',
+            { class: 'style-card-words' },
+            ...words.map((w) => h('span', { class: 'chip chip-muted style-word', text: String(w) }))
+          )
+        )
+      );
+    }
+    if (card && card.style_prompt) {
+      body.append(
+        h(
+          'div',
+          { class: 'field' },
+          h('span', { class: 'field-label', text: '注入用风格说明' }),
+          h('pre', { class: 'skill-inject', text: String(card.style_prompt) })
+        )
+      );
+    }
+  }
+
+  /* api.js 没有风格详情/删除的方法，这里用它的 request 打同一套接口。 */
+  async function fetchStyleDetail(name) {
+    return request(`/api/styles/${encodeURIComponent(name)}`);
+  }
+
+  async function removeStyle(st) {
+    const ok = await confirmDialog({
+      title: `删除风格「${st.name}」？`,
+      message: '删除后开书与创作时就选不到这个风格了。',
+      detail: '已经用这个风格开过的书不受影响。',
+      confirmText: '删除',
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      const payload = await request(`/api/styles/${encodeURIComponent(st.name)}`, { method: 'DELETE' });
+      if (payload && payload.ok === false) throw new Error(payload.note || '删除失败');
+      toast('已删除风格', { tone: 'success', duration: 1800 });
+      await loadStyles();
+    } catch (err) {
+      toast(errorText(err, '删除失败'), { tone: 'danger' });
+    }
+  }
+
   /* -------------------------------------------------------------- start */
 
   async function load() {
-    await Promise.allSettled([loadTree(), loadStats()]);
+    await Promise.allSettled([loadTree(), loadStats(), loadStyles()]);
   }
 
   load();

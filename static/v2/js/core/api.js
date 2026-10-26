@@ -164,6 +164,93 @@ function jsonBody(payload = {}) {
   return { method: 'POST', body: payload };
 }
 
+/* 通用 SSE 客户端：主对话与剧本副驾共用同一套帧解析。 */
+export async function streamSSE(path, payload, { onEvent, signal } = {}) {
+  if (signal && signal.aborted) throw new ApiError('已取消', { code: 'aborted' });
+
+  let res;
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(payload),
+      signal
+    });
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new ApiError('已取消', { code: 'aborted' });
+    throw new ApiError('无法连接流式接口，请确认服务正在运行', { code: 'network' });
+  }
+
+  if (!res.ok) {
+    let payloadData = null;
+    try {
+      payloadData = await res.json();
+    } catch {
+      payloadData = null;
+    }
+    if (res.status === 401) notifyUnauthorized();
+    const code = res.status === 404 || res.status === 501 ? 'stream_unavailable' : 'stream_error';
+    throw new ApiError(fieldMessage(payloadData, res.status), { status: res.status, code, payload: payloadData });
+  }
+
+  if (!res.body || !res.body.getReader) {
+    throw new ApiError('当前浏览器不支持流式输出，请升级浏览器', { code: 'stream_unsupported' });
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let final = null;
+
+  const emitFrame = (frame) => {
+    const lines = frame.split(/\r?\n/);
+    let event = 'message';
+    const dataLines = [];
+    for (const line of lines) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+    }
+    if (!dataLines.length) return;
+    const raw = dataLines.join('\n');
+    let data = raw;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      /* 纯文本 delta */
+    }
+    if (onEvent) onEvent(event, data);
+    if (event === 'done') final = data;
+  };
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx = buffer.indexOf('\n\n');
+      while (idx >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (frame.trim()) emitFrame(frame);
+        idx = buffer.indexOf('\n\n');
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) emitFrame(buffer);
+    return final;
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new ApiError('已取消', { code: 'aborted' });
+    throw new ApiError('流式连接中断，请重试', { code: 'stream_broken' });
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function enc(value) {
   return encodeURIComponent(String(value == null ? '' : value));
 }
@@ -183,9 +270,13 @@ export const api = {
   /* 冷启动只有 key：用它解析作品属于哪种文体，再决定渲染哪套工作台。 */
   project: (key) => request(`/api/library/${enc(key)}`),
   favorite: (key, on) => request(`/api/library/${enc(key)}/favorite`, jsonBody({ on: Boolean(on) })),
+  /* 归档 = 收进作品库「归档」页；回收站 = 可恢复删除；purge 需作品名确认，不可逆。 */
   archive: (key, on) => request(`/api/library/${enc(key)}/archive`, jsonBody({ on: Boolean(on) })),
+  trash: (key) => request(`/api/library/${enc(key)}/trash`, jsonBody({})),
+  restore: (key) => request(`/api/library/${enc(key)}/restore`, jsonBody({})),
+  purge: (key, confirm) => request(`/api/library/${enc(key)}/purge`, { method: 'DELETE', query: { confirm } }),
   rename: (key, name) => request(`/api/library/${enc(key)}/rename`, jsonBody({ name })),
-  remove: (key, hard = false) => request(`/api/library/${enc(key)}`, { method: 'DELETE', query: { hard } }),
+  remove: (key) => request(`/api/library/${enc(key)}`, { method: 'DELETE' }),
   batch: (keys, action) => request('/api/library/batch', jsonBody({ keys, action })),
   tags: (key, tags) => request(`/api/library/${enc(key)}/tags`, jsonBody({ tags })),
   compare: (keys) => request('/api/compare', { query: { keys: keys.join(',') } }),
@@ -202,6 +293,26 @@ export const api = {
   scriptScene: (key, no) => request('/api/script/scene', { query: { key, no } }),
   scriptPreview: (key) => request('/api/script/preview', { query: { key } }),
   scriptRevise: (key) => request('/api/script/revise', jsonBody({ key })),
+  /* 世界观一致性体检 + 按设定重写违规场次（先落快照）。 */
+  scriptCheck: (key) => request('/api/script/check', jsonBody({ key }), { timeout: 180000 }),
+  scriptRewriteScenes: (key, sceneNos, instruction = '') =>
+    request('/api/script/rewrite-scenes', jsonBody({ key, sceneNos, instruction, force: true }), { timeout: 600000 }),
+  /* 通用副驾（剧本/诗词/散文）：讨论或定向改写；改写只回 diff，应用走 assistApply。 */
+  assistStream: (payload, opts) => streamSSE('/api/assist/stream', payload, opts),
+  assistApply: (payload) => request('/api/assist/apply', jsonBody(payload), { timeout: 60000 }),
+  assistVersions: (key, medium, doc) =>
+    request('/api/assist/versions', { query: { key, medium, doc } }),
+  assistRestore: (payload) => request('/api/assist/restore', jsonBody(payload), { timeout: 60000 }),
+  /* 对话历史 + 改稿记录（作品目录 .assist/ 留档） */
+  assistHistory: (key, medium) => request('/api/assist/history', { query: { key, medium } }),
+
+  /* 对话副驾：讨论或定向改写；改写只回 diff，应用走 assistApply。 */
+  scriptAssistStream: (payload, opts) => streamSSE('/api/script/assist/stream', payload, opts),
+  scriptAssistApply: (payload) => request('/api/script/assist/apply', jsonBody(payload), { timeout: 60000 }),
+  scriptAssistVersions: (key, scene) =>
+    request('/api/script/assist/versions', { query: { key, scene } }),
+  scriptAssistRestore: (key, scene, version) =>
+    request('/api/script/assist/restore', jsonBody({ key, scene, version }), { timeout: 60000 }),
 
   poetryStatus: (key) => request('/api/poetry/status', { query: { key } }),
   poetryPart: (key, part) => request('/api/poetry/part', { query: { key, part } }),
@@ -301,7 +412,7 @@ export const api = {
     return joinUrl('/api/export', { key, fmt });
   },
 
-  /* 聊天 SSE：mock 模式模拟分段输出；真实模式解析 text/event-stream。 */
+  /* 聊天 SSE：mock 模式模拟分段输出；真实模式走通用 streamSSE。 */
   async streamChat(payload, { onEvent, signal } = {}) {
     if (IS_MOCK) {
       try {
@@ -311,89 +422,7 @@ export const api = {
         throw new ApiError((err && err.message) || '演示流式输出失败', { code: 'mock' });
       }
     }
-    if (signal && signal.aborted) throw new ApiError('已取消', { code: 'aborted' });
-
-    let res;
-    try {
-      res = await fetch('/api/chat/stream', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify(payload),
-        signal
-      });
-    } catch (err) {
-      if (err && err.name === 'AbortError') throw new ApiError('已取消', { code: 'aborted' });
-      throw new ApiError('无法连接流式接口，请确认服务正在运行', { code: 'network' });
-    }
-
-    if (!res.ok) {
-      let payloadData = null;
-      try {
-        payloadData = await res.json();
-      } catch {
-        payloadData = null;
-      }
-      if (res.status === 401) notifyUnauthorized();
-      const code = res.status === 404 || res.status === 501 ? 'stream_unavailable' : 'stream_error';
-      throw new ApiError(fieldMessage(payloadData, res.status), { status: res.status, code, payload: payloadData });
-    }
-
-    if (!res.body || !res.body.getReader) {
-      throw new ApiError('当前浏览器不支持流式输出，请升级浏览器', { code: 'stream_unsupported' });
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let final = null;
-
-    const emitFrame = (frame) => {
-      const lines = frame.split(/\r?\n/);
-      let event = 'message';
-      const dataLines = [];
-      for (const line of lines) {
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
-      }
-      if (!dataLines.length) return;
-      const raw = dataLines.join('\n');
-      let data = raw;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        /* 纯文本 delta */
-      }
-      if (onEvent) onEvent(event, data);
-      if (event === 'done') final = data;
-    };
-
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let idx = buffer.indexOf('\n\n');
-        while (idx >= 0) {
-          const frame = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          if (frame.trim()) emitFrame(frame);
-          idx = buffer.indexOf('\n\n');
-        }
-      }
-      buffer += decoder.decode();
-      if (buffer.trim()) emitFrame(buffer);
-      return final;
-    } catch (err) {
-      if (err && err.name === 'AbortError') throw new ApiError('已取消', { code: 'aborted' });
-      throw new ApiError('流式连接中断，请重试', { code: 'stream_broken' });
-    } finally {
-      try {
-        reader.releaseLock();
-      } catch {
-        /* ignore */
-      }
-    }
+    return streamSSE('/api/chat/stream', payload, { onEvent, signal });
   }
 };
 

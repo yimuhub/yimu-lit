@@ -1386,6 +1386,21 @@ def _plan_of(pdir):
     return "", "", {}
 
 
+def _lifecycle(meta):
+    """v2.2 作品生命周期字段（展示口径，惰性判定不写盘）。
+
+    archived_at=归档，trashed_at=回收站；旧数据只有 meta.archived=true 时按回收站兼容，
+    因为旧版「归档」实际就是前端作品库里的回收站。"""
+    meta = meta or {}
+    archived_at = meta.get("archived_at")
+    trashed_at = meta.get("trashed_at")
+    archived = bool(archived_at)
+    legacy_trash = bool(meta.get("archived")) and not archived_at and not trashed_at
+    return {"archived": archived, "archived_at": archived_at or None,
+            "trashed_at": trashed_at or None,
+            "trashed": bool(trashed_at) or legacy_trash}
+
+
 def _other_medium_item(key, pdir, med, plan):
     """非小说作品：进度/字数取该文体引擎的 status()，小说专有字段留空而非造假值。
     项目对象用这里已解析好的 pdir 构造，避免各引擎自己的 PROJECTS_DIR 与本模块漂移。"""
@@ -1421,7 +1436,7 @@ def _other_medium_item(key, pdir, med, plan):
             "halted": False, "stage": st.get("stage") or "", "verdict": st.get("verdict") or "",
             "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
             "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
-            "archived": bool(meta.get("archived"))}
+            **_lifecycle(meta)}
 
 
 def library_item(key, with_quality=True):
@@ -1461,16 +1476,22 @@ def library_item(key, with_quality=True):
             "halted": bool(state == "in_progress" and not meta.get("paused") and total_words == 0),
             "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
             "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
-            "archived": bool(meta.get("archived"))}
+            **_lifecycle(meta)}
 
 def _meta_from_plan(plan):
     return plan.get("meta") or {}
 
-def library_all(include_archived=False):
+def library_all(view="active", include_archived=None):
+    """作品列表。view: active（默认，排除归档/回收站）/ archived / trash。
+    include_archived=True 保留给旧调用方，等价于不过滤、返回全部。"""
     items = [library_item(d) for d in _project_dirs()]
-    if not include_archived:
-        items = [i for i in items if not i["archived"]]
-    return items
+    if include_archived:
+        return items
+    if view == "archived":
+        return [i for i in items if i["archived"] and not i["trashed"]]
+    if view == "trash":
+        return [i for i in items if i["trashed"]]
+    return [i for i in items if not i["archived"] and not i["trashed"]]
 
 def _project_dirs():
     if not os.path.isdir(PROJECTS_DIR):
@@ -1510,6 +1531,72 @@ def set_meta(key, **fields):
     plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
     atomic_write_json(pj, plan)
     return library_item(key)
+
+def _now_iso():
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _mutate_meta(key, set_fields=None, drop_fields=()):
+    """按 key 改该作品计划文件的 meta 并刷新 updatedAt；返回最新列表项。
+    作品不存在/非法 key/缺计划文件 → {}（调用方据此返回 ok=False）。"""
+    try:
+        pdir = _project_dir(key)
+    except ValueError:
+        return {}
+    if not os.path.isdir(pdir):
+        return {}
+    med, pj, plan = _plan_of(pdir)
+    if not med:
+        return {}
+    meta = plan.get("meta") or {}
+    for k in drop_fields:
+        meta.pop(k, None)
+    meta.update(set_fields or {})
+    plan["meta"] = meta
+    plan["updatedAt"] = _now_iso()
+    atomic_write_json(pj, plan)
+    return library_item(key)
+
+
+def archive_book(key, on=True):
+    """归档：从侧栏/默认列表收起，作品库「归档」页可见、可恢复；与回收站互斥。"""
+    if on:
+        item = _mutate_meta(key, {"archived_at": _now_iso()}, ("trashed_at", "archived"))
+    else:
+        item = _mutate_meta(key, drop_fields=("archived_at",))
+    if not item:
+        return {"ok": False, "note": "该作品不存在"}
+    return {"ok": True, "item": item}
+
+
+def trash_book(key):
+    """移入回收站：默认全隐藏、可恢复、可彻底删除；与归档互斥。"""
+    item = _mutate_meta(key, {"trashed_at": _now_iso()}, ("archived_at", "archived"))
+    if not item:
+        return {"ok": False, "note": "该作品不存在"}
+    return {"ok": True, "item": item}
+
+
+def restore_book(key):
+    """从归档或回收站恢复：三个生命周期标记一并清除。"""
+    item = _mutate_meta(key, drop_fields=("trashed_at", "archived_at", "archived"))
+    if not item:
+        return {"ok": False, "note": "该作品不存在"}
+    return {"ok": True, "item": item}
+
+
+def purge_book(key, confirm):
+    """彻底删除：必须完整输入作品显示名，否则不动任何文件。"""
+    item = library_item(key)
+    if not item:
+        return {"ok": False, "note": "该作品不存在"}
+    if (confirm or "").strip() != item.get("name"):
+        return {"ok": False, "note": "请完整输入作品名以确认彻底删除"}
+    res = delete_book(key, hard=True)
+    if not res.get("ok"):
+        return res
+    return {"ok": True, "note": "已彻底删除（不可恢复）"}
+
 
 def rename_book(key, new_name):
     """v0.3.3：改书名（只改显示名 novelName + 成书文件名，key/目录不变，避免破坏引用）。"""
@@ -1554,7 +1641,11 @@ def delete_book(key, hard=False):
                 atomic_write_json(SCHEDULES_FILE, sc)
         except Exception: pass
         return {"ok": True, "hard": True, "note": "已彻底删除（不可恢复）"}
-    return {"ok": True, "hard": False, "archived": True, "note": "已移入回收站（可恢复）", "item": set_meta(key, archived=True)}
+    res = trash_book(key)
+    if not res.get("ok"):
+        return res
+    return {"ok": True, "hard": False, "archived": True,
+            "note": "已移入回收站（可恢复）", "item": res.get("item")}
 
 # ---------- v0.7 R3：逐章『保留更好』守护 + 按书任务串行（防并发写同一本书死锁）----------
 import contextlib

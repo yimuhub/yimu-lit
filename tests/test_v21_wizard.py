@@ -29,12 +29,13 @@ ALLOWED_KEYS = {
         "sells", "style_preset", "style_id",
     },
     "script": {
-        # script_writer.create_project 读 form/entryPath/idea/notes/scenes/pages/episodes/title；
+        # script_writer.create_project 读 form/entryPath/idea/notes/scenes/pages/episodes/title
+        # 与时代设定（setting_era/setting_world → meta.setting，贯穿 S0–S5）；
         # genre 与 format_spec 在 app._create_script_project 里折进 notes；
         # *_scale 只是前端选中态的 token 槽位，API 层按白名单丢弃
         "form", "entryPath", "genre", "title", "idea",
         "episodes_scale", "scenes_scale", "pages_scale",
-        "notes", "format_spec", "style_id",
+        "notes", "format_spec", "style_id", "setting_era", "setting_world",
     },
     "poetry": {
         # poetry_writer 读 form/title/idea/maxRounds/cipai/metrical_check/with_notes/with_translation；

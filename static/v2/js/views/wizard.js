@@ -11,6 +11,7 @@ import { store, patchUi } from '../core/state.js';
 import { openModal, toast } from '../core/ui.js';
 import { GENRE_OPTIONS, SCALE_OPTIONS, WRITING_MODES, USAGE_MODES, MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
 import { api, errorText } from '../core/api.js';
+import { openDistillModal } from '../components/distill.js';
 
 /* /api/onboarding 是向导的唯一词表源（题材/基调/视角/卖点/风格预设 + 平台 + 引擎词表）。
    只在第一次打开向导时取一次，失败则回落到本地最小 schema，不阻塞创建。 */
@@ -175,11 +176,35 @@ export function openWizard(ctx, preset = {}) {
     refs: [],
     existing: new Set(),
     styleId: preset.styleId || '',
+    /* 蒸馏出来的风格当场就能选中，不必等下次启动再从 store 取。 */
+    styles: (state.styles || []).slice(),
     copyright: true,
     submitting: false,
     error: '',
     status: ''
   };
+  let stylesFetched = false;
+
+  /* store 里的风格列表可能是旧的（首页启动时才拉过一次），这里自己再拉一次兜底。 */
+  async function ensureStyles() {
+    if (stylesFetched) return;
+    stylesFetched = true;
+    let items = [];
+    try {
+      const res = await api.styles();
+      items = Array.isArray(res) ? res : (res && (res.items || res.styles)) || [];
+    } catch {
+      /* 拉不到就先用 store 里那份，不挡开书 */
+      return;
+    }
+    if (destroyed) return;
+    const list = items.filter(Boolean);
+    if (!list.length) return;
+    const known = new Set(model.styles.map((s) => s.name || s.id));
+    if (model.styles.length && list.every((s) => known.has(s.name || s.id))) return;
+    model.styles = list;
+    render();
+  }
 
   /* 每种体裁一套值，来回切体裁不丢已填内容。 */
   function values() {
@@ -744,10 +769,16 @@ export function openWizard(ctx, preset = {}) {
     const head = h('div', { class: 'ref-step-head' });
     head.append(
       h('span', { class: 'rsh-title', html: `${icon('palette', 14)}<span>蒸馏风格</span>` }),
-      h('span', { class: 'badge', text: '可选' })
+      h('span', { class: 'badge', text: '可选' }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        html: `${icon('sparkles', 13)}<span>蒸馏新风格</span>`,
+        on: { click: () => distillHere() }
+      })
     );
     wrap.append(head);
-    const styles = store.get().styles || [];
+    const styles = model.styles;
     const grid = h('div', { class: 'style-grid' });
     const none = h(
       'button',
@@ -775,9 +806,34 @@ export function openWizard(ctx, preset = {}) {
     }
     wrap.append(grid);
     if (!styles.length) {
-      wrap.append(h('div', { class: 'hint-text', text: '还没有蒸馏风格。可以在设置或作品里先生成风格，本次先自动选择。' }));
+      wrap.append(h('div', { class: 'hint-text', text: '还没有蒸馏风格。点上面的「蒸馏新风格」粘一段目标文本就能现场生成，本次先自动选择。' }));
     }
     return wrap;
+  }
+
+  /* 创作流程里就地蒸馏：不用跳去别的页面，蒸馏完顺手把新风格选中。 */
+  function distillHere() {
+    const genre = String((values() || {}).genre || '');
+    openDistillModal({
+      medium: model.medium,
+      genre,
+      onDone: (card) => {
+        const style = (card && card.style) || {};
+        const name = (card && card.name) || style.name || '';
+        if (!name) return;
+        const item = {
+          id: name,
+          name,
+          genre: style.genre || genre || '',
+          summary: style.summary || (card && card.summary) || '',
+          medium: style.medium || model.medium,
+          fingerprint_words: style.fingerprint_words || []
+        };
+        model.styles = [item, ...model.styles.filter((s) => (s.name || s.id) !== name)];
+        model.styleId = name;
+        render();
+      }
+    });
   }
 
   /* 摘要只列有值的可见字段，长文本单独成段。 */
@@ -821,6 +877,7 @@ export function openWizard(ctx, preset = {}) {
 
   function stepThree() {
     const pane = h('div', { class: 'wiz-pane' });
+    ensureStyles();
     pane.append(
       h(
         'div',
@@ -1112,6 +1169,8 @@ export function openWizard(ctx, preset = {}) {
       }
       /* 作品落盘到磁盘上还要一点时间，先把文体告诉路由，免得打开时被当成小说。 */
       if (ctx.rememberMedium) ctx.rememberMedium(key, med);
+      /* 侧栏先出现占位项：后台规划要几次 LLM 调用，不能让人以为没创建成功。 */
+      if (ctx.addPendingWork) ctx.addPendingWork({ key, name: res.name, medium: med });
       if (ctx.refreshLibrary) await ctx.refreshLibrary().catch(() => {});
       patchUi({ medium: model.medium, rightTab: 'work' });
       modal.close();

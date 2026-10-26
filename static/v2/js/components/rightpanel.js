@@ -19,6 +19,7 @@ import { USAGE_MODES, usageLabel } from '../core/constants.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
 import { createCollabPanel } from './collab.js';
+import { openDistillModal } from './distill.js';
 
 const TABS = [
   { key: 'work', label: '作品', icon: 'book-open' },
@@ -156,7 +157,7 @@ function exportWork(key, fmt, label) {
 /* ---------------------------------------------------------------- work */
 
 /* 剧本/诗词/散文：这里的数字单位属于各自引擎，小说的章节列表、导出与暂停/继续都不适用。 */
-function mediumWorkPane(work) {
+function mediumWorkPane(work, ctx) {
   const pane = h('div', { class: 'rp-pane' });
   const unit = MEDIUM_UNITS[work.medium || 'novel'] || '';
   const pct = Number(work.progress) || 0;
@@ -201,6 +202,27 @@ function mediumWorkPane(work) {
     );
   }
   pane.append(kv);
+  /* 创作过程中就地蒸馏：不用跳去技能库，蒸完当场可用。 */
+  pane.append(
+    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 2px 12px' } },
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        html: `${icon('sparkles', 13)}<span>蒸馏风格</span>`,
+        title: '把目标作者的文本蒸馏成风格卡片',
+        on: {
+          click: () => {
+            openDistillModal({
+              medium: work.medium || 'script',
+              /* work.form 是"体式/媒介形式"（电影剧本、现代诗），不是题材，别拿来填错字段。 */
+              genre: '',
+              onDone: () => ctx && ctx.refreshWork && ctx.refreshWork()
+            });
+          }
+        }
+      })
+    )
+  );
   pane.append(
     h('div', { class: 'hint-text', style: { padding: '12px 2px' }, text: '正文与写作动作在中间的工作台里，按文体分页签展开。' })
   );
@@ -215,7 +237,7 @@ function workPane(ctx) {
     pane.append(emptyState('book', '还没有打开作品', '从左侧选择一本作品，或新建一本。'));
     return pane;
   }
-  if (isMediumBench(state.workMedium)) return mediumWorkPane(work);
+  if (isMediumBench(state.workMedium)) return mediumWorkPane(work, ctx);
   const pct = work.total ? Math.round((work.done / work.total) * 100) : 0;
   const meta = statusMeta(work.state, work.status_label);
 
@@ -300,6 +322,21 @@ function workPane(ctx) {
             ],
             { align: 'start', label: '导出整本' }
           );
+        }
+      }
+    }),
+    h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
+      html: `${icon('sparkles', 13)}<span>蒸馏风格</span>`,
+      title: '把目标作者的文本蒸馏成风格卡片',
+      on: {
+        click: () => {
+          openDistillModal({
+            medium: 'novel',
+            genre: work.genre || '',
+            onDone: () => ctx.refreshWork()
+          });
         }
       }
     })

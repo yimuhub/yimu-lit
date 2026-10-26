@@ -16,6 +16,8 @@ import { api, errorText } from '../core/api.js';
 import { toast, confirmDialog, skeletonBlock, openModal } from '../core/ui.js';
 import { navigate } from '../core/router.js';
 import { renderMarkdownInto } from '../core/markdown.js';
+import { mountChatFloat } from '../components/chatfloat.js';
+import { openDistillModal } from '../components/distill.js';
 
 const BENCH = {
   script: {
@@ -62,6 +64,19 @@ const VERDICT_LABELS = { pass: '通过', fail: '未过', unclear: '存疑' };
 const SCENE_STATE_LABELS = { pending: '待写', in_progress: '写作中', failed: '失败' };
 
 export const MEDIUM_BENCHES = Object.keys(BENCH);
+
+/* 诗词/散文里能按段改的页签：这两个文件就是副驾能落盘的两份文档。 */
+const PARAGRAPH_TABS = new Set(['draft', 'final']);
+
+/* 切段口径必须与后端 bot/assist.py 的 split_blocks 一致：
+   按空行切、逐块 trim、丢掉全空块。 */
+function splitParagraphs(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split(/\n\s*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 /* 格律判定在库列表项里也是原始码，右侧面板同样需要一个中文说法。 */
 export function verdictLabel(verdict) {
@@ -134,6 +149,57 @@ export function renderMediumBench(container, ctx) {
   let awaitingDisk = false;
   let waitingTicks = 0;
 
+  /* 对话副驾的目标：点场次卡片或正文段落时更新；悬浮窗轮询 getContext 取它。
+     doc 统一成字符串：剧本是场号，诗词散文是 final/draft。 */
+  const chatCtx = { doc: null, block: null, title: '' };
+  let chatNode = null;
+  /* 悬浮窗在函数末尾才挂上；先声明，目标变了才知道该不该通知它。 */
+  let chatFloat = null;
+
+  function setChatTarget(doc, block, title, node) {
+    chatCtx.doc = doc == null || doc === '' ? null : String(doc);
+    chatCtx.block = chatCtx.doc && block ? Number(block) : null;
+    chatCtx.title = title || '';
+    if (chatNode) chatNode.dataset.chatTarget = 'false';
+    chatNode = node || null;
+    if (chatNode) chatNode.dataset.chatTarget = 'true';
+    /* 目标变了就让悬浮窗的 chip 立刻跟上，别等到发消息才刷新。 */
+    if (chatFloat) chatFloat.refresh();
+  }
+
+  /* 正文按空行切段渲染：每段都能点，段号与后端 split_blocks 一致，改稿目标才落得准。 */
+  function renderSceneText(container, text, sceneNo, title) {
+    const blocks = splitParagraphs(text);
+    blocks.forEach((part, i) => {
+      const doc = h('div', {
+        class: 'md mb-doc mb-par',
+        dataset: { block: String(i + 1), chatTarget: 'false' },
+        title: `点这一下，把「第 ${sceneNo} 场 · 第 ${i + 1} 段」设为对话改稿目标`
+      });
+      renderMarkdownInto(doc, part);
+      doc.addEventListener('click', () => setChatTarget(String(sceneNo), i + 1, title, doc));
+      container.append(doc);
+    });
+    return blocks.length;
+  }
+
+  /* 诗词/散文的定稿与草稿也按空行切段：后端 split_blocks 就是这个口径，
+     段号对不上就改不到那一段。 */
+  function renderParagraphs(container, text, docId, docLabel) {
+    const blocks = splitParagraphs(text);
+    blocks.forEach((part, i) => {
+      const node = h('div', {
+        class: 'md mb-doc mb-par',
+        dataset: { block: String(i + 1), chatTarget: 'false' },
+        title: `点这一下，把「${docLabel} · 第 ${i + 1} 段」设为对话改稿目标`
+      });
+      renderMarkdownInto(node, part);
+      node.addEventListener('click', () => setChatTarget(docId, i + 1, docLabel, node));
+      container.append(node);
+    });
+    return blocks.length;
+  }
+
   /* ------------------------------------------------------------- paint */
 
   function meta() {
@@ -151,6 +217,12 @@ export function renderMediumBench(container, ctx) {
           iconName: 'book',
           kind: 'view',
           run: () => openScriptPreview('all')
+        },
+        {
+          label: '时代体检',
+          iconName: 'shield',
+          kind: 'check',
+          run: () => runEraCheck()
         },
         {
           label: '写全部场次',
@@ -177,6 +249,124 @@ export function renderMediumBench(container, ctx) {
 
   function sceneWriteAction(no) {
     return { label: '写这一场', kind: 'bg', run: () => api.scriptWrite(key, no) };
+  }
+
+  /* ---------------------------------------------------------- era check */
+
+  const ERA_LABELS = { ancient: '古代', republic: '民国', modern: '当代', future: '近未来', fantasy: '架空', custom: '自定义' };
+
+  /* 体检是纯词表扫描、当场返回，不进 busy 轮询；报告里再决定要不要整场重写。 */
+  async function runEraCheck() {
+    if (model.busy) return;
+    model.busy = '时代体检';
+    paintHead();
+    try {
+      const res = await api.scriptCheck(key);
+      if (gone) return;
+      openEraReport(res || {});
+    } catch (err) {
+      toast(errorText(err, '体检失败'), { tone: 'danger', duration: 5000 });
+    }
+    model.busy = '';
+    paintHead();
+  }
+
+  function openEraReport(res) {
+    const summary = res.summary || {};
+    const items = Array.isArray(res.items) ? res.items : [];
+    const flagged = items.filter((it) => (it.issues || []).length);
+    const eraLabel = ERA_LABELS[res.era] || res.era || '';
+    const body = h('div', { class: 'mb-check' });
+
+    if (!flagged.length) {
+      body.append(
+        h('p', {
+          class: 'hint-text',
+          text: items.length
+            ? `已扫 ${items.length} 场正文，没有发现与「${eraLabel || '当前设定'}」冲突的用词。`
+            : '还没有正文可查：先写场次，再来体检。'
+        })
+      );
+      if (res.error) body.append(h('div', { class: 'msg-error', text: String(res.error) }));
+    } else {
+      body.append(
+        h('p', {
+          class: 'hint-text',
+          text: `${items.length} 场里有 ${flagged.length} 场串代（时代：${eraLabel || '未判定'}）。可以先逐场看词，再让引擎按设定重写。`
+        })
+      );
+      for (const it of flagged) {
+        const chip = h('div', { class: 'mb-check-scene' });
+        chip.append(
+          h(
+            'div',
+            { class: 'mb-check-head' },
+            h('span', { class: 'ms-no', text: `第 ${it.scene} 场` }),
+            h('span', { class: 'spacer' }),
+            h('button', {
+              class: 'btn btn-sm',
+              type: 'button',
+              text: '重写这一场',
+              on: { click: () => rewriteScenes([it.scene], [modal]) }
+            })
+          )
+        );
+        for (const issue of it.issues || []) {
+          chip.append(
+            h(
+              'div',
+              { class: 'mb-check-issue' },
+              h('span', { class: 'mb-check-term', text: `${issue.term} ×${issue.count}` }),
+              h('span', { class: 'mb-check-snip', text: issue.snippet || '' })
+            )
+          );
+        }
+        body.append(chip);
+      }
+    }
+
+    const modal = openModal({
+      title: '时代一致性体检',
+      subtitle: `${(model.status || {}).name || key}${eraLabel ? ` · ${eraLabel}` : ''}`,
+      body,
+      footer: h(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn btn-sm', type: 'button', text: '关闭', on: { click: () => modal.close() } }),
+        flagged.length
+          ? h('button', {
+              class: 'btn btn-sm btn-primary',
+              type: 'button',
+              text: `按设定重写 ${flagged.length} 场`,
+              on: { click: () => rewriteScenes(flagged.map((it) => it.scene), [modal]) }
+            })
+          : null
+      ),
+      size: 'lg'
+    });
+  }
+
+  async function rewriteScenes(nos, modals) {
+    const ok = await confirmDialog({
+      title: `重写 ${nos.length} 场？`,
+      message: '引擎会把这些场次按时代设定整场重写，旧正文会先快照到 04-正文/.versions 目录，可在版本里找回。',
+      confirmText: '开始重写'
+    });
+    if (!ok) return;
+    try {
+      await api.scriptRewriteScenes(key, nos);
+      for (const m of modals) {
+        if (m && m.close) m.close();
+      }
+      if (gone) return;
+      toast('已开始按设定重写，完成后自动刷新', { tone: 'success' });
+      model.scriptPreview = null;
+      model.scriptPreviewErr = null;
+      startTimer();
+    } catch (err) {
+      toast(errorText(err, '重写失败'), { tone: 'danger', duration: 5000 });
+    }
   }
 
   /* ---------------------------------------------------------- preview */
@@ -270,16 +460,13 @@ export function renderMediumBench(container, ctx) {
       const s = list[idx];
       const head = s.heading ? `第 ${s.no} 场 · ${s.heading}` : `第 ${s.no} 场`;
       setHead(head, s.words);
+      setChatTarget(String(s.no), null, head, null);
       content.textContent = '';
       if (!sceneWritten(s)) {
         content.append(h('div', { class: 'mb-prev-pending', text: `第 ${s.no} 场 · 待写` }));
       } else {
         content.append(h('div', { class: 'mb-prev-meta', text: `已写 ${fmtWords(s.words)}` }));
-        if (s.text.trim()) {
-          const doc = h('div', { class: 'md mb-doc' });
-          renderMarkdownInto(doc, s.text);
-          content.append(doc);
-        } else {
+        if (!renderSceneText(content, s.text, s.no, head)) {
           /* 状态写着已写、正文却是空的：如实说明，别只给一块白板。 */
           content.append(
             h(
@@ -318,9 +505,7 @@ export function renderMediumBench(container, ctx) {
           content.append(h('div', { class: 'mb-prev-empty', text: '这一场还没有正文，可能是生成时跳过了' }));
           continue;
         }
-        const doc = h('div', { class: 'md mb-doc' });
-        renderMarkdownInto(doc, s.text);
-        content.append(doc);
+        renderSceneText(content, s.text, s.no, s.heading || `第 ${s.no} 场`);
       }
       if (!list.length) content.append(h('p', { class: 'hint-text', text: '剧本里还没有场次。' }));
       setHead('通读剧本', words, ` · 共 ${list.length} 场`);
@@ -448,6 +633,23 @@ export function renderMediumBench(container, ctx) {
       h('span', { class: `dot dot-${m.tone}` }),
       h('span', { class: 'mb-state', text: m.label }),
       h('span', { style: { flex: '1' } }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        title: '把目标作者的文本蒸馏成风格卡片',
+        html: `${icon('sparkles', 13)}<span>蒸馏风格</span>`,
+        on: {
+          click: () =>
+            openDistillModal({
+              medium,
+              /* status.form 是"体式/媒介形式"（电影剧本、现代诗），不是题材，别拿来填错字段。 */
+              genre: '',
+              onDone: () => {
+                if (!gone) loadAll();
+              }
+            })
+        }
+      }),
       ...actions().map((a) =>
         h('button', {
           class: 'btn btn-sm',
@@ -480,6 +682,9 @@ export function renderMediumBench(container, ctx) {
       h('span', { class: 'sep' }),
       h('span', { text: fmtWords(st.words || 0) })
     ];
+    const eraLabel = (st.setting || {}).era_label;
+    if (eraLabel) bits.push(h('span', { class: 'sep' }), h('span', { text: `时代：${eraLabel}` }));
+    if (st.paused) bits.push(h('span', { class: 'sep' }), h('span', { class: 'mb-paused', text: '已暂停：连续串代，等人工确认' }));
     if (st.operation) bits.push(h('span', { class: 'sep' }), h('span', { text: `写法：${OPERATION_LABELS[st.operation] || st.operation}` }));
     if (st.verdict) bits.push(h('span', { class: 'sep' }), h('span', { text: `格律：${VERDICT_LABELS[st.verdict] || st.verdict}` }));
     bar.append(
@@ -585,18 +790,21 @@ export function renderMediumBench(container, ctx) {
     if (medium === 'script' && model.tab === 'scenes' && model.scenes.length) {
       bodyWrap.append(sceneStrip());
     }
+    const tabLabel = (cfg.tabs.find(([id]) => id === model.tab) || [])[1] || '这一份';
+    const emptyText = SETTLED.has((model.status || {}).state)
+      ? `《${tabLabel}》还不存在。有的引擎只在跑过修订或评分后才写它，可以在上方触发对应动作。`
+      : `《${tabLabel}》还没有内容。引擎是逐阶段落盘的，写完后这里会自动出现。`;
+    /* 诗词散文的定稿与草稿要按段渲染：段号是改稿目标的坐标，其余页签还是整块文档。 */
+    if (medium !== 'script' && PARAGRAPH_TABS.has(model.tab)) {
+      if (!renderParagraphs(bodyWrap, model.doc, model.tab, tabLabel)) {
+        bodyWrap.append(h('p', { class: 'hint-text', text: emptyText }));
+      }
+      return;
+    }
     const doc = h('div', { class: 'md mb-doc' });
     renderMarkdownInto(doc, model.doc || '');
     if (!String(model.doc || '').trim()) {
-      const tabLabel = (cfg.tabs.find(([id]) => id === model.tab) || [])[1] || '这一份';
-      doc.append(
-        h('p', {
-          class: 'hint-text',
-          text: SETTLED.has((model.status || {}).state)
-            ? `《${tabLabel}》还不存在。有的引擎只在跑过修订或评分后才写它，可以在上方触发对应动作。`
-            : `《${tabLabel}》还没有内容。引擎是逐阶段落盘的，写完后这里会自动出现。`
-        })
-      );
+      doc.append(h('p', { class: 'hint-text', text: emptyText }));
     }
     bodyWrap.append(doc);
   }
@@ -678,8 +886,8 @@ export function renderMediumBench(container, ctx) {
       }
       if (!ok || gone) return;
     }
-    /* file 只是跳下载、view 只是开浮层：都不进 busy，也不轮询。 */
-    if (action.kind === 'file' || action.kind === 'view') {
+    /* file 只是跳下载、view 只是开浮层、check 自己管结果弹窗：都不进 busy，也不轮询。 */
+    if (action.kind === 'file' || action.kind === 'view' || action.kind === 'check') {
       action.run();
       return;
     }
@@ -729,6 +937,24 @@ export function renderMediumBench(container, ctx) {
 
   /* ------------------------------------------------------------- start */
 
+  /* 三种文体都挂副驾：剧本按场定位，诗词散文按文档段落定位，改法是同一套。 */
+  chatFloat = mountChatFloat({
+    getContext: () => ({
+      key,
+      medium,
+      doc: chatCtx.doc,
+      block: chatCtx.block,
+      docTitle: chatCtx.title
+    }),
+    onApplied: () => {
+      if (gone) return;
+      /* 落盘后整本预览缓存与当前文档都旧了，重新取一遍。 */
+      model.scriptPreview = null;
+      model.scriptPreviewErr = null;
+      loadDoc();
+    }
+  });
+
   paintHead();
   paintBar();
   paintTabs();
@@ -744,6 +970,7 @@ export function renderMediumBench(container, ctx) {
     destroy() {
       gone = true;
       stopTimer();
+      if (chatFloat) chatFloat.destroy();
       view.remove();
     }
   };

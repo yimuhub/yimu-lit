@@ -1,4 +1,4 @@
-/* 作品库：筛选、排序、网格/列表视图、收藏/归档/重命名/删除/导出。 */
+/* 作品库：视图（全部/归档/回收站）、筛选、排序、批量操作、收藏/归档/恢复/彻底删除/导出。 */
 
 import {
   h,
@@ -16,7 +16,7 @@ import {
 } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
-import { toast, confirmDialog, popoverMenu, openModal } from '../core/ui.js';
+import { toast, popoverMenu, openModal } from '../core/ui.js';
 import { openProject } from '../core/router.js';
 
 const SORTS = [
@@ -33,9 +33,30 @@ const STATUS_OPTIONS = [
   { value: 'in_progress', label: '创作中' },
   { value: 'completed', label: '已完成' },
   { value: 'passing', label: '质量达标' },
-  { value: 'unrated', label: '未评分' },
-  { value: 'archived', label: '回收站' }
+  { value: 'unrated', label: '未评分' }
 ];
+
+/* 三档视图对应后端 view=active|archived|trash，切换时整页重取，避免残留上一视图条目。 */
+const VIEWS = [
+  { value: 'active', label: '全部' },
+  { value: 'archived', label: '归档' },
+  { value: 'trash', label: '回收站' }
+];
+
+const EMPTY_TEXT = {
+  active: {
+    title: (q) => (q ? '没有匹配的作品' : '还没有作品'),
+    hint: (q) => (q ? '换个关键词，或清空筛选条件。' : '从一句话想法开始，第一本三分钟就能立项。')
+  },
+  archived: {
+    title: (q) => (q ? '没有匹配的归档作品' : '还没有归档作品'),
+    hint: (q) => (q ? '换个关键词，或清空筛选条件。' : '归档的作品会出现在这里，随时可以取消归档。')
+  },
+  trash: {
+    title: (q) => (q ? '没有匹配的回收站作品' : '回收站是空的'),
+    hint: (q) => (q ? '换个关键词，或清空筛选条件。' : '移入回收站的作品会出现在这里，可以随时恢复。')
+  }
+};
 
 export function renderLibrary(container, ctx) {
   const view = h('div', { class: 'view-scroll' });
@@ -44,6 +65,7 @@ export function renderLibrary(container, ctx) {
   container.append(view);
 
   const model = {
+    view: 'active',
     q: '',
     genre: '',
     medium: '',
@@ -54,6 +76,8 @@ export function renderLibrary(container, ctx) {
     items: [],
     stats: {},
     facets: {},
+    counts: {},
+    selected: new Set(),
     loading: true,
     error: ''
   };
@@ -85,22 +109,33 @@ export function renderLibrary(container, ctx) {
   );
   pad.append(head);
 
+  const viewsRow = h('div', { class: 'lib-views' });
+  pad.append(viewsRow);
+
   const statsRow = h('div', { class: 'lib-stats' });
   pad.append(statsRow);
 
   const filterRow = h('div', { class: 'lib-toolbar', style: { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', margin: '4px 0 16px' } });
   pad.append(filterRow);
 
+  const batchBar = h('div', { class: 'lib-batch', hidden: true });
+  pad.append(batchBar);
+
   const listWrap = h('div', { class: model.mode === 'grid' ? 'lib-grid' : 'lib-list' });
   pad.append(listWrap);
 
   /* ------------------------------------------------------------ logic */
 
+  let loadSeq = 0;
+
   async function load() {
+    const seq = ++loadSeq;
     model.loading = true;
+    model.error = '';
     paintList();
     try {
       const res = await api.library({
+        view: model.view,
         q: model.q,
         genre: model.genre,
         medium: model.medium,
@@ -108,17 +143,76 @@ export function renderLibrary(container, ctx) {
         sort: model.sort,
         order: model.order
       });
+      if (seq !== loadSeq) return;
       model.items = (res && res.items) || [];
       model.stats = (res && res.stats) || {};
       model.facets = (res && res.facets) || {};
-      model.error = '';
+      /* counts 可能缺省（旧后端），缺省时按当前视图条目数兜底，不阻塞渲染。 */
+      model.counts = (res && res.counts) || model.counts || {};
+      pruneSelection();
     } catch (err) {
+      if (seq !== loadSeq) return;
+      model.items = [];
+      model.selected.clear();
       model.error = errorText(err, '作品库加载失败');
+      paintBatchBar();
     }
+    if (seq !== loadSeq) return;
     model.loading = false;
     paintStats();
+    paintViews();
     paintFilters();
     paintList();
+  }
+
+  function pruneSelection() {
+    const keys = new Set(model.items.map((i) => i.key));
+    for (const key of Array.from(model.selected)) {
+      if (!keys.has(key)) model.selected.delete(key);
+    }
+    paintBatchBar();
+  }
+
+  function viewCount(name) {
+    const counts = model.counts || {};
+    const raw = counts[name];
+    if (raw !== undefined && raw !== null) return Number(raw) || 0;
+    if (name === model.view) return model.items.length;
+    return null;
+  }
+
+  function paintViews() {
+    viewsRow.textContent = '';
+    const seg = h('div', { class: 'segmented', role: 'tablist', 'aria-label': '作品视图' });
+    for (const v of VIEWS) {
+      const count = viewCount(v.value);
+      const btn = h('button', {
+        class: 'seg-btn',
+        type: 'button',
+        role: 'tab',
+        'aria-pressed': model.view === v.value ? 'true' : 'false',
+        'aria-selected': model.view === v.value ? 'true' : 'false'
+      });
+      btn.append(h('span', { text: v.label }));
+      if (count !== null) btn.append(h('span', { class: 'lib-tab-count', text: String(count) }));
+      btn.addEventListener('click', () => setView(v.value));
+      seg.append(btn);
+    }
+    viewsRow.append(seg);
+  }
+
+  function setView(next) {
+    if (model.view === next) return;
+    model.view = next;
+    model.status = '';
+    model.items = [];
+    model.selected.clear();
+    paintViews();
+    paintStats();
+    paintFilters();
+    paintBatchBar();
+    listWrap.textContent = '';
+    load();
   }
 
   function paintStats() {
@@ -258,13 +352,58 @@ export function renderLibrary(container, ctx) {
 
   /* 章节工作台与导出走的是小说接口（02 计划 + /api/export），非小说作品不显示。 */
   function rowActions(item) {
-    const novelOnly = !item.medium || item.medium === 'novel';
+    const isTrash = model.view === 'trash' || item.trashed;
+    const novelOnly = !isTrash && (!item.medium || item.medium === 'novel');
+    const viewActions =
+      model.view === 'archived'
+        ? [
+            {
+              label: '取消归档',
+              icon: 'archive',
+              onSelect: () => archiveItem(item, false)
+            },
+            {
+              label: '移到回收站',
+              icon: 'trash',
+              onSelect: () => trashItem(item)
+            }
+          ]
+        : model.view === 'trash'
+          ? [
+              {
+                label: '恢复',
+                icon: 'refresh',
+                onSelect: () => restoreItem(item)
+              },
+              {
+                label: '彻底删除',
+                icon: 'trash',
+                danger: true,
+                onSelect: () => purgeDialog(item)
+              }
+            ]
+          : [
+              {
+                label: '归档',
+                icon: 'archive',
+                onSelect: () => archiveItem(item, true)
+              },
+              {
+                label: '移到回收站',
+                icon: 'trash',
+                onSelect: () => trashItem(item)
+              }
+            ];
     return [
-      {
-        label: '打开作品',
-        icon: 'book-open',
-        onSelect: () => openProject(item)
-      },
+      ...(isTrash
+        ? []
+        : [
+            {
+              label: '打开作品',
+              icon: 'book-open',
+              onSelect: () => openProject(item)
+            }
+          ]),
       ...(novelOnly
         ? [
             {
@@ -280,11 +419,16 @@ export function renderLibrary(container, ctx) {
         icon: 'star',
         onSelect: () => toggleFavorite(item)
       },
-      {
-        label: '重命名',
-        icon: 'edit',
-        onSelect: () => renameDialog(item)
-      },
+      /* 回收站里不允许改名/导出，作品已不可编辑。 */
+      ...(!isTrash
+        ? [
+            {
+              label: '重命名',
+              icon: 'edit',
+              onSelect: () => renameDialog(item)
+            }
+          ]
+        : []),
       ...(novelOnly
         ? [
             {
@@ -295,17 +439,7 @@ export function renderLibrary(container, ctx) {
           ]
         : []),
       { separator: true },
-      {
-        label: item.archived ? '从回收站恢复' : '移入回收站',
-        icon: 'archive',
-        onSelect: () => toggleArchive(item)
-      },
-      {
-        label: '彻底删除',
-        icon: 'trash',
-        danger: true,
-        onSelect: () => removeDialog(item)
-      }
+      ...viewActions
     ];
   }
 
@@ -340,14 +474,123 @@ export function renderLibrary(container, ctx) {
     }
   }
 
-  async function toggleArchive(item) {
+  async function archiveItem(item, on) {
     try {
-      await api.archive(item.key, !item.archived);
-      toast(item.archived ? '已恢复' : '已移入回收站', { duration: 2000 });
-      load();
+      await api.archive(item.key, on);
+      model.selected.delete(item.key);
+      toast(on ? '已归档，可在作品库的「归档」页找到' : '已取消归档，作品已回到作品库', {
+        tone: 'success',
+        duration: 2400
+      });
+      await load();
       ctx.refreshLibrary();
     } catch (err) {
-      toast(errorText(err, '操作失败'), { tone: 'danger' });
+      toast(errorText(err, on ? '归档失败' : '取消归档失败'), { tone: 'danger' });
+    }
+  }
+
+  async function trashItem(item) {
+    try {
+      await api.trash(item.key);
+      model.selected.delete(item.key);
+      toast('已移入回收站，可在作品库的回收站找回', { tone: 'success', duration: 2600 });
+      await load();
+      ctx.refreshLibrary();
+    } catch (err) {
+      toast(errorText(err, '移入回收站失败'), { tone: 'danger' });
+    }
+  }
+
+  async function restoreItem(item) {
+    try {
+      await api.restore(item.key);
+      model.selected.delete(item.key);
+      toast('已恢复，作品已回到作品库', { tone: 'success', duration: 2400 });
+      await load();
+      ctx.refreshLibrary();
+    } catch (err) {
+      toast(errorText(err, '恢复失败'), { tone: 'danger' });
+    }
+  }
+
+  /* ------------------------------------------------------- batch bar */
+
+  const BATCH_OPS = {
+    archive: { label: '归档', text: (n) => `已归档 ${n} 部作品，可在作品库的「归档」页找到` },
+    unarchive: { label: '取消归档', text: (n) => `已取消归档 ${n} 部作品，作品已回到作品库` },
+    trash: { label: '移到回收站', text: (n) => `已将 ${n} 部作品移入回收站，可在作品库的回收站找回` },
+    restore: { label: '恢复', text: (n) => `已恢复 ${n} 部作品，作品已回到作品库` }
+  };
+
+  function batchOpIds() {
+    if (model.view === 'archived') return ['unarchive', 'trash'];
+    if (model.view === 'trash') return ['restore'];
+    return ['archive', 'trash'];
+  }
+
+  function paintBatchBar() {
+    batchBar.textContent = '';
+    const keys = Array.from(model.selected);
+    if (!keys.length) {
+      batchBar.hidden = true;
+      return;
+    }
+    batchBar.hidden = false;
+    const allSelected = model.items.length > 0 && model.items.every((i) => model.selected.has(i.key));
+    batchBar.append(
+      h('span', { class: 'lib-batch-count', text: `已选 ${keys.length} 部` }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        text: allSelected ? '取消全选' : '全选',
+        on: {
+          click: () => {
+            if (allSelected) model.selected.clear();
+            else for (const item of model.items) model.selected.add(item.key);
+            paintList();
+            paintBatchBar();
+          }
+        }
+      }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        text: '清空选择',
+        on: {
+          click: () => {
+            model.selected.clear();
+            paintList();
+            paintBatchBar();
+          }
+        }
+      }),
+      h('span', { style: { flex: '1' } })
+    );
+    for (const id of batchOpIds()) {
+      const op = BATCH_OPS[id];
+      batchBar.append(
+        h('button', {
+          class: 'btn btn-sm',
+          type: 'button',
+          text: op.label,
+          on: { click: () => runBatch(id) }
+        })
+      );
+    }
+  }
+
+  async function runBatch(action) {
+    const keys = Array.from(model.selected);
+    if (!keys.length) return;
+    const op = BATCH_OPS[action] || { label: '操作', text: (n) => `已处理 ${n} 部作品` };
+    try {
+      await api.batch(keys, action);
+      model.selected.clear();
+      toast(op.text(keys.length), { tone: 'success', duration: 2800 });
+      await load();
+      ctx.refreshLibrary();
+    } catch (err) {
+      toast(errorText(err, `${op.label}失败`), { tone: 'danger' });
     }
   }
 
@@ -386,23 +629,90 @@ export function renderLibrary(container, ctx) {
     const modal = openModal({ title: '重命名作品', body, footer, size: 'sm' });
   }
 
-  async function removeDialog(item) {
-    const ok = await confirmDialog({
-      title: `彻底删除《${item.name}》？`,
-      message: '删除后作品目录与全部章节都会被移除，无法恢复。',
-      detail: '如果只是想暂时收起来，用「移入回收站」即可。',
-      confirmText: '彻底删除',
-      danger: true
+  /* 彻底删除：二次确认 + 手动输入完整作品名，名字不匹配时按钮禁用、不发请求。 */
+  function purgeDialog(item) {
+    const expected = String(item.name || '').trim();
+    const input = h('input', {
+      class: 'input',
+      type: 'text',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      placeholder: `请输入：${expected}`,
+      'aria-label': '输入完整作品名以确认彻底删除'
     });
-    if (!ok) return;
-    try {
-      await api.remove(item.key, true);
-      toast('已删除', { duration: 1800 });
-      load();
-      ctx.refreshLibrary();
-    } catch (err) {
-      toast(errorText(err, '删除失败'), { tone: 'danger' });
+    const error = h('div', { class: 'error-text', role: 'alert' });
+    const confirmBtn = h('button', {
+      class: 'btn btn-danger',
+      type: 'button',
+      text: '彻底删除',
+      disabled: true,
+      on: { click: () => submit() }
+    });
+    const modal = openModal({
+      title: '彻底删除作品',
+      body: h(
+        'div',
+        { class: 'confirm-body' },
+        h('div', { html: `确定要彻底删除 <strong>《${escapeText(expected)}》</strong> 吗？` }),
+        h('div', { class: 'warn-note', text: '删除后作品目录与全部章节都会被移除，无法恢复。' }),
+        h('div', { style: { marginTop: '12px' } }, h('span', { class: 'field-label', text: '输入完整作品名以确认：' })),
+        h('div', { style: { margin: '4px 0 8px', fontWeight: '500', color: 'var(--ink-primary)' }, text: expected }),
+        input,
+        error
+      ),
+      footer: h(
+        'div',
+        { style: { display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end' } },
+        h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+        confirmBtn
+      ),
+      size: 'sm',
+      initialFocus: input
+    });
+
+    let busy = false;
+    function sync() {
+      const typed = input.value.trim();
+      const matched = typed === expected;
+      confirmBtn.disabled = busy || !matched;
+      error.textContent = typed && !matched ? '作品名不一致，请完整输入后重试' : '';
     }
+    input.addEventListener('input', sync);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !confirmBtn.disabled) {
+        event.preventDefault();
+        submit();
+      }
+    });
+
+    async function submit() {
+      const typed = input.value.trim();
+      if (busy || typed !== expected) return;
+      busy = true;
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = '删除中…';
+      try {
+        await api.purge(item.key, typed);
+        modal.close();
+        model.selected.delete(item.key);
+        toast('已彻底删除，无法恢复', { duration: 2200 });
+        await load();
+        ctx.refreshLibrary();
+      } catch (err) {
+        busy = false;
+        confirmBtn.textContent = '彻底删除';
+        sync();
+        toast(errorText(err, '删除失败'), { tone: 'danger' });
+      }
+    }
+  }
+
+  function escapeText(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   function paintList() {
@@ -442,21 +752,15 @@ export function renderLibrary(container, ctx) {
       return;
     }
     if (!model.items.length) {
-      const archived = model.status === 'archived';
+      const copy = EMPTY_TEXT[model.view] || EMPTY_TEXT.active;
       listWrap.append(
         h(
           'div',
           { class: 'lib-empty' },
-          h('div', { class: 'empty-icon', html: icon('library', 18) }),
-          h('h3', { text: archived ? '回收站是空的' : model.q ? '没有匹配的作品' : '还没有作品' }),
-          h('p', {
-            text: archived
-              ? '移入回收站的作品会出现在这里，可以随时恢复。'
-              : model.q
-                ? '换个关键词，或清空筛选条件。'
-                : '从一句话想法开始，第一本三分钟就能立项。'
-          }),
-          !archived
+          h('div', { class: 'empty-icon', html: icon(model.view === 'trash' ? 'trash' : 'library', 18) }),
+          h('h3', { text: copy.title(model.q) }),
+          h('p', { text: copy.hint(model.q) }),
+          model.view === 'active'
             ? h('button', {
                 class: 'btn btn-primary btn-sm',
                 type: 'button',
@@ -488,6 +792,22 @@ export function renderLibrary(container, ctx) {
     return item.total ? Math.round((item.done / item.total) * 100) : 0;
   }
 
+  function selectBox(item) {
+    const box = h('input', {
+      class: 'lib-check',
+      type: 'checkbox',
+      'aria-label': `选择《${item.name}》`,
+      checked: model.selected.has(item.key)
+    });
+    box.addEventListener('click', (event) => event.stopPropagation());
+    box.addEventListener('change', () => {
+      if (box.checked) model.selected.add(item.key);
+      else model.selected.delete(item.key);
+      paintBatchBar();
+    });
+    return box;
+  }
+
   function gridCard(item) {
     const meta = statusMeta(item.state, item.status_label);
     const pct = progressOf(item);
@@ -510,7 +830,8 @@ export function renderLibrary(container, ctx) {
           { class: 'lib-name-line' },
           h('span', { class: 'lib-name', text: item.name }),
           mediumChip(item.medium),
-          qualityChip(item)
+          qualityChip(item),
+          selectBox(item)
         ),
         h(
           'div',
@@ -553,7 +874,9 @@ export function renderLibrary(container, ctx) {
         })
       )
     );
-    card.addEventListener('click', () => openProject(item));
+    card.addEventListener('click', () => {
+      if (model.view !== 'trash') openProject(item);
+    });
     return card;
   }
 
@@ -563,6 +886,7 @@ export function renderLibrary(container, ctx) {
     const unit = MEDIUM_UNITS[item.medium || 'novel'] || '章';
     const row = h('div', { class: 'lib-row', dataset: { key: item.key } });
     row.append(
+      selectBox(item),
       h('span', { class: 'lib-cover', text: initials(item.name) }),
       h(
         'div',
@@ -606,14 +930,18 @@ export function renderLibrary(container, ctx) {
         })
       )
     );
-    row.addEventListener('click', () => openProject(item));
+    row.addEventListener('click', () => {
+      if (model.view !== 'trash') openProject(item);
+    });
     return row;
   }
 
   /* ------------------------------------------------------------ start */
 
   paintStats();
+  paintViews();
   paintFilters();
+  paintBatchBar();
   load();
 
   return {

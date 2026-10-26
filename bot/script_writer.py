@@ -26,7 +26,7 @@ import os
 import re
 import threading
 
-from . import llm, medium, skillkit
+from . import llm, medium, script_checker, skillkit
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -114,6 +114,8 @@ class ScriptProject:
             "running": self.running, "name": plan.get("scriptName", self.name),
             "medium": "script", "form": plan.get("formLabel") or plan.get("form", ""),
             "stage": meta.get("stage", ""), "paused": bool(meta.get("paused")),
+            "setting": meta.get("setting") or {},
+            "era_warnings": meta.get("era_warnings") or [],
         }
 
     def body_dir(self) -> str:
@@ -171,6 +173,69 @@ def _ctx(stage: str, extra: list[str] | None = None, include_case: bool = False,
     return text
 
 
+# ---------------------------------------------------------------- 时代/世界观
+
+_GENRE_ERA = {
+    "古装": "ancient", "历史": "ancient", "武侠": "ancient",
+    "都市": "modern", "现实": "modern",
+    "科幻": "future",
+    "仙侠": "fantasy", "玄幻": "fantasy", "架空": "fantasy",
+}
+_TITLE_ERA_WORDS = (
+    ("ancient", ("古代", "古装", "王朝", "江湖", "宫廷")),
+    ("republic", ("民国",)),
+    ("modern", ("当代", "现代", "都市")),
+    ("future", ("未来", "科幻")),
+    ("fantasy", ("架空", "仙侠", "玄幻")),
+)
+
+
+def _era_of(cfg: dict) -> str:
+    """时代判定：优先向导字段 setting_era；其次是题材/标题里的明确词；最后按词表投票。
+
+    仍判不出返回 ""：此时不做词表拦截，避免把现代剧里的「公司」当成古代剧的错。
+    """
+    era = str((cfg or {}).get("setting_era") or "").strip()
+    if era in script_checker.ERA_LABELS:
+        return era
+    genre = str((cfg or {}).get("genre") or "")
+    for word, code in _GENRE_ERA.items():
+        if word in genre:
+            return code
+    title = str((cfg or {}).get("title") or "")
+    for code, words in _TITLE_ERA_WORDS:
+        if any(w in title for w in words):
+            return code
+    text = " ".join(str((cfg or {}).get(k) or "") for k in ("title", "idea", "notes", "genre"))
+    return script_checker.guess_era(text)
+
+
+def _world_block(cfg: dict) -> str:
+    """把时代与世界观压成一段硬约束，注入 S0/S1/S3/S4/S5 的每一次生成。"""
+    era = _era_of(cfg)
+    label = script_checker.ERA_LABELS.get(era, "")
+    world = str((cfg or {}).get("setting_world") or "").strip() or "（未填写，按该时代的生活常识、称谓与器物考据）"
+    if not era:
+        return ("【世界设定·硬约束】\n"
+                f"世界观：{world}\n"
+                "时代未指定，但全剧必须沿用同一时代设定\n"
+                "违反上述设定的描写一律视为无效，必须改写。")
+    lines = ["【世界设定·硬约束】", f"时代：{label}", f"世界观：{world}"]
+    terms = script_checker.forbidden_terms(era)[:20]
+    if terms:
+        lines.append("本作禁止出现：" + "、".join(terms))
+    lines.append("违反上述设定的描写一律视为无效，必须改写。")
+    return "\n".join(lines)
+
+
+def _era_feedback(issues: list[dict]) -> str:
+    """把违规词与片段整理成可回灌给 LLM 的修正指令。"""
+    picks = [f"- 「{it['term']}」×{it['count']}：…{it['snippet']}…" for it in issues]
+    return ("【校验未过·必须修正】\n"
+            "以下用词与设定时代冲突，逐处改写（换器物/场所/称谓/交通），不得保留：\n"
+            + "\n".join(picks))
+
+
 # ---------------------------------------------------------------- 阶段生成
 
 def _gen(stage: str, task: str, ctx: str, cfg: dict, stage_code: str = "planning",
@@ -203,13 +268,14 @@ def gen_premise(cfg: dict) -> str:
         f"5. **类型契约**（主类型 + 1-2 个混合类型；观众会看到什么 / 为什么还在看 / 会得到什么）\n"
         f"6. **主角 vs 对手** 三行对照（各自想要什么 / 各自的赌注 / 为什么不能两全）\n"
         f"7. **剧本一句话卖点**（给制片方看的，20 字内）\n\n"
+        f"{_world_block(cfg)}\n\n"
         f"用户给的素材/想法：{cfg.get('idea') or '（用户未给，请基于给定前提自行设计）'}\n"
         f"补充说明：{cfg.get('notes') or '无'}"
     )
     return _gen("剧本 · 引擎", task, _ctx("S0", cfg=cfg), cfg, "planning")
 
 
-def gen_characters(cfg: dict) -> str:
+def gen_characters(cfg: dict, premise: str = "") -> str:
     """S1 人物网：人物小传 / 反派梯队 / 关系与未结清单。"""
     task = (
         "写「人物小传」，包含：\n"
@@ -221,12 +287,16 @@ def gen_characters(cfg: dict) -> str:
         "与主角关系 / 与谁有未结的事\n"
         "3. **反派梯队**（三级：执行层 / 阻碍层 / 根源层），每级写战术、战略、哲学三层\n"
         "4. **人物关系网**：每两人之间一件未结的事\n\n"
-        f"已知素材：{cfg.get('idea') or '（见引擎部分）'}"
+        f"{_world_block(cfg)}\n\n"
+        f"【创作引擎与前期设定】\n{(premise or '（见引擎部分）')[:3000]}\n\n"
+        f"已知素材：{cfg.get('idea') or '（见引擎部分）'}\n"
+        f"补充说明：{cfg.get('notes') or '无'}\n\n"
+        "人物的姓名、身份、职业、称谓必须落在上述时代；古代不得出现现代职业与器物。"
     )
     return _gen("剧本 · 人物", task, _ctx("S1", cfg=cfg), cfg, "planning")
 
 
-def gen_structure(cfg: dict) -> str:
+def gen_structure(cfg: dict, premise: str = "", chars: str = "") -> str:
     """S3 结构：幕点 / 序列 / 单集结构。"""
     series = cfg.get("form") == "series"
     if series:
@@ -252,10 +322,16 @@ def gen_structure(cfg: dict) -> str:
             "5. **第二幕「对手赢的戏」清单**（第三幕要原样奉还的场次）\n"
             "6. **结尾一句话**（最后一场戏的新平衡是什么）\n"
         )
+    task += (
+        f"\n{_world_block(cfg)}\n\n"
+        f"【创作圣经（引擎/主题/控制思想）】\n{(premise or '（未提供）')[:2500]}\n\n"
+        f"【人物小传】\n{(chars or '（未提供）')[:2000]}\n\n"
+        "结构里的场所、事件、冲突手段必须能在该时代发生；不得靠现代科技制造阻碍或解法。"
+    )
     return _gen("剧本 · 结构", task, _ctx("S3", cfg=cfg), cfg, "planning")
 
 
-def gen_scenes(cfg: dict, total_scenes: int) -> str:
+def gen_scenes(cfg: dict, total_scenes: int, bible: str = "", struct: str = "") -> str:
     """S4 场次大纲：逐场目标 / 触发 / 阻碍 / beat / 结果。"""
     task = (
         f"写「场次清单」，共 {total_scenes} 场，用 Markdown 表格，列为：\n"
@@ -266,6 +342,12 @@ def gen_scenes(cfg: dict, total_scenes: int) -> str:
         "3. 阻力必须可具象化，不写「他不愿意」要写「他做不到」\n"
         "4. 主要角色的戏占比 50-60%，留出 B 故事线与轻喜剧线的位置\n"
         "5. 场景数与总页数要能对上（中文剧本 1 页约 1 分钟）\n"
+        "6. 地点 / 时间 / 道具 / 称谓必须落在设定时代内；古代不得写医院、公寓、手机、汽车、"
+        "公司、警察等现代物事，人物职业与称呼同此\n\n"
+        f"{_world_block(cfg)}\n\n"
+        f"【创作圣经（引擎/主题）】\n{(bible or '（未提供）')[:4000]}\n\n"
+        f"【结构大纲】\n{(struct or '（未提供）')[:2500]}\n\n"
+        f"补充说明：{cfg.get('notes') or '无'}"
     )
     return _gen("剧本 · 场次", task, _ctx("S4", cfg=cfg), cfg, "planning")
 
@@ -292,6 +374,7 @@ def gen_scene_body(scene: dict, ctx_extra: str, cfg: dict) -> str:
         f"7. 场景内要有 3-8 个节拍（价值翻转），结尾停在问题刚解决或刚变严重的地方\n"
         f"8. 进场时人物已经在麻烦里；不要用台词解释观众已知的事\n"
         f"9. 只输出这一场的正文，不要写场次编号、页码或任何说明\n\n"
+        f"{_world_block(cfg)}\n\n"
         f"上下文材料：\n{ctx_extra}"
     )
     return _gen("剧本 · 写作", task, _ctx("S5", cfg=cfg), cfg, "writing", max_tokens=4000)
@@ -402,6 +485,7 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
     proj = ScriptProject(pdir, name)
     llm.book(os.path.basename(pdir), "planning")
 
+    era = _era_of(cfg)
     plan = {
         "version": 1, "scriptName": name, "projectPath": pdir, "medium": "script",
         "form": form, "formLabel": FORMS.get(form, FORMS["film"])["label"],
@@ -411,30 +495,48 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
         "episodes": int(cfg.get("episodes") or 12),
         "createdAt": datetime.datetime.now().isoformat(),
         "status": "planning", "stages": {}, "scenes": [],
+        "meta": {"setting": {
+            "era": era,
+            "era_label": script_checker.ERA_LABELS.get(era, ""),
+            "world": str(cfg.get("setting_world") or "").strip(),
+        }},
         "config": {k: v for k, v in cfg.items() if k != "api_key"},
     }
     proj.save_plan(plan)
 
     proj.log("🎬 阶段 S0：生成创作引擎…")
     premise = gen_premise(cfg)
-    _write(os.path.join(pdir, F_BIBLE), _bible_header(cfg, name) + "\n\n" + (premise or "（引擎生成失败，请重试）"))
+    bible_text = _bible_header(cfg, name) + "\n\n" + (premise or "（引擎生成失败，请重试）")
+    _write(os.path.join(pdir, F_BIBLE), bible_text)
     plan["stages"]["S0"] = {"done": bool(premise), "at": datetime.datetime.now().isoformat()}
     proj.save_plan(plan)
 
     proj.log("🎭 阶段 S1：生成人物小传…")
-    chars = gen_characters(cfg)
+    chars = gen_characters(cfg, premise=bible_text)
     _write(os.path.join(pdir, F_CHARS), f"# {name} 人物小传\n\n" + (chars or "（人物生成失败，请重试）"))
     plan["stages"]["S1"] = {"done": bool(chars), "at": datetime.datetime.now().isoformat()}
     proj.save_plan(plan)
 
     proj.log("🧭 阶段 S3：生成结构大纲…")
-    struct = gen_structure(cfg)
+    struct = gen_structure(cfg, premise=bible_text, chars=chars)
     _write(os.path.join(pdir, F_STRUCT), f"# {name} 结构大纲\n\n" + (struct or "（结构生成失败，请重试）"))
     plan["stages"]["S3"] = {"done": bool(struct), "at": datetime.datetime.now().isoformat()}
     proj.save_plan(plan)
 
     proj.log("🎞️ 阶段 S4：生成场次清单…")
-    scenes_md = gen_scenes(cfg, plan["totalScenes"])
+    era = _era_of(cfg)
+    scenes_md = gen_scenes(cfg, plan["totalScenes"], bible=bible_text, struct=struct)
+    guard = script_checker.check_text(scenes_md, era)
+    if not guard["ok"]:
+        terms = "、".join(it["term"] for it in guard["issues"][:8])
+        proj.log(f"⚠️ 场次表时代校验未过（{terms}），带反馈重生成一次…")
+        cfg_retry = dict(cfg)
+        cfg_retry["notes"] = "\n".join(
+            x for x in (cfg.get("notes") or "", _era_feedback(guard["issues"])) if x)
+        retry_md = gen_scenes(cfg_retry, plan["totalScenes"], bible=bible_text, struct=struct)
+        if retry_md.strip():
+            scenes_md = retry_md
+        guard = script_checker.check_text(scenes_md, era)
     _write(os.path.join(pdir, F_SCENES), f"# {name} 场次清单\n\n" + (scenes_md or "（场次生成失败，请重试）"))
     scenes = parse_scenes(scenes_md)
     for i, sc in enumerate(scenes, 1):
@@ -444,6 +546,14 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
         sc["wordCount"] = None
     plan["scenes"] = scenes
     plan["stages"]["S4"] = {"done": bool(scenes), "at": datetime.datetime.now().isoformat()}
+    if not guard["ok"]:
+        # 场次表持续与时代冲突：暂停自动写作，把冲突留给用户确认，绝不静默开写。
+        plan.setdefault("meta", {})["paused"] = True
+        plan["meta"]["era_warnings"] = guard["issues"]
+        proj.save_plan(plan)
+        terms = "、".join(it["term"] for it in guard["issues"][:8])
+        proj.log(f"⛔ 场次表与时代设定冲突（{terms}），已暂停自动写作，请先修正时代/世界观或场次表")
+        return proj
     proj.save_plan(plan)
 
     if cfg.get("form") == "series":
@@ -465,15 +575,60 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
 def _bible_header(cfg: dict, name: str) -> str:
     form = FORMS.get(cfg.get("form", "film"), FORMS["film"])
     entry = ENTRY_PATHS.get(cfg.get("entryPath", "idea"), "")
+    era = _era_of(cfg)
+    era_label = script_checker.ERA_LABELS.get(era, "未指定")
+    world = str(cfg.get("setting_world") or "").strip() or "（未填写）"
     return (
         f"# {name} · 创作圣经\n\n"
         f"> 媒介形式：{form['label']} ｜ 入口路径：{entry}\n"
         f"> 目标规模：{cfg.get('pages', 100)} 页 / {cfg.get('scenes', 30)} 场\n"
+        f"> 时代：{era_label} ｜ 世界观：{world}\n"
         f"> 生成时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
     )
 
 
 # ---------------------------------------------------------------- 写正文
+
+def _act_hint(struct_md: str, no: int, total: int) -> str:
+    """从结构大纲里取本场所在幕/序列，取不到返回 ""（绝不报错）。"""
+    if not struct_md:
+        return ""
+    lines = struct_md.splitlines()
+    nodes: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#") or (s.startswith("**") and s.endswith("**")):
+            title = s.lstrip("#").strip().strip("*").strip()
+            if re.search(r"幕|序列|集|Act", title):
+                nodes.append((i, title))
+    if not nodes:
+        return ""
+    hit = None
+    for i, title in nodes:
+        m = re.search(r"第\s*(\d+)\s*(?:[-–~至]\s*(\d+))?\s*场", title)
+        if m:
+            lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+            if lo <= no <= hi:
+                hit = (i, title)
+                break
+    if hit is None and total > 0:
+        idx = min(len(nodes) - 1, max(0, (no - 1) * len(nodes) // total))
+        hit = nodes[idx]
+    if hit is None:
+        return ""
+    i, title = hit
+    body: list[str] = []
+    for line in lines[i + 1:]:
+        if line.strip().startswith("#"):
+            break
+        body.append(line)
+        if sum(len(x) for x in body) > 500:
+            break
+    text = "\n".join(body).strip()
+    return f"【本场所属幕/序列】{title}" + (f"\n{text[:500]}" if text else "")
+
 
 def write_scenes(proj: ScriptProject, only: list[int] | None = None) -> dict:
     """S5：按场次清单逐场写正文。"""
@@ -482,12 +637,28 @@ def write_scenes(proj: ScriptProject, only: list[int] | None = None) -> dict:
     if not scenes:
         return {"ok": False, "error": "没有场次清单，请先生成规划"}
     cfg = _merge_cfg(plan.get("config") or {})
+    cfg.setdefault("title", plan.get("scriptName") or "")
+    setting = (plan.get("meta") or {}).get("setting") or {}
+    # 旧项目没有 setting 字段，但计划里一旦补上，就以它为准覆盖 config 里的缺省。
+    if setting.get("era"):
+        cfg["setting_era"] = setting["era"]
+    if setting.get("world"):
+        cfg["setting_world"] = setting["world"]
     bible = _read(os.path.join(proj.path, F_BIBLE))
     chars = _read(os.path.join(proj.path, F_CHARS))
+    struct_md = _read(os.path.join(proj.path, F_STRUCT))
     body_dir = proj.body_dir()
+    era = _era_of(cfg)
+    world = _world_block(cfg)
+    total = len(scenes)
 
     plan["status"] = "writing"
-    plan.setdefault("meta", {})["stage"] = "S5"
+    meta = plan.setdefault("meta", {})
+    meta["stage"] = "S5"
+    if era and not setting.get("era"):
+        # 旧项目首次按设定重写时把判定结果落盘：之后体检、界面与重写用同一个时代。
+        meta["setting"] = {"era": era, "era_label": script_checker.ERA_LABELS.get(era, ""),
+                           "world": setting.get("world", "")}
     proj.save_plan(plan)
 
     done = 0
@@ -498,12 +669,32 @@ def write_scenes(proj: ScriptProject, only: list[int] | None = None) -> dict:
         if sc.get("status") == "completed":
             continue
         proj.log(f"✍️ 写第 {no} 场…")
-        extra = f"【创作圣经·引擎】\n{bible[:2500]}\n\n【人物小传】\n{chars[:1800]}"
+        extra = (f"【创作圣经·全文（节选）】\n{bible[:6000]}\n\n"
+                 f"【人物小传】\n{chars[:2500]}\n\n"
+                 f"【结构大纲】\n{struct_md[:2500]}\n\n"
+                 f"{world}")
+        hint = _act_hint(struct_md, no if isinstance(no, int) else 0, total)
+        if hint:
+            extra += "\n\n" + hint
         text = gen_scene_body(sc, extra, cfg)
         if not text.strip():
             proj.log(f"⚠️ 第 {no} 场生成失败，跳过")
             sc["status"] = "failed"
             continue
+        check = script_checker.check_text(text, era)
+        if not check["ok"]:
+            terms = "、".join(it["term"] for it in check["issues"][:8])
+            proj.log(f"⚠️ 第 {no} 场时代校验未过（{terms}），带反馈重生成一次…")
+            retry = gen_scene_body(sc, extra + "\n\n" + _era_feedback(check["issues"]), cfg)
+            if retry.strip():
+                text = retry
+                check = script_checker.check_text(text, era)
+        if not check["ok"]:
+            sc["warn"] = check["issues"]
+            terms = "、".join(it["term"] for it in check["issues"][:8])
+            proj.log(f"⚠️ 第 {no} 场仍有时代偏差：{terms}（已保留，待人工修正）")
+        else:
+            sc.pop("warn", None)
         _write(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"), text.strip() + "\n")
         sc["status"] = "completed"
         sc["wordCount"] = len(re.findall(r"[\u4e00-\u9fff]", text))

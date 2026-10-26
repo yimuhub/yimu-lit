@@ -53,6 +53,26 @@ def safe_existing(root: str, name: str, *, label: str = "名称") -> str | None:
     return p if os.path.exists(p) else None
 
 
+def _read_umask() -> int:
+    """读一次当前 umask；只在这里短暂地清零再还原，避免运行期反复改进程状态。"""
+    current = os.umask(0o022)
+    os.umask(current)
+    return current
+
+
+# 新建文件时的默认权限：0666 去掉 umask。mkstemp 建的是 0600，
+# 直接换过去会把用户本来能读的文件悄悄改成只有自己能读。
+_DEFAULT_FILE_MODE = 0o666 & ~_read_umask()
+
+
+def _target_mode(path: str) -> int:
+    """覆盖已有文件沿用原权限；新建文件用默认权限。"""
+    try:
+        return os.stat(path).st_mode & 0o777
+    except OSError:
+        return _DEFAULT_FILE_MODE
+
+
 def atomic_write_text(path: str, text: str) -> None:
     d = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(d, exist_ok=True)
@@ -62,6 +82,7 @@ def atomic_write_text(path: str, text: str) -> None:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp, _target_mode(path))
         os.replace(tmp, path)
     except BaseException:
         try:

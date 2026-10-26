@@ -7,7 +7,7 @@ import {
   resetChat
 } from './core/state.js';
 import { initTheme, setTheme, toggleTheme } from './core/theme.js';
-import { loadPrefs } from './core/prefs.js';
+import { loadPrefs, persistLayout } from './core/prefs.js';
 import { startRouter, navigate, routePath } from './core/router.js';
 import { api, errorText } from './core/api.js';
 import { installHotkeys } from './core/hotkeys.js';
@@ -47,6 +47,53 @@ let pollStop = null;
 let loadedKey = '';
 const inflight = new Set();
 const mediumCache = new Map();
+
+/* 非小说创建是后台线程，目录落盘前作品库还查不到——先用乐观条目占住侧栏。 */
+const PENDING_TTL = 120000;
+let pendingPoll = 0;
+
+function mergePending(fetched) {
+  const now = Date.now();
+  const keep = [];
+  for (const it of store.get().library.items) {
+    if (!(it.pending || it.failed)) continue;
+    if (fetched.some((f) => f.key === it.key)) continue;
+    if (it.pending && now - (it.pendingSince || 0) > PENDING_TTL) {
+      keep.push({ ...it, pending: false, failed: true, error: '创建超时，请重试或移除' });
+    } else {
+      keep.push(it);
+    }
+  }
+  return [...keep, ...fetched];
+}
+
+function schedulePendingPoll() {
+  if (pendingPoll) return;
+  pendingPoll = setInterval(async () => {
+    const pending = store.get().library.items.filter((i) => i.pending);
+    if (!pending.length) {
+      clearInterval(pendingPoll);
+      pendingPoll = 0;
+      return;
+    }
+    let changed = false;
+    for (const it of pending) {
+      try {
+        const info = await api.project(it.key);
+        if (info && info.key) {
+          patch('library', {
+            items: store.get().library.items.map((x) => (x.key === it.key ? { ...x, ...info, pending: false, failed: false } : x))
+          });
+          mediumCache.set(it.key, info.medium || it.medium || 'novel');
+          changed = true;
+        }
+      } catch {
+        /* 404 表示规划线程还没落盘，继续等；超时由 mergePending 兜底 */
+      }
+    }
+    if (changed) syncShell(store.get(), true);
+  }, 2500);
+}
 
 /* 视图按文体分岔，而路由只带 key：文体先解析出来，才谈得上渲染哪套工作台。 */
 function mediumOf(key) {
@@ -176,19 +223,47 @@ const ctx = {
     return list.sort((a, b) => a.n - b.n);
   },
 
+  /* 创建接口一返回就插入侧栏，别等磁盘落盘；之后由轮询把占位项转正。 */
+  addPendingWork({ key, name, medium } = {}) {
+    if (!key) return null;
+    const now = new Date().toISOString();
+    const item = {
+      key,
+      name: (name || '').trim() || '新作品',
+      medium: medium || 'novel',
+      state: 'planning',
+      status_label: '规划中',
+      done: 0,
+      total: 0,
+      total_words: 0,
+      pending: true,
+      pendingSince: Date.now(),
+      created_at: now,
+      updated_at: now
+    };
+    patch('library', { items: [item, ...store.get().library.items.filter((i) => i.key !== key)] });
+    mediumCache.set(key, item.medium);
+    syncShell(store.get(), true);
+    schedulePendingPoll();
+    return item;
+  },
+
   async refreshLibrary() {
     patch('library', { loading: true });
     try {
       const res = await api.library();
+      const items = mergePending((res && res.items) || []);
       patch('library', {
-        items: (res && res.items) || [],
+        items,
         stats: (res && res.stats) || {},
         facets: (res && res.facets) || {},
+        counts: (res && res.counts) || {},
         loading: false,
         loaded: true,
         error: null
       });
-      if (res && res.items) patch('projects', res.items);
+      if (res && res.items) patch('projects', items);
+      if (items.some((i) => i.pending)) schedulePendingPoll();
     } catch (err) {
       patch('library', { loading: false, error: errorText(err, '作品库加载失败') });
     }
@@ -311,23 +386,41 @@ const ctx = {
 
 /* ------------------------------------------------------------ layout */
 
+const CENTER_MIN = 480;
+
+/* 三栏尺寸的单一事实源：先保住中栏 480px，再分配左右。 */
+function layoutMetrics() {
+  const ui = store.get().ui;
+  const vw = window.innerWidth;
+  const expandedMax = Math.max(200, Math.min(560, vw - CENTER_MIN - 320));
+  const sbCol = ui.sidebarExpanded ? clamp(ui.sidebarWidth || 280, 200, expandedMax) : 56;
+  const dockMax = Math.max(320, Math.min(900, Math.round(vw * 0.62), vw - CENTER_MIN - sbCol));
+  return { vw, sbCol, expandedMax, dockMax };
+}
+
 function applyLayout() {
   const app = els.app;
   const ui = store.get().ui;
-  const wide = window.innerWidth >= 1200;
   const narrow = window.innerWidth < 760;
+  const m = layoutMetrics();
+  const canDock = window.innerWidth >= 1180 && m.vw - m.sbCol - 320 >= CENTER_MIN;
 
   app.dataset.sidebar = ui.sidebarExpanded ? 'expanded' : 'rail';
   app.dataset.drawer = narrow && ui.drawerOpen ? 'open' : 'closed';
   els.drawerBackdrop.hidden = !(narrow && ui.drawerOpen);
 
   let mode = 'closed';
-  if (ui.rightOpen) mode = wide ? 'docked' : 'overlay';
+  if (ui.rightOpen) mode = canDock ? 'docked' : 'overlay';
   app.dataset.right = mode;
 
-  const rightW = clamp(ui.rightWidth || Math.round(window.innerWidth * 0.45), 320, Math.min(760, window.innerWidth - 420));
-  app.style.setProperty('--right-col', mode === 'docked' ? `${rightW}px` : '0px');
-  app.style.setProperty('--sidebar-w', `${clamp(ui.sidebarWidth, 200, 420)}px`);
+  /* 拖拽中由 pointermove 直接写 CSS 变量，这里不能回写，否则每帧被打回旧宽度。 */
+  if (app.dataset.dragging !== 'true') {
+    app.style.setProperty('--sidebar-w', `${m.sbCol}px`);
+    const dockW = clamp(ui.rightWidth || Math.round(window.innerWidth * 0.45), 320, m.dockMax);
+    app.style.setProperty('--right-col', mode === 'docked' ? `${dockW}px` : '0px');
+    const overlayMax = Math.max(360, Math.min(720, window.innerWidth - 32));
+    app.style.setProperty('--overlay-w', `${clamp(ui.rightWidth || 440, 360, overlayMax)}px`);
+  }
 
   els.rightBackdrop.hidden = mode !== 'overlay';
 }
@@ -335,72 +428,133 @@ function applyLayout() {
 function bindResizers() {
   const app = els.app;
 
-  function drag(handle, { getStart, apply, commit }) {
+  function varPx(name, fallback) {
+    const raw = parseFloat(app.style.getPropertyValue(name));
+    return Number.isFinite(raw) ? raw : fallback;
+  }
+
+  function track(handle, { move, commit }) {
     let start = null;
+
+    const finish = () => {
+      if (!start) return;
+      const s = start;
+      start = null;
+      app.dataset.dragging = 'false';
+      handle.dataset.active = 'false';
+      commit(s);
+      applyLayout();
+      syncShell(store.get(), true);
+    };
+
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
-      start = { x: event.clientX, ...getStart() };
+      const ui = store.get().ui;
+      start = {
+        x: event.clientX,
+        rail: !ui.sidebarExpanded,
+        sidebarW: varPx('--sidebar-w', ui.sidebarWidth || 280),
+        rightW:
+          app.dataset.right === 'overlay'
+            ? varPx('--overlay-w', ui.rightWidth || 440)
+            : varPx('--right-col', ui.rightWidth || Math.round(window.innerWidth * 0.45) || 440),
+        moved: false
+      };
       try {
         handle.setPointerCapture(event.pointerId);
       } catch {
         /* ignore */
       }
       app.dataset.dragging = 'true';
+      handle.dataset.active = 'true';
       event.preventDefault();
     });
+
     handle.addEventListener('pointermove', (event) => {
       if (!start) return;
-      apply(event.clientX - start.x, start);
+      const dx = event.clientX - start.x;
+      if (Math.abs(dx) > 2) start.moved = true;
+      move(dx, start);
     });
-    const end = (event) => {
-      if (!start) return;
-      start = null;
-      app.dataset.dragging = 'false';
-      commit();
-    };
-    handle.addEventListener('pointerup', end);
-    handle.addEventListener('pointercancel', end);
+
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+
+    handle.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      commit({ reset: true, moved: true });
+      applyLayout();
+      syncShell(store.get(), true);
+    });
+
     handle.addEventListener('keydown', (event) => {
-      const step = event.shiftKey ? 48 : 16;
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault();
-        apply(-step, getStart());
-        commit();
-      } else if (event.key === 'ArrowRight') {
-        event.preventDefault();
-        apply(step, getStart());
-        commit();
-      }
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const step = (event.shiftKey ? 32 : 8) * (event.key === 'ArrowRight' ? 1 : -1);
+      const s = {
+        x: 0,
+        rail: false,
+        sidebarW: varPx('--sidebar-w', store.get().ui.sidebarWidth || 280),
+        rightW:
+          app.dataset.right === 'overlay'
+            ? varPx('--overlay-w', store.get().ui.rightWidth || 440)
+            : varPx('--right-col', store.get().ui.rightWidth || 520),
+        moved: true
+      };
+      move(step, s);
+      commit(s);
+      applyLayout();
+      syncShell(store.get(), true);
     });
   }
 
-  drag(els.handleLeft, {
-    getStart: () => ({ w: store.get().ui.sidebarWidth }),
-    apply(dx, start) {
-      const w = clamp(start.w + dx, 200, 420);
+  track(els.handleLeft, {
+    move(dx, s) {
+      if (!s.moved) return;
+      const max = layoutMetrics().expandedMax;
+      let w;
+      if (s.rail) {
+        if (dx < 8) return;
+        app.dataset.sidebar = 'expanded';
+        w = clamp(200 + (dx - 8), 200, max);
+      } else {
+        w = clamp(s.sidebarW + dx, 200, max);
+      }
+      s.w = w;
       app.style.setProperty('--sidebar-w', `${w}px`);
-      start.w = w;
     },
-    commit() {
-      const w = parseInt(app.style.getPropertyValue('--sidebar-w'), 10) || store.get().ui.sidebarWidth;
+    commit(s) {
+      if (s.reset) {
+        patchUi({ sidebarWidth: 280, sidebarExpanded: true });
+        persistLayout({ sidebarWidth: 280, sidebarExpanded: true });
+        return;
+      }
+      if (!s.w) return;
+      const w = Math.round(s.w);
       patchUi({ sidebarWidth: w, sidebarExpanded: true });
-      applyLayout();
-      syncShell(store.get(), true);
+      persistLayout({ sidebarWidth: w, sidebarExpanded: true });
     }
   });
 
-  drag(els.handleRight, {
-    getStart: () => ({ w: store.get().ui.rightWidth || Math.round(window.innerWidth * 0.45) }),
-    apply(dx, start) {
-      const w = clamp(start.w - dx, 320, Math.min(760, window.innerWidth - 420));
+  track(els.handleRight, {
+    move(dx, s) {
+      if (!s.moved) return;
+      if (app.dataset.right === 'overlay') {
+        const max = Math.max(360, Math.min(720, window.innerWidth - 32));
+        const w = clamp(s.rightW - dx, 360, max);
+        s.w = w;
+        app.style.setProperty('--overlay-w', `${w}px`);
+        return;
+      }
+      const w = clamp(s.rightW - dx, 320, layoutMetrics().dockMax);
+      s.w = w;
       app.style.setProperty('--right-col', `${w}px`);
-      start.w = w;
     },
-    commit() {
-      const w = parseInt(app.style.getPropertyValue('--right-col'), 10) || 0;
-      patchUi({ rightWidth: w });
-      applyLayout();
-      syncShell(store.get(), true);
+    commit(s) {
+      const w = s.reset ? 520 : Math.round(s.w || 0);
+      if (!w) return;
+      patchUi({ rightWidth: w, rightOpen: true });
+      persistLayout({ rightWidth: w });
     }
   });
 }
@@ -412,7 +566,7 @@ const sigs = { sidebar: '', topbar: '', right: '' };
 function syncShell(state, force = false) {
   if (!els.app) return;
   const itemsSig = state.library.items
-    .map((i) => [i.key, i.name, i.state, i.status_label, i.done, i.total, i.total_words, i.favorite, i.archived, i.genre, (i.tags || []).join('|'), i.updated_at].join('~'))
+    .map((i) => [i.key, i.name, i.state, i.status_label, i.done, i.total, i.total_words, i.favorite, i.archived, i.trashed, i.pending, i.failed, i.genre, (i.tags || []).join('|'), i.updated_at].join('~'))
     .join(',');
   const sidebarSig = [
     itemsSig,
@@ -735,7 +889,10 @@ async function loadBootstrap() {
     if (list.length) patch('mediums', list);
   }
   if (styles.status === 'fulfilled' && styles.value) {
-    const list = Array.isArray(styles.value) ? styles.value : styles.value.styles || [];
+    /* /api/styles 回的是 {items:[...]}，不是 {styles:[...]} */
+    const list = Array.isArray(styles.value)
+      ? styles.value
+      : styles.value.items || styles.value.styles || [];
     patch('styles', list);
   }
 

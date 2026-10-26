@@ -4,6 +4,7 @@
 """
 import json
 import os
+import stat
 import time
 
 import pytest
@@ -11,7 +12,8 @@ from fastapi.testclient import TestClient
 
 import app as appmod
 from bot import security, workflow, writer
-from bot.safeio import UnsafePathError, safe_join
+from bot import safeio
+from bot.safeio import UnsafePathError, atomic_write_text, safe_join
 
 
 # ---------------------------------------------------------------- 路径安全
@@ -24,6 +26,17 @@ def test_safe_join_rejects_bad_names(bad, tmp_path):
 
 def test_safe_join_accepts_plain_name(tmp_path):
     assert safe_join(str(tmp_path), "20260101-120000-书名").startswith(str(tmp_path))
+
+
+def test_atomic_write_keeps_file_permissions(tmp_path):
+    """原子写不能把用户本来能读的文件悄悄改成只有自己能读（mkstemp 默认 0600）。"""
+    p = tmp_path / "正文.md"
+    atomic_write_text(str(p), "第一版")
+    assert stat.S_IMODE(os.stat(p).st_mode) == safeio._DEFAULT_FILE_MODE
+    os.chmod(p, 0o644)
+    atomic_write_text(str(p), "第二版")
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o644
+    assert p.read_text(encoding="utf-8") == "第二版"
 
 
 def test_get_project_rejects_traversal(monkeypatch, tmp_path):

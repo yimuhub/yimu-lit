@@ -473,6 +473,8 @@ def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: s
     """占位 key 立即返回，规划放后台线程（引擎里是多次 LLM 调用，同步跑会卡死事件循环）。"""
     import threading as _th
     from datetime import datetime as _dt
+    display = (cfg.get("title") or cfg.get("idea") or default_name or "").strip()
+    display = (display.splitlines()[0] if display else default_name)[:40] or default_name
     _name = safe_fn(cfg.get("title") or cfg.get("idea") or default_name)
     base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
 
@@ -484,17 +486,22 @@ def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: s
             print(f"[bg] {medium}创作失败: {e}", flush=True)
 
     _th.Thread(target=_bg, daemon=True).start()
-    return {"key": base, "pid": base, "project": base, "medium": medium, "async": True}
+    return {"key": base, "pid": base, "project": base, "medium": medium,
+            "name": display, "status": "planning", "async": True}
 
 
 def _create_script_project(payload: dict) -> dict:
-    """剧本引擎只读 form/entryPath/idea/notes/scenes/pages/episodes/title；
+    """剧本引擎读 form/entryPath/idea/notes/scenes/pages/episodes/title 与时代设定；
     向导里的题材、格式要求与蒸馏文风都折进 notes（script_writer.gen_premise 会读它）。"""
     cfg = dict(payload.get("cfg_overrides") or {})
-    for k in ("title", "idea", "form", "entryPath", "scenes", "pages", "episodes"):
+    for k in ("title", "idea", "form", "entryPath", "scenes", "pages", "episodes",
+              "setting_era", "setting_world"):
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("form", "film")
+    # 「跟随素材」不写具体时代，交给引擎从题材/标题/素材里推断，避免默认值压过用户意图。
+    if str(cfg.get("setting_era") or "") in ("", "auto"):
+        cfg.pop("setting_era", None)
     notes = [(payload.get("notes") or "").strip()]
     if payload.get("genre"):
         cfg["genre"] = payload["genre"]
@@ -755,7 +762,10 @@ def api_style_delete(name: str):
 
 @app.post("/api/distill")
 def api_distill(payload: dict):
-    """{name, text?, urls?[], genre?}。粘贴 text 或抓 urls → 蒸馏成命名风格 → 存 styles/。"""
+    """{name, text?, urls?[], genre?, medium?}。粘贴 text 或抓 urls → 蒸馏成命名风格 → 存 styles/。
+
+    medium 决定用哪套风格维度（小说/剧本/诗词/散文），空串按小说算。
+    """
     name = re.sub(r'[\\/:*?"<>|\s]+', "", (payload.get("name") or "").strip())[:40]
     if not name:
         return JSONResponse({"error": "请给这个风格起个名字"}, status_code=400)
@@ -768,7 +778,8 @@ def api_distill(payload: dict):
         source = "网址抓取: " + " ".join(str(u) for u in urls[:5])
         if len(corpus) < 300:
             return {"ok": False, "note": "网址抓到的正文太少（可能是 JS 渲染站或被反爬挡了）。请改用「粘贴文本」：把这部小说的几段内容复制进来再蒸馏。"}
-    return distill.distill(corpus, name, (payload.get("genre") or "").strip(), source, cfg=payload.get("cfg"))
+    return distill.distill(corpus, name, (payload.get("genre") or "").strip(), source,
+                            cfg=payload.get("cfg"), medium=payload.get("medium") or "")
 
 # ---------- v0.3.4：自我进化（学习报告）----------
 @app.get("/api/learn")
@@ -777,27 +788,44 @@ def api_learn():
     return learn.profile()
 @app.get("/api/library")
 def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
-                status: str = "", q: str = "", medium: str = "", include_archived: str = "false"):
-    if status == "archived":
-        base = writer.library_all(include_archived=True)
-        items = [i for i in base if i["archived"]]
+                status: str = "", q: str = "", medium: str = "", view: str = "active"):
+    """view=active|archived|trash 三视图；旧前端用 status=archived 的写法继续兼容。"""
+    if status == "archived" and view == "active":
+        view = "archived"
+    if view not in ("active", "archived", "trash"):
+        view = "active"
+
+    everything = writer.library_all(include_archived=True)
+    if view == "archived":
+        base = [i for i in everything if i.get("archived") and not i.get("trashed")]
+    elif view == "trash":
+        base = [i for i in everything if i.get("trashed")]
     else:
-        base = writer.library_all()          # 默认不含回收站
-        items = base
-        if genre:
-            items = [i for i in items if i["genre"] == genre]
+        base = [i for i in everything if not i.get("archived") and not i.get("trashed")]
+
+    items = list(base)
+    if genre:
+        items = [i for i in items if i["genre"] == genre]
+    if status and status != "archived":
         if status == "passing":
             items = [i for i in items if i.get("passing") is True]
         elif status == "unrated":
             items = [i for i in items if i.get("quality") is None]
-        elif status:
+        elif status != view:
             items = [i for i in items if i["state"] == status or i["status_label"] == status]
-        if q:
-            ql = q.lower()
-            items = [i for i in items if ql in (i["name"] or "").lower() or ql in (i["genre"] or "").lower()]
+    if q:
+        ql = q.lower()
+        items = [i for i in items if ql in (i["name"] or "").lower() or ql in (i["genre"] or "").lower()]
     if medium:
         items = [i for i in items if (i.get("medium") or "novel") == medium]
+
     stats = writer.library_stats(base)
+    counts = {
+        "active": sum(1 for i in everything if not i.get("archived") and not i.get("trashed")),
+        "archived": sum(1 for i in everything if i.get("archived") and not i.get("trashed")),
+        "trash": sum(1 for i in everything if i.get("trashed")),
+    }
+
     def _val(i):
         s = sort
         if s in ("created", "created_at"):
@@ -818,10 +846,11 @@ def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
             return str(i.get("state"))
         return i.get("updated_at") or i.get("created_at") or ""
     items = sorted(items, key=_val, reverse=(order != "asc"))
-    facets = {"genres": sorted({i["genre"] for i in base}),
-              "mediums": sorted({i.get("medium") or "novel" for i in base})}
-    return {"items": items, "stats": stats, "facets": facets, "sort": sort, "order": order,
-            "filters": {"genre": genre, "status": status, "q": q, "medium": medium}}
+    facets = {"genres": sorted({i["genre"] for i in everything}),
+              "mediums": sorted({i.get("medium") or "novel" for i in everything})}
+    return {"items": items, "stats": stats, "counts": counts, "facets": facets,
+            "sort": sort, "order": order,
+            "filters": {"genre": genre, "status": status, "q": q, "medium": medium, "view": view}}
 
 @app.get("/api/library/{key}")
 def api_lib_item(key: str):
@@ -841,18 +870,39 @@ def api_lib_tags(key: str, payload: dict):
 
 @app.post("/api/library/{key}/archive")
 def api_lib_archive(key: str, payload: dict):
-    on = bool(payload.get("on", True))
-    writer.set_meta(key, archived=on)
-    return {"ok": True, "archived": on}
+    """归档 = 收进作品库「归档」页；与回收站互斥。"""
+    return writer.archive_book(key, bool(payload.get("on", True)))
+
+@app.post("/api/library/{key}/trash")
+def api_lib_trash(key: str):
+    """移入回收站：默认列表与侧栏都隐藏，可恢复。"""
+    return writer.trash_book(key)
+
+@app.post("/api/library/{key}/restore")
+def api_lib_restore(key: str):
+    return writer.restore_book(key)
+
+@app.delete("/api/library/{key}/purge")
+def api_lib_purge(key: str, confirm: str = ""):
+    """彻底删除（不可逆）：confirm 必须与作品显示名完全一致。"""
+    res = writer.purge_book(key, confirm)
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    return res
 
 @app.post("/api/library/{key}/rename")
 def api_lib_rename(key: str, payload: dict):
     return writer.rename_book(key, (payload or {}).get("name", ""))
 
 @app.delete("/api/library/{key}")
-def api_lib_delete(key: str, hard: bool = False):
-    """v0.3.3：软删=归档(可恢复)；?hard=true 彻底删除（删目录+清定时，不可逆）。"""
-    return writer.delete_book(key, hard=bool(hard))
+def api_lib_delete(key: str, hard: bool = False, confirm: str = ""):
+    """默认软删=移入回收站；?hard=true 需同时给 confirm=作品名，才会彻底删除。"""
+    if not hard:
+        return writer.trash_book(key)
+    res = writer.purge_book(key, confirm)
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    return res
 
 @app.post("/api/library/batch")
 def api_lib_batch(payload: dict):
@@ -860,14 +910,22 @@ def api_lib_batch(payload: dict):
     act = payload.get("action")
     out = []
     for k in keys:
-        if act in ("archive", "delete"):
-            writer.set_meta(k, archived=True); out.append({"key": k, "ok": True, "note": "已移入回收站"})
+        if act == "archive":
+            r = writer.archive_book(k, True)
+        elif act == "unarchive":
+            r = writer.archive_book(k, False)
+        elif act in ("trash", "delete"):
+            r = writer.trash_book(k)
         elif act == "restore":
-            writer.set_meta(k, archived=False); out.append({"key": k, "ok": True, "note": "已恢复"})
+            r = writer.restore_book(k)
         elif act == "favorite":
-            writer.set_meta(k, favorite=True); out.append({"key": k, "ok": True})
+            writer.set_meta(k, favorite=True)
+            r = {"ok": True}
+        elif act == "purge":
+            r = {"ok": False, "note": "彻底删除需逐条确认作品名"}
         else:
-            out.append({"key": k, "ok": False, "note": f"未知操作 {act}"})
+            r = {"ok": False, "note": f"未知操作 {act}"}
+        out.append({"key": k, **r})
     return {"ok": True, "action": act, "results": out}
 
 @app.get("/api/compare")
@@ -2353,6 +2411,276 @@ async def api_script_preview(key: str):
             "scenes": scenes,
             "written": sum(1 for s in scenes if s["text"].strip()),
             "total": len(scenes)}
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/script/check")
+async def api_script_check(payload: dict):
+    """世界观一致性体检：按计划里的时代设定扫圣经/场次表/正文，列出违规词与位置。"""
+    key = payload.get("key")
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    from bot import script_checker
+    if not hasattr(script_checker, "check_project"):
+        return JSONResponse({"error": "当前版本不支持剧本体检"}, status_code=501)
+    try:
+        return script_checker.check_project(key)
+    except Exception as e:
+        return JSONResponse({"error": f"体检失败：{e}"}, status_code=500)
+
+
+@app.post("/api/script/rewrite-scenes")
+async def api_script_rewrite_scenes(payload: dict):
+    """按设定重写指定场次：先快照旧正文，再把场次状态重置为 pending 后交给写作引擎。"""
+    import threading as _th
+    from datetime import datetime as _dt
+    key = payload.get("key")
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    try:
+        nos = sorted({int(n) for n in (payload.get("sceneNos") or [])})
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "sceneNos 必须是场次号数组"}, status_code=400)
+    if not nos:
+        return JSONResponse({"error": "请选择要重写的场次"}, status_code=400)
+
+    def _bg():
+        try:
+            plan = proj.plan() or {}
+            ts = _dt.now().strftime("%Y%m%d-%H%M%S")
+            ver_dir = os.path.join(proj.body_dir(), ".versions")
+            os.makedirs(ver_dir, exist_ok=True)
+            targets = []
+            for sc in plan.get("scenes") or []:
+                no = int(sc.get("no") or 0)
+                if no not in nos:
+                    continue
+                old = script_writer.read_scene(key, no)
+                if old.strip():
+                    atomic_write_text(os.path.join(ver_dir, f"第{no:03d}场-{ts}.md"), old)
+                sc["status"] = "pending"
+                sc.pop("warn", None)
+                targets.append(no)
+            if targets:
+                proj.save_plan(plan)
+                script_writer.write_scenes(proj, only=targets)
+        except Exception as e:
+            print(f"[bg] 剧本按设定重写失败: {e}", flush=True)
+
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "async": True, "key": key, "scenes": nos}
+
+
+# ---------- v2.2.1：通用副驾（剧本 / 诗词 / 散文 同一套引擎与留档） ----------
+
+def _assist_medium(payload: dict) -> str:
+    med = str(payload.get("medium") or "script").strip()
+    return med if med in ("script", "poetry", "prose") else "script"
+
+
+def _assist_project(medium: str, key: str):
+    if medium == "poetry":
+        return poetry_writer.get_project(key)
+    if medium == "prose":
+        return prose_writer.get_project(key)
+    return script_writer.get_project(key)
+
+
+@app.post("/api/assist/stream")
+async def api_assist_stream(request: Request):
+    """副驾对话：讨论 / 定位改写。改写只返回 diff（patch），落盘走 apply。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "请求体必须是 JSON"}, status_code=400)
+    return await _assist_stream_response(payload)
+
+
+async def _assist_stream_response(payload: dict):
+    import asyncio
+    from bot import assist as assist_mod
+
+    payload = payload or {}
+    key = str(payload.get("key") or "")
+    message = str(payload.get("message") or "").strip()
+    medium = _assist_medium(payload)
+    if not key or not message:
+        return JSONResponse({"error": "缺少作品或消息"}, status_code=400)
+    if not _assist_project(medium, key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    sid = str(payload.get("session_id") or uuid.uuid4().hex)
+    focus = payload.get("focus") or {}
+    history = payload.get("history") or []
+
+    async def gen():
+        t0 = time.time()
+        yield _sse("start", {"session_id": sid, "ts": int(t0)})
+        yield _sse("status", {"stage": "thinking", "text": "正在定位要改的段落…"})
+        loop = asyncio.get_running_loop()
+        ready = asyncio.Event()
+        box: list = []
+
+        def _work():
+            try:
+                box.append((True, assist_mod.assist(
+                    key, medium, message, focus=focus, history_msgs=history)))
+            except BaseException as e:
+                box.append((False, e))
+            finally:
+                try:
+                    loop.call_soon_threadsafe(ready.set)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=_work, daemon=True).start()
+        while not ready.is_set():
+            try:
+                await asyncio.wait_for(ready.wait(), timeout=2.0)
+            except TimeoutError:
+                yield _sse("status", {"stage": "thinking", "text": "仍在推敲改法…"})
+
+        ok, value = box[0] if box else (False, RuntimeError("改稿未返回结果"))
+        if not ok:
+            err = f"改稿失败：{value}"
+            yield _sse("error", {"error": err})
+            yield _sse("done", {"ok": False, "error": err, "elapsed": round(time.time() - t0, 2)})
+            return
+        res = value if isinstance(value, dict) else {"ok": False, "reply": str(value or "")}
+        text = str(res.get("reply") or "")
+        for i in range(0, len(text), 28):
+            yield _sse("delta", {"text": text[i:i + 28]})
+            await asyncio.sleep(0.01)
+        intent = res.get("intent") or {"kind": "discussion"}
+        patch = res.get("patch")
+        if patch and medium == "script":
+            patch = {**patch, "scene": patch.get("doc")}
+        # 对话留档：用户这句与 Agent 这句都进作品目录，随作品走
+        assist_mod.log_chat(key, medium, "user", message, kind=intent.get("kind"),
+                            doc=intent.get("doc"), block=intent.get("block"))
+        if text.strip():
+            assist_mod.log_chat(key, medium, "assistant", text.strip(),
+                                kind=intent.get("kind"), doc=intent.get("doc"),
+                                block=intent.get("block"))
+        yield _sse("done", {
+            "ok": bool(res.get("ok", True)),
+            "text": text,
+            "intent": intent,
+            "patch": patch,
+            "session_id": sid,
+            "elapsed": round(time.time() - t0, 2),
+        })
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/assist/apply")
+async def api_assist_apply(payload: dict):
+    """把 patch 落盘：只改目标段，其余内容逐字不动。"""
+    from bot import assist as assist_mod
+
+    medium = _assist_medium(payload)
+    key = str(payload.get("key") or "")
+    if not _assist_project(medium, key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    try:
+        block = int(payload.get("block"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "缺少段号"}, status_code=400)
+    res = assist_mod.apply_edit(key, medium, payload.get("doc"), block,
+                                str(payload.get("base_hash") or ""),
+                                str(payload.get("new_text") or ""))
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=409 if res.get("code") == "stale" else 400)
+    return res
+
+
+@app.get("/api/assist/versions")
+async def api_assist_versions(key: str, medium: str = "script", doc: str = ""):
+    from bot import assist as assist_mod
+
+    med = medium if medium in ("script", "poetry", "prose") else "script"
+    if not _assist_project(med, key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return assist_mod.list_versions(key, med, doc)
+
+
+@app.post("/api/assist/restore")
+async def api_assist_restore(payload: dict):
+    from bot import assist as assist_mod
+
+    medium = _assist_medium(payload)
+    key = str(payload.get("key") or "")
+    if not _assist_project(medium, key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    res = assist_mod.restore_version(key, medium, payload.get("doc"),
+                                      str(payload.get("version") or ""))
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    return res
+
+
+@app.get("/api/assist/history")
+async def api_assist_history(key: str, medium: str = "script"):
+    """对话历史 + 改稿记录：随作品留档，换浏览器也还在。"""
+    from bot import assist as assist_mod
+
+    med = medium if medium in ("script", "poetry", "prose") else "script"
+    if not _assist_project(med, key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return assist_mod.history(key, med)
+
+
+# ---------- 旧路径兼容：/api/script/assist/* 走同一套通用副驾 ----------
+
+@app.post("/api/script/assist/stream")
+async def api_script_assist_stream(request: Request):
+    """剧本副驾（兼容入口，与 /api/assist/stream 同源）。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "请求体必须是 JSON"}, status_code=400)
+    payload = dict(payload or {})
+    payload["medium"] = "script"
+    focus = payload.get("focus") or {}
+    if isinstance(focus, dict) and focus.get("scene") is not None and focus.get("doc") is None:
+        focus = {**focus, "doc": str(focus.get("scene"))}
+    payload["focus"] = focus
+    return await _assist_stream_response(payload)
+
+
+@app.post("/api/script/assist/apply")
+async def api_script_assist_apply(payload: dict):
+    payload = dict(payload or {})
+    payload["medium"] = "script"
+    if payload.get("doc") is None and payload.get("scene") is not None:
+        payload["doc"] = str(payload.get("scene"))
+    return await api_assist_apply(payload)
+
+
+@app.get("/api/script/assist/versions")
+async def api_script_assist_versions(key: str, scene: int):
+    from bot import assist as assist_mod
+
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    res = assist_mod.list_versions(key, "script", str(scene))
+    if not res.get("ok"):
+        return res
+    return {"ok": True, "items": res.get("items") or []}
+
+
+@app.post("/api/script/assist/restore")
+async def api_script_assist_restore(payload: dict):
+    payload = dict(payload or {})
+    payload["medium"] = "script"
+    if payload.get("doc") is None and payload.get("scene") is not None:
+        payload["doc"] = str(payload.get("scene"))
+    return await api_assist_restore(payload)
 
 
 @app.post("/api/script/write")

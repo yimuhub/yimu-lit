@@ -454,6 +454,200 @@
   cursor: pointer;
 }
 
+/* 蒸馏风格区 ----------------------------------------------------------- */
+
+.skill-distill {
+  margin-top: 26px;
+  padding: 16px 18px 18px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--elev-soft);
+}
+
+.skill-distill-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.skill-distill-head h2 {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.skill-distill-head .hint-text {
+  margin-top: 2px;
+  max-width: 640px;
+}
+
+.skill-distill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* 风格卡片 ------------------------------------------------------------- */
+
+.style-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+
+.style-card:hover {
+  border-color: var(--line-3);
+  background: var(--bg-sidebar);
+}
+
+.style-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.style-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.style-card-name {
+  color: var(--ink-primary);
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.style-card-summary {
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.style-card-meta {
+  color: var(--ink-caption);
+  font-size: 11.5px;
+}
+
+.style-card-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.style-word {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.style-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* 风格详情（弹窗内） ---------------------------------------------------- */
+
+.style-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.style-dims {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.style-dim {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--line-1);
+  font-size: var(--fs-small);
+  line-height: 1.65;
+}
+
+.style-dim:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.style-dim-k {
+  color: var(--ink-secondary);
+  font-weight: 500;
+}
+
+.style-dim-v {
+  color: var(--ink-primary);
+  overflow-wrap: anywhere;
+}
+
+/* 蒸馏弹窗表单 --------------------------------------------------------- */
+
+.distill-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.distill-modal .distill-form .textarea {
+  min-height: 92px;
+}
+
+.distill-mediums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.distill-medium {
+  height: 28px;
+  padding: 0 12px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-base);
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.distill-medium:hover {
+  background: var(--hover);
+  color: var(--ink-primary);
+}
+
+.distill-medium[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.distill-count {
+  font-variant-numeric: tabular-nums;
+}
+
 /* 响应式 ----------------------------------------------------------------- */
 
 @media (max-width: 900px) {
@@ -491,5 +685,19 @@
 
   .skill-list-head .hint-text {
     display: none;
+  }
+
+  .style-card {
+    flex-wrap: wrap;
+  }
+
+  .style-card-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .style-dim {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
   }
 }

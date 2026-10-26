@@ -57,7 +57,7 @@ MEDIUMS: dict[str, dict] = {
         ],
         "pass_line": 85,
         "agents": ["script_planner", "script_writer", "script_reviewer"],
-        "checker": None,
+        "checker": "bot.script_checker",
         "live": "/api/script-live",
     },
     "poetry": {
@@ -303,6 +303,9 @@ _NOVEL_SECTIONS = {
 # 剧本：引擎真实消费 title/idea/form/entryPath/scenes/pages/episodes/notes（见 bot/script_writer.py）。
 _SCRIPT_GENRES = ["悬疑/犯罪", "古装/历史", "都市/现实", "科幻", "战争/军事",
                   "喜剧", "爱情", "家庭/伦理", "武侠/仙侠", "恐怖/灵异"]
+# 时代/世界观是硬约束：写进场次与正文的每一次生成，并由 bot/script_checker 做词表校验。
+_ERA_OPTIONS = _opts([("auto", "跟随题材/素材（推荐）"), ("ancient", "古代"), ("republic", "民国"),
+                      ("modern", "当代"), ("future", "近未来"), ("fantasy", "架空"), ("custom", "自定义")])
 _SCRIPT_SCALE_SCENES = (
     {"value": "s20", "label": "短片体量", "desc": "约 20 场", "fill": 20},
     {"value": "s30", "label": "长片标准", "desc": "约 30 场", "fill": 30},
@@ -334,6 +337,10 @@ _SCRIPT_SECTIONS = {
     ],
     "basic": [
         _f("title", "剧名", "text", max_length=40, hint="留空则由系统按素材生成。"),
+        _f("setting_era", "时代", "select", options=_ERA_OPTIONS, default="auto",
+           hint="贯穿场次与正文的硬约束：地点、道具、称谓、交通都必须落在该时代；跟随素材时由题材与标题推断。"),
+        _f("setting_world", "世界观与考据约束", "textarea", rows=2, max_length=600,
+           hint="一句话写清世界规则与必须考据的细节；会作为硬约束贯穿场次与正文。"),
         _f("idea", "logline / 素材", "textarea", rows=4, max_length=4000, required=True,
            hint="有原著就写清原著与想保留的内核；只有想法就写「谁 / 想要什么 / 被什么挡住」。"),
         # scale 的 token 槽位（*_scale）只给前端选中态用；数字落引擎 key（custom_key）。

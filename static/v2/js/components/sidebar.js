@@ -14,10 +14,17 @@ function rowMeta(item) {
 }
 
 function renderRow(item, ctx, { isActive }) {
-  const meta = statusMeta(item.state, item.status_label);
+  /* 乐观条目：pending=正在规划，failed=创建失败；两类都不隐藏，点开由作品页处理。 */
+  const pending = Boolean(item.pending);
+  const failed = Boolean(item.failed);
+  const meta = failed
+    ? { tone: 'danger', label: '创建失败' }
+    : pending
+      ? { tone: 'warn', label: '规划中' }
+      : statusMeta(item.state, item.status_label);
   const { pct, words } = rowMeta(item);
   const btn = h('button', {
-    class: `side-row${isActive ? ' is-active' : ''}`,
+    class: `side-row${isActive ? ' is-active' : ''}${pending ? ' is-pending' : ''}${failed ? ' is-failed' : ''}`,
     type: 'button',
     dataset: { key: item.key },
     'data-tip': `${item.name} · ${meta.label}`,
@@ -31,18 +38,29 @@ function renderRow(item, ctx, { isActive }) {
     h('span', { class: `dot${meta.tone === 'muted' ? '' : ' dot-' + meta.tone}`, title: meta.label }),
     h('span', { class: 'side-row-name', text: item.name })
   );
-  const bottom = h(
-    'span',
-    { class: 'side-row-meta' },
-    h('span', { text: `${item.done}/${item.total}` }),
-    h('span', { class: 'sep' }),
-    h('span', { text: fmtWords(words) })
-  );
-  if (item.state === 'in_progress') {
+  if (failed) {
+    top.append(h('span', { class: 'badge', dataset: { tone: 'danger' }, text: '创建失败' }));
+  } else if (pending) {
+    top.append(h('span', { class: 'badge badge-accent', text: '规划中' }));
+  }
+  const bottom = h('span', { class: 'side-row-meta' });
+  if (pending) {
+    /* 乐观条目没有章节进度，不显示 0/0。 */
+    bottom.append(h('span', { text: '正在规划' }));
+  } else if (failed) {
+    bottom.append(h('span', { text: '尚未创建' }));
+  } else {
     bottom.append(
+      h('span', { text: `${item.done}/${item.total}` }),
       h('span', { class: 'sep' }),
-      h('span', { class: 'mini-progress progress-track', html: `<span style="width:${pct}%"></span>` })
+      h('span', { text: fmtWords(words) })
     );
+    if (item.state === 'in_progress') {
+      bottom.append(
+        h('span', { class: 'sep' }),
+        h('span', { class: 'mini-progress progress-track', html: `<span style="width:${pct}%"></span>` })
+      );
+    }
   }
   main.append(top, bottom);
   btn.append(main);
@@ -87,7 +105,7 @@ function bindSearch(input, listEl, ctx) {
 function paintList(listEl, ctx) {
   const state = store.get();
   const q = localQuery.toLowerCase();
-  let items = state.library.items.filter((i) => !i.archived);
+  let items = state.library.items.filter((i) => !i.archived && !i.trashed);
   if (q) {
     items = items.filter(
       (i) =>
