@@ -12,8 +12,8 @@ import {
   MEDIUM_LABELS,
   MEDIUM_UNITS
 } from '../core/dom.js';
-import { store, patchUi, patchChat } from '../core/state.js';
-import { navigate } from '../core/router.js';
+import { store, patch, patchUi, patchChat } from '../core/state.js';
+import { navigate, routePath } from '../core/router.js';
 import { isMediumBench, verdictLabel } from '../views/mediumbench.js';
 import { USAGE_MODES, usageLabel } from '../core/constants.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
@@ -62,7 +62,15 @@ const panel = {
   refQuery: '',
   refHits: null,
   refLoading: false,
-  stateQuery: ''
+  stateQuery: '',
+  /* v2.3 标题候选 / 一致性体检：null 表示还没拉过，切书时随 resetPanelFor 一起清。 */
+  titleCands: null,
+  titleCandLoading: false,
+  titleCandError: '',
+  titleCandMissing: false,
+  titleCandBusy: false,
+  auditLoading: false,
+  auditError: ''
 };
 
 function resetPanelFor(key) {
@@ -74,7 +82,34 @@ function resetPanelFor(key) {
   panel.stateQuery = '';
   panel.refHits = null;
   panel.refQuery = '';
+  panel.titleCands = null;
+  panel.titleCandLoading = false;
+  panel.titleCandError = '';
+  panel.titleCandMissing = false;
+  panel.titleCandBusy = false;
+  panel.auditLoading = false;
+  panel.auditError = '';
   destroyCollab();
+}
+
+/* 两套章节状态词表归一：写作计划（writer 落盘）用 completed/in_progress/failed/pending，
+   章卡 02d-章卡.jsonl 用 done/writing/changed/planned；后端合并下发时两套都会出现，
+   前端先归一到五态再渲染。未知值原样保留，由 statusLabel 兜底「待写」。 */
+const CHAPTER_STATUS_MAP = {
+  done: 'completed',
+  completed: 'completed',
+  writing: 'in_progress',
+  in_progress: 'in_progress',
+  error: 'failed',
+  failed: 'failed',
+  pending: 'pending',
+  changed: 'planned',
+  planned: 'planned'
+};
+
+function normChapterStatus(raw) {
+  const key = String(raw || '').trim().toLowerCase();
+  return CHAPTER_STATUS_MAP[key] || key || 'planned';
 }
 
 function chaptersFrom(planPayload) {
@@ -83,8 +118,8 @@ function chaptersFrom(planPayload) {
     return plan.chapters.map((c) => ({
       n: c.n || c.chapterNumber,
       title: c.title || `第${c.n || c.chapterNumber}章`,
-      status: c.status || 'planned',
-      words: c.words || c.wordCount || 0
+      status: normChapterStatus(c.status),
+      words: c.words || c.wordCount || c.word_count || 0
     }));
   }
   const list = [];
@@ -96,8 +131,8 @@ function chaptersFrom(planPayload) {
           list.push({
             n: c.n || c.chapterNumber,
             title: c.title || `第${c.n}章`,
-            status: c.status || 'planned',
-            words: c.words || c.wordCount || 0
+            status: normChapterStatus(c.status),
+            words: c.words || c.wordCount || c.word_count || 0
           });
         }
       } else {
@@ -113,7 +148,7 @@ function chaptersFrom(planPayload) {
 function statusLabel(status) {
   const map = {
     completed: '已写',
-    in_progress: '进行中',
+    in_progress: '正在创作',
     failed: '失败',
     pending: '待写',
     planned: '待规划'
@@ -152,6 +187,200 @@ function exportWork(key, fmt, label) {
   }
   downloadUrl(api.exportUrl(key, fmt));
   toast(`正在导出 ${label}…`, { duration: 2000 });
+}
+
+/* ------------------------------------------------------- v2.3 标题改名/候选 */
+
+/* 改名成功后 key 会变：先本地替换侧栏条目并 toast，再把路由切到新 key，
+   侧栏选中、右栏、对话都会跟着 onRoute 重建；随后 refreshLibrary 以后端为准覆盖。 */
+async function applyRename(ctx, oldKey, newTitle) {
+  const res = await api.title.set(oldKey, newTitle);
+  const newKey = (res && res.key) || oldKey;
+  const name = (res && res.name) || newTitle;
+  patch('library', {
+    items: store.get().library.items.map((i) => (i.key === oldKey ? { ...i, key: newKey, name } : i))
+  });
+  toast(`已改名《${name}》`, { tone: 'success' });
+  if (newKey !== oldKey) {
+    navigate(routePath('work', { key: newKey }));
+    if (ctx.refreshLibrary) ctx.refreshLibrary();
+  } else if (ctx.refreshWork) {
+    ctx.refreshWork();
+  }
+  return res;
+}
+
+function startTitleEdit(topEl, work, ctx) {
+  topEl.textContent = '';
+  const input = h('input', {
+    class: 'input rp-title-input',
+    type: 'text',
+    value: work.name || '',
+    'aria-label': '新书名'
+  });
+  let busy = false;
+  const submit = async () => {
+    if (busy) return;
+    const name = String(input.value || '').trim();
+    if (!name) {
+      toast('书名不能为空', { tone: 'danger' });
+      input.focus();
+      return;
+    }
+    if (name === work.name) {
+      ctx.rerenderPanel();
+      return;
+    }
+    busy = true;
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = '改名中…';
+    try {
+      await applyRename(ctx, work.key, name);
+    } catch (err) {
+      busy = false;
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = '确定';
+      toast(errorText(err, '改名失败'), { tone: 'danger' });
+    }
+  };
+  const confirmBtn = h('button', { class: 'btn btn-primary btn-sm', type: 'button', text: '确定' });
+  confirmBtn.addEventListener('click', submit);
+  const cancelBtn = h('button', {
+    class: 'btn btn-sm',
+    type: 'button',
+    text: '取消',
+    on: { click: () => ctx.rerenderPanel() }
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submit();
+    } else if (event.key === 'Escape') {
+      ctx.rerenderPanel();
+    }
+  });
+  topEl.append(input, confirmBtn, cancelBtn);
+  input.focus();
+  input.select();
+}
+
+/* 标题候选 chips：打开 work pane 时拉一次；空则「生成候选」，有则「再要几个」（各 n=3）。 */
+function titleCandsSection(ctx) {
+  const key = store.get().currentKey || '';
+  const sec = h('div', { class: 'rp-section' });
+  const countEl = h('span', { class: 'count' });
+  sec.append(h('div', { class: 'rp-section-head' }, h('h3', { text: '标题候选' }), countEl));
+  const body = h('div', { class: 'rp-cand-body' });
+  sec.append(body);
+
+  function paint() {
+    body.textContent = '';
+    if (panel.titleCandLoading) {
+      countEl.textContent = '';
+      body.append(
+        h('div', { class: 'rp-cand-loading' },
+          h('span', { class: 'spinner' }),
+          h('span', { class: 'hint-text', text: '正在请模型起名，约需半分钟…' }))
+      );
+      return;
+    }
+    const items = panel.titleCands || [];
+    countEl.textContent = items.length ? `${items.length} 个` : '';
+    if (panel.titleCandError) {
+      body.append(
+        h('div', { class: panel.titleCandMissing ? 'hint-text' : 'error-text', text: panel.titleCandError })
+      );
+    }
+    if (items.length) {
+      const row = h('div', { class: 'rp-cand-row' });
+      for (const it of items) {
+        const tip = [it.technique ? `手法：${it.technique}` : '', it.why || ''].filter(Boolean).join(' · ');
+        const chip = h('span', { class: 'chip rp-cand-chip', title: tip || it.title || '' });
+        chip.append(
+          h('span', { class: 'rp-cand-name', text: it.title || '' }),
+          h('button', {
+            class: 'rp-cand-adopt',
+            type: 'button',
+            text: '采用',
+            on: { click: (event) => adopt(it, event.currentTarget) }
+          })
+        );
+        row.append(chip);
+      }
+      body.append(row);
+    }
+    const foot = h('div', { class: 'rp-cand-foot' });
+    foot.append(
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        html: items.length
+          ? `${icon('refresh', 12)}<span>再要几个</span>`
+          : `${icon('sparkles', 12)}<span>生成候选</span>`,
+        disabled: panel.titleCandBusy || !key,
+        on: { click: () => generate() }
+      })
+    );
+    body.append(foot);
+  }
+
+  async function generate() {
+    if (panel.titleCandLoading) return;
+    panel.titleCandLoading = true;
+    panel.titleCandError = '';
+    panel.titleCandMissing = false;
+    paint();
+    try {
+      const res = await api.title.generate(key, 3);
+      const fresh = (res && Array.isArray(res.items) && res.items) || [];
+      panel.titleCands = [...(panel.titleCands || []), ...fresh].slice(0, 12);
+    } catch (err) {
+      panel.titleCandError = errorText(err, '生成候选失败');
+      panel.titleCandMissing = Boolean(err && err.isMissing);
+    } finally {
+      panel.titleCandLoading = false;
+      if (store.get().currentKey === key) paint();
+    }
+  }
+
+  async function adopt(it, btn) {
+    if (panel.titleCandBusy) return;
+    panel.titleCandBusy = true;
+    btn.disabled = true;
+    try {
+      await applyRename(ctx, key, it.title);
+    } catch (err) {
+      panel.titleCandBusy = false;
+      btn.disabled = false;
+      toast(errorText(err, '采用失败'), { tone: 'danger' });
+    }
+  }
+
+  if (!key) {
+    body.append(h('div', { class: 'hint-text', text: '打开一本作品后可以查看与生成标题候选。' }));
+    return sec;
+  }
+  if (panel.titleCands === null && !panel.titleCandLoading) {
+    panel.titleCandLoading = true;
+    paint();
+    api
+      .title.candidates(key)
+      .then((res) => {
+        panel.titleCands = (res && Array.isArray(res.items) && res.items) || [];
+      })
+      .catch((err) => {
+        panel.titleCands = [];
+        panel.titleCandError = errorText(err, '候选读取失败');
+        panel.titleCandMissing = Boolean(err && err.isMissing);
+      })
+      .finally(() => {
+        panel.titleCandLoading = false;
+        if (store.get().currentKey === key) paint();
+      });
+  } else {
+    paint();
+  }
+  return sec;
 }
 
 /* ---------------------------------------------------------------- work */
@@ -204,7 +433,7 @@ function mediumWorkPane(work, ctx) {
   pane.append(kv);
   /* 创作过程中就地蒸馏：不用跳去技能库，蒸完当场可用。 */
   pane.append(
-    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 2px 12px' } },
+    h('div', { class: 'rp-actions rp-actions-pad' },
       h('button', {
         class: 'btn btn-sm',
         type: 'button',
@@ -224,7 +453,7 @@ function mediumWorkPane(work, ctx) {
     )
   );
   pane.append(
-    h('div', { class: 'hint-text', style: { padding: '12px 2px' }, text: '正文与写作动作在中间的工作台里，按文体分页签展开。' })
+    h('div', { class: 'hint-text rp-note', text: '正文与写作动作在中间的工作台里，按文体分页签展开。' })
   );
   return pane;
 }
@@ -246,6 +475,14 @@ function workPane(ctx) {
     'div',
     { class: 'rp-summary-top' },
     h('div', { class: 'rp-summary-title', text: work.name }),
+    h('button', {
+      class: 'icon-btn icon-btn-sm',
+      type: 'button',
+      'aria-label': '修改书名',
+      title: '修改书名',
+      html: icon('pen', 13),
+      on: { click: () => startTitleEdit(top, work, ctx) }
+    }),
     h('span', { class: 'status-chip', dataset: { tone: meta.tone }, text: meta.label })
   );
   summary.append(top);
@@ -260,6 +497,7 @@ function workPane(ctx) {
     h('div', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` })
   );
   pane.append(summary);
+  pane.append(titleCandsSection(ctx));
 
   const kv = h('div', { class: 'kv-grid' });
   const cells = [
@@ -282,7 +520,7 @@ function workPane(ctx) {
 
   const actions = h(
     'div',
-    { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } },
+    { class: 'rp-actions' },
     h('button', {
       class: 'btn btn-primary btn-sm',
       type: 'button',
@@ -365,7 +603,7 @@ function workPane(ctx) {
     countEl.textContent = `${filtered.length} 章`;
     listEl.textContent = '';
     if (!filtered.length) {
-      listEl.append(h('div', { style: { padding: '14px' }, class: 'hint-text', text: '没有匹配的章节' }));
+      listEl.append(h('div', { class: 'empty-state' }, h('p', { text: '没有匹配的章节' })));
       return;
     }
     const shown = filtered.slice(0, panel.chapterLimit);
@@ -420,7 +658,6 @@ function workPane(ctx) {
       placeholder: '章节号或标题',
       'aria-label': '搜索章节',
       value: panel.chapterQuery,
-      style: { width: '120px' },
       on: {
         input: (event) => {
           panel.chapterQuery = event.target.value;
@@ -432,7 +669,6 @@ function workPane(ctx) {
     h('select', {
       class: 'select',
       'aria-label': '筛选章节',
-      style: { width: '92px', height: '28px', padding: '0 22px 0 6px', fontSize: '11px' },
       on: {
         change: (event) => {
           panel.chapterFilter = event.target.value;
@@ -500,7 +736,7 @@ function planPane(ctx) {
     h('span', { class: 'plan-scale', text: `v${plan.version || 1}` }),
     h('span', { class: 'plan-scale', text: plan.scale_label || (plan.target_words ? fmtWords(plan.target_words) : '未设规模') }),
     h('span', { class: 'chip chip-muted', text: plan.mode || '滚动规划' }),
-    h('span', { style: { flex: '1' } }),
+    h('span', { class: 'rp-spring' }),
     h('button', {
       class: 'btn btn-sm',
       type: 'button',
@@ -533,7 +769,7 @@ function planPane(ctx) {
     });
     volEl.append(volHead);
     const body = h('div', { class: 'plan-vol-body' });
-    if (vol.goal) body.append(h('div', { class: 'hint-text', style: { padding: '2px 0 4px' }, text: vol.goal }));
+    if (vol.goal) body.append(h('div', { class: 'hint-text', text: vol.goal }));
     for (const arc of vol.arcs || []) {
       const arcEl = h('div', { class: 'plan-arc' });
       arcEl.append(
@@ -549,7 +785,7 @@ function planPane(ctx) {
       const nums = arc.chapters || [];
       for (const n of nums) {
         const card = cards.find((c) => (c.n || c.chapterNumber) === n);
-        const st = card ? card.status : 'planned';
+        const st = card ? normChapterStatus(card.status) : 'planned';
         chips.append(
           h('button', {
             class: 'chapter-chip',
@@ -673,7 +909,7 @@ function openReplanDialog(ctx) {
   );
   const footer = h(
     'div',
-    { style: { display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end' } },
+    { class: 'rp-form-foot' },
     h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
     h('button', {
       class: 'btn btn-primary',
@@ -800,6 +1036,85 @@ function entityGroup(title, iconName, items, renderRight) {
   return wrap;
 }
 
+/* v2.3 一致性体检入口：后端把结果落在 state.last_audit {at, scope, issues[str]}，
+   这里展示上次记录并提供「一致性体检」按钮；完成后走既有 refreshState 刷新本 pane。 */
+function auditSection(ctx, payload) {
+  const key = store.get().currentKey || '';
+  const sec = h('div', { class: 'rp-section' });
+  const audit = (payload.state && payload.state.last_audit) || null;
+  const runBtn = h('button', {
+    class: 'btn btn-sm',
+    type: 'button',
+    html: `${icon('shield', 12)}<span>${panel.auditLoading ? '体检中…' : '一致性体检'}</span>`,
+    disabled: panel.auditLoading || !key,
+    on: {
+      click: async () => {
+        if (panel.auditLoading) return;
+        panel.auditLoading = true;
+        panel.auditError = '';
+        ctx.rerenderPanel();
+        try {
+          await api.audit(key, 'book');
+          toast('体检完成', { tone: 'success' });
+        } catch (err) {
+          panel.auditError = errorText(err, '体检失败');
+          toast(panel.auditError, { tone: 'danger' });
+        } finally {
+          panel.auditLoading = false;
+          if (ctx.refreshState) {
+            try {
+              await ctx.refreshState();
+            } catch {
+              /* 刷新失败时下方 pane 会走既有兜底 */
+            }
+          }
+          ctx.rerenderPanel();
+        }
+      }
+    }
+  });
+  sec.append(
+    h('div', { class: 'rp-section-head' }, h('h3', { text: '一致性体检' }),
+      h('div', { class: 'rp-section-actions' }, runBtn))
+  );
+  if (panel.auditError) sec.append(h('div', { class: 'error-text', text: panel.auditError }));
+  if (!audit) {
+    sec.append(
+      h('div', {
+        class: 'hint-text',
+        text: panel.auditLoading
+          ? '体检进行中，稍后即可查看人物、伏笔与设定的冲突。'
+          : '还没有体检记录：点「一致性体检」，扫描全书人物、伏笔与设定冲突。'
+      })
+    );
+    return sec;
+  }
+  sec.append(
+    h(
+      'div',
+      { class: 'rp-audit-meta' },
+      h('span', { text: `上次体检：${audit.at ? relTime(audit.at) : '刚刚'}` }),
+      h('span', { class: 'chip chip-muted', text: audit.scope === 'book' ? '全书' : audit.scope || '—' })
+    )
+  );
+  const issues = Array.isArray(audit.issues) ? audit.issues : [];
+  if (!issues.length) {
+    sec.append(h('div', { class: 'hint-text', text: '未发现一致性问题。' }));
+  } else {
+    for (const text of issues.slice(0, 8)) {
+      sec.append(
+        h(
+          'div',
+          { class: 'issue-row' },
+          h('span', { class: 'issue-dot' }),
+          h('span', { class: 'issue-text', text: String(text) })
+        )
+      );
+    }
+  }
+  return sec;
+}
+
 function statePane(ctx) {
   const state = store.get();
   const payload = state.lore;
@@ -856,6 +1171,7 @@ function statePane(ctx) {
     }
   });
   pane.append(search);
+  pane.append(auditSection(ctx, payload));
 
   const due = filter(payload.foreshadowing || []).filter(
     (f) => f.due != null && f.status !== 'done' && f.due <= (payload.current_chapter || 0) + 2
@@ -885,13 +1201,14 @@ function statePane(ctx) {
     const sec = h('div', { class: 'rp-section' });
     sec.append(sectionHead('一致性问题', `${issues.length} 条`));
     for (const issue of issues.slice(0, 6)) {
+      const text = typeof issue === 'string' ? issue : (issue.text || '');
       sec.append(
         h(
           'div',
-          { class: 'issue-row', dataset: { severity: issue.severity || 'medium' } },
+          { class: 'issue-row', dataset: { severity: (typeof issue === 'object' && issue && issue.severity) || 'medium' } },
           h('span', { class: 'issue-dot' }),
-          h('span', { class: 'issue-text', text: issue.text }),
-          issue.ref ? h('span', { class: 'issue-ref', text: issue.ref }) : null
+          h('span', { class: 'issue-text', text }),
+          (typeof issue === 'object' && issue && issue.ref) ? h('span', { class: 'issue-ref', text: issue.ref }) : null
         )
       );
     }
@@ -900,11 +1217,11 @@ function statePane(ctx) {
 
   const entities = [
     ['人物', 'users', payload.characters || [], (x) =>
-      h('span', { class: 'entity-sub', style: { flex: 'none', maxWidth: '84px' }, text: x.status || '' })],
+      h('span', { class: 'entity-sub', text: x.status || '' })],
     ['地点', 'pin', payload.locations || []],
     ['物件', 'package', payload.items || []],
     ['线索 / 伏笔', 'flag', payload.threads || [], (x) =>
-      x.progress != null ? h('span', { class: 'progress-track', style: { width: '44px' }, html: `<span style="width:${x.progress}%"></span>` }) : null]
+      x.progress != null ? h('span', { class: 'progress-track entity-progress', html: `<span style="width:${x.progress}%"></span>` }) : null]
   ];
   for (const [title, ic, items, right] of entities) {
     const filtered = filter(items);
@@ -992,7 +1309,7 @@ function refsPane(ctx) {
   add.append(seg);
 
   if (panel.refMode === 'upload') {
-    const input = h('input', { type: 'file', style: { display: 'none' }, accept: '.txt,.md,.docx,.pdf,.epub,.rtf,.html,.json,.csv' });
+    const input = h('input', { type: 'file', hidden: true, accept: '.txt,.md,.docx,.pdf,.epub,.rtf,.html,.json,.csv' });
     add.append(
       h(
         'button',
@@ -1443,12 +1760,12 @@ function skillsPane(ctx) {
 
   const histSec = h('div', { class: 'rp-section' });
   histSec.append(sectionHead('版本历史', `${(payload.history || []).length} 条`));
-  const histList = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '1px' } });
+  const histList = h('div', { class: 'stack-tight' });
   for (const v of payload.history || []) {
     const row = h(
       'div',
       { class: 'version-row' },
-      h('span', { class: 'dot', style: v.active ? { background: 'var(--success)' } : {} }),
+      h('span', { class: 'dot', dataset: v.active ? { tone: 'success' } : null }),
       h('span', { class: 'v-name', text: `${v.name} · ${v.version}` }),
       h('span', { class: 'v-time', text: v.at ? relTime(v.at) : '' }),
       v.active

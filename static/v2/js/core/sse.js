@@ -3,7 +3,10 @@
 import { api, IS_MOCK } from './api.js';
 
 export function streamChat(payload, handlers = {}, opts = {}) {
-  const { onStart, onStatus, onDelta, onDone, onError } = handlers;
+  const {
+    onStart, onStatus, onDelta, onDone, onError,
+    onChapterStart, onChapterDelta, onChapterDone
+  } = handlers;
   let text = '';
   const promise = api
     .streamChat(payload, {
@@ -17,6 +20,12 @@ export function streamChat(payload, handlers = {}, opts = {}) {
           const piece = data && typeof data === 'object' ? data.text || '' : String(data || '');
           text += piece;
           if (onDelta) onDelta(piece, text);
+        } else if (event === 'chapter_start') {
+          if (onChapterStart) onChapterStart(data);
+        } else if (event === 'chapter_delta') {
+          if (onChapterDelta) onChapterDelta(data);
+        } else if (event === 'chapter_done') {
+          if (onChapterDone) onChapterDone(data);
         } else if (event === 'done') {
           if (onDone) onDone(data);
         } else if (event === 'error') {

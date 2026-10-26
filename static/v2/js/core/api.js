@@ -324,6 +324,14 @@ export const api = {
   create: (payload) => request('/api/create', { method: 'POST', body: payload, timeout: 30000 }),
   titles: (key) => request('/api/titles', { query: { key } }),
   pickTitle: (key, title) => request('/api/pick-title', jsonBody({ key, title })),
+  /* v2.3 书名改名与候选：set 返回改名后的新 key；generate 同步调 LLM（10-40 秒）。 */
+  title: {
+    set: (key, title) => request('/api/title/set', { ...jsonBody({ key, title }), timeout: 60000 }),
+    generate: (key, n = 3) => request('/api/title/generate', { ...jsonBody({ key, n }), timeout: 120000 }),
+    candidates: (key) => request('/api/title/candidates', { query: { key } })
+  },
+  /* 全书一致性体检：同步返回 {ok, issues[str], at, scope}。 */
+  audit: (key, scope = 'book') => request('/api/audit', { ...jsonBody({ key, scope }), timeout: 120000 }),
   sample: () => request('/api/sample', jsonBody({})),
 
   settings: () => request('/api/settings'),

@@ -24,13 +24,13 @@
 .set-section-head h3 {
   flex: 1;
   color: var(--ink-secondary);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.03em;
 }
 
 .set-section-head .hint-text {
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .set-row {
@@ -108,7 +108,7 @@
   padding: 0 9px;
   border-radius: var(--radius-xs);
   color: var(--ink-tertiary);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .theme-opt[aria-pressed="true"] {
@@ -135,7 +135,7 @@
 
 .provider-row[data-default="true"] {
   border-color: var(--accent-ring);
-  background: linear-gradient(180deg, var(--accent-soft), transparent 220%);
+  background: var(--accent-soft);
 }
 
 .prov-main {
@@ -151,22 +151,24 @@
   align-items: center;
   gap: 6px;
   color: var(--ink-primary);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .prov-meta {
   overflow: hidden;
   color: var(--ink-caption);
-  font-size: 10.5px;
+  font-size: 11px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .prov-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  justify-content: flex-end;
+  gap: 6px;
   flex: none;
 }
 
@@ -177,7 +179,7 @@
   height: 18px;
   padding: 0 5px;
   border-radius: var(--radius-xs);
-  font-size: 9.5px;
+  font-size: 11px;
   line-height: 1;
 }
 
@@ -211,8 +213,61 @@
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   color: var(--ink-tertiary);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.55;
+}
+
+/* 设置页统一原语：页面宽 / 动作行 / 加载态 / 空态 / 错误态 / 技能 chips */
+.set-page {
+  max-width: 760px;
+}
+
+.set-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.set-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.skeleton-line.w-45 { width: 45%; }
+.skeleton-line.w-50 { width: 50%; }
+
+.set-empty {
+  padding: 24px 8px;
+}
+
+.set-skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.set-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+
+.set-error .error-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.set-error .btn {
+  flex: none;
 }
 
 /* Wizard ----------------------------------------------------------------- */
@@ -239,7 +294,7 @@
   gap: 7px;
   min-width: 0;
   color: var(--ink-caption);
-  font-size: 11.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -252,7 +307,7 @@
   border-radius: 50%;
   background: var(--bg-chip);
   color: var(--ink-tertiary);
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -310,7 +365,7 @@
 
 .wiz-pane-title p {
   color: var(--ink-tertiary);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .wiz-group {
@@ -324,13 +379,13 @@
   align-items: baseline;
   gap: 6px;
   color: var(--ink-secondary);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .wiz-label .opt {
   color: var(--ink-caption);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 400;
 }
 
@@ -384,13 +439,13 @@
 
 .genre-card .gc-name {
   color: var(--ink-primary);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .genre-card .gc-desc {
   color: var(--ink-tertiary);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -436,13 +491,13 @@
 
 .choice-card .cc-name {
   color: var(--ink-primary);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .choice-card .cc-sub {
   color: var(--ink-caption);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -459,7 +514,7 @@
 .wiz-grid .input,
 .wiz-grid .select,
 .wiz-grid .textarea {
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .wiz-grid .textarea {
@@ -532,7 +587,7 @@
   align-items: center;
   gap: 5px;
   color: var(--ink-primary);
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -546,7 +601,7 @@
 
 .opt-radio .muted {
   color: var(--ink-caption);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .opt-radio:has(input:checked) {
@@ -580,7 +635,7 @@
   align-items: center;
   gap: 6px;
   color: var(--ink-tertiary);
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -634,13 +689,13 @@
   align-items: center;
   gap: 4px;
   color: var(--ink-primary);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .mode-card .mc-desc {
   color: var(--ink-caption);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -665,7 +720,7 @@
 .ref-step-head .rsh-title {
   flex: 1;
   color: var(--ink-secondary);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -687,7 +742,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-base);
   box-shadow: inset 0 0 0 0.5px var(--line-1);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .staged-ref .sr-name {
@@ -702,7 +757,7 @@
 .staged-ref .sr-mode {
   flex: none;
   color: var(--ink-caption);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .staged-ref .sr-x {
@@ -725,7 +780,7 @@
   align-items: center;
   gap: 8px;
   color: var(--ink-caption);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .ref-or::before,
@@ -767,14 +822,14 @@
 
 .style-opt .so-name {
   color: var(--ink-primary);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .style-opt .so-sub {
   overflow: hidden;
   color: var(--ink-caption);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -786,7 +841,7 @@
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--ink-secondary);
   line-height: 1.6;
 }
@@ -806,7 +861,7 @@
   border-radius: var(--radius-sm);
   background: var(--danger-soft);
   color: var(--danger-ink);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -853,7 +908,7 @@
   border-radius: var(--radius-sm);
   background: var(--warn-soft);
   color: var(--warn-label);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .feedback-form {
@@ -877,7 +932,7 @@
   border: 0.5px solid var(--line-2);
   border-radius: var(--radius-sm);
   color: var(--ink-tertiary);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .rating-btn:hover {
@@ -938,6 +993,14 @@
     gap: 8px;
   }
 
+  .provider-row {
+    flex-wrap: wrap;
+  }
+
+  .prov-actions {
+    justify-content: flex-start;
+  }
+
   .set-control {
     width: 100%;
     justify-content: flex-start;
@@ -970,7 +1033,7 @@
   background: var(--bg-base);
   color: var(--ink-secondary);
   font-family: var(--font-ui);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);

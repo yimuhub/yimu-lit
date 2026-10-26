@@ -351,6 +351,12 @@ def queue_msg(key, text, immediate=False):
                "ts": datetime.datetime.now().isoformat()})
     p.save_plan(plan)
     p.log(("⚡ 立即修正指令：「" if immediate else "📝 待发送指令（下一条生效）：「") + text[:40] + "」")
+    # v2.3.0 任务三：用户即时改稿指令计入学习样本（技能进化界面可见改稿口味）；异常吞掉不影响入队
+    try:
+        from . import learn as _learn
+        _learn.note_user_directive(key, text)
+    except Exception:
+        pass
     return True
 
 def pending_queue(key):
@@ -789,6 +795,121 @@ def _index_chapter_continuity(proj, ch, cfg):
     _audit_at_boundary(proj, cfg, no)
 
 
+# ---------- v2.3.0：里程碑标题回流（基于已成稿内容再生成书名候选） ----------
+TITLE_CANDIDATES_FILE = "05-标题候选.json"   # 与另一 Agent 的接口约定文件名
+_TITLE_MILESTONE_STEP = 10                    # 每累计完成 10 章触发一次
+_TITLE_CAP = 20                               # 候选封顶条数
+
+
+def _recent_chapter_digests(proj, k=3) -> str:
+    """取最近 k 章的成稿摘要（供标题回流的提示词）；来自 longform 的章摘要账本，缺失则空串。"""
+    try:
+        from . import longform as _lf
+        rows = _lf._load_chapter_summaries(proj) or {}
+        out = []
+        for n in sorted(rows, reverse=True)[:k]:
+            sm = (rows[n] or {}).get("summary") if isinstance(rows[n], dict) else ""
+            if sm:
+                out.append(f"第{n}章：{str(sm)[:200]}")
+        return "\n".join(reversed(out))
+    except Exception:
+        return ""
+
+
+def _gen_milestone_titles(proj, plan, cfg):
+    """基于大纲摘要 + 最近 3 章成稿摘要，让 LLM 给出 3 个更贴合已成稿、更能抓读者的书名候选。
+    走 llm.chat_json（与 gen_titles 内部同一风格，但能吃进真实成稿内容，更贴合'基于实际写出的内容'）。
+    返回 [{title, technique, why}]；解析不出返回 []（异常由上层 _maybe_backflow_titles 兜住）。"""
+    outline = ""
+    try:
+        op = os.path.join(proj.path, "01-大纲.md")
+        if os.path.exists(op):
+            outline = open(op, encoding="utf-8").read()[:1200]
+    except OSError:
+        outline = ""
+    digests = _recent_chapter_digests(proj)
+    sys_p = (
+        "你是「一幕·神笔」的书名策划。这本书已在连载，请基于【已实际成稿】的内容（不是仅凭初始设定），"
+        "再想 3 个更贴合已成稿卖点/爽点、更能抓住读者的书名。每个书名注明所用技巧与一句话理由。"
+        '严格输出 JSON：{"titles":[{"title":..,"technique":..,"why":..}]}。只输出 JSON。')
+    user_p = (
+        f"【初始配置】{json.dumps({k: cfg.get(k) for k in ('genre','idea','conflict','protagonist','theme','tone') if cfg.get(k)}, ensure_ascii=False)}\n"
+        f"【大纲摘要】\n{outline or '（无）'}\n"
+        f"【最近成稿摘要】\n{digests or '（暂无摘要，按大纲与配置给名）'}\n"
+        "【要求】结合上面已成稿剧情给出 3 个书名，比初始候选更抓读者。")
+    out = llm.chat_json([{"role": "system", "content": sys_p},
+                         {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
+    titles = out.get("titles") if isinstance(out, dict) else None
+    if not isinstance(titles, list):
+        return []
+    res = []
+    for t in titles[:3]:
+        if isinstance(t, dict) and str(t.get("title") or "").strip():
+            res.append({"title": str(t["title"]).strip(),
+                        "technique": str(t.get("technique") or "").strip(),
+                        "why": str(t.get("why") or "").strip()})
+    return res
+
+
+def _append_title_candidates(proj, items) -> int:
+    """把 items 追加进 <作品目录>/05-标题候选.json；按 title 去重、封顶 _TITLE_CAP 条。返回实际新增条数。
+    契约格式（与另一 Agent 一字不差）：{"updated_at":..., "items":[{"title","technique","why","at"}]}。"""
+    fp = os.path.join(proj.path, TITLE_CANDIDATES_FILE)
+    existing = []
+    if os.path.exists(fp):
+        try:
+            loaded = json.load(open(fp, encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = [x for x in (loaded.get("items") or []) if isinstance(x, dict)]
+        except Exception:
+            existing = []
+    seen = {str(x.get("title") or "").strip() for x in existing}
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    added = 0
+    for it in items or []:
+        title = str(it.get("title") or "").strip()
+        if not title or title in seen:
+            continue
+        existing.append({"title": title, "technique": it.get("technique", ""),
+                         "why": it.get("why", ""), "at": now})
+        seen.add(title)
+        added += 1
+    doc = {"updated_at": now, "items": existing[-_TITLE_CAP:]}
+    atomic_write_json(fp, doc)
+    return added
+
+
+def _maybe_backflow_titles(proj, ch_no=None):
+    """v2.3.0 任务一挂点：每累计完成 10 章触发一次标题回流，追加 3 个更贴合的书名候选。
+    用 plan['meta']['title_milestone'] 记录上次回流时的里程碑（10 的整数倍）；在 proj.lock 内读改写，
+    先把里程碑推到位再生成，并行 worker 下不会双跑。全流程防御：任何异常都不抛出、不中断写作。"""
+    try:
+        with proj.lock:
+            plan = proj.plan() or {}
+            done = sum(1 for c in (plan.get("chapters") or []) if c.get("status") == "completed")
+            target = (done // _TITLE_MILESTONE_STEP) * _TITLE_MILESTONE_STEP
+            meta = plan.setdefault("meta", {})
+            last = int(meta.get("title_milestone") or 0)
+            if target <= 0 or target <= last:
+                return None
+            meta["title_milestone"] = target
+            proj.save_plan(plan)
+        cfg = plan.get("config") if isinstance(plan.get("config"), dict) else {}
+        items = _gen_milestone_titles(proj, plan, cfg)
+        if not items:
+            return None
+        added = _append_title_candidates(proj, items)
+        if added:
+            proj.log(f"📚 新增 {added} 个标题候选（第{target}章里程碑）")
+        return added
+    except Exception as e:
+        try:
+            proj.log(f"⚠️ 标题候选回流失败（不阻断写作）：{e}")
+        except Exception:
+            pass
+        return None
+
+
 def _write_loop_parallel(proj, n_workers=5):
     """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）。
     先熔炼『总架构』，各 worker 领 1..N 章，写完一个立即取下一未完成章；
@@ -933,7 +1054,10 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
         except Exception:
             ctx = {}
         cons = (f"人物：{ctx.get('characters_text','')[:2000]}\n文风：{ctx.get('style_text','')[:1000]}\n"
-                f"大纲要点：{ctx.get('outline_text','')[:1500]}\n上一章结尾：{(ctx.get('prev_tail') or '')[-400:]}")
+                f"大纲要点：{ctx.get('outline_text','')[:1500]}\n上一章结尾：{(ctx.get('prev_tail') or '')[-400:]}\n"
+                f"世界观/故事圣经：{(ctx.get('story_bible') or '')[:1200]}\n"
+                f"设定词典（本章相关）：{(ctx.get('lore_relevant') or '')[:1200]}\n"
+                f"线索账本（须兑现/不得乱揭）：{(ctx.get('clue_ledger') or '')[:1200]}")
         cfg = plan.get("config") or {}
         new = workflow.guided_rewrite(body, fix, cons, cfg)
         new = _clean_chapter_text(new or "")
@@ -1057,6 +1181,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
         except Exception as e:
             proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
     _index_chapter_continuity(proj, ch, ctx.get("cfg"))
+    _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
 
 def _validate_and_finish(proj):
     llm.book(os.path.basename(proj.path), "review")   # v0.3.x：五角色审校 token 归集
@@ -1815,7 +1940,10 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
         orig = open(fp, encoding="utf-8").read()
         ctx = _build_ctx(proj, ch)
         cons = (f"人物：{ctx.get('characters_text','')[:2500]}\n文风：{ctx.get('style_text','')[:1200]}\n"
-                f"大纲要点：{ctx.get('outline_text','')[:2000]}\n上一章结尾：{(ctx.get('prev_tail') or '')[-500:]}")
+                f"大纲要点：{ctx.get('outline_text','')[:2000]}\n上一章结尾：{(ctx.get('prev_tail') or '')[-500:]}\n"
+                f"世界观/故事圣经：{(ctx.get('story_bible') or '')[:1500]}\n"
+                f"设定词典（本章相关）：{(ctx.get('lore_relevant') or '')[:1500]}\n"
+                f"线索账本（须兑现/不得乱揭）：{(ctx.get('clue_ledger') or '')[:1500]}")
         reqs = [f"【全局主攻】{g}" for g in brief["global_directions"]]
         reqs += [f"【第{n}章】{r}" for r in next((c["requirements"] for c in brief["chapters"] if c["chapter"] == n), [])]
         if dimensions:

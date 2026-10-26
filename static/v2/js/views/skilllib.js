@@ -106,7 +106,7 @@ export function renderSkillLib(container, ctx) {
 
   const side = h('aside', { class: 'skill-side', 'aria-label': '文体与题材筛选' });
   const listCol = h('div', { class: 'skill-list-col' });
-  const preview = h('section', { class: 'skill-preview-wrap', 'aria-label': '技能正文预览', hidden: true });
+  const preview = h('section', { class: 'skill-preview-card', 'aria-label': '技能正文预览', hidden: true });
   const listWrap = h('div', { class: 'skill-list' });
   listCol.append(preview, listWrap);
 
@@ -142,7 +142,7 @@ export function renderSkillLib(container, ctx) {
     const chips = [];
     const s = model.stats;
     if (s) {
-      chips.push(h('span', { class: 'chip skill-chip skill-chip-total', text: `共 ${fmtNum(s.files || s.total || 0)} 条技能` }));
+      chips.push(h('span', { class: 'chip chip-accent skill-chip skill-chip-total', text: `共 ${fmtNum(s.files || s.total || 0)} 条技能` }));
       const byMedia = s.by_media || {};
       for (const key of ['novel', 'script', 'poetry', 'prose', 'all', 'custom']) {
         if (byMedia[key]) {
@@ -294,9 +294,9 @@ export function renderSkillLib(container, ctx) {
           h(
             'div',
             { class: 'skill-item skill-item-skeleton' },
-            h('div', { style: { flex: '1', minWidth: '0' } },
+            h('div', { class: 'skill-fill' },
               h('div', { class: 'skeleton skeleton-line', style: { width: `${40 + ((i * 17) % 45)}%` } }),
-              h('div', { class: 'skeleton skeleton-line w-40', style: { height: '7px', marginTop: '8px' } })
+              h('div', { class: 'skeleton skeleton-line w-40' })
             )
           )
         );
@@ -457,14 +457,13 @@ export function renderSkillLib(container, ctx) {
     preview.hidden = !model.selected && !model.fileLoading;
     if (!model.selected) return;
     const skill = model.selected;
-    const card = h('div', { class: 'skill-preview-card' });
-    card.append(
+    preview.append(
       h(
         'div',
         { class: 'skill-preview-head' },
         h(
           'div',
-          { style: { flex: '1', minWidth: '0' } },
+          { class: 'skill-fill' },
           h('h2', { class: 'skill-preview-title', text: skill.title || skill.name }),
           h(
             'div',
@@ -496,18 +495,17 @@ export function renderSkillLib(container, ctx) {
 
     if (model.fileLoading) {
       const loading = h('div', { class: 'session-loading', 'aria-label': '正文加载中' });
-      loading.append(h('div', { class: 'skeleton skeleton-line', style: { width: '55%' } }));
+      loading.append(h('div', { class: 'skeleton skeleton-line' }));
       for (let i = 0; i < 4; i += 1) {
         loading.append(
-          h('div', { class: 'skeleton skeleton-line', style: { width: `${68 + ((i * 9) % 28)}%`, height: '8px' } })
+          h('div', { class: 'skeleton skeleton-line skill-sk-doc', style: { width: `${68 + ((i * 9) % 28)}%` } })
         );
       }
-      card.append(loading);
-      preview.append(card);
+      preview.append(loading);
       return;
     }
     if (model.fileError) {
-      card.append(
+      preview.append(
         h(
           'div',
           { class: 'skill-preview-error', role: 'alert' },
@@ -520,7 +518,6 @@ export function renderSkillLib(container, ctx) {
           })
         )
       );
-      preview.append(card);
       return;
     }
 
@@ -541,18 +538,17 @@ export function renderSkillLib(container, ctx) {
           )
         );
       }
-      card.append(grid);
+      preview.append(grid);
     }
     if (file.relpath) {
-      card.append(h('div', { class: 'caption skill-path', text: `skillkit/${file.relpath}` }));
+      preview.append(h('div', { class: 'caption skill-path', text: `skillkit/${file.relpath}` }));
     }
     const doc = h('div', { class: 'md skill-doc' });
     renderMarkdownInto(doc, file.content || '');
     if (!(file.content || '').trim()) {
       doc.append(h('p', { class: 'hint-text', text: '这份技能正文是空的，可能是后端文件还没写好。' }));
     }
-    card.append(doc);
-    preview.append(card);
+    preview.append(doc);
   }
 
   /* --------------------------------------------------------- 在本书使用 */
@@ -565,18 +561,21 @@ export function renderSkillLib(container, ctx) {
 
     if (!libraryItems.length) {
       body.append(
-        h('div', { class: 'hint-text', text: '作品库还是空的：先建一部作品，才能看到这本书实际注入了哪些技能。' }),
-        h('button', {
-          class: 'btn btn-sm',
-          type: 'button',
-          text: '去作品库',
-          on: {
-            click: () => {
-              modal.close();
-              navigate('/library');
+        h('div', { class: 'empty-state' },
+          h('div', { class: 'empty-icon', html: icon('library', 18) }),
+          h('p', { text: '作品库还是空的：先建一部作品，才能看到这本书实际注入了哪些技能。' }),
+          h('button', {
+            class: 'btn btn-sm',
+            type: 'button',
+            text: '去作品库',
+            on: {
+              click: () => {
+                modal.close();
+                navigate('/library');
+              }
             }
-          }
-        })
+          })
+        )
       );
     } else {
       sel = h('select', { class: 'select', 'aria-label': '选择作品' });
@@ -668,7 +667,7 @@ export function renderSkillLib(container, ctx) {
       }
       if (res.injected_preview) {
         result.append(
-          h('div', { class: 'field', style: { marginTop: '12px' } },
+          h('div', { class: 'field skill-inject-field' },
             h('span', { class: 'field-label', text: '本书实际注入的上下文片段' }),
             h('pre', { class: 'skill-inject', text: String(res.injected_preview) })
           )
@@ -677,9 +676,8 @@ export function renderSkillLib(container, ctx) {
       if (book) {
         result.append(
           h('button', {
-            class: 'btn btn-sm',
+            class: 'btn btn-sm skill-apply-open',
             type: 'button',
-            style: { marginTop: '10px' },
             html: `${icon('book-open', 13)}<span>打开这本书</span>`,
             on: {
               click: () => {
@@ -770,7 +768,7 @@ export function renderSkillLib(container, ctx) {
           h('span', { class: 'field-label', text: '正文文件（.md）' }),
           fileInput
         ),
-        h('div', { class: 'field' }, h('span', { class: 'field-label', text: ' ' }), submitBtn)
+        h('div', { class: 'form-actions' }, submitBtn)
       )
     );
 
@@ -867,7 +865,7 @@ export function renderSkillLib(container, ctx) {
         { class: 'skill-distill-head' },
         h(
           'div',
-          { style: { flex: '1', minWidth: '0' } },
+          { class: 'skill-fill' },
           h('h2', { text: '蒸馏风格' }),
           h('p', {
             class: 'hint-text',
@@ -938,10 +936,12 @@ export function renderSkillLib(container, ctx) {
     }
     if (!model.styles.length) {
       distillList.append(
-        h('div', {
-          class: 'hint-text',
-          text: '还没有蒸馏风格。点右上角「蒸馏新风格」，粘一段目标作者的文本就能生成一张风格卡片。'
-        })
+        h('div', { class: 'empty-state' },
+          h('div', { class: 'empty-icon', html: icon('sparkles', 18) }),
+          h('p', {
+            text: '还没有蒸馏风格。点右上角「蒸馏新风格」，粘一段目标作者的文本就能生成一张风格卡片。'
+          })
+        )
       );
       return;
     }
@@ -1010,8 +1010,8 @@ export function renderSkillLib(container, ctx) {
       h(
         'div',
         { class: 'session-loading' },
-        h('div', { class: 'skeleton skeleton-line', style: { width: '58%' } }),
-        h('div', { class: 'skeleton skeleton-line', style: { width: '82%' } })
+        h('div', { class: 'skeleton skeleton-line' }),
+        h('div', { class: 'skeleton skeleton-line' })
       )
     );
     let card = null;

@@ -96,7 +96,7 @@ export function renderEvolution(container, ctx) {
       body.append(
         h(
           'div',
-          { class: 'lib-empty', role: 'alert' },
+          { class: 'lib-empty empty-state', role: 'alert' },
           h('div', { class: 'empty-icon', html: icon('alert', 18) }),
           h('h3', { text: '技能数据没有加载出来' }),
           h('p', { text: model.error }),
@@ -112,7 +112,7 @@ export function renderEvolution(container, ctx) {
             'div',
             { class: 'evo-card' },
             h('div', { class: 'skeleton skeleton-line', style: { width: `${40 + i * 15}%` } }),
-            h('div', { class: 'skeleton skeleton-line w-40', style: { height: '7px', marginTop: '10px' } })
+            h('div', { class: 'skeleton skeleton-line w-40' })
           )
         );
       }
@@ -131,20 +131,20 @@ export function renderEvolution(container, ctx) {
   function paintProfile() {
     const learn = model.learn;
     const card = h('div', { class: 'evo-card evo-insight' });
-    card.append(h('div', { class: 'evo-card-title' }, h('span', { html: icon('target', 14) }), h('span', { text: '写作画像' })));
+    card.append(h('h2', {}, h('span', { html: icon('target', 14) }), h('span', { text: '写作画像' })));
     if (!learn) {
       card.append(h('div', { class: 'hint-text', text: '还没有足够的写作记录。完成几章后，这里会给出题材偏好与改进重点。' }));
       body.append(card);
       return;
     }
     if (learn.insight) card.append(h('p', { text: learn.insight }));
-    const chips = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' } });
+    const chips = h('div', { class: 'evo-chips' });
     for (const s of learn.strengths || []) chips.append(h('span', { class: 'badge', dataset: { tone: 'success' }, text: `长处 · ${s}` }));
     for (const w of learn.weaknesses || []) chips.append(h('span', { class: 'badge', dataset: { tone: 'warn' }, text: `待改进 · ${w}` }));
     if (learn.focus) chips.append(h('span', { class: 'badge badge-accent', text: `下一步 · ${learn.focus}` }));
     if (chips.children.length) card.append(chips);
     if ((learn.genres || []).length) {
-      const rows = h('div', { class: 'kv-grid', style: { marginTop: '12px' } });
+      const rows = h('div', { class: 'kv-grid' });
       for (const g of learn.genres.slice(0, 4)) {
         rows.append(
           h(
@@ -175,7 +175,7 @@ export function renderEvolution(container, ctx) {
     ];
     for (const [k, v, unit] of cells) {
       grid.append(
-        h('div', { class: 'stat-card' }, h('span', { class: 'kv-k', text: k }), h('span', { class: 'kv-v' }, v, unit ? h('span', { class: 'kv-unit', text: unit }) : null))
+        h('div', { class: 'stat-card' }, h('span', { class: 'stat-k', text: k }), h('span', { class: 'stat-v' }, v, unit ? h('small', { text: unit }) : null))
       );
     }
     body.append(grid);
@@ -189,13 +189,20 @@ export function renderEvolution(container, ctx) {
       h(
         'div',
         { class: 'rp-section-head' },
-        h('h2', { text: '候选技能' }),
+        h('h3', { text: '候选技能' }),
         h('span', { class: 'count', text: `${(model.skills.candidates || []).length} 个` })
       )
     );
     const cands = model.skills.candidates || [];
     if (!cands.length) {
-      sec.append(h('div', { class: 'hint-text', text: '还没有候选。给作品打分或写反馈，积累几条之后就能一键生成候选技能。' }));
+      sec.append(
+        h(
+          'div',
+          { class: 'empty-state' },
+          h('div', { class: 'empty-icon', html: icon('sparkles', 16) }),
+          h('p', { text: '还没有候选。给作品打分或写反馈，积累几条之后就能一键生成候选技能。' })
+        )
+      );
       body.append(sec);
       return;
     }
@@ -289,22 +296,29 @@ export function renderEvolution(container, ctx) {
       h(
         'div',
         { class: 'rp-section-head' },
-        h('h2', { text: '版本历史' }),
+        h('h3', { text: '版本历史' }),
         h('span', { class: 'count', text: `${(model.skills.history || []).length} 条` })
       )
     );
     const history = model.skills.history || [];
     if (!history.length) {
-      sec.append(h('div', { class: 'hint-text', text: '还没有版本记录。第一个转正的技能会出现在这里。' }));
+      sec.append(
+        h(
+          'div',
+          { class: 'empty-state' },
+          h('div', { class: 'empty-icon', html: icon('history', 16) }),
+          h('p', { text: '还没有版本记录。第一个转正的技能会出现在这里。' })
+        )
+      );
       body.append(sec);
       return;
     }
-    const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '1px' } });
+    const list = h('div', { class: 'evo-history' });
     for (const v of history) {
       const row = h(
         'div',
         { class: 'version-row' },
-        h('span', { class: 'dot', style: v.active ? { background: 'var(--success)' } : {} }),
+        h('span', { class: v.active ? 'dot dot-success' : 'dot' }),
         h('span', { class: 'v-name', text: `${v.name} · ${v.version}` }),
         h('span', { class: 'v-time', text: v.at ? relTime(v.at) : '' }),
         v.active
@@ -346,16 +360,23 @@ export function renderEvolution(container, ctx) {
       h(
         'div',
         { class: 'rp-section-head' },
-        h('h2', { text: '最近反馈' }),
+        h('h3', { text: '最近反馈' }),
         h('span', { class: 'count', text: `${model.feedbackItems.length} 条` })
       )
     );
     if (!model.feedbackItems.length) {
-      sec.append(h('div', { class: 'hint-text', text: '还没有反馈样本。在作品里对回复打分或添加标签，就会出现在这里。' }));
+      sec.append(
+        h(
+          'div',
+          { class: 'empty-state' },
+          h('div', { class: 'empty-icon', html: icon('message', 16) }),
+          h('p', { text: '还没有反馈样本。在作品里对回复打分或添加标签，就会出现在这里。' })
+        )
+      );
       body.append(sec);
       return;
     }
-    const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } });
+    const list = h('div', { class: 'evo-list' });
     for (const fb of model.feedbackItems.slice(0, 12)) {
       const tags = Array.isArray(fb.tags) ? fb.tags : fb.tag ? [fb.tag] : [];
       const text = fb.comment || fb.note || fb.text || '';
@@ -374,9 +395,9 @@ export function renderEvolution(container, ctx) {
         { class: 'feedback-row' },
         h(
           'div',
-          { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' } },
+          { class: 'evo-meta-row' },
           ratingBadge,
-          tags.map((t) => h('span', { class: 'tag-chip', text: t })),
+          tags.map((t) => h('span', { class: 'badge', text: t })),
           at ? h('span', { class: 'hint-text', text: relTime(at) }) : null
         ),
         text ? h('div', { class: 'hint-text', text: String(text).slice(0, 120) }) : null

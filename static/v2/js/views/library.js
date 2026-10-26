@@ -115,7 +115,7 @@ export function renderLibrary(container, ctx) {
   const statsRow = h('div', { class: 'lib-stats' });
   pad.append(statsRow);
 
-  const filterRow = h('div', { class: 'lib-toolbar', style: { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', margin: '4px 0 16px' } });
+  const filterRow = h('div', { class: 'lib-toolbar' });
   pad.append(filterRow);
 
   const batchBar = h('div', { class: 'lib-batch', hidden: true });
@@ -229,13 +229,8 @@ export function renderLibrary(container, ctx) {
         h(
           'div',
           { class: 'stat-card' },
-          h('span', { class: 'kv-k', text: k }),
-          h(
-            'span',
-            { class: 'kv-v' },
-            `${v}`,
-            unit ? h('span', { class: 'kv-unit', text: unit }) : null
-          )
+          h('span', { class: 'stat-k', text: k }),
+          h('span', { class: 'stat-v' }, `${v}`, unit ? h('small', { text: unit }) : null)
         )
       );
     }
@@ -243,17 +238,18 @@ export function renderLibrary(container, ctx) {
 
   function paintFilters() {
     filterRow.textContent = '';
-    const search = h('input', {
-      class: 'input lib-search',
+    const searchInput = h('input', {
+      class: 'input',
       type: 'search',
       placeholder: '搜索书名或题材…',
       value: model.q,
       'aria-label': '搜索作品'
     });
-    search.addEventListener('input', () => {
-      model.q = search.value.trim();
+    searchInput.addEventListener('input', () => {
+      model.q = searchInput.value.trim();
       runSearch();
     });
+    const search = h('div', { class: 'lib-search', html: icon('search', 14) }, searchInput);
 
     const mediumSel = h('select', { class: 'select', 'aria-label': '文体筛选' });
     mediumSel.append(h('option', { value: '', text: '全部文体' }));
@@ -331,7 +327,7 @@ export function renderLibrary(container, ctx) {
       })
     );
 
-    filterRow.append(search, mediumSel, genreSel, statusSel, sortSel, orderBtn, h('span', { style: { flex: '1' } }), seg);
+    filterRow.append(search, mediumSel, genreSel, statusSel, sortSel, orderBtn, h('span', { class: 'lib-spacer' }), seg);
   }
 
   function setMode(mode) {
@@ -564,7 +560,7 @@ export function renderLibrary(container, ctx) {
           }
         }
       }),
-      h('span', { style: { flex: '1' } })
+      h('span', { class: 'lib-spacer' })
     );
     for (const id of batchOpIds()) {
       const op = BATCH_OPS[id];
@@ -599,7 +595,7 @@ export function renderLibrary(container, ctx) {
     const body = h('div', {}, input);
     const footer = h(
       'div',
-      { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' } },
+      { class: 'lib-dialog-foot' },
       h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
       h('button', {
         class: 'btn btn-primary',
@@ -655,14 +651,14 @@ export function renderLibrary(container, ctx) {
         { class: 'confirm-body' },
         h('div', { html: `确定要彻底删除 <strong>《${escapeText(expected)}》</strong> 吗？` }),
         h('div', { class: 'warn-note', text: '删除后作品目录与全部章节都会被移除，无法恢复。' }),
-        h('div', { style: { marginTop: '12px' } }, h('span', { class: 'field-label', text: '输入完整作品名以确认：' })),
-        h('div', { style: { margin: '4px 0 8px', fontWeight: '500', color: 'var(--ink-primary)' }, text: expected }),
+        h('div', { class: 'lib-confirm-label' }, h('span', { class: 'field-label', text: '输入完整作品名以确认：' })),
+        h('div', { class: 'lib-confirm-name', text: expected }),
         input,
         error
       ),
       footer: h(
         'div',
-        { style: { display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end' } },
+        { class: 'lib-dialog-foot' },
         h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
         confirmBtn
       ),
@@ -725,12 +721,12 @@ export function renderLibrary(container, ctx) {
           h(
             'div',
             { class: model.mode === 'grid' ? 'lib-card' : 'lib-row' },
-            h('div', { class: 'skeleton', style: { width: '44px', height: '58px', borderRadius: '8px' } }),
+            h('div', { class: 'skeleton lib-skel-cover' }),
             h(
               'div',
-              { style: { flex: '1' } },
+              { class: 'lib-skel-body' },
               h('div', { class: 'skeleton skeleton-line', style: { width: `${45 + ((i * 13) % 35)}%` } }),
-              h('div', { class: 'skeleton skeleton-line w-40', style: { height: '7px', marginTop: '8px' } })
+              h('div', { class: 'skeleton skeleton-line w-40' })
             )
           )
         );
@@ -742,7 +738,7 @@ export function renderLibrary(container, ctx) {
       listWrap.append(
         h(
           'div',
-          { class: 'lib-empty', role: 'alert' },
+          { class: 'lib-empty empty-state', role: 'alert' },
           h('div', { class: 'empty-icon', html: icon('alert', 18) }),
           h('h3', { text: '作品库没有加载出来' }),
           h('p', { text: model.error }),
@@ -756,7 +752,7 @@ export function renderLibrary(container, ctx) {
       listWrap.append(
         h(
           'div',
-          { class: 'lib-empty' },
+          { class: 'lib-empty empty-state' },
           h('div', { class: 'empty-icon', html: icon(model.view === 'trash' ? 'trash' : 'library', 18) }),
           h('h3', { text: copy.title(model.q) }),
           h('p', { text: copy.hint(model.q) }),
@@ -816,45 +812,49 @@ export function renderLibrary(container, ctx) {
     card.append(
       h(
         'div',
-        { class: 'lib-cover' },
-        h('span', { text: initials(item.name) }),
-        item.favorite
-          ? h('span', { class: 'lib-star', html: icon('star', 13), title: '已收藏' })
-          : null
-      ),
-      h(
-        'div',
-        { class: 'lib-main' },
+        { class: 'lib-card-top' },
         h(
           'div',
-          { class: 'lib-name-line' },
-          h('span', { class: 'lib-name', text: item.name }),
-          mediumChip(item.medium),
-          qualityChip(item),
-          selectBox(item)
+          { class: 'lib-cover' },
+          h('span', { text: initials(item.name) }),
+          item.favorite
+            ? h('span', { class: 'lib-star', html: icon('star', 13), title: '已收藏' })
+            : null
         ),
         h(
           'div',
-          { class: 'lib-meta' },
-          h('span', { text: item.genre || '未分类' }),
-          h('span', { class: 'sep' }),
-          h('span', { class: `dot dot-${meta.tone}` }),
-          h('span', { text: meta.label }),
-          h('span', { class: 'sep' }),
-          h('span', { text: `${item.done}/${item.total} ${unit}` })
-        ),
-        h(
-          'div',
-          { class: 'lib-progress' },
-          h('span', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` }),
-          h('span', { class: 'pct', text: `${pct}%` })
-        ),
-        h(
-          'div',
-          { class: 'lib-updated' },
-          h('span', { text: fmtWords(item.total_words) }),
-          h('span', { class: 'sep' }),
-          h('span', { text: fmtDate(item.updated_at) })
+          { class: 'lib-main' },
+          h(
+            'div',
+            { class: 'lib-name-line' },
+            h('span', { class: 'lib-name', text: item.name }),
+            mediumChip(item.medium),
+            qualityChip(item),
+            selectBox(item)
+          ),
+          h(
+            'div',
+            { class: 'lib-meta' },
+            h('span', { text: item.genre || '未分类' }),
+            h('span', { class: 'sep' }),
+            h('span', { class: `dot dot-${meta.tone}` }),
+            h('span', { text: meta.label }),
+            h('span', { class: 'sep' }),
+            h('span', { text: `${item.done}/${item.total} ${unit}` })
+          ),
+          h(
+            'div',
+            { class: 'lib-progress' },
+            h('span', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` }),
+            h('span', { class: 'pct', text: `${pct}%` })
+          ),
+          h(
+            'div',
+            { class: 'lib-updated' },
+            h('span', { text: fmtWords(item.total_words) }),
+            h('span', { class: 'sep' }),
+            h('span', { text: fmtDate(item.updated_at) })
+          )
         )
       ),
       h(

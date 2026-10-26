@@ -3,7 +3,7 @@
 # 借鉴"偏好学习/个性化推荐"思路（累计统计 + 平滑），无外部依赖。
 """数据存 data/learn_profiles.json。记录维度：题材分布、各题材下最常用的金手指/节奏/语言、
 平均成书质量（P5 质量分）。"""
-import json, os
+import json, os, datetime
 from .safeio import atomic_write_json
 
 _DATA = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -55,6 +55,26 @@ def record_quality(genre, score):
 
 def _top(counter, n=3):
     return [k for k, _ in sorted((counter or {}).items(), key=lambda x: -x[1])[:n]]
+
+
+def note_user_directive(key, text):
+    """v2.3.0：把一条读者即时改稿指令记入学习画像（用户改稿口味样本）。
+
+    只累积到 data/learn_profiles.json 的 user_directives（保留最近 50 条），供技能进化界面展示。
+    绝不做长文本学习/统计推断，也不阻断任何调用方：全程 try/except，异常返回 {}。
+    """
+    try:
+        text = (text or "").strip()
+        if not text:
+            return profile()
+        d = _load()
+        item = {"key": str(key or ""), "text": text[:120],
+                "at": datetime.datetime.now().isoformat(timespec="seconds")}
+        d["user_directives"] = (d.get("user_directives") or [])[-49:] + [item]
+        _save(d)
+        return profile()
+    except Exception:
+        return {}
 
 
 def record_feedback_summary(summary):
@@ -149,6 +169,7 @@ def profile():
     genres.sort(key=lambda x: -x["count"])
     agg = _feedback_agg()
     strengths, weaknesses, focus = _feedback_hints(agg, genres)
+    directives = d.get("user_directives") or []
     return {
         "total": total, "avg_quality": avg_q, "genres": genres,
         "insight": ("你已写 %d 本" % total) + (
@@ -160,6 +181,9 @@ def profile():
         "weaknesses": weaknesses,
         "focus": focus,
         "feedback_total": int(agg.get("total") or 0) if isinstance(agg, dict) else 0,
+        # v2.3.0：用户即时改稿指令样本（技能进化界面看改稿口味）
+        "recent_directives": [x.get("text") for x in directives[-10:] if isinstance(x, dict) and x.get("text")],
+        "directives_total": len(directives),
     }
 
 

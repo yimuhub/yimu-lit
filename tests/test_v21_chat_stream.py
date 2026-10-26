@@ -81,8 +81,8 @@ def test_heartbeat_while_waiting(patch_chat, monkeypatch):
     monkeypatch.setattr(providers, "usable", lambda: True)
     seen = []
 
-    def fake_chat(sid, message):
-        seen.append((sid, message))
+    def fake_chat(sid, message, key=None):
+        seen.append((sid, message, key))
         time.sleep(2.4)          # 跨过一整个心跳周期，但整轮仍远低于 15s 预算
         return "心跳测试正文"
 
@@ -104,7 +104,7 @@ def test_heartbeat_while_waiting(patch_chat, monkeypatch):
     assert done["text"] == "心跳测试正文"
     assert done["session_id"] == "s-hb" and "elapsed" in done
     assert "".join(d["text"] for e, d in frames if e == "delta") == "心跳测试正文"
-    assert seen == [("s-hb", "写个开头")]
+    assert seen == [("s-hb", "写个开头", None)]
 
 
 def test_no_provider_returns_friendly_fallback(patch_chat, monkeypatch):
@@ -130,7 +130,7 @@ def test_no_provider_returns_friendly_fallback(patch_chat, monkeypatch):
 def test_provider_present_error_is_not_masked(patch_chat, monkeypatch):
     monkeypatch.setattr(providers, "usable", lambda: True)
 
-    def boom(sid, message):
+    def boom(sid, message, key=None):
         raise RuntimeError("供应商 401 鉴权失败")
 
     patch_chat(boom)

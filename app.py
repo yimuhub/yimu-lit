@@ -77,13 +77,22 @@ import sys
 def _trace(tag, **kw):
     print(f"[TRACE] {tag} {kw}", file=sys.stderr, flush=True)
 
-def chat(session_id, message):
+def chat(session_id, message, key=None):
     s = SESSIONS.get(session_id) or {"id": session_id, "state": "idle", "cfg": None,
                                      "project": None, "titles": None, "busy": False}
     SESSIONS[session_id] = s
     msg = message.strip()
     _trace("chat-in", sid=session_id, state=s["state"], msg=msg[:40], busy=s.get("busy"))
     reply = []
+
+    # ---- v2.3.0 修复「对话误起新书」：入口处绑定当前打开的作品。----
+    # 服务重启后 SESSIONS 清空、state=idle，此前任何消息（「继续」「进度」）都会被
+    # 当成新主题走 extract_config → 起一本全新小说。v2 每条消息带 key：
+    # idle + key 有效 → 直接绑定本书（attached），绝不进新主题分支；
+    # options/planning/title 等新建流程中途 → 保持原流程不动。
+    if key and s.get("state") == "idle" and _get_project(str(key)):
+        s["project"] = str(key)
+        s["state"] = "attached"
 
     # ---- 文体自动分流：用户直接写诗词/散文/剧本 指令时，不走小说流水线 ----
     if s["state"] == "idle":
@@ -117,8 +126,16 @@ def chat(session_id, message):
                 return "正在疯狂创作中（阶段3 无需确认，技能规定一口气写完）。\n" \
                        f"当前进度 {st['done']}/{st['total']} 章，说「进度」查看，或发新主题开新作品。"
         # 已完成 → 允许新主题
+    # ---- v2.3.0：会话已绑定本书（attached）：一切消息按「这本书」路由，绝不误起新书 ----
+    if s["state"] == "attached" and s.get("project"):
+        proj = _get_project(s["project"])
+        if proj:
+            return _chat_attached(s, proj, msg)
+        s["state"] = "idle"   # 目录已被删除 → 解绑，回落旧行为
+        s["project"] = None
     # ---- 新作品触发（仅 idle；options 状态下重复丢主题 → 重显菜单，不重复提取）----
-    if s["state"] == "idle" or re.search(r"^(写|帮我写|新|再|来)(一|个)?(部|本)?|新作品|新的小说|重新", msg):
+    # v2.3.0 保护：idle 但已有 project 的会话不得进新主题提取（attached 已在上面截获）。
+    if (s["state"] == "idle" and not s.get("project")) or re.search(r"^(写|帮我写|新|再|来)(一|个)?(部|本)?|新作品|新的小说|重新", msg):
         if s["state"] == "options" and not re.search(r"^(写|帮我写|新|再|来)|新作品|新的小说|重新", msg):
             pass
         elif s["state"] == "options":
@@ -191,7 +208,7 @@ def chat(session_id, message):
             # 当作调整意见（忙锁防重复投递）
             s["busy"] = True
             try:
-                return chat(session_id, "3 " + msg)
+                return chat(session_id, "3 " + msg, key)
             finally:
                 s["busy"] = False
         return "请回复 1 / 2 / 3 / 4，或直接用文字告诉我要调整什么。"
@@ -259,6 +276,268 @@ def _rename_project(proj, new_name):
         plan["novelName"] = new_name
         proj.save_plan(plan)
 
+# ---------- v2.3.0：attached 会话（对话绑定本书）与标题体系 ----------
+
+# attached 会话里判断「想开新书」：必须带宾语（部/本/作品/小说），裸「写」「重新」不算——
+# 「第12章重新写一下」「写得更紧凑」是改本书，不是开新书。
+_NEW_BOOK_PAT = (r"新作品|新的小说|新开一|开.{0,2}新书|起.{0,2}新书|再写一[部本]|来一[部本]|"
+                 r"写一[部本]新|写[部本]新|重新写一[部本]|重新开一|换一[部本]新|另起一[部本]")
+_CN_DIG = {"〇": 0, "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+           "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+def _cn_to_int(s):
+    """支持 一~九十九 / 数字字符串，够对话解析章号用。"""
+    if s.isdigit():
+        return int(s)
+    if "十" in s:
+        a, b = s.split("十", 1)
+        t = _CN_DIG.get(a, 1) if a else 1
+        u = _CN_DIG.get(b, 0) if b else 0
+        if a and a not in _CN_DIG or (b and b not in _CN_DIG):
+            return None
+        return t * 10 + u
+    v = 0
+    for ch in s:
+        if ch not in _CN_DIG:
+            return None
+        v = v * 10 + _CN_DIG[ch]
+    return v or None
+
+def _parse_chapter_no(text):
+    """从消息里解析「第N章」章号；没有返回 None。"""
+    m = re.search(r"第\s*(\d{1,4})\s*章", text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"第\s*([〇零一二两三四五六七八九十]{1,4})\s*章", text)
+    if m:
+        return _cn_to_int(m.group(1))
+    return None
+
+def _next_pending_chapter(plan):
+    """plan 里下一个未完成章的章号（queue 回复文案用），取不到返回 None。"""
+    for c in plan.get("chapters") or []:
+        if str(c.get("status")) != "completed":
+            no = c.get("chapterNumber")
+            if isinstance(no, int) and no > 0:
+                return no
+    return None
+
+def _clean_book_title(title):
+    """书名清洗：与 _pick_title / create_project 同一套字符规则。"""
+    return re.sub(r'[\\/:*?"<>|\s]+', "", str(title or ""))
+
+def _apply_title(key, title):
+    """改名核心：清洗书名 → 目录改名（保留时间戳前缀）→ 02/02c 写回 → 索引与会话引用换新 key。
+
+    返回 {ok, key, name}；目录不存在/重名/非法名一律 {ok: False, error} 不崩。"""
+    title = _clean_book_title(title)
+    if not title:
+        return {"ok": False, "error": "书名不能为空"}
+    proj = _get_project(key)
+    if not proj:
+        return {"ok": False, "error": "项目不存在"}
+    if not os.path.isdir(proj.path):
+        return {"ok": False, "error": "作品目录不存在"}
+    base = os.path.basename(proj.path)
+    _p = base.split("-", 2)
+    prefix = "-".join(_p[:2]) + "-" if len(_p) >= 2 else base + "-"
+    try:
+        target = safe_join(writer.PROJECTS_DIR, prefix + title, label="目录名")
+    except ValueError:
+        return {"ok": False, "error": "书名不合法"}
+    if target != proj.path and os.path.exists(target):
+        return {"ok": False, "error": "已有同名作品，请先处理冲突"}
+    if target != proj.path:
+        os.rename(proj.path, target)
+    new_key = os.path.basename(target)
+    proj.path = target
+    proj.name = title
+    # 02-写作计划.json：novelName + projectPath
+    plan = proj.plan() or {}
+    plan["novelName"] = title
+    plan["projectPath"] = target
+    proj.save_plan(plan)
+    # 02c-总规划.json：仅当已有 novelName/name 字段时同步
+    cplan = os.path.join(target, "02c-总规划.json")
+    if os.path.exists(cplan):
+        try:
+            d = json.load(open(cplan, encoding="utf-8"))
+            if isinstance(d, dict):
+                if "novelName" in d:
+                    d["novelName"] = title
+                if "name" in d:
+                    d["name"] = title
+                atomic_write_json(cplan, d)
+        except Exception:
+            pass
+    # 内存索引 + 所有引用旧 key 的会话
+    PROJECT_INDEX.pop(key, None)
+    PROJECT_INDEX[new_key] = proj
+    for sess in SESSIONS.values():
+        if sess.get("project") == key:
+            sess["project"] = new_key
+    return {"ok": True, "key": new_key, "name": title}
+
+def _read_title_items(key):
+    """读 05-标题候选.json 的 items（无文件返回 []）。"""
+    try:
+        pdir = writer._project_dir(key)
+    except ValueError:
+        return []
+    fp = os.path.join(pdir, "05-标题候选.json")
+    if not os.path.exists(fp):
+        return []
+    try:
+        return (json.load(open(fp, encoding="utf-8")) or {}).get("items") or []
+    except Exception:
+        return []
+
+def _generate_title_candidates(key, n=5):
+    """基于本书生成候选标题并落盘 05-标题候选.json（与已有条目去重、封顶 20）。
+
+    素材：plan 的 config/meta（题材/基调等）+ 大纲尾部 + plan_digest 进度摘要；
+    出词复用 workflow.gen_titles(cfg, n=n)。失败返回 []。"""
+    proj = _get_project(key)
+    if not proj:
+        return []
+    plan = proj.plan() or {}
+    cfg = dict(plan.get("config") or {})
+    meta = plan.get("meta") or {}
+    for k in ("genre", "tone", "theme", "idea", "conflict", "protagonist"):
+        if not cfg.get(k) and meta.get(k):
+            cfg[k] = meta[k]
+    if not cfg.get("idea"):
+        # 大纲尾部若干章摘要作创意种子（大纲文件名兼容 01-/02- 两代）
+        for fn in ("02-大纲.md", "01-大纲.md"):
+            p = os.path.join(proj.path, fn)
+            if os.path.exists(p):
+                try:
+                    tail = open(p, encoding="utf-8").read()[-900:].strip()
+                except Exception:
+                    tail = ""
+                if tail:
+                    cfg["idea"] = tail[-160:]
+                break
+    try:
+        from bot import longform as _lf
+        d = _lf.plan_digest(proj) or {}
+        if d.get("summary"):
+            cfg.setdefault("special", str(d["summary"]))
+    except Exception:
+        pass
+    try:
+        titles = workflow.gen_titles(cfg, n=n)
+    except Exception:
+        return []
+    items = [t for t in (titles or []) if isinstance(t, dict) and t.get("title")]
+    if not items:
+        return []
+    at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    for x in items:
+        x.setdefault("at", at)
+    fp = os.path.join(proj.path, "05-标题候选.json")
+    old = []
+    if os.path.exists(fp):
+        try:
+            old = (json.load(open(fp, encoding="utf-8")) or {}).get("items") or []
+        except Exception:
+            old = []
+    merged, seen = [], set()
+    for x in items + [o for o in old if isinstance(o, dict) and o.get("title")]:
+        t = str(x.get("title"))
+        if t in seen:
+            continue
+        seen.add(t)
+        merged.append({"title": t, "technique": x.get("technique", ""),
+                       "why": x.get("why", ""), "at": x.get("at") or at})
+    merged = merged[:20]
+    atomic_write_json(fp, {"updated_at": at, "items": merged})
+    return items
+
+def _chat_apply_title(s, key, title):
+    res = _apply_title(key, title)
+    if not res.get("ok"):
+        return f"⚠️ 改名失败：{res.get('error') or '未知错误'}"
+    s["project"] = res["key"]
+    s["title_candidates"] = None
+    return f"✅ 《{res['name']}》已改好。"
+
+def _chat_title_cmd(s, key, msg):
+    """chat 内标题命令：生成候选 / 采用N / 改名为Y（与 /api/title/* 同一套底层函数）。"""
+    if (re.search(r"几个|候选|再想想|重新起|想想|起几个|来几个", msg)
+            or re.fullmatch(r"(标题|书名|改标题|改书名|换标题|换书名|重命名|改名|换名)", msg)):
+        items = _generate_title_candidates(key, n=5)
+        if not items:
+            return "⚠️ 标题候选生成失败（模型不可用或写作计划缺失），稍后再试。"
+        s["title_candidates"] = items
+        lines = [f"【{i + 1}】《{x.get('title', '')}》—— {x.get('technique', '')}，{x.get('why', '')}"
+                 for i, x in enumerate(items[:5])]
+        return ("📚 为本书拟了几组标题候选：\n" + "\n".join(lines)
+                + "\n\n回复数字采用，或直接说「改名为Y」。")
+    m = re.search(r"采用\s*(\d+)", msg)
+    if m:
+        i = int(m.group(1)) - 1
+        items = s.get("title_candidates") or _read_title_items(key)
+        if 0 <= i < len(items) and items[i].get("title"):
+            return _chat_apply_title(s, key, items[i]["title"])
+        return "⚠️ 没有这个编号的候选，先说「给我几个书名」生成一批。"
+    m = re.search(r"(?:改名为|改名成|改名叫|改叫|换名为|换名成|换名叫|重命名为|重命名成|书名叫|小说名叫)\s*"
+                  r"[《「\"']?([^》」\"'\s，。]+)", msg)
+    if m and m.group(1):
+        return _chat_apply_title(s, key, m.group(1))
+    return "关于标题：说「给我几个书名」生成候选；「采用N」用第 N 个；或直接说「改名为Y」。"
+
+def _chat_attached(s, proj, msg):
+    """attached 分支路由：标题 > 继续 > 进度/状态 > 第N章局部重写 > 新建意图引导 > 即时指令。
+    章号重写必须排在新建意图之前：「第12章重新写一下」是改本书，不是开新书。"""
+    key = s["project"]
+    plan = proj.plan() or {}
+    st = proj.status()
+    name = st.get("name") or plan.get("novelName") or os.path.basename(proj.path)
+    # 只信线程级 running（Project.running）。plan 的 state=in_progress 会跨重启残留，
+    # 拿它当「活着」会让「继续」误报正在创作而不真正续写。
+    running = bool(st.get("running"))
+    # 候选给出后的数字回复 = 采用（认「2」「采用2」「选2」「#2」）
+    m = re.fullmatch(r"(?:采用|选|用|#)?\s*(\d{1,2})\s*[#号]?", msg) if s.get("title_candidates") else None
+    if m:
+        return _chat_title_cmd(s, key, "采用" + m.group(1))
+    # 1) 标题命令
+    if re.search(r"标题|书名|改名|换名|重命名", msg):
+        return _chat_title_cmd(s, key, msg)
+    # 2) 继续创作
+    if re.search(r"继续|续写|接着写|写下去|下一章", msg):
+        if running:
+            return (f"📖 《{name}》正在创作中：第 {st['done']}/{st['total']} 章，"
+                    f"说「进度」随时可查。")
+        if writer.resume_book(key):
+            st2 = proj.status()
+            return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）…"
+        return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
+    # 3) 进度/状态（只认明确问询，短修改指令不得被进度回复吞掉）
+    if re.search(r"进度|状态|写到哪|怎么样了|status", msg):
+        mark = ("正在创作中" if st.get("running") else
+                "已暂停" if st.get("paused") else
+                "已完结" if st.get("state") == "completed" else "在库待写")
+        return (f"📖 《{name}》{mark}：第 {st['done']}/{st['total']} 章，已写 {st['words']} 字。"
+                f"可随时问「进度」，或直接下修改指令。")
+    # 4) 指明章号 → 既有局部重写通道（与 /api/rewrite 同一引擎与 _REWRITING 表）
+    no = _parse_chapter_no(msg)
+    if no:
+        if _REWRITING.get(key, {}).get("running"):
+            return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
+        if _start_rewrite(key, chapters=[no], dimensions=[msg]):
+            return f"已安排第{no}章局部重写，完成后状态 pane 可见。"
+        return "⚠️ 重写任务启动失败，请稍后再试。"
+    # 5) 新建意图：不执行，只引导（版权确认仍只在新向导里）
+    if re.search(_NEW_BOOK_PAT, msg):
+        return (f"当前对话已绑定《{name}》。要改这本书直接说（例如「第12章节奏再紧一点」"
+                f"「给女主加一场反击」）；要开新书请用左侧『新建作品』。")
+    # 6) 其余消息 → 读者即时指令，并入创作
+    if not writer.queue_msg(key, msg):
+        return f"⚠️ 这条要求没能并入《{name}》的创作（写作计划缺失？），可在『作品』里检查该书。"
+    nxt = _next_pending_chapter(plan)
+    return f"已把这条要求并入创作：第{nxt}章起生效。" if nxt else "已把这条要求并入创作。"
+
 # ---------- 路由 ----------
 
 @app.get("/")
@@ -292,7 +571,7 @@ def api_chat(payload: dict):
         s["state"] = "options"
         r = _do_planning(s)
         return {"session_id": sid, "reply": r, "project": s.get("project")}
-    reply = chat(sid, message)
+    reply = chat(sid, message, str(payload.get("key") or "") or None)
     return {"session_id": sid, "reply": reply, "project": SESSIONS[sid].get("project")}
 
 # ---------- 模型供应商管理（多供应商绑定 / 按任务选模型） ----------
@@ -746,6 +1025,23 @@ def api_sample():
 # ---------- v0.2：作品库管理 + 审查后重写 ----------
 _REWRITING = {}  # key -> {"running":bool,"result":dict}
 
+def _start_rewrite(key, chapters=None, dimensions=None, max_rounds=6):
+    """v2.3.0：局部重写统一入口（/api/rewrite 端点与 attached 对话共用，不重复造轮子）。
+    已在跑则返回 False；否则后台线程跑 writer.run_guided_rewrite，状态进 _REWRITING 表。"""
+    if _REWRITING.get(key, {}).get("running"):
+        return False
+    _REWRITING[key] = {"running": True, "result": None}
+
+    def _job():
+        try:
+            res = writer.run_guided_rewrite(key, chapters=chapters,
+                                            dimensions=dimensions, max_rounds=max_rounds)
+            _REWRITING[key] = {"running": False, "result": res}
+        except Exception as e:
+            _REWRITING[key] = {"running": False, "result": {"error": str(e)}}
+    threading.Thread(target=_job, daemon=True).start()
+    return True
+
 # ---------- v0.3.4：风格蒸馏引擎（粘贴文本 / 网址抓取 → 风格库）----------
 @app.get("/api/styles")
 def api_styles():
@@ -951,16 +1247,8 @@ def api_rewrite(payload: dict):
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     if _REWRITING.get(key, {}).get("running"):
         return {"ok": True, "running": True, "msg": "重写进行中，请稍候…"}
-    _REWRITING[key] = {"running": True, "result": None}
-    def _job():
-        try:
-            res = writer.run_guided_rewrite(key, chapters=payload.get("chapters"),
-                                             dimensions=payload.get("dimensions"),
-                                             max_rounds=int(payload.get("max_rounds") or 6))
-            _REWRITING[key] = {"running": False, "result": res}
-        except Exception as e:
-            _REWRITING[key] = {"running": False, "result": {"error": str(e)}}
-    threading.Thread(target=_job, daemon=True).start()
+    _start_rewrite(key, chapters=payload.get("chapters"), dimensions=payload.get("dimensions"),
+                   max_rounds=int(payload.get("max_rounds") or 6))
     return {"ok": True, "running": True, "msg": "🔁 审查后定向重写中…（约 2-5 分钟，把要求书逐条带进目标章）"}
 
 @app.get("/api/rewrite-progress")
@@ -978,6 +1266,56 @@ def api_rewrite_cancel(payload: dict):
     writer.cancel_rewrite(key)
     _REWRITING[key] = {"running": False, "result": {"cancelled": True}}
     return {"ok": True, "msg": "已请求取消（下一检查点停，已写章保留）"}
+
+# ---------- v2.3.0：标题体系 + 一致性体检 ----------
+
+@app.post("/api/title/set")
+def api_title_set(payload: dict):
+    key = str(payload.get("key") or "")
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    res = _apply_title(key, str(payload.get("title") or ""))
+    if not res.get("ok"):
+        return JSONResponse({"error": res.get("error") or "改名失败"}, status_code=400)
+    return res
+
+@app.post("/api/title/generate")
+def api_title_generate(payload: dict):
+    key = str(payload.get("key") or "")
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    try:
+        n = min(max(int(payload.get("n") or 5), 1), 10)
+    except (TypeError, ValueError):
+        n = 5
+    items = _generate_title_candidates(key, n=n)
+    return {"ok": bool(items), "items": items}
+
+@app.get("/api/title/candidates")
+def api_title_candidates(key: str):
+    if not _get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"items": _read_title_items(key)}
+
+@app.post("/api/audit")
+def api_audit(payload: dict):
+    """确定性一致性体检：arc/volume/book 三档，结果落 22-规划体检.json 供状态 pane 复读。"""
+    key = str(payload.get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    scope = str(payload.get("scope") or "book")
+    from bot import longform as _lf
+    if scope.startswith("arc:"):
+        issues = _lf.audit_arc(proj, scope.split(":", 1)[1])
+    elif scope.startswith("volume:"):
+        issues = _lf.audit_volume(proj, scope.split(":", 1)[1])
+    else:
+        scope, issues = "book", _lf.audit_book(proj)
+    at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    atomic_write_json(os.path.join(proj.path, "22-规划体检.json"),
+                      {"at": at, "scope": scope, "issues": list(issues or [])[:50]})
+    return {"ok": True, "at": at, "scope": scope, "issues": list(issues or [])[:50]}
 
 @app.get("/api/book-live")
 def api_book_live(key: str):
@@ -1087,7 +1425,17 @@ def api_rewrite_section(payload: dict):
     if not target:
         return JSONResponse({"error": "未定位到该段（试试给更多定位文字或段落序号）"}, status_code=404)
     cfg = plan.get("config") or {}
-    new = workflow.guided_rewrite(target, instr, "全书约束：保持人物/设定一致，只改这一段", cfg)
+    # v2.3.0：段级改写也吃连续性上下文（人物/世界观/设定/线索），改一段不许跑偏
+    cons = "全书约束：保持人物/设定一致，只改这一段"
+    try:
+        ctx = writer._build_ctx(proj, ch)
+        cons += (f"\n人物：{(ctx.get('characters_text') or '')[:1200]}"
+                 f"\n世界观/故事圣经：{(ctx.get('story_bible') or '')[:800]}"
+                 f"\n设定词典（本章相关）：{(ctx.get('lore_relevant') or '')[:800]}"
+                 f"\n线索账本（须兑现/不得乱揭）：{(ctx.get('clue_ledger') or '')[:600]}")
+    except Exception:
+        pass
+    new = workflow.guided_rewrite(target, instr, cons, cfg)
     new = (new or "").strip()
     if new:
         versions.snapshot(proj.path, ch_no, body, label="局部改写前")

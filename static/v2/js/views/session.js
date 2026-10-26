@@ -10,6 +10,7 @@ import {
   removeMessage
 } from '../core/state.js';
 import { api, errorText, ApiError } from '../core/api.js';
+import { renderMarkdownInto } from '../core/markdown.js';
 import { toast, confirmDialog } from '../core/ui.js';
 import { createComposer } from '../components/composer.js';
 import { createChatView } from '../components/chat.js';
@@ -77,7 +78,11 @@ export function renderSession(container, ctx = {}) {
   let turn = null;
   let planSig = '';
   let bannerSig = '';
+  let bindSig = '';
+  const bindRow = h('div', { class: 'rp-bind-row' });
   let queueTimer = 0;
+  // 追章（v2.2.2）：本轮对话里已开气泡的章节 no → {id, text, words, done, synced}
+  let chapterBubbles = new Map();
 
   const composer = createComposer({
     variant: 'docked',
@@ -117,8 +122,35 @@ export function renderSession(container, ctx = {}) {
     }
   });
 
-  const dock = h('div', { class: 'composer-dock' }, composer.el);
+  const dock = h('div', { class: 'composer-dock' }, bindRow, composer.el);
   el.append(planSlot, bannerSlot, chat.el, dock);
+
+  // v2.3 对话绑定提示：小说且当前打开了作品时，composer 上方挂一枚「已绑定《X》」chip。
+  // 纯展示，判断口径与 buildStreamPayload 的 withWork 一致；不碰追章流逻辑。
+  function paintBind() {
+    const state = store.get();
+    if (state.currentKey !== mountKey) return;
+    const medium = state.workMedium || state.ui.medium || 'novel';
+    const item = state.library.items.find((i) => i.key === state.currentKey);
+    const name = (state.work && state.work.name) || (item && item.name) || '';
+    const show = Boolean(state.currentKey) && medium === 'novel' && Boolean(name);
+    const sig = show ? name : '';
+    if (sig === bindSig) return;
+    bindSig = sig;
+    bindRow.textContent = '';
+    if (!show) return;
+    bindRow.append(
+      h(
+        'span',
+        {
+          class: 'chip chip-accent rp-bind-chip',
+          title: '本轮对话会带着这本书的记忆与规划'
+        },
+        h('span', { html: icon('book-open', 12) }),
+        h('span', { text: `已绑定《${name}》` })
+      )
+    );
+  }
 
   function paintPlan() {
     const state = store.get();
@@ -279,15 +311,18 @@ export function renderSession(container, ctx = {}) {
     const state = store.get();
     const attachments = currentAttachments(payload.attachments);
     const text = String(payload.text || '').trim() || (attachments.length ? '请参考我附上的资料继续。' : '');
+    // 追章模式（v2.2.2）：仅小说且当前打开了作品时携带 key——后端检测到这本书
+    // 正在后台写作，就会在回复后继续把新完成的章节实时推进对话。
+    const medium = payload.medium || state.workMedium || state.ui.medium || 'novel';
+    const withWork = Boolean(state.currentKey) && medium === 'novel';
     return {
       message: text,
-      key: state.currentKey,
-      project_key: state.currentKey,
+      ...(withWork ? { key: state.currentKey, project_key: state.currentKey } : {}),
       session_id: state.chat.sessionId || undefined,
       provider_id: state.ui.providerId || (state.models && state.models.default_provider) || undefined,
       model: state.ui.model || (state.work && state.work.model) || undefined,
       mode: payload.mode || 'draft',
-      medium: payload.medium || state.ui.medium,
+      medium,
       genre: payload.genre || '',
       attachments
     };
@@ -308,6 +343,7 @@ export function renderSession(container, ctx = {}) {
     const startedAt = Date.now();
     const controller = new AbortController();
     turn = { controller, assistantId: '', epoch: myEpoch, stopped: false, clockTimer: 0 };
+    chapterBubbles = new Map();
 
     if (appendUser) {
       addMessage({
@@ -416,6 +452,43 @@ export function renderSession(container, ctx = {}) {
         }));
         return;
       }
+      if (event === 'chapter_start' && data) {
+        const no = Number(data.no);
+        // 防御性去重：同一章已有气泡就忽略重复的 start
+        if (!Number.isFinite(no) || chapterBubbles.has(no)) return;
+        const title = String(data.title || `第${no}章`);
+        const msg = addMessage({
+          role: 'assistant',
+          tag: `第${no}章 · ${title}`,
+          content: '正在落笔…',
+          chapter: no,
+          phase: '落笔中',
+          status: '',
+          streaming: true
+        });
+        chapterBubbles.set(no, { id: msg.id, text: '', words: 0, done: false, synced: '' });
+        queueChapterPaint(no);
+        return;
+      }
+      if (event === 'chapter_delta' && data) {
+        const no = Number(data.no);
+        const b = chapterBubbles.get(no);
+        const chunk = typeof data === 'string' ? data : data.text || '';
+        if (!b || b.done || !chunk) return;
+        b.text += chunk;
+        queueChapterPaint(no);
+        return;
+      }
+      if (event === 'chapter_done' && data) {
+        const no = Number(data.no);
+        const b = chapterBubbles.get(no);
+        if (!b) return;
+        b.words = Number(data.words) || 0;
+        b.done = true;
+        paintChapter(no);
+        scrollIfNear();
+        return;
+      }
       if (event === 'error') {
         streamError = (data && (data.error || data.message)) || '本轮生成失败';
         updateMessage(assistant.id, { status: streamError });
@@ -434,6 +507,7 @@ export function renderSession(container, ctx = {}) {
       stageTimers.forEach(clearTimeout);
       clearInterval(clockTimer);
       if (turn) turn.clockTimer = 0;
+      closeOpenChapters();
       const chatState = store.get().chat;
       const msg = chatState.messages.find((m) => m.id === assistant.id);
       const duration = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
@@ -554,6 +628,7 @@ export function renderSession(container, ctx = {}) {
           };
         });
         patchChat({ streaming: false, phase: '', error: message, stopRequested: false });
+        closeOpenChapters();
         toast(message, { tone: 'danger' });
         turn = null;
       });
@@ -591,10 +666,82 @@ export function renderSession(container, ctx = {}) {
     }));
     patchChat({ streaming: false, phase: '', stopRequested: true });
     toast('已停止生成，保留已输出内容', { duration: 2200 });
+    closeOpenChapters();
     turn = null;
   }
 
+  // ---------- 追章渲染（v2.2.2）----------
+  // 聊天视图只逐帧刷新「第一条 streaming 消息」（主回复气泡），章节气泡的正文
+  // 在这里自绘：store 同步 + 直改 DOM，rAF 合并避免每 ~40 字符一次 reflow。
+  function chapterContent(b) {
+    if (b.done) {
+      if (b.text && b.words) return `${b.text}\n\n*${b.words} 字*`;
+      if (b.text) return b.text;
+      if (b.words) return `本章 ${b.words} 字`;
+      return '本章已完成';
+    }
+    return b.text || '正在落笔…';
+  }
+
+  function paintChapter(no) {
+    const b = chapterBubbles.get(no);
+    if (!b || disposed || b.stopped) return;
+    const raw = chapterContent(b);
+    if (b.synced !== raw) {
+      b.synced = raw;
+      updateMessage(b.id, (m) => ({ ...m, content: raw }));
+    }
+    const node = chat.el.querySelector(`.msg[data-id="${b.id}"] .msg-body`);
+    if (node && node.dataset.raw !== raw) {
+      node.dataset.raw = raw;
+      node.textContent = '';
+      renderMarkdownInto(node, raw);
+    }
+  }
+
+  const chapterDirty = new Set();
+  let chapterPaintQueued = false;
+
+  function queueChapterPaint(no) {
+    chapterDirty.add(no);
+    if (chapterPaintQueued) return;
+    chapterPaintQueued = true;
+    requestAnimationFrame(() => {
+      chapterPaintQueued = false;
+      const batch = Array.from(chapterDirty);
+      chapterDirty.clear();
+      for (const n of batch) paintChapter(n);
+      if (batch.length) scrollIfNear();
+    });
+  }
+
+  function scrollIfNear() {
+    const s = chat.scroll;
+    if (!s || disposed) return;
+    if (s.scrollHeight - s.scrollTop - s.clientHeight < 160) chat.scrollToBottom(false);
+  }
+
+  // 中断/收尾兜底：把没写完的章节气泡关掉，避免 composer 卡在生成态
+  function closeOpenChapters() {
+    for (const [, b] of chapterBubbles) {
+      if (b.done) continue;
+      b.done = true;
+      b.stopped = true;
+      const body = b.text || '';
+      updateMessage(b.id, (m) => ({
+        ...m,
+        streaming: false,
+        phase: '',
+        content: body ? `${body}\n\n*（已停止）*` : '（已停止）'
+      }));
+    }
+  }
+
   function retryMessage(msg) {
+    if (msg && msg.chapter) {
+      toast('章节内容是对话生成的，不能单独重试', { duration: 2200 });
+      return;
+    }
     const chatState = store.get().chat;
     if (chatState.streaming) {
       toast('正在生成，等这一轮结束再重试', { duration: 2000 });
@@ -690,6 +837,7 @@ export function renderSession(container, ctx = {}) {
     if (disposed || state.currentKey !== mountKey) return;
     paintPlan();
     paintBanner();
+    paintBind();
     if (state.plan && !state.chat.approval) deriveApproval();
   });
 
@@ -704,6 +852,7 @@ export function renderSession(container, ctx = {}) {
 
   paintPlan();
   paintBanner();
+  paintBind();
   container.append(el);
   requestAnimationFrame(() => {
     composer.focus();
@@ -717,8 +866,10 @@ export function renderSession(container, ctx = {}) {
     refresh() {
       planSig = '';
       bannerSig = '';
+      bindSig = '';
       paintPlan();
       paintBanner();
+      paintBind();
       chat.refresh();
     },
     scrollToBottom: chat.scrollToBottom,

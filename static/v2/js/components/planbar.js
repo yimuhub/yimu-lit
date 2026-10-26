@@ -14,7 +14,8 @@ export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
   const mode = planData.mode || '滚动规划';
   let chapterLabel = `第 ${Math.min(done + 1, total || done + 1)} 章`;
   const cards = planData.chapters || [];
-  const current = cards.find((c) => c.status === 'in_progress');
+  /* 章节状态两套词表都认：写作计划 in_progress / 章卡 writing。 */
+  const current = cards.find((c) => c.status === 'in_progress' || c.status === 'writing');
   if (current && current.title) chapterLabel = `第 ${current.n} 章 · ${String(current.title).replace(/^第\d+章\s*/, '')}`;
 
   const bar = h('div', { class: 'plan-bar' });

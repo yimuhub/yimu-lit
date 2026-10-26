@@ -48,7 +48,7 @@ function loadingSkeleton() {
   return h(
     'div',
     { class: 'session-loading' },
-    h('span', { class: 'skeleton skeleton-line', style: { width: '60%' } })
+    h('span', { class: 'skeleton skeleton-line w-60' })
   );
 }
 
@@ -217,30 +217,16 @@ export function createCollabPanel(ctx) {
   }
 
   function agentCard(a) {
-    const card = h(
-      'div',
-      {
-        class: 'collab-card',
-        style: {
-          border: '1px solid var(--line-2)',
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--bg-elevated)',
-          padding: '10px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '6px'
-        }
-      }
-    );
+    const card = h('div', { class: 'collab-card' });
     const modelText = a.model || (a.provider_id ? '供应商默认模型' : a.effective) || '未绑定';
     card.append(
       h(
         'div',
-        { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
-        h('span', { style: { fontWeight: '600', color: 'var(--ink-primary)' }, text: a.label || a.agent }),
+        { class: 'collab-card-head' },
+        h('span', { class: 'collab-agent-name', text: a.label || a.agent }),
         a.stage ? h('span', { class: 'chip chip-muted', text: a.stage }) : null,
         sourceBadge(a),
-        h('span', { style: { flex: '1' } }),
+        h('span', { class: 'rp-spring' }),
         h('button', {
           class: 'icon-btn icon-btn-sm',
           type: 'button',
@@ -250,12 +236,12 @@ export function createCollabPanel(ctx) {
           on: { click: (event) => openModelMenu(event.currentTarget, a) }
         })
       ),
-      h('div', { class: 'mono', style: { fontSize: '11px', color: 'var(--ink-secondary)' }, text: modelText })
+      h('div', { class: 'mono collab-agent-model', text: modelText })
     );
     if (a.desc) card.append(h('div', { class: 'hint-text', text: a.desc }));
     /* skills 为同事并行新增字段：没有该字段就整块不渲染，绝不报错。 */
     if (Array.isArray(a.skills)) {
-      const chips = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px' } });
+      const chips = h('div', { class: 'chip-row' });
       if (a.skills.length) {
         for (const sk of a.skills) chips.append(h('span', { class: 'chip', text: SKILL_TITLES[String(sk)] || String(sk) }));
       } else {
@@ -277,7 +263,7 @@ export function createCollabPanel(ctx) {
       sec.append(loadingSkeleton());
     } else {
       if (!list.length) sec.append(h('div', { class: 'hint-text', text: '后端没有返回岗位数据。' }));
-      const wrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } });
+      const wrap = h('div', { class: 'rp-stack' });
       for (const a of list) wrap.append(agentCard(a));
       sec.append(wrap);
     }
@@ -381,12 +367,12 @@ export function createCollabPanel(ctx) {
     const valueOut = h('span', { class: 'badge badge-accent', text: `${s.workers} Agents` });
     const slider = h('input', {
       type: 'range',
+      class: 'collab-slider',
       min: '1',
       max: '8',
       step: '1',
       value: String(s.workers),
       'aria-label': '并行 Agent 数',
-      style: { flex: '1', accentColor: 'var(--accent)', minWidth: '0' },
       on: {
         input: (event) => {
           s.workersTouched = true;
@@ -398,7 +384,7 @@ export function createCollabPanel(ctx) {
     sec.append(
       h(
         'div',
-        { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+        { class: 'collab-row' },
         slider,
         valueOut,
         h('button', {
@@ -416,7 +402,7 @@ export function createCollabPanel(ctx) {
       sec.append(
         h(
           'div',
-          { class: 'hint-text', style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+          { class: 'hint-text collab-row' },
           h('span', { class: 'spinner' }),
           h('span', { text: `${s.workers} 个 Agent 分章齐写中：先熔炼总架构，写完一本立即取下一章…` })
         )
@@ -428,7 +414,7 @@ export function createCollabPanel(ctx) {
     }
 
     sec.append(
-      h('div', { style: { marginTop: '4px' } }, h('span', { class: 'count', text: 'Agent 领章（实时）' })),
+      h('span', { class: 'rp-subhead', text: 'Agent 领章（实时）' }),
       h('div', { class: 'live-log collab-live' })
     );
     parallelBody.append(sec);
@@ -455,7 +441,7 @@ export function createCollabPanel(ctx) {
     const items = s.jobs || [];
     sec.append(
       sectionHead('后台任务', items.length ? `${items.length} 条` : ''),
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' } },
+      h('div', { class: 'collab-toolbar' },
         h('button', {
           class: 'btn btn-sm',
           type: 'button',
@@ -471,7 +457,7 @@ export function createCollabPanel(ctx) {
     } else if (!items.length) {
       sec.append(h('div', { class: 'hint-text', text: '这本书还没有后台任务记录。' }));
     } else {
-      const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '1px' } });
+      const list = h('div', { class: 'stack-tight' });
       for (const job of items.slice(0, JOB_ROWS)) {
         const st = jobStatus(job);
         list.append(
@@ -535,7 +521,7 @@ export function createCollabPanel(ctx) {
       }
       sec.append(kv);
       const bar = h('div', { class: 'progress-track', dataset: s.usage.exceeded ? { tone: 'danger' } : {} });
-      bar.append(h('span', { style: { width: `${pct}%`, background: s.usage.exceeded ? 'var(--danger-ink)' : '' } }));
+      bar.append(h('span', { style: { width: `${pct}%` } }));
       sec.append(
         bar,
         h('div', {

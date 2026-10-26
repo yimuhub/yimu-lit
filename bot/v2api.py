@@ -133,6 +133,10 @@ def _sse(event: str, data: dict) -> str:
 # 会话流：等待期心跳间隔（秒）与「没有任何可用供应商」时的友好兜底文案。
 _HEARTBEAT_SECS = 2.0
 _NO_PROVIDER_TEXT = "您的消息已收到。由于未配置大模型，请配置模型。"
+# 追章模式：轮询间隔沿用心跳节奏；正文切片大小/片间隔；最长陪跑 30 分钟。
+_CHAPTER_CHUNK = 40
+_CHAPTER_DELTA_GAP = 0.012
+_FOLLOW_TIMEOUT_SECS = 30 * 60
 
 
 def _waiting_text(elapsed: float) -> str:
@@ -154,6 +158,102 @@ def _provider_ready() -> bool:
         return True
 
 
+# ------------------------------------------------------------ 追章（v2.2.2）
+
+
+def _follow_project(payload: dict, get_project):
+    """追章目标项目：payload.key 能解析且作品存在才返回，否则 None（走普通收尾）。"""
+    key = payload.get("key")
+    if not isinstance(key, str) or not key:
+        return None
+    try:
+        return get_project(key) or None
+    except Exception:
+        return None
+
+
+def _proj_status(proj) -> dict:
+    """proj.status() 的防御包装；任何异常/非 dict 都按「未知状态」处理。"""
+    try:
+        st = proj.status()
+    except Exception:
+        return {}
+    return st if isinstance(st, dict) else {}
+
+
+def _proj_plan(proj) -> dict:
+    """proj.plan() 的防御包装；读不到计划按空处理（Project.plan 每次都读盘，无缓存问题）。"""
+    try:
+        p = proj.plan()
+    except Exception:
+        return {}
+    return p if isinstance(p, dict) else {}
+
+
+def _next_pending(plan: dict):
+    """plan 里下一个待写章节 (no, title)；全部写完时返回 None。"""
+    best = None
+    for c in plan.get("chapters") or []:
+        if not isinstance(c, dict) or str(c.get("status") or "") not in ("pending", "in_progress"):
+            continue
+        no = _as_int(c.get("chapterNumber"))
+        if no is None:
+            continue
+        if best is None or no < best[0]:
+            best = (no, str(c.get("title") or f"第{no}章"))
+    return best
+
+
+def _read_chapter_file(proj, file_path) -> str:
+    """按计划里的 filePath 读章节正文；越界/非法/读不到一律空串（只发 start/done）。"""
+    name = str(file_path or "").strip()
+    if not name:
+        return ""
+    try:
+        from bot.safeio import safe_join
+        path = safe_join(proj.path, name, label="章节文件")
+    except Exception:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _as_int(v):
+    """宽松转 int；失败返回 None（章节号/字数来自磁盘 JSON，可能缺失或为脏数据）。"""
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+def _merge_card_status(card: dict, flat) -> dict:
+    """章卡叠加 02-写作计划.json 里的真实写作状态：只升级不降级。
+
+    planned/changed + 计划 completed → done；planned/changed + in_progress → writing；
+    done 保持 done；计划里没有该章时原样返回（另补 word_count/title）。
+    """
+    out = dict(card) if isinstance(card, dict) else {"n": 0, "status": "planned"}
+    if not isinstance(flat, dict):
+        return out
+    st = out.get("status")
+    fs = str(flat.get("status") or "")
+    if st in ("planned", "changed"):
+        if fs == "completed":
+            out["status"] = "done"
+        elif fs == "in_progress":
+            out["status"] = "writing"
+    try:
+        out["word_count"] = int(flat.get("wordCount"))
+    except Exception:
+        out["word_count"] = None
+    if not out.get("title") and flat.get("title"):
+        out["title"] = str(flat["title"])
+    return out
+
+
 def _plan_view(proj, plan: dict) -> dict:
     """把 02c 总规划与 02d 章卡合成前端树；结构不匹配时原样返回。"""
     if not isinstance(plan, dict):
@@ -165,6 +265,21 @@ def _plan_view(proj, plan: dict) -> dict:
             by_no[int(c.get("n"))] = c
         except Exception:
             continue
+    # 写作计划里的真实状态：chapterNumber → 章节条目（02d 章卡的状态可能滞后）。
+    # 事实源是 02-写作计划.json（writer 落盘）；02c 只有老项目迁移时才带 chapters，
+    # 所以必须从 proj.plan() 取，传入的 plan（02c）只作兜底。
+    flat = {}
+    disk_plan = proj.plan() if proj is not None else None
+    if isinstance(disk_plan, dict) and isinstance(disk_plan.get("chapters"), list):
+        chs = disk_plan["chapters"]
+    else:
+        chs = plan.get("chapters")
+    if isinstance(chs, list):
+        for c in chs:
+            if isinstance(c, dict):
+                no = _as_int(c.get("chapterNumber"))
+                if no is not None:
+                    flat[no] = c
     sc = plan.get("scale")
     if isinstance(sc, dict):
         words = int(sc.get("target_words") or 0)
@@ -188,7 +303,8 @@ def _plan_view(proj, plan: dict) -> dict:
                 nums = [n for n, c in by_no.items()
                         if c.get("volume") == vno and c.get("arc") == ano]
             a["chapters"] = sorted(set(nums))
-            a["chapter_cards"] = [by_no.get(n, {"n": n, "status": "planned"}) for n in a["chapters"]]
+            a["chapter_cards"] = [_merge_card_status(by_no.get(n, {"n": n, "status": "planned"}),
+                                                     flat.get(n)) for n in a["chapters"]]
     return plan
 
 
@@ -369,6 +485,18 @@ def register_v2_routes(app, get_project, chat_func=None):
             return err
         try:
             st = stmod.load(proj.path) or {}
+            # v2.3.0：注入最近一次一致性体检（22-规划体检.json，由 /api/audit 或写作收束写入）
+            try:
+                afp = os.path.join(proj.path, "22-规划体检.json")
+                if os.path.exists(afp):
+                    with open(afp, encoding="utf-8") as _f:
+                        _audit = json.load(_f) or {}
+                    if isinstance(_audit, dict) and _audit.get("at"):
+                        st = dict(st)
+                        st["last_audit"] = {"at": _audit.get("at"), "scope": _audit.get("scope"),
+                                            "issues": list(_audit.get("issues") or [])[:8]}
+            except Exception:
+                pass
             plan = proj.plan() or {}
             total = len(plan.get("chapters") or [])
             done = sum(1 for c in (plan.get("chapters") or []) if c.get("status") == "completed")
@@ -902,6 +1030,8 @@ def register_v2_routes(app, get_project, chat_func=None):
         if not message.strip():
             return _bad("消息不能为空")
         sid = str(payload.get("session_id") or uuid.uuid4().hex)
+        # v2.3.0：key 随消息透传给会话状态机（idle + 有效 key → 绑定本书，绝不误起新书）
+        key = str(payload.get("key") or "") or None
 
         async def gen():
             t0 = time.time()
@@ -927,7 +1057,7 @@ def register_v2_routes(app, get_project, chat_func=None):
 
             def _work():
                 try:
-                    box.append((True, chat_func(sid, message)))
+                    box.append((True, chat_func(sid, message, key)))
                 except BaseException as e:  # 原样带回事件循环，转成 error 帧
                     box.append((False, e))
                 finally:
@@ -958,8 +1088,79 @@ def register_v2_routes(app, get_project, chat_func=None):
             for i in range(0, len(text), 28):
                 yield _sse("delta", {"text": text[i:i + 28]})
                 await asyncio.sleep(0.012)
-            yield _sse("done", {"ok": True, "text": text, "session_id": sid,
-                                "elapsed": round(time.time() - t0, 2)})
+
+            done_payload = {"ok": True, "text": text, "session_id": sid,
+                            "elapsed": round(time.time() - t0, 2)}
+
+            # ---------- 追章模式（v2.2.2）----------
+            # 本轮触发了后台写作（payload.key 指向的作品 running / in_progress）时，
+            # 继续轮询写作计划，把新完成的章节逐字推给前端。开局快照里已完成的
+            # 章节不重推，避免历史章节在每轮对话里重复刷屏。心跳与追章共用这一
+            # 个循环；客户端断开时 CancelledError 从 sleep 处正常终止生成器，
+            # 写作线程不受影响。
+            proj = _follow_project(payload, get_project)
+            st = _proj_status(proj) if proj else {}
+            if proj is not None and (st.get("running") or st.get("state") == "in_progress"):
+                seen = set()
+                for c in _proj_plan(proj).get("chapters") or []:
+                    if isinstance(c, dict) and str(c.get("status")) == "completed":
+                        no = _as_int(c.get("chapterNumber"))
+                        if no is not None:
+                            seen.add(no)
+                pushed: list = []
+                deadline = time.time() + _FOLLOW_TIMEOUT_SECS
+                while True:
+                    plan = _proj_plan(proj)
+                    for c in plan.get("chapters") or []:
+                        if not isinstance(c, dict) or str(c.get("status")) != "completed":
+                            continue
+                        no = _as_int(c.get("chapterNumber"))
+                        if no is None or no in seen:
+                            continue
+                        seen.add(no)
+                        words = _as_int(c.get("wordCount")) or 0
+                        yield _sse("chapter_start", {"no": no,
+                                                     "title": str(c.get("title") or f"第{no}章")})
+                        body = _read_chapter_file(proj, c.get("filePath"))
+                        for i in range(0, len(body), _CHAPTER_CHUNK):
+                            yield _sse("chapter_delta", {"no": no, "text": body[i:i + _CHAPTER_CHUNK]})
+                            await asyncio.sleep(_CHAPTER_DELTA_GAP)
+                        yield _sse("chapter_done", {"no": no, "words": words})
+                        pushed.append({"no": no, "words": words})
+
+                    st = _proj_status(proj)
+                    state = str(st.get("state") or "")
+                    if state in ("completed", "failed") and not st.get("running"):
+                        break
+                    if state == "paused" or st.get("paused"):
+                        state = "paused"
+                        break
+                    if time.time() >= deadline:
+                        state = "timeout"
+                        break
+                    # 章与章之间继续发思考心跳，文案带上下一个待写章节的进度
+                    nxt = _next_pending(plan)
+                    yield _sse("status", {"stage": "writing",
+                                          "text": (f"正在创作第{nxt[0]}章：{nxt[1]}…") if nxt
+                                          else "正在收尾全部章节…"})
+                    await asyncio.sleep(_HEARTBEAT_SECS)
+
+                name = str(st.get("name") or "作品")
+                d = _as_int(st.get("done")) or 0
+                total = _as_int(st.get("total")) or 0
+                words_sum = _as_int(st.get("words")) or 0
+                if state == "paused":
+                    tail = f"《{name}》写作已暂停（当前 {d}/{total} 章），随时可以让我继续。"
+                elif state == "timeout":
+                    tail = f"《{name}》仍在后台创作（当前 {d}/{total} 章），稍后回来看新章节就好。"
+                else:
+                    tail = (f"《{name}》本轮新增 {len(pushed)} 章，全书进度 {d}/{total} 章，"
+                            f"累计约 {words_sum} 字。")
+                done_payload = {"ok": True, "text": f"{text}\n\n{tail}".strip(),
+                                "session_id": sid, "elapsed": round(time.time() - t0, 2),
+                                "chapters": pushed}
+
+            yield _sse("done", done_payload)
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",

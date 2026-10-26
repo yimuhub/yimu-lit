@@ -22,9 +22,20 @@ const THEME_OPTIONS = [
 
 /* 技能标题清单见 core/skillCatalog.js：设置页与右栏协作面板共用同一份缓存。 */
 
+/* 错误态：error-text 原语 + .btn 系重试按钮，三块数据区共用。 */
+function errorRow(message, onRetry) {
+  return h(
+    'div',
+    { class: 'set-error', role: 'alert' },
+    h('span', { html: icon('alert', 14) }),
+    h('span', { class: 'error-text', text: message }),
+    h('button', { class: 'btn btn-sm', type: 'button', text: '重试', on: { click: onRetry } })
+  );
+}
+
 export function renderSettings(container, ctx) {
   const view = h('div', { class: 'view-scroll' });
-  const pad = h('div', { class: 'view-pad', style: { maxWidth: '760px' } });
+  const pad = h('div', { class: 'view-pad set-page' });
   view.append(pad);
   container.append(view);
 
@@ -57,7 +68,7 @@ export function renderSettings(container, ctx) {
 
   const themeSec = h('div', { class: 'set-section' });
   themeSec.append(
-    h('div', { class: 'set-section-head' }, h('h2', { text: '外观' })),
+    h('div', { class: 'set-section-head' }, h('h3', { text: '外观' })),
     h(
       'div',
       { class: 'theme-options' },
@@ -95,27 +106,17 @@ export function renderSettings(container, ctx) {
 
   const qualitySec = h('div', { class: 'set-section' });
   const qualityBody = h('div', {});
-  qualitySec.append(h('div', { class: 'set-section-head' }, h('h2', { text: '生成质量' })), qualityBody);
+  qualitySec.append(h('div', { class: 'set-section-head' }, h('h3', { text: '生成质量' })), qualityBody);
   pad.append(qualitySec);
 
   function paintQuality() {
     qualityBody.textContent = '';
     if (model.settingsError) {
-      qualityBody.append(
-        h(
-          'div',
-          { class: 'msg-error', role: 'alert' },
-          h('span', { html: icon('alert', 14) }),
-          h('span', { text: model.settingsError }),
-          h('button', { class: 'err-btn', type: 'button', text: '重试', on: { click: loadSettings } })
-        )
-      );
+      qualityBody.append(errorRow(model.settingsError, loadSettings));
       return;
     }
     if (!model.settings) {
-      qualityBody.append(
-        h('div', { class: 'session-loading' }, h('span', { class: 'skeleton skeleton-line', style: { width: '40%' } }))
-      );
+      qualityBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-40' })));
       return;
     }
     const s = model.settings;
@@ -212,12 +213,26 @@ export function renderSettings(container, ctx) {
       disabled: !model.dirty || model.saving,
       on: { click: saveSettings }
     });
-    qualityBody.append(h('div', { class: 'settings-note', style: { display: 'flex', justifyContent: 'flex-end' } }, saveBtn));
+    qualityBody.append(h('div', { class: 'set-actions' }, saveBtn));
   }
 
   function switchRow(title, desc, value, onChange) {
-    const box = h('input', { type: 'checkbox', checked: Boolean(value) });
-    box.addEventListener('change', () => onChange(box.checked));
+    /* tokens.css 的 .switch 原语：aria-checked 挂在开关元素本身，::after 为滑块。 */
+    let checked = Boolean(value);
+    const sw = h('button', {
+      class: 'switch',
+      type: 'button',
+      role: 'switch',
+      'aria-checked': checked ? 'true' : 'false',
+      'aria-label': title,
+      on: {
+        click: () => {
+          checked = !checked;
+          sw.setAttribute('aria-checked', checked ? 'true' : 'false');
+          onChange(checked);
+        }
+      }
+    });
     return h(
       'div',
       { class: 'set-row' },
@@ -227,7 +242,7 @@ export function renderSettings(container, ctx) {
         h('div', { class: 'set-row-title', text: title }),
         h('div', { class: 'set-row-desc', text: desc })
       ),
-      h('div', { class: 'set-control' }, box)
+      h('div', { class: 'set-control' }, sw)
     );
   }
 
@@ -268,7 +283,7 @@ export function renderSettings(container, ctx) {
   const provHead = h(
     'div',
     { class: 'set-section-head' },
-    h('h2', { text: '模型与密钥' }),
+    h('h3', { text: '模型与密钥' }),
     h(
       'button',
       {
@@ -286,19 +301,11 @@ export function renderSettings(container, ctx) {
   function paintProviders() {
     provBody.textContent = '';
     if (model.providerError) {
-      provBody.append(
-        h(
-          'div',
-          { class: 'msg-error', role: 'alert' },
-          h('span', { html: icon('alert', 14) }),
-          h('span', { text: model.providerError }),
-          h('button', { class: 'err-btn', type: 'button', text: '重试', on: { click: loadProviders } })
-        )
-      );
+      provBody.append(errorRow(model.providerError, loadProviders));
       return;
     }
     if (!model.providers) {
-      provBody.append(h('div', { class: 'session-loading' }, h('span', { class: 'skeleton skeleton-line', style: { width: '50%' } })));
+      provBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-50' })));
       return;
     }
     const providers = model.providers.providers || [];
@@ -306,7 +313,7 @@ export function renderSettings(container, ctx) {
       provBody.append(
         h(
           'div',
-          { class: 'empty-state', style: { padding: '24px 8px' } },
+          { class: 'empty-state set-empty' },
           h('div', { class: 'empty-icon', html: icon('plug', 18) }),
           h('h3', { text: '还没有模型供应商' }),
           h('p', { text: '添加 OpenAI 兼容接口（DeepSeek / Kimi / 本地 Ollama 都可以），神笔才能开始写作。' }),
@@ -483,7 +490,7 @@ export function renderSettings(container, ctx) {
 
     const footer = h(
       'div',
-      { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' } },
+      { class: 'set-actions' },
       h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
       h('button', {
         class: 'btn btn-primary',
@@ -530,7 +537,7 @@ export function renderSettings(container, ctx) {
   const collabHead = h(
     'div',
     { class: 'set-section-head' },
-    h('h2', { text: '模型与岗位' }),
+    h('h3', { text: '模型与岗位' }),
     h(
       'button',
       {
@@ -705,7 +712,7 @@ export function renderSettings(container, ctx) {
     );
     const footer = h(
       'div',
-      { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' } },
+      { class: 'set-actions' },
       h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
       h('button', {
         class: 'btn btn-primary',
@@ -746,7 +753,7 @@ export function renderSettings(container, ctx) {
     );
     /* skills 是并行同事新增字段：缺失就整块不渲染技能区，不能报错。 */
     if (Array.isArray(a.skills) && a.skills.length) {
-      const chips = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' } });
+      const chips = h('div', { class: 'set-skill-chips' });
       for (const sk of a.skills) chips.append(h('span', { class: 'chip', text: SKILL_TITLES[String(sk)] || String(sk) }));
       copy.append(chips);
     }
@@ -756,7 +763,7 @@ export function renderSettings(container, ctx) {
       copy,
       h(
         'div',
-        { class: 'set-control', style: { display: 'flex', gap: '6px' } },
+        { class: 'set-control' },
         h('button', {
           class: 'btn btn-sm',
           type: 'button',
@@ -777,19 +784,11 @@ export function renderSettings(container, ctx) {
   function paintAgentsMatrix() {
     collabBody.textContent = '';
     if (model.collabError) {
-      collabBody.append(
-        h(
-          'div',
-          { class: 'msg-error', role: 'alert' },
-          h('span', { html: icon('alert', 14) }),
-          h('span', { text: model.collabError }),
-          h('button', { class: 'err-btn', type: 'button', text: '重试', on: { click: loadAgents } })
-        )
-      );
+      collabBody.append(errorRow(model.collabError, loadAgents));
       return;
     }
     if (!model.collab) {
-      collabBody.append(h('div', { class: 'session-loading' }, h('span', { class: 'skeleton skeleton-line', style: { width: '45%' } })));
+      collabBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-45' })));
       return;
     }
     const view = model.collab;
@@ -800,8 +799,7 @@ export function renderSettings(container, ctx) {
       max: '64',
       step: '1',
       value: String(view.max_global_agents ?? 4),
-      'aria-label': '全局并发上限',
-      style: { width: '88px' }
+      'aria-label': '全局并发上限'
     });
     collabBody.append(
       h(
@@ -815,7 +813,7 @@ export function renderSettings(container, ctx) {
         ),
         h(
           'div',
-          { class: 'set-control', style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+          { class: 'set-control' },
           maxInput,
           h('button', {
             class: 'btn btn-primary btn-sm',
@@ -840,7 +838,7 @@ export function renderSettings(container, ctx) {
   const aboutSec = h(
     'div',
     { class: 'set-section' },
-    h('div', { class: 'set-section-head' }, h('h2', { text: '技能与数据' })),
+    h('div', { class: 'set-section-head' }, h('h3', { text: '技能与数据' })),
     h(
       'div',
       { class: 'set-row' },
@@ -876,7 +874,7 @@ export function renderSettings(container, ctx) {
 
   const advSec = h('div', { class: 'set-section' });
   const advBody = h('div', {});
-  advSec.append(h('div', { class: 'set-section-head' }, h('h2', { text: '高级' })), advBody);
+  advSec.append(h('div', { class: 'set-section-head' }, h('h3', { text: '高级' })), advBody);
   pad.append(advSec);
 
   function paintAdvanced() {
