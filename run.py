@@ -5,7 +5,7 @@
     python run.py -p 5000    # 指定端口
     python run.py --no-venv  # 用当前解释器直接跑（依赖需已装）
 """
-import sys, os, subprocess, importlib, shutil, socket, argparse, venv
+import sys, os, subprocess, shutil, socket, argparse, venv
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REQ = os.path.join(ROOT, "requirements.txt")
@@ -34,18 +34,21 @@ def _port_free(port):
     except OSError:
         return False
 
+def _venv_python():
+    return os.path.join(VENV, "Scripts", "python.exe") if os.name == "nt" else os.path.join(VENV, "bin", "python")
+
+def _deps_in(py):
+    """用指定解释器探测依赖，避免外层解释器误判后重建 .venv。"""
+    return subprocess.run([py, "-c", "import fastapi, httpx"], capture_output=True).returncode == 0
+
 def _ensure_venv():
     """缺 .venv 就建 + 装依赖；装好返回 True。"""
-    if os.path.exists(os.path.join(VENV, "pyvenv.cfg")) and importlib.util.find_spec("fastapi") \
-       and importlib.util.find_spec("httpx"):
+    py = _venv_python()
+    if os.path.exists(os.path.join(VENV, "pyvenv.cfg")) and os.path.exists(py) and _deps_in(py):
         return True
     _log("首次运行：创建虚拟环境 .venv 并安装依赖（fastapi/uvicorn/httpx）…")
     venv.create(VENV, with_pip=True)
-    if os.name == "nt":
-        pip = os.path.join(VENV, "Scripts", "python.exe")
-    else:
-        pip = os.path.join(VENV, "bin", "python")
-    subprocess.run([pip, "-m", "pip", "install", "-r", REQ], check=True)
+    subprocess.run([py, "-m", "pip", "install", "-r", REQ], check=True)
     _log("依赖安装完成。")
     return True
 
@@ -62,9 +65,7 @@ def _pick_python(no_venv=False):
     if no_venv:
         return sys.executable
     _ensure_venv()
-    if os.name == "nt":
-        return os.path.join(VENV, "Scripts", "python.exe")
-    return os.path.join(VENV, "bin", "python")
+    return _venv_python()
 
 def main():
     ap = argparse.ArgumentParser(description="启动 novel-bot")

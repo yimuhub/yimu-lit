@@ -25,6 +25,10 @@ function nowId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function shownChars(text) {
+  return Array.from(String(text || '')).length;
+}
+
 function modelName(state) {
   const chosen = state.ui.model;
   if (chosen) return chosen;
@@ -264,9 +268,10 @@ export function renderSession(container, ctx = {}) {
 
   function processQueue() {
     const chatState = store.get().chat;
-    if (disposed || chatState.streaming || !chatState.queue.length) return;
-    const next = chatState.queue[0];
-    patchChat({ queue: chatState.queue.slice(1) });
+    const queue = chatState.queue || [];
+    if (disposed || turn || !queue.length) return;
+    const next = queue[0];
+    patchChat({ queue: queue.slice(1) });
     runTurn(next, { appendUser: true, fromQueue: true });
   }
 
@@ -291,7 +296,8 @@ export function renderSession(container, ctx = {}) {
   function runTurn(payload, { appendUser = true, fromQueue = false, retry = false } = {}) {
     const state = store.get();
     if (!state.currentKey) return;
-    if (state.chat.streaming) {
+    // turn 是本视图掌握的“正在跑”事实来源：会话级 streaming 标志可能被其他局部更新覆盖
+    if (state.chat.streaming || turn) {
       if (!retry) enqueue(payload);
       return;
     }
@@ -301,7 +307,7 @@ export function renderSession(container, ctx = {}) {
     const myEpoch = ++epoch;
     const startedAt = Date.now();
     const controller = new AbortController();
-    turn = { controller, assistantId: '', epoch: myEpoch, stopped: false };
+    turn = { controller, assistantId: '', epoch: myEpoch, stopped: false, clockTimer: 0 };
 
     if (appendUser) {
       addMessage({
@@ -316,7 +322,7 @@ export function renderSession(container, ctx = {}) {
       role: 'assistant',
       streaming: true,
       content: '',
-      phase: '准备中',
+      phase: '正在思考中',
       status: '',
       process: buildProcess(store.get())
     });
@@ -331,26 +337,49 @@ export function renderSession(container, ctx = {}) {
       approval: retry ? store.get().chat.approval : store.get().chat.approval
     });
 
+    let streamError = '';
+    let finalData = null;
+    let sawDelta = false;
+    let phaseBase = '正在思考中';
+
+    const elapsedSeconds = () => Math.floor((Date.now() - startedAt) / 1000);
+    const phaseLabel = () => {
+      const seconds = elapsedSeconds();
+      // 只有尚未产出内容时才升级为“深入思考”，生成中不制造焦虑
+      const thinking = !sawDelta && phaseBase !== '生成中';
+      const base = thinking && seconds >= 8 ? '深入思考中' : phaseBase;
+      return seconds >= 3 ? `${base}（已等待 ${seconds}s）` : base;
+    };
+
     const stageTimers = [
       later(() => {
         if (myEpoch !== epoch) return;
+        phaseBase = '思考中';
         updateMessage(assistant.id, (msg) => ({
           ...msg,
-          phase: '思考中',
+          phase: phaseLabel(),
           status: '正在读取作品记忆…'
         }));
         setSteps(assistant.id, stageStates('thinking'));
       }, 700),
       later(() => {
         if (myEpoch !== epoch) return;
-        updateMessage(assistant.id, { phase: '对齐中', status: '正在对齐人物、伏笔与章节目标…' });
+        phaseBase = '对齐中';
+        updateMessage(assistant.id, { phase: phaseLabel(), status: '正在对齐人物、伏笔与章节目标…' });
         setSteps(assistant.id, stageStates('align'));
       }, 1700)
     ];
 
-    let streamError = '';
-    let finalData = null;
-    let sawDelta = false;
+    // 后端心跳可能缺席或延迟，前端自己走秒，保证气泡始终有东西在动
+    const clockTimer = setInterval(() => {
+      if (disposed || myEpoch !== epoch) return;
+      updateMessage(assistant.id, (msg) => ({
+        ...msg,
+        phase: phaseLabel(),
+        notice: !sawDelta && elapsedSeconds() >= 60 ? '网关较慢，可停止后重试' : ''
+      }));
+    }, 1000);
+    turn.clockTimer = clockTimer;
 
     const handleEvent = (event, data) => {
       if (myEpoch !== epoch) return;
@@ -361,9 +390,10 @@ export function renderSession(container, ctx = {}) {
       if (event === 'status' && data) {
         const stage = data.stage || '';
         const text = data.text || '';
+        phaseBase = stage === 'writing' ? '生成中' : '思考中';
         updateMessage(assistant.id, (msg) => ({
           ...msg,
-          phase: stage === 'writing' ? '生成中' : '思考中',
+          phase: phaseLabel(),
           status: text
         }));
         setSteps(assistant.id, stageStates(stage));
@@ -376,11 +406,13 @@ export function renderSession(container, ctx = {}) {
           sawDelta = true;
           setSteps(assistant.id, ['done', 'done', 'running']);
         }
+        phaseBase = '生成中';
         updateMessage(assistant.id, (msg) => ({
           ...msg,
           content: (msg.content || '') + chunk,
-          phase: '生成中',
-          status: ''
+          phase: phaseLabel(),
+          status: '',
+          notice: ''
         }));
         return;
       }
@@ -400,6 +432,8 @@ export function renderSession(container, ctx = {}) {
     const finish = ({ title, stage = 'done', sessionId } = {}) => {
       if (myEpoch !== epoch) return;
       stageTimers.forEach(clearTimeout);
+      clearInterval(clockTimer);
+      if (turn) turn.clockTimer = 0;
       const chatState = store.get().chat;
       const msg = chatState.messages.find((m) => m.id === assistant.id);
       const duration = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
@@ -408,6 +442,7 @@ export function renderSession(container, ctx = {}) {
         streaming: false,
         phase: '',
         status: '',
+        notice: '',
         process: finishSteps(current.process, {
           title: title || '本轮处理完成',
           duration,
@@ -426,18 +461,20 @@ export function renderSession(container, ctx = {}) {
         deriveApproval();
         if (msg && msg.content) {
           queueTimer = later(() => {
-            if (!store.get().chat.queue.length) return;
+            if (!(store.get().chat.queue || []).length) return;
             processQueue();
           }, 420);
         }
       }
+      turn = null;
     };
 
     const fallback = async () => {
+      phaseBase = '兼容模式';
       updateMessage(assistant.id, (msg) => ({
         ...msg,
         content: msg.content || '',
-        phase: '兼容模式',
+        phase: phaseLabel(),
         status: '流式接口不可用，正在用兼容模式生成…'
       }));
       const res = await api.chat({
@@ -449,7 +486,8 @@ export function renderSession(container, ctx = {}) {
       if (myEpoch !== epoch) return;
       const text = String((res && (res.reply || res.message || res.content)) || '');
       if (!text) throw new ApiError('兼容接口没有返回内容，请稍后重试');
-      updateMessage(assistant.id, { content: text, phase: '生成中', status: '' });
+      phaseBase = '生成中';
+      updateMessage(assistant.id, { content: text, phase: phaseLabel(), status: '' });
       finish({ title: '兼容模式完成', sessionId: res && res.session_id });
     };
 
@@ -468,8 +506,12 @@ export function renderSession(container, ctx = {}) {
         const chatState = store.get().chat;
         const msg = chatState.messages.find((m) => m.id === assistant.id);
         const finalText = finalData && typeof finalData.text === 'string' ? finalData.text : '';
-        if (finalText && (!msg || !msg.content || finalText.length > msg.content.length)) {
+        // 以服务端 done.text 为唯一准绳：流式可能缺尾，不能按长度判断
+        if (finalText && finalText !== ((msg && msg.content) || '')) {
           updateMessage(assistant.id, { content: finalText });
+        }
+        if (finalData && finalData.fallback) {
+          updateMessage(assistant.id, { action: { text: '去配置模型', path: '/settings' } });
         }
         finish({
           sessionId: finalData && finalData.session_id,
@@ -491,30 +533,40 @@ export function renderSession(container, ctx = {}) {
         }
         if (myEpoch !== epoch) return;
         stageTimers.forEach(clearTimeout);
+        clearInterval(clockTimer);
+        if (turn) turn.clockTimer = 0;
         const message = errorText(err, '这一轮没有完成，请稍后重试');
-        updateMessage(assistant.id, (current) => ({
-          ...current,
-          streaming: false,
-          phase: '',
-          status: '',
-          error: message,
-          process: finishSteps(current.process, {
-            title: '本轮中断',
-            duration: `${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
-            stage: 'stopped'
-          })
-        }));
+        updateMessage(assistant.id, (current) => {
+          const partial = current.content || '';
+          return {
+            ...current,
+            streaming: false,
+            phase: '',
+            status: '',
+            notice: '',
+            content: partial ? `${partial}\n\n*（回复中断，已显示 ${shownChars(partial)} 字）*` : partial,
+            error: message,
+            process: finishSteps(current.process, {
+              title: '本轮中断',
+              duration: `${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
+              stage: 'stopped'
+            })
+          };
+        });
         patchChat({ streaming: false, phase: '', error: message, stopRequested: false });
         toast(message, { tone: 'danger' });
+        turn = null;
       });
   }
 
   function stopTurn() {
     const chatState = store.get().chat;
-    if (!chatState.streaming || !turn) return;
+    if (!turn || turn.stopped) return;
     const { controller, assistantId } = turn;
     turn.stopped = true;
     epoch += 1;
+    if (turn.clockTimer) clearInterval(turn.clockTimer);
+    turn.clockTimer = 0;
     try {
       controller.abort();
     } catch {
@@ -527,7 +579,10 @@ export function renderSession(container, ctx = {}) {
       streaming: false,
       phase: '',
       status: '',
-      content: partial ? `${partial}\n\n*（已停止生成，保留以上内容）*` : '*（已停止生成）*',
+      notice: '',
+      content: partial
+        ? `${partial}\n\n*（已停止，已显示 ${shownChars(partial)} 字）*`
+        : '*（已停止生成）*',
       process: finishSteps(msg.process, {
         title: '已停止生成',
         duration: '',
@@ -536,6 +591,7 @@ export function renderSession(container, ctx = {}) {
     }));
     patchChat({ streaming: false, phase: '', stopRequested: true });
     toast('已停止生成，保留已输出内容', { duration: 2200 });
+    turn = null;
   }
 
   function retryMessage(msg) {
@@ -638,7 +694,7 @@ export function renderSession(container, ctx = {}) {
   });
 
   function onKeydown(event) {
-    if (event.key === 'Escape' && store.get().chat.streaming) {
+    if (event.key === 'Escape' && turn && !turn.stopped) {
       const target = event.target;
       const typing = target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT');
       if (!typing) stopTurn();
@@ -669,6 +725,7 @@ export function renderSession(container, ctx = {}) {
     destroy() {
       disposed = true;
       epoch += 1;
+      if (turn && turn.clockTimer) clearInterval(turn.clockTimer);
       if (turn && turn.controller) {
         try {
           turn.controller.abort();

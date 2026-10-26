@@ -29,6 +29,7 @@ import os
 import re
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from . import llm, state as state_mod
 from .safeio import atomic_write_json, atomic_write_text, safe_join
@@ -446,15 +447,20 @@ def _parse_json_text(raw) -> dict:
     return obj if isinstance(obj, dict) else {}
 
 
-def _llm_json(system: str, user: str, cfg, stage: str, max_tokens: int = 2000) -> dict:
-    """一次严格 JSON 调用；空返回/异常/坏结构一律 {}，调用方走确定性兜底。"""
+def _llm_json(system: str, user: str, cfg, stage: str, max_tokens: int = 2000,
+              agent: str | None = None) -> dict:
+    """一次严格 JSON 调用；空返回/异常/坏结构一律 {}，调用方走确定性兜底。
+
+    agent：子 Agent 岗位名（planner/editor…）；传入后该次调用按岗位绑定的
+    模型/技能解析（providers.agent_resolve），多角色同时规划靠它把不同岗位挂到不同模型。
+    """
     if not _llm_on(cfg):
         return {}
     try:
         raw = llm.chat([{"role": "system", "content": system},
                         {"role": "user", "content": user}],
                        json_mode=True, temperature=0.4, max_tokens=max_tokens,
-                       cfg=cfg, stage=stage)
+                       cfg=cfg, stage=stage, agent=agent)
     except Exception:
         raw = ""
     out = _parse_json_text(raw)
@@ -465,7 +471,7 @@ def _llm_json(system: str, user: str, cfg, stage: str, max_tokens: int = 2000) -
         try:
             out = llm.chat_json([{"role": "system", "content": system},
                                  {"role": "user", "content": user}],
-                                cfg=cfg, stage=stage)
+                                cfg=cfg, stage=stage, agent=agent)
         except Exception:
             return {}
     return out if isinstance(out, dict) else {}
@@ -823,8 +829,67 @@ def _scope_range(proj, scope: str, next_no: int, cards: dict[int, dict]) -> tupl
     return list(range(next_no, min(total, next_no + 14) + 1)), {}
 
 
-def replan(proj, scope: str = "window", instruction: str = "", reason: str = "manual") -> dict:
-    """生成重规划提案（写 02e），**不修改** 02c/02d。"""
+# ---------- 多角色同时规划（v2.1 P2） ----------
+
+# 岗位 → 视角提示。系统默认文案保持旧版「总编」措辞，只有显式指定岗位时才换口吻，
+# 这样历史调用与测试的行为不变。
+MULTI_ROLES = {
+    "planner": {
+        "label": "规划师",
+        "system": "你是长篇网文的规划师，负责把主线推进、钩子密度与爽点节拍排进章卡，只输出严格 JSON。",
+        "angle": "你的视角：主线推进与追读钩子——优先保证每章有明确目标、章尾有钩子、爽点节拍不断档。",
+    },
+    "editor": {
+        "label": "总编",
+        "system": "你是长篇网文的总编，负责重规划提案，只输出严格 JSON。",
+        "angle": "你的视角：一致性与风险——优先核对伏笔回收、人物动机、时间线与结构断裂，指出并修正隐患。",
+    },
+}
+
+
+def _replan_system(agent: str) -> str:
+    role = MULTI_ROLES.get(agent or "")
+    return role["system"] if role else "你是长篇网文的总编，负责重规划提案，只输出严格 JSON。"
+
+
+def multi_replan(proj, scope: str = "window", instruction: str = "",
+                 roles: tuple | list | None = None) -> list[dict]:
+    """两个（或多个）岗位同时出一份规划提案，返回对比卡数据。
+
+    每个岗位各写一份 02e 提案（互不覆盖），前端并排展示后由用户选一份应用——
+    「多 Agent 同时规划、不同 Agent 干不同的事」的落点。单个岗位失败只标记该岗位，
+    不影响其它岗位产出的提案。
+    """
+    keys = [r for r in (roles or ("planner", "editor")) if r in MULTI_ROLES]
+    keys = list(dict.fromkeys(keys))[:3] or ["planner"]
+    base = _text(instruction, 1000)
+
+    def one(agent: str) -> dict:
+        role = MULTI_ROLES[agent]
+        ask = f"{base}\n{role['angle']}".strip() if base else role["angle"]
+        try:
+            p = replan(proj, scope=scope, instruction=ask,
+                       reason=f"multi:{agent}", agent=agent, role=role["label"])
+            return {"agent": agent, "label": role["label"], "ok": True,
+                    "proposal_id": p.get("id"), "summary": p.get("summary") or "",
+                    "diff": p.get("diff") or [], "scope": p.get("scope"),
+                    "affected_chapters": p.get("affected_chapters") or [],
+                    "requires_past_rewrite": bool(p.get("requires_past_rewrite")),
+                    "status": p.get("status") or "pending", "created_at": p.get("created_at")}
+        except Exception as e:
+            return {"agent": agent, "label": role["label"], "ok": False, "error": str(e)}
+
+    with ThreadPoolExecutor(max_workers=len(keys)) as pool:
+        return list(pool.map(one, keys))
+
+
+def replan(proj, scope: str = "window", instruction: str = "", reason: str = "manual",
+           agent: str = "", role: str = "") -> dict:
+    """生成重规划提案（写 02e），**不修改** 02c/02d。
+
+    agent/role（v2.1 P2）：多角色同时规划时传入岗位名与角色标签，提案里带上它们，
+    前端才能把「规划师版 / 总编版」并排成对比卡；不传则与旧行为完全一致。
+    """
     scope = scope if scope in ("book", "volume", "arc", "window", "chapter") else "window"
     instruction = _text(instruction, 1000)
     reason = _text(reason, 200) or "manual"
@@ -854,8 +919,8 @@ def replan(proj, scope: str = "window", instruction: str = "", reason: str = "ma
             '"cards":[{"n":章号,"title":"","goal":"","conflict":"","turn":"","payoff":"",'
             '"cliffhanger":""}]}。不要输出与范围无关的章。'
         )
-        out = _llm_json("你是长篇网文的总编，负责重规划提案，只输出严格 JSON。", user, cfg,
-                        "longform_replan", 3500)
+        out = _llm_json(_replan_system(agent), user, cfg,
+                        "longform_replan", 3500, agent=agent or None)
         llm_summary = _text(out.get("summary"), 600)
         llm_diff = _str_list(out.get("diff"), 200, 10)
         for item in _list(out.get("volume_updates")):
@@ -907,6 +972,8 @@ def replan(proj, scope: str = "window", instruction: str = "", reason: str = "ma
         "scope": scope,
         "reason": reason,
         "instruction": instruction,
+        "agent": _text(agent, 40),
+        "role": _text(role, 40),
         "created_at": _now(),
         "status": "pending",
         "summary": llm_summary or (diff[0] if diff else f"{scope} 重规划"),
@@ -1068,6 +1135,8 @@ def list_proposals(proj, status: str | None = None) -> list[dict]:
             "scope": data.get("scope"),
             "reason": data.get("reason"),
             "instruction": data.get("instruction"),
+            "agent": data.get("agent") or "",
+            "role": data.get("role") or "",
             "status": data.get("status"),
             "summary": data.get("summary"),
             "diff": data.get("diff") or [],
@@ -1081,10 +1150,22 @@ def list_proposals(proj, status: str | None = None) -> list[dict]:
 
 
 def _append_replan_log(proj, rec: dict) -> None:
+    """审计日志追加。多岗位同时规划时会有两个线程并发写同一文件，
+    所以能拿到 proj.lock 就上锁，避免半行 JSON。"""
     try:
         path = os.path.join(_pdir(proj), REPLAN_LOG)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+        line = json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n"
+    except (OSError, TypeError, ValueError):
+        return
+    lock = getattr(proj, "lock", None)
+    try:
+        if lock is None:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+        else:
+            with lock:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(line)
     except OSError:
         pass
 

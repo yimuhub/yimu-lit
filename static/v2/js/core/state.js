@@ -67,6 +67,7 @@ export const initialState = {
   providers: null,
 
   currentKey: '',
+  workMedium: '',
   work: null,
   workError: null,
   plan: null,

@@ -77,7 +77,9 @@ def test_studio_overview_shape():
     so = client.get("/api/studio-overview").json()
     assert "books" in so and "active_count" in so
     li = client.get("/api/library").json().get("items", [])
-    assert len(so["books"]) == len(li)
+    # 库含四种文体，工作室总览只挂小说的并行/重写/放行动作
+    novels = [i for i in li if (i.get("medium") or "novel") == "novel"]
+    assert len(so["books"]) == len(novels)
     b0 = so["books"][0]
     for f in ["key", "name", "state", "done", "total", "quality", "archived", "running"]:
         assert f in b0, f"studio-overview book 缺字段 {f}"

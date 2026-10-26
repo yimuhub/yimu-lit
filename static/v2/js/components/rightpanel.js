@@ -8,21 +8,49 @@ import {
   fmtDate,
   relTime,
   statusMeta,
-  downloadUrl
+  downloadUrl,
+  MEDIUM_LABELS,
+  MEDIUM_UNITS
 } from '../core/dom.js';
 import { store, patchUi, patchChat } from '../core/state.js';
 import { navigate } from '../core/router.js';
+import { isMediumBench, verdictLabel } from '../views/mediumbench.js';
 import { USAGE_MODES, usageLabel } from '../core/constants.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
+import { createCollabPanel } from './collab.js';
 
 const TABS = [
   { key: 'work', label: '作品', icon: 'book-open' },
   { key: 'plan', label: '规划', icon: 'list' },
   { key: 'state', label: '状态', icon: 'activity' },
   { key: 'refs', label: '参考', icon: 'folder' },
-  { key: 'skills', label: '技能', icon: 'sparkles' }
+  { key: 'skills', label: '技能', icon: 'sparkles' },
+  { key: 'collab', label: '协作', icon: 'layers' }
 ];
+
+/* 协作面板带轮询与订阅，跨 tab / 跨书必须显式销毁，否则 interval 会残留。 */
+let collabInst = null;
+
+function destroyCollab() {
+  if (!collabInst) return;
+  try {
+    collabInst.destroy();
+  } catch (err) {
+    console.error('[collab] destroy failed', err);
+  }
+  collabInst = null;
+}
+
+function collabPane(ctx) {
+  const key = store.get().currentKey || '';
+  if (!collabInst || collabInst.key !== key) {
+    destroyCollab();
+    collabInst = createCollabPanel(ctx);
+    collabInst.key = key;
+  }
+  return collabInst.el;
+}
 
 const panel = {
   key: '',
@@ -45,6 +73,7 @@ function resetPanelFor(key) {
   panel.stateQuery = '';
   panel.refHits = null;
   panel.refQuery = '';
+  destroyCollab();
 }
 
 function chaptersFrom(planPayload) {
@@ -126,6 +155,58 @@ function exportWork(key, fmt, label) {
 
 /* ---------------------------------------------------------------- work */
 
+/* 剧本/诗词/散文：这里的数字单位属于各自引擎，小说的章节列表、导出与暂停/继续都不适用。 */
+function mediumWorkPane(work) {
+  const pane = h('div', { class: 'rp-pane' });
+  const unit = MEDIUM_UNITS[work.medium || 'novel'] || '';
+  const pct = Number(work.progress) || 0;
+  const meta = statusMeta(work.state, work.status_label);
+  const summary = h('div', { class: 'rp-summary' });
+  summary.append(
+    h(
+      'div',
+      { class: 'rp-summary-top' },
+      h('div', { class: 'rp-summary-title', text: work.name }),
+      h('span', { class: 'status-chip', dataset: { tone: meta.tone }, text: meta.label })
+    ),
+    h(
+      'div',
+      { class: 'rp-summary-meta' },
+      h('span', { text: `${work.done} / ${work.total} ${unit}` }),
+      h('span', { text: `${pct}%` }),
+      h('span', { text: fmtWords(work.total_words) })
+    ),
+    h('div', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` })
+  );
+  pane.append(summary);
+
+  const kv = h('div', { class: 'kv-grid' });
+  const cells = [
+    ['已写字数', fmtNum(work.total_words), '字'],
+    ['文体', MEDIUM_LABELS[work.medium || 'novel'] || '作品', ''],
+    ['形式', work.form || work.genre || '未分类', ''],
+    ['状态', meta.label, '']
+  ];
+  /* 散文的写法、诗词的格律判定各自引擎才有，缺了就不占一格。 */
+  if (work.operation) cells.push(['写法', work.operation, '']);
+  if (work.verdict) cells.push(['格律', verdictLabel(work.verdict), '']);
+  for (const [k, v, extra] of cells) {
+    kv.append(
+      h(
+        'div',
+        { class: 'kv-cell' },
+        h('span', { class: 'kv-k', text: k }),
+        h('span', { class: 'kv-v' }, `${v}`, extra ? h('span', { class: 'kv-unit', text: extra }) : null)
+      )
+    );
+  }
+  pane.append(kv);
+  pane.append(
+    h('div', { class: 'hint-text', style: { padding: '12px 2px' }, text: '正文与写作动作在中间的工作台里，按文体分页签展开。' })
+  );
+  return pane;
+}
+
 function workPane(ctx) {
   const state = store.get();
   const work = state.work || state.library.items.find((i) => i.key === state.currentKey);
@@ -134,6 +215,7 @@ function workPane(ctx) {
     pane.append(emptyState('book', '还没有打开作品', '从左侧选择一本作品，或新建一本。'));
     return pane;
   }
+  if (isMediumBench(state.workMedium)) return mediumWorkPane(work);
   const pct = work.total ? Math.round((work.done / work.total) * 100) : 0;
   const meta = statusMeta(work.state, work.status_label);
 
@@ -455,45 +537,74 @@ function planPane(ctx) {
   if (!proposals.length) {
     proposalSection.append(h('div', { class: 'hint-text', text: '还没有提案。需要调整结构时，点上方「重规划」。' }));
   }
-  for (const prop of proposals.slice(0, 6)) {
-    const card = h('div', { class: 'proposal-card', dataset: { status: prop.status || 'pending' } });
-    const stText = prop.status === 'applied' ? '已应用' : prop.status === 'rejected' ? '已驳回' : '待确认';
-    const stTone = prop.status === 'applied' ? 'success' : prop.status === 'rejected' ? 'muted' : 'warn';
-    card.append(
-      h(
-        'div',
-        { class: 'proposal-head' },
-        h('span', { html: icon('git-commit', 12) }),
-        h('span', { text: prop.scope || '规划调整' }),
-        h('span', { class: 'status-chip', dataset: { tone: stTone }, text: stText })
-      ),
-      h('div', { class: 'proposal-title', text: prop.reason || prop.instruction || '规划重排' }),
-      h('div', { class: 'proposal-summary', text: prop.summary || prop.instruction || '' })
-    );
-    if (prop.diff) card.append(h('div', { class: 'proposal-diff', text: prop.diff }));
-    if (!prop.status || prop.status === 'pending') {
-      const actions = h(
-        'div',
-        { class: 'proposal-actions' },
-        h('button', {
-          class: 'btn btn-primary btn-sm',
-          type: 'button',
-          text: '应用',
-          on: { click: () => applyProposal(ctx, prop) }
-        }),
-        h('button', {
-          class: 'btn btn-sm',
-          type: 'button',
-          text: '驳回',
-          on: { click: () => rejectProposal(ctx, prop) }
-        })
-      );
-      card.append(actions);
-    }
-    proposalSection.append(card);
+  /* 多岗位同时规划（v2.1 P2）：带 agent 的提案并排成对比卡，其余按原列表展示。 */
+  const roleProps = proposals.filter((p) => p && p.agent);
+  const plainProps = proposals.filter((p) => p && !p.agent);
+  if (roleProps.length) {
+    proposalSection.append(h('div', { class: 'hint-text', text: '同一条指令由两个岗位各出一份提案，对比后选一份应用。' }));
+    const compare = h('div', { class: 'proposal-compare' });
+    for (const prop of roleProps.slice(0, 4)) compare.append(proposalCard(ctx, prop, true));
+    proposalSection.append(compare);
   }
+  for (const prop of plainProps.slice(0, 6)) proposalSection.append(proposalCard(ctx, prop, false));
   pane.append(proposalSection);
   return pane;
+}
+
+function proposalCard(ctx, prop, wide) {
+  const card = h('div', {
+    class: `proposal-card${wide ? ' proposal-card-wide' : ''}`,
+    dataset: { status: prop.status || 'pending' }
+  });
+  const stText = prop.status === 'applied' ? '已应用' : prop.status === 'rejected' ? '已驳回' : '待确认';
+  const stTone = prop.status === 'applied' ? 'success' : prop.status === 'rejected' ? 'muted' : 'warn';
+  /* 多岗位提案的 reason 是内部标记（multi:planner），卡面显示角色名更好读。 */
+  const isMulti = String(prop.reason || '').startsWith('multi:');
+  const titleText = isMulti
+    ? `双岗位同时规划 · ${prop.role || prop.reason.slice(6)}`
+    : prop.reason || prop.instruction || '规划重排';
+  card.append(
+    h(
+      'div',
+      { class: 'proposal-head' },
+      h('span', { html: icon('git-commit', 12) }),
+      h('span', { text: prop.role || prop.scope || '规划调整' }),
+      prop.role ? h('span', { class: 'chip chip-muted', text: prop.scope || '规划调整' }) : null,
+      h('span', { class: 'status-chip', dataset: { tone: stTone }, text: stText })
+    ),
+    h('div', { class: 'proposal-title', text: titleText }),
+    h('div', { class: 'proposal-summary', text: prop.summary || prop.instruction || '' })
+  );
+  if (Array.isArray(prop.diff) && prop.diff.length) {
+    const list = h('ul', { class: 'proposal-diff proposal-diff-list' });
+    for (const line of prop.diff.slice(0, 8)) list.append(h('li', { text: String(line) }));
+    card.append(list);
+    if (prop.diff.length > 8) {
+      card.append(h('div', { class: 'hint-text', text: `另有 ${prop.diff.length - 8} 条变更说明` }));
+    }
+  } else if (prop.diff) {
+    card.append(h('div', { class: 'proposal-diff', text: String(prop.diff) }));
+  }
+  if (!prop.status || prop.status === 'pending') {
+    const actions = h(
+      'div',
+      { class: 'proposal-actions' },
+      h('button', {
+        class: 'btn btn-primary btn-sm',
+        type: 'button',
+        text: '应用',
+        on: { click: () => applyProposal(ctx, prop) }
+      }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        text: '驳回',
+        on: { click: () => rejectProposal(ctx, prop) }
+      })
+    );
+    card.append(actions);
+  }
+  return card;
 }
 
 function openReplanDialog(ctx) {
@@ -510,9 +621,16 @@ function openReplanDialog(ctx) {
     rows: 4,
     placeholder: '例如：第 46 章留存回落，压缩两章调查，把对峙提前到第 48 章。'
   });
+  const mode = h(
+    'select',
+    { class: 'select' },
+    h('option', { value: 'single', text: '单个岗位（总编视角）' }),
+    h('option', { value: 'multi', text: '双岗位同时规划（规划师 + 总编）' })
+  );
   const body = h(
     'div',
     { class: 'feedback-form' },
+    h('div', { class: 'field' }, h('span', { class: 'field-label', text: '出提案的岗位' }), mode),
     h('div', { class: 'field' }, h('span', { class: 'field-label', text: '调整范围' }), scope),
     h('div', { class: 'field' }, h('span', { class: 'field-label', text: '调整要求' }), instruction)
   );
@@ -533,14 +651,30 @@ function openReplanDialog(ctx) {
             return;
           }
           btn.disabled = true;
+          const multi = mode.value === 'multi';
           try {
-            await api.replan({
-              key: store.get().currentKey,
-              scope: scope.value,
-              instruction: instruction.value.trim(),
-              reason: '用户手动重规划'
-            });
-            toast('提案已生成，确认后才会写入规划', { tone: 'success' });
+            if (multi) {
+              const res = await api.planMulti({
+                key: store.get().currentKey,
+                scope: scope.value,
+                instruction: instruction.value.trim()
+              });
+              const cards = (res && res.cards) || [];
+              const failed = cards.filter((c) => c.ok === false);
+              const done = cards.length - failed.length;
+              const msg = failed.length
+                ? `已出 ${done} 份提案（${failed.map((f) => f.label || f.agent).join('、')}失败）`
+                : `已出 ${cards.length} 份提案：对比后选一份应用`;
+              toast(msg, { tone: failed.length ? 'warn' : 'success', duration: 3600 });
+            } else {
+              await api.replan({
+                key: store.get().currentKey,
+                scope: scope.value,
+                instruction: instruction.value.trim(),
+                reason: '用户手动重规划'
+              });
+              toast('提案已生成，确认后才会写入规划', { tone: 'success' });
+            }
             modal.close();
             ctx.refreshPlan();
           } catch (err) {
@@ -554,7 +688,7 @@ function openReplanDialog(ctx) {
   );
   const modal = openModal({
     title: '重规划',
-    subtitle: '会先生成一份提案与差异，确认后才应用。',
+    subtitle: '会先生成一份提案与差异，确认后才应用。双岗位时两位各出一份，你选一份。',
     body,
     footer,
     size: 'sm'
@@ -1082,10 +1216,65 @@ function refsPane(ctx) {
 
 /* -------------------------------------------------------------- skills */
 
+/* 右栏「本书适用技能」：异步查 /api/skills/applicable，把当前题材真正注入的技能显性化。 */
+function applicableCard(ctx) {
+  const key = store.get().currentKey || '';
+  const sec = h('div', { class: 'rp-section' });
+  const count = h('span', { class: 'count', text: '检测中…' });
+  const body = h('div', { class: 'hint-text', text: '正在按本书文体与题材匹配技能…' });
+  const go = h('button', {
+    class: 'btn btn-sm',
+    type: 'button',
+    text: '打开技能库',
+    on: { click: () => navigate('/skills') }
+  });
+  sec.append(h('div', { class: 'rp-section-head' }, h('h3', { text: '本书适用技能' }), count, go), body);
+
+  async function load() {
+    body.textContent = '正在按本书文体与题材匹配技能…';
+    count.textContent = '检测中…';
+    let res = null;
+    let errText = '';
+    try {
+      res = await api.skillsApplicable(key);
+    } catch (err) {
+      errText = errorText(err, '查询失败');
+    }
+    if (store.get().currentKey !== key) return;
+    body.textContent = '';
+    if (!res) {
+      count.textContent = '—';
+      body.append(h('span', { class: 'error-text', text: errText || '后端未提供本书技能查询' }));
+      return;
+    }
+    const items = (Array.isArray(res.items) ? res.items : []).filter(Boolean);
+    count.textContent = `${items.length} 项 · ${res.medium || ''}${res.genre ? ` · ${res.genre}` : ''}`;
+    if (!items.length) {
+      body.append(h('span', { text: '这本书暂未命中任何题材技能，可在技能库里补一本题材craft。' }));
+      return;
+    }
+    const chips = h('div', { class: 'chip-row' });
+    for (const it of items.slice(0, 12)) {
+      chips.append(h('span', { class: 'chip', text: it.title || it.name, title: it.genre || '' }));
+    }
+    if (items.length > 12) chips.append(h('span', { class: 'chip chip-muted', text: `+${items.length - 12}` }));
+    body.append(chips);
+  }
+
+  if (!key || IS_MOCK) {
+    count.textContent = '—';
+    body.textContent = '选中一本书后可以查看它会注入的技能。';
+  } else {
+    load();
+  }
+  return sec;
+}
+
 function skillsPane(ctx) {
   const state = store.get();
   const payload = state.skills;
   const pane = h('div', { class: 'rp-pane' });
+  pane.append(applicableCard(ctx));
   if (!payload) {
     pane.append(
       featureMissing('技能进化'),
@@ -1308,7 +1497,10 @@ async function promoteSkill(ctx, cand) {
 export function renderRightPanel(container, ctx) {
   const state = store.get();
   resetPanelFor(state.currentKey);
+  const mediumBench = isMediumBench(state.workMedium);
   const available = TABS.filter((item) => {
+    /* 规划/状态/参考/协作都是小说引擎的数据面，非小说作品没有这些接口，页签直接不出现。 */
+    if (mediumBench && item.key !== 'work' && item.key !== 'skills') return false;
     if (item.key === 'plan') return state.features.plan !== false;
     if (item.key === 'state') return state.features.state !== false;
     if (item.key === 'refs') return state.features.references !== false;
@@ -1317,6 +1509,7 @@ export function renderRightPanel(container, ctx) {
   });
   const requested = state.ui.rightTab || 'work';
   const tab = available.some((t) => t.key === requested) ? requested : 'work';
+  if (tab !== 'collab') destroyCollab();
   const scrollTop = (() => {
     const body = container.querySelector('.rp-body');
     return body ? body.scrollTop : 0;
@@ -1363,6 +1556,7 @@ export function renderRightPanel(container, ctx) {
   else if (tab === 'plan') pane = planPane(ctx);
   else if (tab === 'state') pane = statePane(ctx);
   else if (tab === 'refs') pane = refsPane(ctx);
+  else if (tab === 'collab') pane = collabPane(ctx);
   else pane = skillsPane(ctx);
   body.append(pane);
   wrap.append(body);

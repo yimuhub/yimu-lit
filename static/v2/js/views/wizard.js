@@ -1,4 +1,5 @@
-/* 新建作品向导：体裁与模式 → 基本信息 → 参考资料与风格。三步内可返回，创建中有 loading 与可读错误。 */
+/* 新建作品向导：三屏字段全部由 /api/onboarding.by_medium 的 schema 驱动。
+   切换体裁即整屏换字段——引擎读什么，这里就问什么；不再按 medium 硬编码分支。 */
 
 import {
   h,
@@ -8,10 +9,41 @@ import {
 } from '../core/dom.js';
 import { store, patchUi } from '../core/state.js';
 import { openModal, toast } from '../core/ui.js';
-import { GENRE_OPTIONS, SCALE_OPTIONS, WRITING_MODES, USAGE_MODES, MEDIUM_FALLBACK, scaleLabel } from '../core/constants.js';
+import { GENRE_OPTIONS, SCALE_OPTIONS, WRITING_MODES, USAGE_MODES, MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
 import { api, errorText } from '../core/api.js';
 
-const DEFAULT_CHAPTERS = { short: 100, '1m': 300, '3m': 900, '5m': 1500 };
+/* /api/onboarding 是向导的唯一词表源（题材/基调/视角/卖点/风格预设 + 平台 + 引擎词表）。
+   只在第一次打开向导时取一次，失败则回落到本地最小 schema，不阻塞创建。 */
+let ONB = null;
+let ONB_PROMISE = null;
+
+function onb() {
+  return ONB || {};
+}
+
+function ensureOnboarding() {
+  if (!ONB_PROMISE) {
+    ONB_PROMISE = api
+      .onboarding()
+      .then((data) => {
+        ONB = data || {};
+        return ONB;
+      })
+      .catch(() => {
+        ONB = {};
+        return ONB;
+      });
+  }
+  return ONB_PROMISE;
+}
+
+function platformList() {
+  return onb().platforms || [];
+}
+
+function styleDims() {
+  return onb().style || {};
+}
 
 function mediumList() {
   const loaded = store.get().mediums || [];
@@ -22,11 +54,74 @@ function mediumOf(key) {
   return mediumList().find((m) => m.key === key) || mediumList()[0] || MEDIUM_FALLBACK[0];
 }
 
-function defaultGenre(mediumKey) {
-  if (mediumKey === 'script') return '剧本';
-  if (mediumKey === 'poetry') return '诗词';
-  if (mediumKey === 'prose') return '散文';
-  return '悬疑';
+/* 词表没到位时的本地兜底：小说仍能选齐题材/规模，其余文体至少给出必填起点。 */
+function localSchema(medium) {
+  if (medium !== 'novel') {
+    return {
+      brief: [],
+      basic: [
+        { key: 'title', label: '标题', type: 'text', max_length: 40 },
+        { key: 'idea', label: '一句话起点', type: 'textarea', rows: 4, required: true }
+      ],
+      style: []
+    };
+  }
+  return {
+    brief: [
+      { key: 'genre', label: '题材', type: 'select', required: true, default: '悬疑',
+        options: GENRE_OPTIONS.map((g) => ({ value: g, label: g })) },
+      { key: 'mode', label: '创作模式', type: 'cards', default: 'rolling',
+        options: WRITING_MODES.map((m) => ({ value: m.value, label: m.label, desc: m.desc, icon: m.icon })) }
+    ],
+    basic: [
+      { key: 'title', label: '书名', type: 'text', max_length: 40 },
+      { key: 'idea', label: '一句话 premise', type: 'textarea', rows: 4, required: true },
+      { key: 'scale', label: '规模', type: 'scale', default: '1m', custom_key: 'total_chapters',
+        min: 1, max: 2000, unit: '章',
+        options: SCALE_OPTIONS.map((s) => ({ value: s.value, label: s.label, desc: s.desc, fill: s.chapters })) }
+    ],
+    style: []
+  };
+}
+
+function sectionsFor(medium) {
+  const by = onb().by_medium;
+  return (by && by[medium]) || localSchema(medium);
+}
+
+function fieldsOf(medium, group) {
+  return sectionsFor(medium)[group] || [];
+}
+
+function optionsOf(field) {
+  return (field.options || []).map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
+}
+
+/* 规模字段的「自定义」圆点是渲染器统一补的，schema 只声明快捷档 */
+const CUSTOM_TOKEN = 'custom';
+
+function scaleOptions(field) {
+  return [...optionsOf(field), { value: CUSTOM_TOKEN, label: '自定义' }];
+}
+
+function fillOf(field, token) {
+  const hit = optionsOf(field).find((o) => String(o.value) === String(token));
+  return hit && Number.isFinite(Number(hit.fill)) ? Number(hit.fill) : null;
+}
+
+function sameToken(a, b) {
+  return String(a) === String(b);
+}
+
+function humanValue(field, token) {
+  const hit = optionsOf(field).find((o) => sameToken(o.value, token));
+  return hit ? hit.label : String(token ?? '');
+}
+
+function isVisible(field, values) {
+  const rule = field.when;
+  if (!rule) return true;
+  return (rule.in || []).some((x) => sameToken(values[rule.field], x));
 }
 
 function stepsBar(step) {
@@ -63,26 +158,54 @@ function field(label, control, { hint = '', optionalText = '' } = {}) {
   return wrap;
 }
 
+function chip(label, active, onClick, { title = '' } = {}) {
+  const btn = h('button', { class: 'wiz-chip', type: 'button', 'aria-pressed': active ? 'true' : 'false' });
+  if (title) btn.setAttribute('title', title);
+  btn.append(h('span', { text: label }));
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
 export function openWizard(ctx, preset = {}) {
   const state = store.get();
-  const initialMedium = preset.medium || state.ui.medium || 'novel';
   const model = {
     step: 1,
-    medium: initialMedium,
-    genre: preset.genre || defaultGenre(initialMedium),
-    title: preset.title || '',
-    idea: preset.idea || '',
-    scale: preset.scale || '1m',
-    chapters: Number(preset.chapters) || DEFAULT_CHAPTERS[preset.scale || '1m'] || 300,
-    mode: preset.mode || 'rolling',
-    styleId: preset.styleId || '',
+    medium: preset.medium || state.ui.medium || 'novel',
+    values: {},
     refs: [],
     existing: new Set(),
+    styleId: preset.styleId || '',
     copyright: true,
     submitting: false,
     error: '',
     status: ''
   };
+
+  /* 每种体裁一套值，来回切体裁不丢已填内容。 */
+  function values() {
+    return valuesOf(model.medium);
+  }
+
+  /* 逐字段补齐缺失的默认值：/api/onboarding 晚于首帧到达时，本地兜底 schema 建的值袋
+     会少了真 schema 才有的字段（如每章字数），不补就会渲染成空并误报越界。 */
+  function valuesOf(medium) {
+    const bag = model.values[medium] || (model.values[medium] = {});
+    ['brief', 'basic', 'style'].forEach((name) => {
+      for (const f of fieldsOf(medium, name)) {
+        if (f.type === 'note' || f.type === 'preview') continue;
+        if (f.type === 'scale') {
+          if (bag[f.key] === undefined) bag[f.key] = f.default || (optionsOf(f)[0] || {}).value || '';
+          if (bag[f.custom_key] === undefined) {
+            const n = fillOf(f, bag[f.key]);
+            bag[f.custom_key] = n === null ? f.min || 1 : n;
+          }
+        } else if (bag[f.key] === undefined) {
+          bag[f.key] = f.default !== undefined ? f.default : f.multi ? [] : '';
+        }
+      }
+    });
+    return bag;
+  }
 
   for (const item of preset.attachments || []) {
     if (item.file) {
@@ -97,6 +220,50 @@ export function openWizard(ctx, preset = {}) {
       model.existing.add(item.id);
     }
   }
+
+  /* 平台只作用于小说：切走体裁时清掉平台维度，避免把网文分类带进诗词/剧本。 */
+  function platformOf(key) {
+    return platformList().find((p) => p.key === key) || null;
+  }
+
+  function applyPlatform(plat) {
+    const v = values();
+    v.platform = plat ? plat.key : '';
+    v.sells = [];
+    if (!plat) {
+      v.style_preset = '';
+      const choices = optionsOf(genreField());
+      if (!choices.some((o) => sameToken(o.value, v.genre))) {
+        v.genre = (genreField().default || choices[0] || {}).value || '';
+      }
+      return;
+    }
+    v.style_preset = plat.style_preset || '';
+    const allowed = (plat.genres || []).length ? plat.genres : null;
+    const choices = optionsOf(genreField());
+    if (allowed && !allowed.includes(v.genre)) v.genre = allowed[0];
+    else if (!choices.some((o) => sameToken(o.value, v.genre))) v.genre = (choices[0] || {}).value || '';
+    v.sells = (plat.hot_tags || []).slice(0, 3);
+  }
+
+  function genreField() {
+    const found = fieldsOf(model.medium, 'brief').find((f) => f.key === 'genre');
+    return found || { key: 'genre', type: 'select', options: [], default: '' };
+  }
+
+  function resolvedStyle() {
+    const v = values();
+    const presets = styleDims().preset || {};
+    return presets[v.genre] || presets[v.style_preset] || null;
+  }
+
+  /* 字段语义效果登记表：schema 用 effect 声明，渲染器只认这个名字，不含体裁分支。 */
+  const EFFECTS = {
+    platform: (token) => {
+      applyPlatform(platformOf(token));
+      render();
+    }
+  };
 
   const body = h('div', { class: 'wiz-body' });
   const footer = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', width: '100%' } });
@@ -118,82 +285,274 @@ export function openWizard(ctx, preset = {}) {
     origClose();
   };
 
+  /* 空态返回 hidden 元素而不是 null：Element.append(null) 会把 "null" 当文本渲染。 */
   function errorBanner() {
-    if (!model.error) return null;
     const box = h('div', { class: 'wiz-error', role: 'alert' });
-    box.append(h('span', { html: icon('alert', 14) }), h('div', { text: model.error }));
+    if (!model.error) box.hidden = true;
+    else box.append(h('span', { html: icon('alert', 14) }), h('div', { text: model.error }));
     return box;
   }
 
   function statusLine() {
-    if (!model.status) return null;
-    return h('div', { class: 'hint-text', style: { marginTop: '6px' }, text: model.status });
+    const line = h('div', { class: 'hint-text', style: { marginTop: '6px' } });
+    if (!model.status) line.hidden = true;
+    else line.textContent = model.status;
+    return line;
+  }
+
+  /* ---------------------------------------------------------- 通用字段渲染 */
+  function set(fieldDef, next) {
+    const v = values();
+    v[fieldDef.key] = next;
+    if (fieldDef.effect && EFFECTS[fieldDef.effect]) EFFECTS[fieldDef.effect](next);
+  }
+
+  function controlFor(fieldDef) {
+    const v = values();
+    switch (fieldDef.type) {
+      case 'note':
+        return h('p', { class: 'wiz-note', text: fieldDef.text || '' });
+      case 'preview':
+        return previewControl();
+      case 'select': {
+        const sel = h('select', { class: 'select', 'aria-label': fieldDef.label });
+        if (!fieldDef.required) sel.append(h('option', { value: '', text: `不限${fieldDef.label}` }));
+        for (const o of optionsOf(fieldDef)) {
+          sel.append(h('option', { value: String(o.value), text: o.label, selected: sameToken(v[fieldDef.key], o.value) }));
+        }
+        sel.addEventListener('change', () => {
+          const hit = optionsOf(fieldDef).find((o) => sameToken(o.value, sel.value));
+          set(fieldDef, sel.value);
+          /* 题材带 craft key（skillkit 归一结果），后端按 key 注入，不再靠中文字面匹配。 */
+          if (hit && hit.key) v[`${fieldDef.key}_key`] = hit.key;
+          render();
+        });
+        const hit = optionsOf(fieldDef).find((o) => sameToken(o.value, v[fieldDef.key]));
+        if (hit && hit.key) v[`${fieldDef.key}_key`] = hit.key;
+        return sel;
+      }
+      case 'number': {
+        const input = h('input', {
+          class: 'input wiz-number',
+          type: 'number',
+          min: String(fieldDef.min ?? 1),
+          max: String(fieldDef.max ?? 100000),
+          value: String(v[fieldDef.key] ?? ''),
+          'aria-label': fieldDef.label
+        });
+        input.addEventListener('input', () => {
+          v[fieldDef.key] = input.value === '' ? '' : Number(input.value) || 0;
+        });
+        return h('div', { class: 'wiz-with-unit' }, input, h('span', { class: 'scale-unit', text: fieldDef.unit || '' }));
+      }
+      case 'text': {
+        const input = h('input', {
+          class: 'input',
+          maxlength: String(fieldDef.max_length || 80),
+          placeholder: fieldDef.placeholder || '',
+          value: v[fieldDef.key] || '',
+          'aria-label': fieldDef.label
+        });
+        input.addEventListener('input', () => {
+          v[fieldDef.key] = input.value;
+        });
+        return input;
+      }
+      case 'textarea': {
+        const area = h('textarea', {
+          class: 'textarea',
+          rows: String(fieldDef.rows || 4),
+          maxlength: String(fieldDef.max_length || 4000),
+          placeholder: fieldDef.placeholder || '',
+          'aria-label': fieldDef.label
+        });
+        area.value = v[fieldDef.key] || '';
+        area.addEventListener('input', () => {
+          v[fieldDef.key] = area.value;
+        });
+        return area;
+      }
+      case 'toggle': {
+        const box = h('input', { type: 'checkbox', checked: v[fieldDef.key] !== false });
+        box.addEventListener('change', () => {
+          v[fieldDef.key] = box.checked;
+        });
+        return h('label', { class: 'wiz-toggle' }, box, h('span', { text: v[fieldDef.key] !== false ? '开启' : '关闭' }));
+      }
+      case 'chips': {
+        const row = h('div', { class: 'wiz-chips' });
+        const single = (key) => !fieldDef.multi && sameToken(v[fieldDef.key], key);
+        if (!fieldDef.multi && !fieldDef.required) {
+          row.append(chip(fieldDef.none_label || '不限', single(''), () => {
+            set(fieldDef, '');
+            render();
+          }));
+        }
+        for (const o of optionsOf(fieldDef)) {
+          const on = fieldDef.multi ? (v[fieldDef.key] || []).includes(o.value) : single(o.value);
+          row.append(
+            chip(o.label, on, () => {
+              if (fieldDef.multi) {
+                const list = v[fieldDef.key] || [];
+                v[fieldDef.key] = list.includes(o.value) ? list.filter((x) => x !== o.value) : [...list, o.value];
+              } else {
+                set(fieldDef, on ? '' : o.value);
+              }
+              render();
+            }, { title: o.desc || '' })
+          );
+        }
+        if (!optionsOf(fieldDef).length && fieldDef.multi) row.append(h('span', { class: 'hint-text', text: '暂无可选项。' }));
+        return row;
+      }
+      case 'cards': {
+        const cards = h('div', { class: 'mode-cards' });
+        for (const o of optionsOf(fieldDef)) {
+          const on = sameToken(v[fieldDef.key], o.value);
+          const btn = h(
+            'button',
+            { class: 'mode-card', type: 'button', 'aria-pressed': on ? 'true' : 'false' },
+            h('span', { class: 'mc-name' }, h('span', { html: icon(o.icon || 'book', 13) }), h('span', { text: o.label })),
+            h('span', { class: 'mc-desc', text: o.desc || '' })
+          );
+          btn.addEventListener('click', () => {
+            set(fieldDef, o.value);
+            render();
+          });
+          cards.append(btn);
+        }
+        return cards;
+      }
+      case 'scale':
+        return scaleControl(fieldDef);
+      case 'radio':
+      default:
+        return radioControl(fieldDef);
+    }
+  }
+
+  /* 规模 = 小圆点快捷档 + 末位「自定义」；选中自定义才露出数字框。 */
+  function scaleControl(fieldDef) {
+    const v = values();
+    const name = `${model.medium}-${fieldDef.key}`;
+    const box = h('div', { class: 'wiz-radios wiz-scale', role: 'radiogroup', 'aria-label': fieldDef.label });
+    for (const o of scaleOptions(fieldDef)) {
+      const on = sameToken(v[fieldDef.key], o.value);
+      const radio = h('input', { type: 'radio', name, value: String(o.value), checked: on });
+      radio.addEventListener('change', () => {
+        v[fieldDef.key] = o.value;
+        if (o.value !== CUSTOM_TOKEN) {
+          const n = fillOf(fieldDef, o.value);
+          if (n !== null) v[fieldDef.custom_key] = n;
+        }
+        render();
+      });
+      box.append(
+        h('label', { class: 'opt-radio' }, radio, h('span', { text: o.label }), o.desc ? h('span', { class: 'muted', text: o.desc }) : null)
+      );
+    }
+    if (sameToken(v[fieldDef.key], CUSTOM_TOKEN)) {
+      const input = h('input', {
+        class: 'input wiz-number',
+        type: 'number',
+        min: String(fieldDef.min || 1),
+        max: String(fieldDef.max || 2000),
+        value: String(v[fieldDef.custom_key] || ''),
+        'aria-label': `${fieldDef.label}自定义`
+      });
+      input.addEventListener('input', () => {
+        v[fieldDef.custom_key] = Number(input.value) || 0;
+      });
+      box.append(h('div', { class: 'wiz-with-unit' }, input, h('span', { class: 'scale-unit', text: fieldDef.unit || '' })));
+    }
+    return box;
+  }
+
+  function radioControl(fieldDef) {
+    const v = values();
+    const name = `${model.medium}-${fieldDef.key}`;
+    const box = h('div', { class: 'wiz-radios', role: 'radiogroup', 'aria-label': fieldDef.label });
+    for (const o of optionsOf(fieldDef)) {
+      const on = sameToken(v[fieldDef.key], o.value);
+      const radio = h('input', { type: 'radio', name, value: String(o.value), checked: on });
+      radio.addEventListener('change', () => {
+        set(fieldDef, o.value);
+        render();
+      });
+      box.append(
+        h('label', { class: 'opt-radio' }, radio, h('span', { text: o.label }), o.desc ? h('span', { class: 'muted', text: o.desc }) : null)
+      );
+    }
+    return box;
+  }
+
+  function previewControl() {
+    const row = h('div', { class: 'wiz-chips' });
+    const resolved = resolvedStyle();
+    if (!resolved) {
+      row.append(h('span', { class: 'hint-text', text: ONB === null ? '维度数据尚未加载完，创建后仍可在作品规划里调整。' : '暂无可用预设。' }));
+      return row;
+    }
+    for (const [k, val] of Object.entries(resolved)) row.append(h('span', { class: 'wiz-chip static', text: `${k}：${val}` }));
+    return row;
+  }
+
+  function renderGroup(name, { span = false } = {}) {
+    const pane = h('div', { class: span ? 'wiz-grid' : 'wiz-stack' });
+    for (const f of fieldsOf(model.medium, name)) {
+      if (!isVisible(f, values())) continue;
+      if (f.type === 'note') {
+        pane.append(h('p', { class: 'wiz-note', text: f.text || '' }));
+        continue;
+      }
+      const wrap = field(f.label, controlFor(f), {
+        hint: f.hint || '',
+        optionalText: f.required ? '' : '可选'
+      });
+      if (span && (f.type === 'textarea' || f.type === 'scale' || f.type === 'chips' || f.type === 'preview')) {
+        wrap.classList.add('span-2');
+      }
+      pane.append(wrap);
+    }
+    return pane;
   }
 
   /* ---------------------------------------------------------- step 1 */
   function stepOne() {
     const pane = h('div', { class: 'wiz-pane' });
-    const title = h(
-      'div',
-      { class: 'wiz-pane-title' },
-      h('h3', { text: '这次想写什么？' }),
-      h('p', { text: '体裁决定规划深度与交付形态；创作模式决定先规划还是边写边看。' })
+    pane.append(
+      h(
+        'div',
+        { class: 'wiz-pane-title' },
+        h('h3', { text: '这次想写什么？' }),
+        h('p', { text: '体裁决定要填哪些维度：小说问题材与规模，剧本问形式与入口，诗词问体式与韵书，散文问文体与操作。' })
+      )
     );
-    pane.append(title);
 
     const cards = h('div', { class: 'genre-cards' });
     for (const medium of mediumList().slice(0, 4)) {
       const active = model.medium === medium.key;
       const card = h(
         'button',
-        {
-          class: 'genre-card',
-          type: 'button',
-          'aria-pressed': active ? 'true' : 'false',
-          dataset: { medium: medium.key }
-        },
-        h('span', { class: 'gc-icon', html: icon(medium.icon || 'book', 17) }),
+        { class: 'genre-card', type: 'button', 'aria-pressed': active ? 'true' : 'false', dataset: { medium: medium.key } },
+        h('span', { class: 'gc-icon', html: icon(mediumIcon(medium), 17) }),
         h('span', { class: 'gc-name', text: medium.label }),
         h('span', { class: 'gc-desc', text: medium.desc || '' }),
         h('span', { class: 'gc-check', html: icon('check', 12) })
       );
       card.addEventListener('click', () => {
         model.medium = medium.key;
-        model.genre = defaultGenre(medium.key);
+        valuesOf(medium.key);
+        if (medium.key !== 'novel') {
+          const v = valuesOf(medium.key);
+          if ('platform' in v) v.platform = '';
+        }
         render();
       });
       cards.append(card);
     }
     pane.append(field('体裁', cards));
-
-    const genreSelect = h('select', { class: 'select', 'aria-label': '题材' });
-    for (const g of GENRE_OPTIONS) {
-      genreSelect.append(h('option', { value: g, text: g, selected: g === model.genre }));
-    }
-    genreSelect.addEventListener('change', () => {
-      model.genre = genreSelect.value;
-    });
-    pane.append(field('题材', genreSelect, { hint: '题材会作为规划与文风的第一层约束，之后仍可微调。' }));
-
-    const modes = h('div', { class: 'mode-cards' });
-    for (const mode of WRITING_MODES) {
-      const btn = h(
-        'button',
-        {
-          class: 'mode-card',
-          type: 'button',
-          'aria-pressed': model.mode === mode.value ? 'true' : 'false'
-        },
-        h('span', { class: 'mc-name' }, h('span', { html: icon(mode.icon, 13) }), h('span', { text: mode.label })),
-        h('span', { class: 'mc-desc', text: mode.desc })
-      );
-      btn.addEventListener('click', () => {
-        model.mode = mode.value;
-        render();
-      });
-      modes.append(btn);
-    }
-    pane.append(field('创作模式', modes));
+    pane.append(renderGroup('brief'));
     pane.append(errorBanner(), statusLine());
     return pane;
   }
@@ -205,71 +564,11 @@ export function openWizard(ctx, preset = {}) {
       h(
         'div',
         { class: 'wiz-pane-title' },
-        h('h3', { text: '给它一个起点' }),
-        h('p', { text: '一句话说清主角、困境或核心场面即可。书名可以留空，由系统生成候选。' })
+        h('h3', { text: `给它一个起点` }),
+        h('p', { text: `${mediumOf(model.medium).label}需要知道的规模与素材。留空的项由系统按体裁默认。` })
       )
     );
-
-    const grid = h('div', { class: 'wiz-grid' });
-    const titleInput = h('input', {
-      class: 'input',
-      maxlength: '40',
-      placeholder: '例如：长夜灯河',
-      value: model.title,
-      'aria-label': '书名'
-    });
-    titleInput.addEventListener('input', () => {
-      model.title = titleInput.value;
-    });
-    grid.append(field('书名', titleInput, { optionalText: '可选' }));
-
-    const idea = h('textarea', {
-      class: 'textarea',
-      rows: 4,
-      maxlength: '2000',
-      placeholder: '例如：一名被停职的港城刑警，在追查守灯人失踪案时发现一份跨越二十年的失踪者名单。',
-      'aria-label': '一句话 premise'
-    });
-    idea.value = model.idea;
-    idea.addEventListener('input', () => {
-      model.idea = idea.value;
-    });
-    const ideaWrap = field('一句话 premise', idea, { hint: '写清「谁 / 想要什么 / 被什么挡住」最容易得到可用的规划。' });
-    ideaWrap.classList.add('span-2');
-    grid.append(ideaWrap);
-
-    const scaleRow = h('div', { class: 'scale-row' });
-    const presets = h('div', { class: 'scale-presets' });
-    for (const option of SCALE_OPTIONS) {
-      const btn = h('button', {
-        class: 'scale-opt',
-        type: 'button',
-        'aria-pressed': model.scale === option.value ? 'true' : 'false'
-      });
-      btn.append(h('span', { text: option.label }), h('span', { class: 'muted', text: option.desc }));
-      btn.addEventListener('click', () => {
-        model.scale = option.value;
-        model.chapters = DEFAULT_CHAPTERS[option.value] || model.chapters;
-        render();
-      });
-      presets.append(btn);
-    }
-    const chapters = h('input', {
-      class: 'input scale-input',
-      type: 'number',
-      min: '1',
-      max: '2000',
-      value: String(model.chapters),
-      'aria-label': '章节数'
-    });
-    chapters.addEventListener('input', () => {
-      model.chapters = Number(chapters.value) || 0;
-    });
-    scaleRow.append(presets, h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, chapters, h('span', { class: 'scale-unit', text: '章' })));
-    const scaleWrap = field('规模与章节数', scaleRow, { hint: '章节数会作为规划目标，写作过程中仍可扩展。' });
-    scaleWrap.classList.add('span-2');
-    grid.append(scaleWrap);
-    pane.append(grid);
+    pane.append(renderGroup('basic', { span: true }));
     pane.append(errorBanner(), statusLine());
     return pane;
   }
@@ -444,7 +743,7 @@ export function openWizard(ctx, preset = {}) {
     const wrap = h('div', { class: 'ref-step' });
     const head = h('div', { class: 'ref-step-head' });
     head.append(
-      h('span', { class: 'rsh-title', html: `${icon('palette', 14)}<span>文风</span>` }),
+      h('span', { class: 'rsh-title', html: `${icon('palette', 14)}<span>蒸馏风格</span>` }),
       h('span', { class: 'badge', text: '可选' })
     );
     wrap.append(head);
@@ -481,20 +780,42 @@ export function openWizard(ctx, preset = {}) {
     return wrap;
   }
 
+  /* 摘要只列有值的可见字段，长文本单独成段。 */
   function summaryBox() {
+    const v = values();
     const box = h('div', { class: 'wiz-summary' });
-    const rows = [
-      ['体裁', `${mediumOf(model.medium).label} · ${model.genre}`],
-      ['书名', model.title.trim() || '留空，创建后生成候选'],
-      ['规模', `${scaleLabel(model.scale) || model.scale} · 约 ${model.chapters} 章`],
-      ['创作模式', (WRITING_MODES.find((m) => m.value === model.mode) || {}).label || model.mode],
-      ['文风', model.styleId || '自动选择'],
-      ['参考', `${model.refs.length + model.existing.size} 份`]
-    ];
-    for (const [k, v] of rows) {
-      box.append(h('div', {}, h('span', { text: k }), h('b', { text: v })));
-    }
-    if (model.idea.trim()) box.append(h('p', { text: model.idea.trim() }));
+    const rows = [['体裁', mediumOf(model.medium).label]];
+    const longTexts = [];
+    ['brief', 'basic', 'style'].forEach((name) => {
+      for (const f of fieldsOf(model.medium, name)) {
+        if (!isVisible(f, v) || f.type === 'note' || f.type === 'preview') continue;
+        const raw = v[f.key];
+        if (f.type === 'textarea') {
+          if (String(raw || '').trim()) longTexts.push(`${f.label}：${String(raw).trim()}`);
+          continue;
+        }
+        if (f.type === 'scale') {
+          const n = v[f.custom_key];
+          rows.push([f.label, sameToken(v[f.key], CUSTOM_TOKEN) ? `自定义 ${n} ${f.unit || ''}` : `${humanValue(f, v[f.key])} · ${n} ${f.unit || ''}`]);
+          continue;
+        }
+        if (raw === '' || raw === null || raw === undefined) continue;
+        if (Array.isArray(raw)) {
+          if (raw.length) rows.push([f.label, raw.join('、')]);
+          continue;
+        }
+        if (typeof raw === 'boolean') {
+          rows.push([f.label, raw ? '开启' : '关闭']);
+          continue;
+        }
+        const shown = optionsOf(f).length ? humanValue(f, raw) : `${raw}${f.unit || ''}`;
+        rows.push([f.label, f.type === 'number' ? `${raw} ${f.unit || ''}` : shown]);
+      }
+    });
+    if (model.styleId) rows.push(['蒸馏风格', model.styleId]);
+    rows.push(['参考', `${model.refs.length + model.existing.size} 份`]);
+    for (const [k, val] of rows) box.append(h('div', {}, h('span', { text: k }), h('b', { text: String(val) })));
+    for (const line of longTexts) box.append(h('p', { text: line }));
     return box;
   }
 
@@ -508,7 +829,22 @@ export function openWizard(ctx, preset = {}) {
         h('p', { text: '创建前先放好资料和风格，第一版规划会更贴近你想要的东西。' })
       )
     );
-    pane.append(refsPane(), stylePane(), summaryBox(), errorBanner(), statusLine());
+    const extra = renderGroup('style');
+    pane.append(refsPane(), stylePane());
+    if (extra.childElementCount) {
+      const step = h('div', { class: 'ref-step' });
+      step.append(
+        h(
+          'div',
+          { class: 'ref-step-head' },
+          h('span', { class: 'rsh-title', html: `${icon('sliders', 14)}<span>${sectionsFor(model.medium).style_title || '本体裁附加项'}</span>` }),
+          h('span', { class: 'badge', text: mediumOf(model.medium).label })
+        ),
+        extra
+      );
+      pane.append(step);
+    }
+    pane.append(summaryBox(), errorBanner(), statusLine());
     return pane;
   }
 
@@ -546,13 +882,14 @@ export function openWizard(ctx, preset = {}) {
         })
       );
     } else {
+      const v = values();
       footer.append(
         h('button', {
           class: 'btn btn-primary',
           type: 'button',
           html: model.submitting
             ? '<span class="wiz-loading"><span class="spinner"></span>创建中…</span>'
-            : `<span>${model.title.trim() ? '创建并开始' : '创建作品'}</span>${icon('arrow-right', 14)}`,
+            : `<span>${String(v.title || '').trim() ? '创建并开始' : '创建作品'}</span>${icon('arrow-right', 14)}`,
           disabled: model.submitting,
           on: { click: () => submit() }
         })
@@ -560,8 +897,32 @@ export function openWizard(ctx, preset = {}) {
     }
   }
 
+  /* 词表到位后，本地兜底 schema 播下的值可能不在真选项里（如「悬疑」vs「悬疑/刑侦」）：
+     <select> 会显示首项却提交旧值。渲染前先归一，保证所见即所提交。 */
+  function normalizeValues() {
+    const v = values();
+    for (const group of ['brief', 'basic', 'style']) {
+      for (const f of fieldsOf(model.medium, group)) {
+        if (f.type === 'note' || f.type === 'preview' || f.type === 'scale') continue;
+        const opts = optionsOf(f);
+        if (!opts.length) continue;
+        const known = (token) => opts.some((o) => sameToken(o.value, token));
+        if (f.multi) {
+          v[f.key] = (v[f.key] || []).filter(known);
+          continue;
+        }
+        if (v[f.key] === '' || v[f.key] === undefined || known(v[f.key])) continue;
+        const fallback = known(f.default) ? f.default : opts[0].value;
+        v[f.key] = fallback;
+        const hit = opts.find((o) => sameToken(o.value, fallback));
+        if (hit && hit.key) v[`${f.key}_key`] = hit.key;
+      }
+    }
+  }
+
   function render() {
     if (destroyed) return;
+    normalizeValues();
     body.textContent = '';
     body.append(stepsBar(model.step));
     if (model.step === 1) body.append(stepOne());
@@ -570,32 +931,69 @@ export function openWizard(ctx, preset = {}) {
     renderFooter();
   }
 
+  ensureOnboarding().then(() => {
+    if (destroyed) return;
+    const v = values();
+    if ('platform' in v && !platformOf(v.platform)) v.platform = '';
+    if ('platform' in v && v.platform) applyPlatform(platformOf(v.platform));
+    render();
+  });
+
+  function visibleFields() {
+    const out = [];
+    ['brief', 'basic', 'style'].forEach((name) => {
+      for (const f of fieldsOf(model.medium, name)) if (isVisible(f, values())) out.push(f);
+    });
+    return out;
+  }
+
   function validateStep() {
-    if (model.step === 1) {
-      if (!model.medium) {
-        model.error = '请选择一种体裁';
-        return false;
-      }
-      if (!model.genre) {
-        model.error = '请选择题材';
-        return false;
-      }
-    }
-    if (model.step === 2) {
-      if (!model.title.trim() && !model.idea.trim()) {
-        model.error = '至少填写书名或一句话 premise，系统才能开始规划';
-        return false;
-      }
-      if (model.title.trim().length > 40) {
-        model.error = '书名请控制在 40 字以内';
-        return false;
-      }
-      if (!Number.isInteger(model.chapters) || model.chapters < 1 || model.chapters > 2000) {
-        model.error = '章节数需在 1–2000 之间';
-        return false;
-      }
-    }
+    const v = values();
     model.error = '';
+    if (model.step === 1 && !model.medium) {
+      model.error = '请选择一种体裁';
+      return false;
+    }
+    const stepGroup = model.step === 1 ? 'brief' : model.step === 2 ? 'basic' : null;
+    if (!stepGroup) return true;
+    for (const f of fieldsOf(model.medium, stepGroup)) {
+      if (!isVisible(f, v) || f.type === 'note' || f.type === 'preview') continue;
+      const raw = v[f.key];
+      if (f.required) {
+        const empty = Array.isArray(raw) ? !raw.length : raw === '' || raw === null || raw === undefined;
+        if (empty) {
+          model.error = `请填写「${f.label}」`;
+          return false;
+        }
+      }
+      if (f.type === 'text' && String(raw || '').length > (f.max_length || 80)) {
+        model.error = `「${f.label}」请控制在 ${f.max_length || 80} 字以内`;
+        return false;
+      }
+      if (f.type === 'scale') {
+        const n = Number(v[f.custom_key]);
+        if (!Number.isInteger(n) || n < (f.min || 1) || n > (f.max || 2000)) {
+          model.error = `「${f.label}」需在 ${f.min || 1}–${f.max || 2000} 之间`;
+          return false;
+        }
+      }
+      if (f.type === 'number' && raw !== '' && raw !== null && raw !== undefined) {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < (f.min ?? 0) || n > (f.max ?? 100000)) {
+          model.error = `「${f.label}」需在 ${f.min ?? 0}–${f.max ?? 100000} 之间`;
+          return false;
+        }
+      }
+    }
+    /* 第 2 屏兜底：书名与起点至少要有一个，否则引擎无从规划。 */
+    if (model.step === 2) {
+      const hasTitle = fieldsOf(model.medium, 'basic').some((f) => f.key === 'title' && String(v[f.key] || '').trim());
+      const hasIdea = fieldsOf(model.medium, 'basic').some((f) => f.key === 'idea' && String(v[f.key] || '').trim());
+      if (!hasTitle && !hasIdea) {
+        model.error = '至少填写标题或起点素材，系统才能开始规划';
+        return false;
+      }
+    }
     return true;
   }
 
@@ -662,6 +1060,27 @@ export function openWizard(ctx, preset = {}) {
     return { ids, failures };
   }
 
+  function buildPayload() {
+    const v = values();
+    const payload = { medium: model.medium, copyright_confirmed: true };
+    for (const f of visibleFields()) {
+      if (f.type === 'note' || f.type === 'preview') continue;
+      const raw = v[f.key];
+      if (raw === '' || raw === null || raw === undefined) continue;
+      if (Array.isArray(raw) && !raw.length) continue;
+      payload[f.key] = typeof raw === 'string' ? raw.trim() : raw;
+      if (f.type === 'scale') payload[f.custom_key] = v[f.custom_key];
+      if (f.key === 'genre' && v.genre_key) payload.genre_key = v.genre_key;
+    }
+    if (model.styleId) payload.style_id = model.styleId;
+    const resolved = resolvedStyle();
+    if (resolved) payload.style = resolved;
+    const ui = store.get().ui;
+    if (ui.providerId) payload.provider_id = ui.providerId;
+    if (ui.model) payload.model = ui.model;
+    return payload;
+  }
+
   async function submit() {
     if (model.submitting) return;
     if (!model.copyright) {
@@ -677,43 +1096,33 @@ export function openWizard(ctx, preset = {}) {
     const { ids, failures } = await uploadStaged();
     if (destroyed) return;
 
-    const referenceIds = [...ids, ...model.existing];
+    const payload = buildPayload();
+    payload.reference_ids = [...ids, ...model.existing];
     model.status = '正在创建作品并启动规划…';
     render();
 
     try {
-      const payload = {
-        title: model.title.trim(),
-        idea: model.idea.trim(),
-        genre: model.genre,
-        medium: model.medium,
-        total_chapters: model.chapters,
-        scale: model.scale,
-        writing_mode: model.mode,
-        mode: model.mode,
-        style_id: model.styleId || '',
-        reference_ids: referenceIds,
-        copyright_confirmed: true
-      };
-      const ui = store.get().ui;
-      if (ui.providerId) payload.provider_id = ui.providerId;
-      if (ui.model) payload.model = ui.model;
-
       const res = await api.create(payload);
       const key = res && (res.key || res.project || res.pid);
       if (!key) throw new Error('创建接口没有返回作品 key，请刷新后重试');
 
+      const med = res.medium || model.medium || 'novel';
       if (failures.length) {
         toast(`作品已创建，但有 ${failures.length} 份资料未入库`, { tone: 'danger', duration: 5000 });
-      } else {
-        toast('作品已创建，正在生成规划与书名', { tone: 'success' });
       }
+      /* 作品落盘到磁盘上还要一点时间，先把文体告诉路由，免得打开时被当成小说。 */
+      if (ctx.rememberMedium) ctx.rememberMedium(key, med);
       if (ctx.refreshLibrary) await ctx.refreshLibrary().catch(() => {});
       patchUi({ medium: model.medium, rightTab: 'work' });
       modal.close();
       ctx.navigate(`/work/${encodeURIComponent(key)}`);
-      if (res.awaiting_title) {
-        toast('书名候选生成中，可在作品页继续处理', { duration: 3000 });
+      if (med === 'novel') {
+        if (!failures.length) toast('作品已创建，正在生成规划与书名', { tone: 'success' });
+        if (res.awaiting_title) {
+          toast('书名候选生成中，可在作品页继续处理', { duration: 3000 });
+        }
+      } else if (!failures.length) {
+        toast('作品已创建，引擎正在后台逐阶段生成，工作台会自动刷新', { tone: 'success', duration: 4000 });
       }
     } catch (err) {
       if (destroyed) return;

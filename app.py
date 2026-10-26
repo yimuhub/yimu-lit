@@ -8,12 +8,16 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
-from bot import prose_writer, slop_checker, security, jobs, versions
+from bot import prose_writer, slop_checker, security, jobs, versions, platforms
 from bot import export as export_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SAMPLE_DIR = os.path.join(ROOT, "samples", "示例书-雨夜出租车")
+
+# 未绑定可用供应商时的统一兜底：v2 流式接口（bot/v2api.py）与旧版 /api/chat 说同一句话
+_NO_MODEL_REPLY = ("您的消息已收到。由于未配置大模型，请配置模型。"
+                   "在「设置 → 模型供应商」里绑定一个可用模型后，再发一次主题。")
 
 @asynccontextmanager
 async def _lifespan(_app):
@@ -125,6 +129,9 @@ def chat(session_id, message):
             prov = s.get("prov") or {}
             try:
                 cfg = workflow.extract_config(msg, cfg=prov)
+            except providers.ProviderError:
+                # 与 /api/chat/stream 的兜底同口径：没配模型不是「描述得不够具体」
+                return _NO_MODEL_REPLY
             except Exception as e:
                 return f"⚠️ 理解主题失败（{e}），请再描述具体一点。"
             s["cfg"] = dict(cfg)
@@ -153,6 +160,8 @@ def chat(session_id, message):
                     cfg.update(merged)
                     s["cfg"] = cfg
                     return workflow.config_summary(cfg) + "\n\n再选：【1】确认 【2】快车道 【3】再调整"
+                except providers.ProviderError:
+                    return _NO_MODEL_REPLY
                 finally:
                     s["busy"] = False
             if msg.startswith("4"):
@@ -226,6 +235,9 @@ def _do_planning(s):
              for i, x in enumerate(titles[:5])]
         return ("📐 规划完成（人物档案/大纲/文风基准/写作计划 已生成）。\n"
                 "请选书名（回复编号，或直接输入你想要的书名）：\n" + "\n".join(t))
+    except providers.ProviderError:
+        s["state"] = "options"
+        return _NO_MODEL_REPLY + "\n配置完成后回复「重试」即可继续生成规划。"
     except Exception as e:
         s["state"] = "options"
         return f"⚠️ 规划生成失败：{e}\n回复「重试」再试一次，或调整配置。"
@@ -430,17 +442,162 @@ def _link_references(key, ref_ids):
     except Exception:
         pass
 
+
+# ---------- v2.1 B：按文体建项目（/api/create 分发与 /api/<medium>/create 共用同一套 cfg 组装） ----------
+
+def _provider_into(cfg: dict, payload: dict) -> dict:
+    if payload.get("provider_id"):
+        cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
+    if payload.get("model"):
+        cfg.setdefault("defaults", {})["model"] = payload["model"]
+    return cfg
+
+
+def _style_prompt_of(style_id) -> str:
+    """蒸馏风格卡的技法文本。剧本/诗词/散文没有 style_ref.json 注入点，折进素材说明里交给提示词。"""
+    card = distill.get_style((style_id or "").strip())
+    return (card or {}).get("style_prompt", "") or ""
+
+
+def _refs_into(cfg: dict, payload: dict, query_keys: tuple) -> list:
+    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
+    if ref_ids:
+        cfg["reference_ids"] = ref_ids
+        cfg["_reference_block"] = _reference_block(
+            ref_ids, " ".join(str(payload.get(k) or "") for k in query_keys))
+    return ref_ids
+
+
+def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: str,
+                   cfg: dict, ref_ids: list) -> dict:
+    """占位 key 立即返回，规划放后台线程（引擎里是多次 LLM 调用，同步跑会卡死事件循环）。"""
+    import threading as _th
+    from datetime import datetime as _dt
+    _name = safe_fn(cfg.get("title") or cfg.get("idea") or default_name)
+    base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
+
+    def _bg():
+        try:
+            create_fn(cfg, base_key=base)
+            _link_references(base, ref_ids)
+        except Exception as e:
+            print(f"[bg] {medium}创作失败: {e}", flush=True)
+
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"key": base, "pid": base, "project": base, "medium": medium, "async": True}
+
+
+def _create_script_project(payload: dict) -> dict:
+    """剧本引擎只读 form/entryPath/idea/notes/scenes/pages/episodes/title；
+    向导里的题材、格式要求与蒸馏文风都折进 notes（script_writer.gen_premise 会读它）。"""
+    cfg = dict(payload.get("cfg_overrides") or {})
+    for k in ("title", "idea", "form", "entryPath", "scenes", "pages", "episodes"):
+        if payload.get(k) is not None:
+            cfg[k] = payload[k]
+    cfg.setdefault("form", "film")
+    notes = [(payload.get("notes") or "").strip()]
+    if payload.get("genre"):
+        cfg["genre"] = payload["genre"]
+        notes.append(f"题材类型：{payload['genre']}。")
+    spec = payload.get("format_spec") or []
+    if spec:
+        notes.append("剧本格式要求：" + "、".join(str(x) for x in spec) + "。")
+    sp = _style_prompt_of(payload.get("style_id"))
+    if sp:
+        notes.append("目标文风：" + sp)
+    cfg["notes"] = "\n".join(x for x in notes if x)
+    _provider_into(cfg, payload)
+    ref_ids = _refs_into(cfg, payload, ("title", "idea", "form"))
+    return _spawn_project("script", "s_", script_writer.create_project,
+                          script_writer._safe, "未命名剧本", cfg, ref_ids)
+
+
+def _create_poetry_project(payload: dict) -> dict:
+    """诗词引擎读 form/title/idea/maxRounds；词牌与情感核心折进 idea（I 释读与 C 起草都从它起），
+    格律开关与附产项由 poetry_writer 直接消费。"""
+    cfg = dict(payload.get("cfg_overrides") or {})
+    for k in ("title", "form", "cipai", "emotion", "metrical_check", "with_notes", "with_translation"):
+        if payload.get(k) is not None:
+            cfg[k] = payload[k]
+    cfg.setdefault("form", "modern")
+    try:
+        rounds = int(payload.get("maxRounds") or payload.get("rounds") or 3)
+    except (TypeError, ValueError):
+        rounds = 3
+    cfg["maxRounds"] = min(5, max(1, rounds))
+    idea = [(payload.get("idea") or "").strip()]
+    if cfg.get("cipai") and str(cfg.get("form")) in ("ci", "qu"):
+        idea.append(f"词牌／曲牌：{cfg['cipai']}（句读与每句字数按该牌谱，不得自拟）。")
+    if cfg.get("emotion"):
+        idea.append(f"情感核心：{cfg['emotion']}。")
+    sp = _style_prompt_of(payload.get("style_id"))
+    if sp:
+        idea.append("目标文风：" + sp)
+    cfg["idea"] = "\n".join(x for x in idea if x)
+    _provider_into(cfg, payload)
+    ref_ids = _refs_into(cfg, payload, ("title", "idea", "form"))
+    return _spawn_project("poetry", "p_", poetry_writer.create_project,
+                          poetry_writer._safe, "无题", cfg, ref_ids)
+
+
+def _create_prose_project(payload: dict) -> dict:
+    """散文引擎按操作跑 B/S/D/A/P/F；受众、目的、语气、目标字数与去味深度、事实核验开关都写进 cfg，
+    prose_writer 的 brief／素材／去味阶段直接消费。"""
+    cfg = dict(payload.get("cfg_overrides") or {})
+    for k in ("title", "idea", "genre", "operation", "sourceText", "audience", "purpose",
+              "tone", "target_words", "slop_depth", "fact_check"):
+        if payload.get(k) is not None:
+            cfg[k] = payload[k]
+    cfg.setdefault("operation", "write")
+    sp = _style_prompt_of(payload.get("style_id"))
+    if sp:
+        cfg["idea"] = "\n".join(x for x in ((cfg.get("idea") or "").strip(), "目标文风：" + sp) if x)
+    _provider_into(cfg, payload)
+    ref_ids = _refs_into(cfg, payload, ("title", "idea", "genre"))
+    return _spawn_project("prose", "e_", prose_writer.create_project,
+                          prose_writer._safe, "未命名散文", cfg, ref_ids)
+
+
+_MEDIUM_CREATORS = {
+    "script": _create_script_project,
+    "poetry": _create_poetry_project,
+    "prose": _create_prose_project,
+}
+
+
 @app.post("/api/create")
 def api_create(payload: dict):
-    """REST 直接开书。{title?, genre?, tone?, sells?, perspective?, idea?, total_chapters?, provider_id?, model?, cfg_overrides?}。
-    带 title → 直接开写；不带 → 停在"选书名"（awaiting_title，不自动开写，返回 8 候选）。"""
+    """REST 直接开书；payload.medium 决定进哪条流水线（novel/script/poetry/prose）。
+
+    小说：{title?, genre?, tone?, sells?, perspective?, idea?, total_chapters?, provider_id?, model?, cfg_overrides?}。
+    带 title → 直接开写；不带 → 停在"选书名"（awaiting_title，不自动开写，返回 8 候选）。
+    其余文体见 _MEDIUM_CREATORS。"""
+    _med = (payload.get("medium") or "novel")
+    _creator = _MEDIUM_CREATORS.get(_med)
+    if _creator:
+        return _creator(payload)
+
     title = (payload.get("title") or "").strip()
     overrides = payload.get("cfg_overrides") or {}
     cfg = _deep_merge(_load_base_cfg(), overrides)
     if payload.get("genre"):
         cfg["genre"] = payload["genre"]
+    if payload.get("genre_key"):       # v2.1 B：前端带来的 skillkit craft key，题材名归一失败时用它兜底
+        cfg["genre_key"] = payload["genre_key"]
+    if payload.get("min_words_per_chapter"):   # v2.1 B：单章目标字数（写进 plan.minWordsPerChapter）
+        try:
+            _w = int(payload["min_words_per_chapter"])
+            if 500 <= _w <= 20000:
+                cfg["min_words_per_chapter"] = _w
+        except (TypeError, ValueError):
+            pass
     if payload.get("tone"):
         cfg["tone"] = payload["tone"]
+    if payload.get("platform"):           # v2.1 P1：发布平台（bot/platforms.py 的 key），决定节奏/开局策略
+        plat = platforms.find(payload["platform"])
+        if plat:
+            cfg["platform"] = plat["label"]
+            cfg["platform_note"] = f"{plat['pace']}；{plat['hook']}"
     if payload.get("style"):           # v0.3 P2：题材×风格技能 {金手指,基调,节奏,语言,卷}
         cfg["style"] = payload["style"]
     if payload.get("sells"):
@@ -494,6 +651,7 @@ def api_create(payload: dict):
     skeleton_plan = {"version": 1, "novelName": title or (payload.get("idea") or "未命名"),
                      "projectPath": pdir, "status": "planning",
                      "chapters": [], "totalChapters": total, "totalWords": 0,
+                     "minWordsPerChapter": int(cfg.get("min_words_per_chapter") or 3000),
                      "config": {k: v for k, v in cfg.items() if k != "api_key"},
                      "meta": {"awaiting_title": bool(not title), "title_candidates": [],
                               "planning_running": True},
@@ -619,7 +777,7 @@ def api_learn():
     return learn.profile()
 @app.get("/api/library")
 def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
-                status: str = "", q: str = "", include_archived: str = "false"):
+                status: str = "", q: str = "", medium: str = "", include_archived: str = "false"):
     if status == "archived":
         base = writer.library_all(include_archived=True)
         items = [i for i in base if i["archived"]]
@@ -637,6 +795,8 @@ def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
         if q:
             ql = q.lower()
             items = [i for i in items if ql in (i["name"] or "").lower() or ql in (i["genre"] or "").lower()]
+    if medium:
+        items = [i for i in items if (i.get("medium") or "novel") == medium]
     stats = writer.library_stats(base)
     def _val(i):
         s = sort
@@ -658,9 +818,18 @@ def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
             return str(i.get("state"))
         return i.get("updated_at") or i.get("created_at") or ""
     items = sorted(items, key=_val, reverse=(order != "asc"))
-    facets = {"genres": sorted({i["genre"] for i in base})}
+    facets = {"genres": sorted({i["genre"] for i in base}),
+              "mediums": sorted({i.get("medium") or "novel" for i in base})}
     return {"items": items, "stats": stats, "facets": facets, "sort": sort, "order": order,
-            "filters": {"genre": genre, "status": status, "q": q}}
+            "filters": {"genre": genre, "status": status, "q": q, "medium": medium}}
+
+@app.get("/api/library/{key}")
+def api_lib_item(key: str):
+    """单作品元数据：前端冷启动只有 key，用它解析文体与进度。"""
+    it = writer.library_item(key)
+    if not it:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    return it
 
 @app.post("/api/library/{key}/favorite")
 def api_lib_favorite(key: str, payload: dict):
@@ -915,6 +1084,21 @@ def api_onboarding():
                         "max_release_rounds": d.get("max_release_rounds", 3),
                         "title_count": d.get("title_count", 8),
                         "p5_pipeline": d.get("p5_pipeline", True)}
+    plat = platforms.payload()
+    _ONB["platforms"] = plat["platforms"]
+    _ONB["platforms_disclaimer"] = plat["disclaimer"]
+    _ONB["by_medium"] = medium_mod.wizard_payload({
+        "genres": _ONB["genres"], "tones": _ONB["tones"], "perspectives": _ONB["perspectives"],
+        "sells": _ONB["sells"], "style_presets": list((_ONB["style"].get("preset") or {})),
+        "platforms": [{"value": p["key"], "label": p["label"], "desc": p.get("note") or ""}
+                      for p in plat["platforms"]],
+        "script_forms": [{"value": k, "label": v["label"], "desc": f"目标 {v['target_pages']} {v['unit']}"}
+                         for k, v in script_writer.FORMS.items() if k != "custom"],
+        "script_entry_paths": list(script_writer.ENTRY_PATHS.items()),
+        "poetry_forms": list(poetry_writer.FORMS.items()),
+        "prose_genres": list(prose_writer.GENRES.items()),
+        "prose_operations": list(prose_writer.OPERATIONS.items()),
+    })
     return _ONB
 
 def _plan_genre(proj):
@@ -1531,13 +1715,26 @@ def api_export(key: str, fmt: str = "docx"):
 @app.get("/api/agents")
 def api_agents():
     """v0.5 M4：多 Agent 宇宙 —— 各岗位当前模型绑定 + 可选模型树 + 全局并发上限。"""
-    return agents.view()
+    view = agents.view()
+    # 分章齐写的默认并发（config.json defaults.chapter_workers），前端滑杆据此初始化。
+    view["default_workers"] = max(1, min(8, int(writer._cfg_defaults().get("chapter_workers") or 5)))
+    return view
 
 @app.post("/api/agents-set")
 def api_agents_set(payload: dict):
     """v0.5 M4：给某子 Agent 单独配 provider/model（留空=回落 stage/默认）。"""
     am = agents.set_binding(payload.get("agent"), payload.get("provider_id"), payload.get("model"))
     return {"ok": True, "agent_models": am}
+
+@app.post("/api/agents-skills")
+def api_agents_skills(payload: dict):
+    """v2.1 P2：给某岗位绑定技能（skillkit 文件 name）；空列表=解绑。
+    绑定后该岗位产出的注入会优先带上这些技能（skillkit.pick 的 boost 维度）。"""
+    try:
+        agents.set_skills(payload.get("agent"), payload.get("skills"))
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    return {"ok": True, "agent": payload.get("agent"), "skills": agents.skills_for(payload.get("agent"))}
 
 @app.post("/api/agents-maxglobal")
 def api_agents_maxglobal(payload: dict):
@@ -1573,7 +1770,8 @@ _PARALLEL_RUNNING = {}
 def api_parallel_write(payload: dict):
     """v0.6 B：单本书内 N 个 worker 分章齐写（先熔炼总架构，写完一个立即取下一章）。后台线程跑，立即返回。"""
     key = payload.get("key")
-    nworkers = max(1, min(8, int(payload.get("workers") or 5)))
+    default_workers = max(1, min(8, int(writer._cfg_defaults().get("chapter_workers") or 5)))
+    nworkers = max(1, min(8, int(payload.get("workers") or default_workers)))
     proj = _get_project(key)
     if not proj or not proj.plan():
         return JSONResponse({"ok": False, "error": "项目不存在或未创建"}, status_code=404)
@@ -1650,6 +1848,8 @@ def api_studio_overview():
     """v0.7 R5 工作室总览（重度）：所有书 mini 进度 + 运行态（并行/重写/放行/一键），像任务看板。"""
     items = []
     for it in writer.library_all():
+        if it.get("medium") not in (None, "novel"):
+            continue   # 本看板只挂小说的并行/重写/放行动作，剧本等另走各自工作台
         k = it.get("key")
         items.append({
             "key": k, "name": it.get("name"), "state": it.get("state"),
@@ -2074,34 +2274,8 @@ async def api_script_projects():
 
 @app.post("/api/script/create")
 async def api_script_create(payload: dict):
-    """建剧本项目。payload: {title?, idea?, form?, entryPath?, scenes?, pages?, episodes?, notes?, cfg_overrides?}"""
-    cfg = dict(payload.get("cfg_overrides") or {})
-    for k in ("title", "idea", "form", "entryPath", "scenes", "pages", "episodes", "notes"):
-        if payload.get(k) is not None:
-            cfg[k] = payload[k]
-    cfg.setdefault("form", "film")
-    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
-    if ref_ids:
-        cfg["reference_ids"] = ref_ids
-        cfg["_reference_block"] = _reference_block(
-            ref_ids, " ".join(str(payload.get(k) or "") for k in ("title", "idea", "form")))
-    if payload.get("provider_id"):
-        cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
-    if payload.get("model"):
-        cfg.setdefault("defaults", {})["model"] = payload["model"]
-    # v1.2.1：规划放后台线程（async 端点里同步跑 LLM 会阻塞事件循环 → 全站请求卡死、无法并发多创作）
-    import threading as _th
-    from datetime import datetime as _dt
-    _name = script_writer._safe(cfg.get("title") or cfg.get("idea") or "未命名剧本")
-    base = f"s_{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
-    def _bg():
-        try:
-            script_writer.create_project(cfg, base_key=base)
-            _link_references(base, ref_ids)
-        except Exception as e:
-            print(f"[bg] 剧本规划失败: {e}", flush=True)
-    _th.Thread(target=_bg, daemon=True).start()
-    return {"key": base, "pid": base, "project": base, "medium": "script", "async": True}
+    """建剧本项目（与 /api/create + medium=script 同一条路径）。"""
+    return _create_script_project(payload)
 
 
 @app.get("/api/script/status")
@@ -2148,7 +2322,37 @@ async def api_script_scenes(key: str):
 @app.get("/api/script/scene")
 async def api_script_scene(key: str, no: int):
     """单场正文。"""
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
     return {"key": key, "no": no, "text": script_writer.read_scene(key, no)}
+
+
+@app.get("/api/script/preview")
+async def api_script_preview(key: str):
+    """整剧预览：按场次顺序一次返回全部场次的标题/状态/字数/正文（省掉逐场 30 次往返）。
+
+    场次标题由引擎的 scene_heading() 合成，未写的场次也占位返回 text=""，
+    前端据此直接排版占位。written 为实际有正文的场次数，total 为计划总场数。
+    """
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    plan = proj.plan() or {}
+    scenes = []
+    for sc in plan.get("scenes") or []:
+        no = sc.get("no")
+        text = script_writer.read_scene(key, no) if no is not None else ""
+        scenes.append({
+            "no": no,
+            "heading": script_writer.scene_heading(sc),
+            "status": sc.get("status", ""),
+            "words": sc.get("wordCount") or 0,
+            "text": text,
+        })
+    return {"key": key, "name": plan.get("scriptName", proj.name),
+            "scenes": scenes,
+            "written": sum(1 for s in scenes if s["text"].strip()),
+            "total": len(scenes)}
 
 
 @app.post("/api/script/write")
@@ -2232,29 +2436,8 @@ async def api_poetry_projects():
 
 @app.post("/api/poetry/create")
 async def api_poetry_create(payload: dict):
-    """建诗词项目。payload: {title?, idea?, form?, rounds?, cfg_overrides?}"""
-    cfg = dict(payload.get("cfg_overrides") or {})
-    for k in ("title", "idea", "form", "rounds"):
-        if payload.get(k) is not None:
-            cfg[k] = payload[k]
-    cfg.setdefault("form", "modern")
-    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
-    if ref_ids:
-        cfg["reference_ids"] = ref_ids
-        cfg["_reference_block"] = _reference_block(
-            ref_ids, " ".join(str(payload.get(k) or "") for k in ("title", "idea", "form")))
-    import threading as _th
-    from datetime import datetime as _dt
-    _name = poetry_writer._safe(cfg.get("title") or cfg.get("idea") or "无题")
-    base = f"p_{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
-    def _bg():
-        try:
-            poetry_writer.create_project(cfg, base_key=base)
-            _link_references(base, ref_ids)
-        except Exception as e:
-            print(f"[bg] 诗词创作失败: {e}", flush=True)
-    _th.Thread(target=_bg, daemon=True).start()
-    return {"key": base, "pid": base, "project": base, "medium": "poetry", "async": True}
+    """建诗词项目（与 /api/create + medium=poetry 同一条路径）。"""
+    return _create_poetry_project(payload)
 
 
 @app.get("/api/poetry/status")
@@ -2311,29 +2494,8 @@ async def api_prose_projects():
 
 @app.post("/api/prose/create")
 async def api_prose_create(payload: dict):
-    """建散文项目。payload: {title?, idea?, genre?, operation?, sourceText?, cfg_overrides?}"""
-    cfg = dict(payload.get("cfg_overrides") or {})
-    for k in ("title", "idea", "genre", "operation", "sourceText"):
-        if payload.get(k) is not None:
-            cfg[k] = payload[k]
-    cfg.setdefault("operation", "write")
-    ref_ids = [str(x) for x in (payload.get("reference_ids") or []) if str(x).strip()][:40]
-    if ref_ids:
-        cfg["reference_ids"] = ref_ids
-        cfg["_reference_block"] = _reference_block(
-            ref_ids, " ".join(str(payload.get(k) or "") for k in ("title", "idea", "genre")))
-    import threading as _th
-    from datetime import datetime as _dt
-    _name = prose_writer._safe(cfg.get("title") or cfg.get("idea") or "未命名散文")
-    base = f"e_{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
-    def _bg():
-        try:
-            prose_writer.create_project(cfg, base_key=base)
-            _link_references(base, ref_ids)
-        except Exception as e:
-            print(f"[bg] 散文创作失败: {e}", flush=True)
-    _th.Thread(target=_bg, daemon=True).start()
-    return {"key": base, "pid": base, "project": base, "medium": "prose", "async": True}
+    """建散文项目（与 /api/create + medium=prose 同一条路径）。"""
+    return _create_prose_project(payload)
 
 
 @app.get("/api/prose/status")

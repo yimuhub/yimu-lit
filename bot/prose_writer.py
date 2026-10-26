@@ -22,6 +22,7 @@ import re
 import threading
 
 from . import llm, skillkit
+from . import slop_checker
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -190,6 +191,14 @@ def normalize_op(op: str) -> str:
 def gen_brief(cfg: dict) -> str:
     """B brief：七项必填。"""
     genre = GENRES.get(normalize_genre(cfg.get("genre", "suibi")), "随笔")
+    given = []
+    for label, key in (("受众", "audience"), ("目的", "purpose"), ("语气", "tone")):
+        if cfg.get(key):
+            given.append(f"- {label}：{cfg[key]}")
+    if cfg.get("target_words"):
+        given.append(f"- 目标字数：约 {int(cfg['target_words'])} 字（成稿允许 ±20%）")
+    if cfg.get("fact_check") is False:
+        given.append("- 事实清单：本篇不要求外部事实与引文，「事实清单」一项写「不适用」")
     task = (
         f"写「创作简报（brief）」，目标文体：{genre}。\n\n"
         f"必填七项，每项写清楚（用户没给的就标注「待确认」并给一个建议值）：\n"
@@ -198,22 +207,24 @@ def gen_brief(cfg: dict) -> str:
         f"5. **语气**（克制 / 锐利 / 温和 / 冷，并给具体档位）\n"
         f"6. **约束**（目标字数、必须包含的、不能碰的）\n"
         f"7. **事实清单**（要写到的具体事实、数字、事件、引文；不确定的列出来）\n\n"
-        f"用户给的内容：{cfg.get('idea') or '（未给，请拟定一个可行的 brief 并标注哪些是待确认）'}"
+        + (f"用户已指定，直接采用、不要再标「待确认」：\n" + "\n".join(given) + "\n\n" if given else "")
+        + f"用户给的内容：{cfg.get('idea') or '（未给，请拟定一个可行的 brief 并标注哪些是待确认）'}"
     )
     return _gen("散文 · Brief", task, _ctx("B", cfg=cfg), cfg, "planning")
 
 
 def gen_material(cfg: dict, brief: str) -> str:
     """S 素材：细节库 + 事实核验 + 缺口。"""
-    task = (
-        "写「素材与细节库」，包含：\n"
-        "1. **可用细节**（8-12 条，每条：具体物 + 它承载什么信息）\n"
-        "2. **事实与来源**（要用到的事实、数字、引文；标出哪些待核实）\n"
-        "3. **缺口清单**（写不出来的地方用 `[待补：…]` 标记）\n"
-        "4. **结构方案**（选一种：时间顺叙 / 主题辐射 / 双线交织 / 问题驱动，并说明为什么）\n"
-        "5. **文风参考**（若用户给了样本，说明要采样的维度）\n\n"
-        f"Brief：\n{brief[:2500]}"
-    )
+    need_fact = cfg.get("fact_check", True) is not False
+    raw = ["**可用细节**（8-12 条，每条：具体物 + 它承载什么信息）"]
+    if need_fact:
+        raw.append("**事实与来源**（要用到的事实、数字、引文；标出哪些待核实）")
+    raw += ["**缺口清单**（写不出来的地方用 `[待补：…]` 标记）",
+            "**结构方案**（选一种：时间顺叙 / 主题辐射 / 双线交织 / 问题驱动，并说明为什么）",
+            "**文风参考**（若用户给了样本，说明要采样的维度）"]
+    task = ("写「素材与细节库」，包含：\n"
+            + "\n".join(f"{i + 1}. {x}" for i, x in enumerate(raw)) + "\n\n"
+            f"Brief：\n{brief[:2500]}")
     return _gen("散文 · 素材", task, _ctx("S", cfg=cfg), cfg, "planning")
 
 
@@ -296,6 +307,42 @@ def gen_polish(text: str, cfg: dict) -> str:
     return _gen("散文 · 精修", task, _ctx("P", cfg=cfg), cfg, "review", max_tokens=7000)
 
 
+def gen_deslop(text: str, rep: dict, cfg: dict) -> str:
+    """按确定性扫描报告定向去味：只改命中处，不重写。"""
+    task = (
+        "下面的扫描报告标出了稿子里的 AI 腔（套路词、机械排比、总结句、元话语、抽象大词等）。\n"
+        "**只改报告点名的位置**，其余一字不动；不要顺手改写没被点名的句子。\n"
+        "直接输出改后的全文，不要任何说明。\n\n"
+        f"扫描报告：\n{slop_checker.report_yaml(rep)[:2500]}\n\n"
+        f"稿件：\n{text[:10000]}"
+    )
+    return _gen("散文 · 去味", task, _ctx("A", cfg=cfg), cfg, "review", max_tokens=7000)
+
+
+def slop_pass(text: str, cfg: dict) -> tuple[str, dict]:
+    """slop_depth 决定扫描后的处理量：light 只出报告 / standard 一轮定向改 / deep 最多两轮。"""
+    depth = str(cfg.get("slop_depth") or "standard")
+    try:
+        rep = slop_checker.scan(text)
+    except Exception:
+        return text, {}
+    for _ in range({"light": 0, "standard": 1}.get(depth, 2)):
+        if not (rep.get("findings") or []):
+            break
+        try:
+            fixed = gen_deslop(text, rep, cfg).strip()
+        except Exception:
+            break
+        if not fixed or fixed == text.strip():
+            break
+        text = fixed
+        try:
+            rep = slop_checker.scan(text)
+        except Exception:
+            break
+    return text, rep
+
+
 # ---------------------------------------------------------------- 生命周期
 
 def create_project(cfg: dict, base_key: str = "") -> ProseProject:
@@ -360,9 +407,16 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
     polished = gen_polish(draft, cfg)
     if not polished.strip():
         polished = draft
+    polished, slop_rep = slop_pass(polished, cfg)
+    if slop_rep:
+        proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
+                 f"{slop_rep.get('summary', '')}")
     _write(os.path.join(pdir, F_SLOP), polished.strip() + "\n")
     plan["meta"]["stage"] = "P"
     plan["meta"]["stageIdx"] = 4
+    plan["meta"]["slop"] = {"depth": str(cfg.get("slop_depth") or "standard"),
+                            "verdict": slop_rep.get("verdict", ""),
+                            "summary": slop_rep.get("summary", "")}
     proj.save_plan(plan)
 
     proj.log("📋 阶段 F：定稿…")

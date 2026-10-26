@@ -1,11 +1,18 @@
-"""v0.5 M4：多 Agent 创作宇宙 —— 角色注册表 + 子 Agent 独立配模型 + 并发调度。
+"""v0.5 M4：多 Agent 创作宇宙 —— 角色注册表 + 子 Agent 独立配模型/技能 + 并发调度。
 
 模型解析在 providers.agent_resolve（agent_models > stage_models > 默认），
 限流在 providers.ConcurrencyGuard（全局并发上限 + 每 provider 限流，防 429）。
-这里提供「宇宙」语义层：AGENTS 注册表、每岗位绑定的读写、批量分发多书并发创作。
+这里提供「宇宙」语义层：AGENTS 注册表、每岗位绑定的读写（模型 + 技能）、批量分发多书并发创作。
+
+v2.1 P1：岗位×技能绑定 —— config.json defaults.agent_skills = { "<agent>": ["<skill>", ...] }。
+技能名懒校验（skillkit 由并行同事维护、签名可能变动，校验失败只记警告、不阻止保存）。
 """
+import logging
+
 from . import providers
 from .safeio import atomic_write_json
+
+log = logging.getLogger(__name__)
 
 # 岗位注册表：每个子 Agent 可单独配 provider/model；缺省回落到 stage_models / 默认供应商。
 AGENTS = {
@@ -50,17 +57,105 @@ def set_binding(agent, provider_id=None, model=None):
     atomic_write_json(p, c)
     return am
 
-def view():
-    """给前端：每个岗位的绑定 + 可选项（供应商→模型）。"""
-    opts = providers.active_model_options()
+
+# ---------- 岗位 × 技能绑定（v2.1 P1；defaults.agent_skills） ----------
+def get_skill_bindings():
+    """返回 {agent: [skill name, ...]} —— 从 config.json defaults.agent_skills。"""
+    import json
+    try:
+        return json.load(open(_config_path(), encoding="utf-8")).get("defaults", {}).get("agent_skills", {}) or {}
+    except Exception:
+        return {}
+
+def _clean_skills(names):
+    """names 必须是字符串列表：去空白、去重、排序；非法输入抛 ValueError。"""
+    if isinstance(names, str) or not isinstance(names, (list, tuple, set)):
+        raise ValueError("技能必须是字符串列表")
+    out = set()
+    for n in names:
+        if not isinstance(n, str):
+            raise ValueError("技能必须是字符串列表")
+        n = n.strip()
+        if n:
+            out.add(n)
+    return sorted(out)
+
+def _check_skills_exist(names):
+    """懒校验：bot/skillkit 由并行同事维护、签名可能变动——容错导入，
+    查不到的技能只记警告，不阻止保存，绝不 import 期崩溃。返回未知名列表。"""
+    unknown = []
+    try:
+        from . import skillkit
+        by_name = getattr(skillkit, "by_name", None)
+        if not callable(by_name):
+            return []
+        for n in names:
+            try:
+                if by_name(n) is None:
+                    unknown.append(n)
+            except Exception:
+                return []      # skillkit 行为变化：放弃校验，不影响保存
+    except Exception:
+        return []
+    if unknown:
+        log.warning("agent 技能懒校验：技能库中未找到 %s（仍已保存）", unknown)
+    return unknown
+
+def skills_for(agent):
+    """某岗位绑定的技能名列表；未绑定/异常一律返回 []，永不抛异常。"""
+    try:
+        v = get_skill_bindings().get(agent)
+        if not isinstance(v, list):
+            return []
+        return [s for s in v if isinstance(s, str) and s.strip()]
+    except Exception:
+        return []
+
+def set_skills(agent, names):
+    """把某岗位的技能绑定写进 config.json（空列表 = 取消绑定）。
+    agent 必须在 AGENTS 内；names 去重排序后落盘，技能名懒校验只警告。"""
+    if agent not in AGENTS:
+        raise ValueError(f"未知岗位：{agent!r}")
+    cleaned = _clean_skills(names)
+    _check_skills_exist(cleaned)
+    import json
+    p = _config_path()
+    try:
+        c = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        c = {}
+    d = c.setdefault("defaults", {})
+    asm = d.setdefault("agent_skills", {})
+    asm[agent] = cleaned          # 空列表 = 清空绑定（与 set_binding 全空语义一致）
+    atomic_write_json(p, c)
+    return asm
+
+def _skills_of(sbinds, agent):
+    v = sbinds.get(agent)
+    if not isinstance(v, list):
+        return []
+    return sorted({s.strip() for s in v if isinstance(s, str) and s.strip()})
+
+def bindings_view():
+    """给前端协作面板：岗位 + 模型绑定 + 技能绑定。
+    返回 { agents: [{agent,label,stage,desc,provider_id,model,effective,skills}], max_global_agents }。"""
     binds = get_bindings()
+    sbinds = get_skill_bindings()
     out = []
     for agent, meta in AGENTS.items():
         b = binds.get(agent, {}) or {}
         out.append({"agent": agent, "label": meta["label"], "stage": meta["stage"], "desc": meta["desc"],
                     "provider_id": b.get("provider_id"), "model": b.get("model"),
-                    "effective": ("已绑定 " + (b.get("model") or "?")) if (b.get("provider_id") or b.get("model")) else "回落 stage/默认"})
-    return {"agents": out, "options": opts, "max_global_agents": _max_global()}
+                    "effective": ("已绑定 " + (b.get("model") or "?")) if (b.get("provider_id") or b.get("model")) else "回落 stage/默认",
+                    "skills": _skills_of(sbinds, agent)})
+    return {"agents": out, "max_global_agents": _max_global()}
+
+def view():
+    """给前端：每个岗位的绑定 + 可选项（供应商→模型）。
+    v2.1：字段保持原样，仅每个 agent 增加 skills。"""
+    bv = bindings_view()
+    bv["options"] = providers.active_model_options()
+    return bv
 
 def _max_global():
     import json

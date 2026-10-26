@@ -38,23 +38,25 @@ export function renderBench(container, ctx) {
     type: 'button',
     text: '保存',
     disabled: true,
+    dataset: { state: 'saved' },
     on: { click: () => save() }
   });
   view.append(head);
 
-  const main = h('div', { class: 'bench-editor-wrap' });
+  const body = h('div', { class: 'bench-body' });
+  const editorCol = h('div', { class: 'bench-editor' });
   const editor = h('textarea', {
-    class: 'bench-editor',
+    class: 'bench-input',
     spellcheck: 'false',
     placeholder: '这一章还没有正文。可以直接粘贴或开始写作，改动会形成版本快照。',
     'aria-label': '章节正文'
   });
   const foot = h('div', { class: 'bench-foot' });
-  main.append(editor, foot);
-  view.append(main);
+  editorCol.append(editor, foot);
 
   const side = h('div', { class: 'bench-side' });
-  view.append(side);
+  body.append(editorCol, side);
+  view.append(body);
 
   /* ------------------------------------------------------------ paint */
 
@@ -72,9 +74,12 @@ export function renderBench(container, ctx) {
       }),
       h(
         'div',
-        { class: 'bench-info' },
-        h('div', { class: 'bench-title', text: model.title || `第 ${model.n} 章` }),
-        h('div', { class: 'hint-text', text: work ? `${work.name} · 第 ${model.n} / ${work.total || '?'} 章` : `第 ${model.n} 章` })
+        { class: 'bench-title' },
+        h('span', { class: 'bt-name', text: model.title || `第 ${model.n} 章` }),
+        h('span', {
+          class: 'bt-sub',
+          text: work ? `${work.name} · 第 ${model.n} / ${work.total || '?'} 章` : `第 ${model.n} 章`
+        })
       ),
       h('span', { style: { flex: '1' } }),
       h('button', {
@@ -100,9 +105,13 @@ export function renderBench(container, ctx) {
     foot.textContent = '';
     const chars = editor.value.length;
     foot.append(
-      h('span', { text: `${chars.toLocaleString('zh-CN')} 字符` }),
-      model.words ? h('span', { class: 'sep' }, h('span', { text: `记录字数 ${fmtWords(model.words)}` })) : null,
-      model.updatedAt ? h('span', { class: 'sep' }, h('span', { text: `上次保存 ${fmtDate(model.updatedAt, true)}` })) : null,
+      h(
+        'div',
+        { class: 'bench-foot-info' },
+        h('span', { text: `${chars.toLocaleString('zh-CN')} 字符` }),
+        model.words ? h('span', { class: 'sep' }, h('span', { text: `记录字数 ${fmtWords(model.words)}` })) : null,
+        model.updatedAt ? h('span', { class: 'sep' }, h('span', { text: `上次保存 ${fmtDate(model.updatedAt, true)}` })) : null
+      ),
       h('span', { style: { flex: '1' } }),
       model.dirty ? h('span', { class: 'bench-dirty', text: '有未保存改动 · Cmd/ Ctrl+S 保存' }) : h('span', { class: 'hint-text', text: '已保存' })
     );
@@ -129,13 +138,16 @@ export function renderBench(container, ctx) {
           { class: 'bench-version' },
           h(
             'div',
-            { style: { flex: '1', minWidth: '0' } },
-            h('div', { text: v.label || v.id || '快照' }),
-            h('div', { class: 'hint-text', text: `${v.at ? relTime(v.at) : ''}${v.words ? ` · ${fmtWords(v.words)}` : ''}` })
+            { class: 'bv-top' },
+            h('span', { class: 'bv-label', text: v.label || v.id || '快照' }),
+            h('span', {
+              class: 'bv-meta',
+              text: `${v.at ? relTime(v.at) : ''}${v.words ? ` · ${fmtWords(v.words)}` : ''}`
+            })
           ),
           h(
             'div',
-            { style: { display: 'flex', gap: '4px', flex: 'none' } },
+            { class: 'bv-actions' },
             h('button', { class: 'btn btn-sm', type: 'button', text: '对比', on: { click: () => showDiff(v) } }),
             h('button', {
               class: 'btn btn-sm',
@@ -166,12 +178,18 @@ export function renderBench(container, ctx) {
     side.append(body);
   }
 
+  function paintSaveBtn() {
+    const state = model.saving ? 'saving' : model.error && !model.dirty ? 'error' : model.dirty ? 'dirty' : 'saved';
+    saveBtn.dataset.state = state;
+    saveBtn.disabled = !model.dirty || model.saving;
+    saveBtn.textContent = model.saving ? '保存中…' : model.dirty ? '保存改动' : '已保存';
+  }
+
   function paintAll() {
     paintHead();
     paintFoot();
     paintSide();
-    saveBtn.disabled = !model.dirty || model.saving;
-    saveBtn.textContent = model.saving ? '保存中…' : model.dirty ? '保存改动' : '已保存';
+    paintSaveBtn();
   }
 
   /* ------------------------------------------------------------ data */
@@ -228,6 +246,7 @@ export function renderBench(container, ctx) {
   editor.addEventListener('input', () => {
     model.dirty = editor.value !== model.savedText;
     paintFoot();
+    saveBtn.dataset.state = model.saving ? 'saving' : model.dirty ? 'dirty' : 'saved';
     saveBtn.disabled = !model.dirty || model.saving;
     saveBtn.textContent = model.dirty ? '保存改动' : '已保存';
     clearTimeout(autosaveTimer);
@@ -266,8 +285,17 @@ export function renderBench(container, ctx) {
         bodyEl.append(h('div', { class: 'hint-text', text: '两个版本内容一致。' }));
       } else {
         for (const line of diffText.split('\n')) {
-          const cls = line.startsWith('+') && !line.startsWith('+++') ? 'add' : line.startsWith('-') && !line.startsWith('---') ? 'del' : line.startsWith('@@') ? 'meta' : '';
-          bodyEl.append(h('div', { class: `diff-line ${cls}`.trim(), text: line || ' ' }));
+          const isAdd = line.startsWith('+') && !line.startsWith('+++');
+          const isDel = line.startsWith('-') && !line.startsWith('---');
+          const cls = isAdd || isDel ? (isAdd ? 'add' : 'del') : line.startsWith('@@') ? 'hunk' : 'meta';
+          bodyEl.append(
+            h(
+              'div',
+              { class: `diff-line ${cls}` },
+              h('span', { class: 'dl-sign', text: isAdd ? '+' : isDel ? '-' : '' }),
+              h('span', { text: line.replace(/^[+-]/, '') || ' ' })
+            )
+          );
         }
       }
     } catch (err) {

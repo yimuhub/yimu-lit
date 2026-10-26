@@ -433,6 +433,22 @@
   animation: caret-blink 1.05s steps(2, start) infinite;
 }
 
+/* 等待/慢网关提示：空的时候不占位，避免状态清空后留下空隙 */
+.msg-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.msg-hints:empty {
+  display: none;
+}
+
+.msg-hints .msg-notice {
+  color: var(--warn-label);
+}
+
 @keyframes caret-blink {
   to { visibility: hidden; }
 }
@@ -580,6 +596,25 @@
   color: var(--ink-caption);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 气泡内联动作（例如未配置模型时去设置） */
+.msg-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  border-bottom: 0.5px solid currentColor;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.msg-link:hover {
+  color: var(--accent);
 }
 
 /* Process card */

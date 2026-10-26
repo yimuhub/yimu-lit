@@ -12,7 +12,7 @@ import {
 import { store } from '../core/state.js';
 import { navigate } from '../core/router.js';
 import { createComposer } from '../components/composer.js';
-import { MEDIUM_FALLBACK } from '../core/constants.js';
+import { MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
 import { toast } from '../core/ui.js';
 
 function mediumList() {
@@ -84,7 +84,7 @@ export function renderWelcome(container, ctx) {
     const btn = h(
       'button',
       { class: 'quick-card', type: 'button', dataset: { medium: medium.key } },
-      h('span', { class: 'qc-icon', html: icon(medium.icon || 'book', 15) }),
+      h('span', { class: 'qc-icon', html: icon(mediumIcon(medium), 15) }),
       h('span', { class: 'qc-name', text: medium.label }),
       h('span', { class: 'qc-desc', text: medium.desc || '' })
     );

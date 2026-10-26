@@ -68,6 +68,27 @@ def config_summary(cfg):
             f"🌍 世界观：{cfg.get('worldview') or '待定'} | 👁 视角：{cfg.get('perspective') or '待定'} | 🎨 基调：{cfg.get('tone') or '待定'}\n"
             f"💡 主题：{cfg.get('theme') or '待定'} | 📊 规模：{cfg.get('chapters') or '待定'}章")
 
+def _craft_genre(cfg):
+    """craft 注入用的题材标识：优先用前端归一好的 skillkit key（genre_key），
+    没有则回落到中文题材名（skillkit._genre_key 会再做一次归一）。"""
+    return str(cfg.get("genre_key") or cfg.get("genre") or "").strip()
+
+def agent_skills_block(agent, cfg, stage, max_bytes=6000):
+    """岗位×技能绑定（v2.1 P2）：该岗位在设置里绑了技能才注入，没绑定返回空串。
+
+    这样默认路径的提示词体积与旧版一致，只有用户显式给某个岗位配了技能，
+    那部分技能内容才会进入该岗位的上下文。
+    """
+    try:
+        from . import agents as _agents, skillkit as _skillkit
+        if not _agents.skills_for(agent):
+            return ""
+        return _skillkit.stage_inject(stage, cfg.get("medium") or "novel",
+                                      genre=_craft_genre(cfg), agent=agent,
+                                      max_bytes=max_bytes)
+    except Exception:
+        return ""
+
 # ---------- 阶段2：规划 ----------
 
 def gen_characters(cfg):
@@ -94,6 +115,9 @@ def gen_outline(cfg):
     user_p = (f"小说配置：{json.dumps(cfg, ensure_ascii=False)}\n"
               f"【技能模板】\n{skill.guide('outline-template')[:2000]}\n"
               f"【情节结构方法摘录】\n{skill.guide('plot-structures')[:3000]}")
+    planner_skills = agent_skills_block("planner", cfg, "P0")
+    if planner_skills:
+        sys_p += "\n\n" + planner_skills
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
@@ -125,7 +149,7 @@ def _writing_system(ctx):
     parts = [
         "你是「一幕·神笔 · ShenBi NovelCraft」原创创作系统的资深中文网文作者，目标是写出能上排行榜前列的长篇。",
         "三大黄金法则 + 七条创作底线：\n" + skill.golden_rules(),
-        f"【题材 craft（{cfg.get('genre','') or '通用'}）】\n" + skill.genre(cfg.get("genre", ""))[:900],
+        f"【题材 craft（{cfg.get('genre','') or '通用'}）】\n" + skill.genre(_craft_genre(cfg))[:900],
         "【章纲写作规范】\n" + skill.guide("chapter-guide")[:2500],
         "【钩子与卡点】\n" + skill.guide("hook-techniques")[:2200],
         "【对话写法】\n" + skill.guide("dialogue-writing")[:1800],
@@ -140,6 +164,9 @@ def _writing_system(ctx):
     if ctx.get("references_block") or cfg.get("_reference_block"):
         parts.append("【参考资料纪律】只吸收事实、结构与风格，禁止连续复制原文 12 字以上；"
                      "引用须标注来源；与用户设定冲突时以用户设定为准。")
+    writer_skills = agent_skills_block("writer", cfg, "P2")
+    if writer_skills:
+        parts.append(writer_skills)
     parts += [
         "硬性要求：正文 3000-5000 汉字；章首引子 50-150 字；对话占比 30%+；全章≥2个爽点/张力波峰；"
         "≥1个意外转折；结尾必留钩子；严守人物性格与知情范围一致性；动笔前先消化上一章结尾语态。",
@@ -374,7 +401,7 @@ def chapter_review(ch_body, cfg, context=""):
     返回 {"scores":{6维0-10}, "weak":[维度名×3], "verdict":"一句话"}；失败返回 {}。
     评的是"这一章在本书里是否达标"，吃 context（文风/人物/前后章）做参照。"""
     try:
-        genre_txt = skill.genre(cfg.get("genre", ""))
+        genre_txt = skill.genre(_craft_genre(cfg))
         sys_p = ("你是「一幕·神笔」五角色审校团。现在只审**下面这一章**（在整本书语境下），"
                  "按 6 维打分（0-10）：结构/因果可信/人物/连续性/语言/读者体验。"
                  f"【题材craft】{genre_txt[:600]}\n【反AI腔(供语言维)】{skill.anti_slop()[:600]}\n"
@@ -386,6 +413,9 @@ def chapter_review(ch_body, cfg, context=""):
                  '"verdict":"一句话本章质量判断与最该修的点"}。'
                  'evidence 至少 2 条，quote 必须是原文片段，不得编造。只输出 JSON。')
         user_p = f"待审章节（第 ? 章，只评它）：\n{ch_body[:9000]}"
+        reviewer_skills = agent_skills_block("reviewer", cfg, "P4")
+        if reviewer_skills:
+            sys_p += "\n" + reviewer_skills
         # 规则层：slop 定位（语言维证据，不装确定）
         try:
             from . import slop_checker
@@ -420,7 +450,7 @@ def chapter_review(ch_body, cfg, context=""):
 def five_role_review(book_md, cfg, l1_findings=None):
     """五角色审校团（Architect/Scribe/Editor/Guardian/Curator）单次 LLM 覆盖，
     吃 L1 确定性结果作为证据；返回 6 维(0-10)评分 + findings + fix_actions。"""
-    genre_txt = skill.genre(cfg.get("genre", ""))
+    genre_txt = skill.genre(_craft_genre(cfg))
     sys_p = ("你是「一幕·神笔」五角色审校团，对全书做分层编辑审稿并分工：\n"
              "Architect(结构/节拍/黄金三章)、Scribe(正文是否注水/推进)、"
              "Editor(语言·去AI腔，套用反AI腔清单)、Guardian(连续性，先采信 L1 再复核)、"
@@ -438,6 +468,9 @@ def five_role_review(book_md, cfg, l1_findings=None):
              "\"fix_actions\":[{\"chapter\":N,\"action\":\"具体可执行的局部重写指令\"}]}。"
              "fix_actions 只放 severity=high 且能定位到章节的（最多 6 条）。只输出 JSON。")
     user_p = f"全书（节选）：\n{book_md[:30000]}"
+    editor_skills = agent_skills_block("editor", cfg, "P4")
+    if editor_skills:
+        sys_p += "\n" + editor_skills
     return llm.chat_json([{"role": "system", "content": sys_p},
                           {"role": "user", "content": user_p}], cfg=cfg, stage="review")
 

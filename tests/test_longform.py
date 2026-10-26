@@ -272,6 +272,37 @@ def test_replan_proposal_and_apply_only_future(tmp_path):
     assert any(x["id"] == another["id"] for x in longform.list_proposals(p, status="rejected"))
 
 
+def test_multi_replan_two_roles_parallel(tmp_path):
+    """多角色同时规划：规划师与总编各出一份提案，互不覆盖，可选一份应用。"""
+    p = make_project(tmp_path, total=20, done=10)
+    longform.ensure_plan(p)
+    plan_before = _plan_bytes(p)
+
+    cards = longform.multi_replan(p, scope="window", instruction="把追兵提前")
+    assert [c["agent"] for c in cards] == ["planner", "editor"]
+    assert all(c["ok"] for c in cards), cards
+    ids = [c["proposal_id"] for c in cards]
+    assert len(set(ids)) == 2                      # 两份提案各自落盘
+    assert all(os.path.exists(os.path.join(p.path, "02e-规划提案", f"{i}.json")) for i in ids)
+    assert all(c["label"] for c in cards)          # 前端对比卡需要角色名
+    assert all(min(c["affected_chapters"]) > 10 for c in cards)
+    assert plan_before == _plan_bytes(p)           # 规划本身仍未被修改
+
+    stored = {x["id"]: x for x in longform.list_proposals(p, status="pending")}
+    assert stored[ids[0]]["agent"] == "planner"
+    assert stored[ids[1]]["role"] == "总编"
+
+    applied = longform.apply_replan(p, ids[1])
+    assert applied["ok"] is True
+    assert any(x["id"] == ids[0] for x in longform.list_proposals(p, status="pending"))
+
+    # 只跑一个岗位也行；非法岗位被忽略
+    one = longform.multi_replan(p, scope="window", roles=["editor"])
+    assert [c["agent"] for c in one] == ["editor"]
+    none = longform.multi_replan(p, scope="window", roles=["ghost"])
+    assert [c["agent"] for c in none] == ["planner"]
+
+
 # ---------- 6. 重规划触发 ----------
 
 def test_should_replan_triggers(tmp_path):

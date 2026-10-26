@@ -2,7 +2,7 @@
 
 import { h, icon, validateFile, ATTACH_ACCEPT, fmtWords } from '../core/dom.js';
 import { store, patchUi } from '../core/state.js';
-import { USAGE_MODES, usageLabel, MEDIUM_FALLBACK } from '../core/constants.js';
+import { USAGE_MODES, usageLabel, MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
 import { toast, popoverMenu } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
 
@@ -15,7 +15,7 @@ const MODES = [
 function mediumOptions() {
   const loaded = store.get().mediums;
   const list = loaded && loaded.length ? loaded : MEDIUM_FALLBACK;
-  return list.map((m) => ({ key: m.key, label: m.label, icon: m.icon || 'book', desc: m.desc || '' }));
+  return list.map((m) => ({ key: m.key, label: m.label, icon: mediumIcon(m), desc: m.desc || '' }));
 }
 
 export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onStop, placeholder } = {}) {

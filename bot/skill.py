@@ -9,7 +9,7 @@ genre / golden_rules / golden3 / anti_slop / check_words）供既有代码无感
 import json, os, re
 from functools import cache
 
-from . import wordcount
+from . import skillkit, wordcount
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SECRETS_DIR = os.path.join(ROOT, "secrets")
@@ -81,26 +81,37 @@ def golden_rules():
     return "1. 展示而非讲述 2. 冲突驱动剧情 3. 悬念承上启下"
 
 
-def _genre_key(genre):
-    """cfg 的题材字符串 → 题材 craft 文件 key；未命中回落 _index（全平台通配默认）。"""
-    g = (genre or "").lower()
-    table = [
-        (("推理", "悬疑", "犯罪", "mystery", "惊悚"), "mystery"),
-        (("言情", "甜宠", "都市情感", "romance"), "romance"),
-        (("恐怖", "惊悚", "horror", "灵异"), "horror"),
-        (("玄幻", "仙侠", "修仙", "修真", "xuanhuan", "玄幻仙侠"), "xuanhuan"),
-        (("都市", "现实", "职场", "商战", "重生", "赘婿", "urban", "爽文"), "urban"),
-    ]
-    for keys, val in table:
-        for k in keys:
-            if k in g:
-                return val
-    return "_index"
+# v2.1：题材映射统一到 bot/skillkit.py 单一实现（旧版这里有一份只覆盖 5 个题材的
+# 重复表，导致 历史/科幻/军事/职场/仙侠 craft 永远命中不到）。skill._genre_key
+# 名字保留供既有代码调用，实际就是 skillkit._genre_key 本体。
+_genre_key = skillkit._genre_key
+
+
+def _genre_filename(key):
+    """题材 key → references/genre/ 下的实际文件名。
+
+    v2.1 新增：craft 文件存在中文文件名（历史.md / 科幻.md …），不能再用
+    key + '.md' 直拼；按 skillkit._genre_key 对文件名归一后匹配。
+    找不到对应 craft（如 wuxia 暂无文件）回落 _index.md。
+    """
+    d = os.path.join(_skill_root(), "references", "genre")
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        names = []
+    for fn in names:
+        if fn.endswith(".md") and skillkit._genre_key(fn[:-3]) == key:
+            return fn
+    return "_index.md"
 
 
 def genre(genre):
     """返回该题材的 craft 套文本；无法命中返回通用默认（_index）。"""
-    return read_file(f"references/genre/{_genre_key(genre)}.md")
+    fn = _genre_filename(_genre_key(genre))
+    try:
+        return read_file(f"references/genre/{fn}")
+    except Exception:
+        return read_file("references/genre/_index.md")
 
 
 def anti_slop():

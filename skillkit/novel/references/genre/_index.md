@@ -7,6 +7,7 @@ kind: method
 weight: 3
 license: MIT
 source: 原创（神笔小说 ShenBi NovelCraft，方法论吸收业界通用创作思想）
+genre: _index
 ---
 
 # 题材 craft · 总则（全平台通配默认）

@@ -74,9 +74,13 @@ def _style_text(pdir: str) -> str:
                 ("题材", sk.get("genre", "")), ("基调", sk.get("tone", "")),
                 ("视角", sk.get("perspective", "")), ("金手指", d.get("金手指", "")),
                 ("风格基调", d.get("基调", "")), ("节奏", d.get("节奏", "")),
-                ("语言", d.get("语言", "")), ("卷", d.get("卷", ""))] if v]
+                ("语言", d.get("语言", "")), ("卷", d.get("卷", "")),
+                ("发布平台", sk.get("platform", "")),
+                ("卖点", "、".join(str(s) for s in (sk.get("sells") or [])))] if v]
             if parts:
                 text += "\n\n## 创作风格技能（本作品按此技能设定书写，严格遵守）\n" + "\n".join(parts)
+            if sk.get("platform_note"):
+                text += "\n\n## 平台节奏要求（" + str(sk["platform"]) + "）\n" + str(sk["platform_note"])
     except Exception:
         pass
     try:

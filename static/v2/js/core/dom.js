@@ -215,12 +215,24 @@ export function statusMeta(state, label) {
   const map = {
     completed: { tone: 'success', label: label || '已出书' },
     in_progress: { tone: 'running', label: label || '创作中' },
+    planning: { tone: 'warn', label: label || '规划中' },
+    writing: { tone: 'running', label: label || '写作中' },
     validating: { tone: 'running', label: label || '校验中' },
     awaiting_title: { tone: 'warn', label: label || '选书名' },
     failed: { tone: 'danger', label: label || '失败' },
     idle: { tone: 'muted', label: label || '草稿' }
   };
   return map[state] || { tone: 'muted', label: label || '未开始' };
+}
+
+export const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文' };
+/* 各文体的进度单位不同：小说计章、剧本计场、诗词计改稿轮、散文计阶段。 */
+export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段' };
+
+export function mediumChip(medium) {
+  const label = MEDIUM_LABELS[medium];
+  if (!label || medium === 'novel') return null;
+  return h('span', { class: `lib-medium`, text: label, title: `${label}作品` });
 }
 
 export function initials(name) {

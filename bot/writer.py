@@ -195,7 +195,9 @@ def create_project(cfg, titles, pdir=None, name=None):
     # v0.3 P2：题材×风格技能（金手指/基调/视角/节奏/语言/卷）→ style.json，供 craft 注入
     import json as _json
     _sk = {"genre": cfg.get("genre", ""), "tone": cfg.get("tone", ""),
-           "perspective": cfg.get("perspective", ""), "style": cfg.get("style") or {}}
+           "perspective": cfg.get("perspective", ""), "style": cfg.get("style") or {},
+           "platform": cfg.get("platform", ""), "platform_note": cfg.get("platform_note", ""),
+           "sells": cfg.get("sells") or []}
     atomic_write_json(os.path.join(pdir, "style.json"), _sk)
 
     # ---------- 连续性结构（加法，单个失败不阻断规划） ----------
@@ -228,7 +230,7 @@ def create_project(cfg, titles, pdir=None, name=None):
     chapter_titles = _parse_outline_titles(outline, total)
     plan = {
         "version": 1, "novelName": name, "projectPath": pdir,
-        "totalChapters": total, "minWordsPerChapter": 3000,
+        "totalChapters": total, "minWordsPerChapter": int(cfg.get("min_words_per_chapter") or 3000),
         "createdAt": datetime.datetime.now().isoformat(),
         "status": "planning", "writingMode": "serial", "config": cfg,
         "titles": titles,
@@ -448,9 +450,14 @@ def _build_ctx_legacy(proj, ch):
             _parts = [f"{k}：{v}" for k, v in [
                 ("题材", _sk.get("genre", "")), ("基调", _sk.get("tone", "")), ("视角", _sk.get("perspective", "")),
                 ("金手指", _d.get("金手指", "")), ("风格基调", _d.get("基调", "")), ("节奏", _d.get("节奏", "")),
-                ("语言", _d.get("语言", "")), ("卷", _d.get("卷", ""))] if v]
+                ("语言", _d.get("语言", "")), ("卷", _d.get("卷", "")),
+                ("发布平台", _sk.get("platform", "")),
+                ("卖点", "、".join(str(s) for s in (_sk.get("sells") or [])))] if v]
             if _parts:
                 style_text += "\n\n## 创作风格技能（本作品按此技能设定书写，严格遵守）\n" + "\n".join(_parts)
+            if _sk.get("platform_note"):
+                style_text += ("\n\n## 平台节奏要求（" + str(_sk.get("platform", "")) + "）\n"
+                               + str(_sk["platform_note"]))
     except Exception:
         pass
     # v0.3.4：专属蒸馏风格（style_ref.json）→ 追加注入，按该风格技法书写
@@ -1358,19 +1365,76 @@ def _pass_line():
 def _meta(proj):
     return (proj.plan() or {}).get("meta") or {}
 
+# 四套引擎各写各的计划文件；文件名是项目文体唯一的判据。
+_PLAN_BY_MEDIUM = (("novel", "02-写作计划.json"), ("script", "剧本计划.json"),
+                   ("poetry", "诗词计划.json"), ("prose", "散文计划.json"))
+_NAME_KEY = {"novel": "novelName", "script": "scriptName", "poetry": "poemName", "prose": "proseName"}
+_FORM_LABEL_KEY = {"novel": "", "script": "formLabel", "poetry": "formLabel", "prose": "genreLabel"}
+_OTHER_LABEL = {"completed": "已完成", "planning": "规划中", "writing": "写作中",
+                "in_progress": "创作中", "failed": "失败", "unknown": "草稿"}
+
+
+def _plan_of(pdir):
+    """(文体, 计划文件路径, plan)；没有任一计划文件的目录不算作品。"""
+    for med, fname in _PLAN_BY_MEDIUM:
+        pj = os.path.join(pdir, fname)
+        if os.path.exists(pj):
+            try:
+                return med, pj, json.load(open(pj, encoding="utf-8"))
+            except Exception:
+                return med, pj, {}
+    return "", "", {}
+
+
+def _other_medium_item(key, pdir, med, plan):
+    """非小说作品：进度/字数取该文体引擎的 status()，小说专有字段留空而非造假值。
+    项目对象用这里已解析好的 pdir 构造，避免各引擎自己的 PROJECTS_DIR 与本模块漂移。"""
+    st = {}
+    try:
+        from bot import poetry_writer, prose_writer, script_writer
+        cls = {"script": script_writer.ScriptProject, "poetry": poetry_writer.PoetryProject,
+               "prose": prose_writer.ProseProject}[med]
+        st = cls(pdir, key).status() or {}
+    except Exception:
+        st = {}
+    meta = plan.get("meta") or {}
+    state = str(st.get("state") or plan.get("status") or "unknown")
+    total = int(st.get("total") or 0)
+    done = int(st.get("done") or 0)
+    # 各引擎的 form 不统一（剧本给码，诗词/散文给标签），展示一律取计划里的 *Label。
+    form = plan.get(_FORM_LABEL_KEY[med]) or ""
+    cfg = plan.get("config") or {}
+    genre = ((cfg.get("genre") or "") if med == "script" else "") or form or "未分类"
+    words = int(st.get("words") or 0)
+    if state == "completed":
+        total = max(total, 1)
+        done = total   # 完成态按定稿算：诗词的轮数（如 1/3）只反映改稿轮数，不是完成度
+    return {"key": key, "name": st.get("name") or plan.get(_NAME_KEY[med]) or key,
+            "medium": med, "form": form, "genre": genre,
+            "state": state, "status_label": _OTHER_LABEL.get(state, state),
+            "done": done, "total": total,
+            "progress": round(100 * done / total) if total else 0,
+            "total_words": words, "running": False,
+            "quality": None, "passing": None, "pass_line": _pass_line(),
+            "released": None, "final_quality": None, "awaiting_title": False,
+            "gate_rounds": None, "paused": bool(meta.get("paused")), "queued": 0,
+            "halted": False, "stage": st.get("stage") or "", "verdict": st.get("verdict") or "",
+            "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
+            "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
+            "archived": bool(meta.get("archived"))}
+
+
 def library_item(key, with_quality=True):
-    """单个作品富元数据（作品库管理用）。"""
+    """单个作品富元数据（作品库管理用）；文体由计划文件判定。"""
     try:
         pdir = _project_dir(key)
     except ValueError:
         return {}
-    plan = {}
-    pj = os.path.join(pdir, "02-写作计划.json")
-    if os.path.exists(pj):
-        try:
-            plan = json.load(open(pj, encoding="utf-8"))
-        except Exception:
-            plan = {}
+    med, pj, plan = _plan_of(pdir)
+    if not med:
+        return {}
+    if med != "novel":
+        return _other_medium_item(key, pdir, med, plan)
     st = Project(pdir, key).status()
     genre = (plan.get("config") or {}).get("genre") or plan.get("genre") or "未分类"
     total_words = plan.get("totalWords") or st.get("words") or 0
@@ -1384,7 +1448,8 @@ def library_item(key, with_quality=True):
     awaiting_title = bool(meta.get("awaiting_title"))
     label = {"completed": "已出书", "in_progress": "创作中", "validating": "校验中",
              "awaiting_title": "选书名", "failed": "失败", "idle": "草稿"}.get(state, "未完成" if st.get("done", 0) < st.get("total", 1) else "已完成")
-    return {"key": key, "name": st.get("name") or key, "genre": genre, "state": state,
+    return {"key": key, "name": st.get("name") or key, "medium": "novel", "form": "",
+            "genre": genre, "state": state,
             "status_label": label, "done": st.get("done", 0), "total": st.get("total", 0),
             "progress": round(100 * st.get("done", 0) / st.get("total", 1)) if st.get("total") else 0,
             "total_words": total_words, "running": st.get("running", False),
@@ -1411,7 +1476,7 @@ def _project_dirs():
     if not os.path.isdir(PROJECTS_DIR):
         return []
     return [d for d in sorted(os.listdir(PROJECTS_DIR), reverse=True)
-            if os.path.exists(os.path.join(PROJECTS_DIR, d, "02-写作计划.json"))]
+            if _plan_of(os.path.join(PROJECTS_DIR, d))[0]]
 
 def library_stats(items):
     ts = [i["total"] for i in items]
@@ -1428,13 +1493,14 @@ def library_stats(items):
             "genres": genres}
 
 def set_meta(key, **fields):
-    """收藏/标签/归档 等写入 02 计划 meta。"""
+    """收藏/标签/归档 等写入该作品自己的计划文件（文体由计划文件名判定）。"""
     try:
         pdir = _project_dir(key)
     except ValueError:
         return {}
-    pj = os.path.join(pdir, "02-写作计划.json")
-    plan = json.load(open(pj, encoding="utf-8")) if os.path.exists(pj) else {}
+    med, pj, plan = _plan_of(pdir)
+    if not med:
+        return {}
     plan["meta"] = plan.get("meta") or {}
     for k, v in fields.items():
         if k == "tags":
@@ -1456,10 +1522,12 @@ def rename_book(key, new_name):
         pdir = _project_dir(key)
     except ValueError:
         return {"ok": False, "note": "作品 key 非法"}
-    pj = os.path.join(pdir, "02-写作计划.json")
-    plan = json.load(open(pj, encoding="utf-8")) if os.path.exists(pj) else {}
-    old = plan.get("novelName")
-    plan["novelName"] = new_name
+    med, pj, plan = _plan_of(pdir)
+    if not med:
+        return {"ok": False, "note": "作品计划文件缺失"}
+    nk = _NAME_KEY[med]
+    old = plan.get(nk)
+    plan[nk] = new_name
     plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
     atomic_write_json(pj, plan)
     if old and old != new_name:

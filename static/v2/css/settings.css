@@ -513,6 +513,96 @@
   font-size: 11px;
 }
 
+/* schema 驱动的向导字段：竖排分组、圆点单选、开关、只读说明 */
+.wiz-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wiz-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+}
+
+.opt-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.opt-radio input[type="radio"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.opt-radio .muted {
+  color: var(--ink-caption);
+  font-size: 10px;
+}
+
+.opt-radio:has(input:checked) {
+  font-weight: 500;
+}
+
+.wiz-scale {
+  gap: 6px 12px;
+}
+
+.wiz-with-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wiz-number {
+  width: 96px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--ink-primary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wiz-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-tertiary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.wiz-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.wiz-note {
+  margin: 0;
+  padding: 7px 9px;
+  border-left: 2px solid var(--line-4);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  background: var(--bg-chip);
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .mode-cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -860,4 +950,61 @@
   .wiz-steps .wiz-step[data-state="active"] .step-label {
     display: inline;
   }
+}
+
+/* v2.1 P1：开书向导的维度芯片（发布平台 / 卖点 / 风格预设） */
+
+.wiz-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wiz-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-base);
+  color: var(--ink-secondary);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.wiz-chip:hover {
+  border-color: var(--line-3);
+  color: var(--ink-primary);
+}
+
+.wiz-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.wiz-chip.static {
+  cursor: default;
+  background: var(--bg-chip);
+  color: var(--ink-tertiary);
+  border-color: var(--line-1);
+}
+
+.wiz-chip.static:hover {
+  border-color: var(--line-1);
+  color: var(--ink-tertiary);
+}
+
+/* 岗位绑定技能弹窗：清单可能上百条，限高滚动，避免把设置页撑长。 */
+.skill-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 230px;
+  overflow-y: auto;
+  padding: 4px 0;
 }

@@ -95,14 +95,15 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
   function renderAll() {
     const state = store.get();
     const chat = state.chat;
+    const messages = chat.messages || [];
     const wasNear = nearBottom();
     flow.textContent = '';
     currentNodeMap = new Map();
 
-    if (!chat.messages.length) {
+    if (!messages.length) {
       flow.append(buildEmpty());
     } else {
-      for (const msg of chat.messages) {
+      for (const msg of messages) {
         const node =
           msg.role === 'user'
             ? renderUserMessage(msg)
@@ -120,7 +121,7 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
 
     renderExtras();
     currentSig = messageSignature(chat);
-    lastStreaming = Boolean(chat.messages.find((m) => m.streaming));
+    lastStreaming = messages.some((m) => m.streaming);
     if (wasNear || lastStreaming) requestAnimationFrame(() => scrollToBottom(false));
     updateComposerStreaming(chat);
   }
@@ -142,6 +143,25 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
         extras.append(wrap);
       }
     }
+  }
+
+  function syncHints(node, msg) {
+    let hints = node.querySelector('.msg-hints');
+    if (!hints) {
+      const main = node.querySelector('.msg-main');
+      if (!main) return;
+      hints = h('div', { class: 'msg-hints' });
+      main.append(hints);
+    }
+    const status = msg.status || '';
+    const notice = msg.notice || '';
+    const sig = `${status}|${notice}`;
+    // 整块重建，避免状态清空后旧提示行永久留在气泡里
+    if (hints.dataset.sig === sig) return;
+    hints.dataset.sig = sig;
+    hints.textContent = '';
+    if (status) hints.append(h('div', { class: 'hint-text msg-status', text: status }));
+    if (notice) hints.append(h('div', { class: 'hint-text msg-notice', text: notice }));
   }
 
   function updateStreamingNode(msg) {
@@ -172,20 +192,18 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
         }
       }
     }
-    const statusEl = node.querySelector('.hint-text');
-    if (msg.status) {
-      if (statusEl) statusEl.textContent = msg.status;
-      else {
-        const line = h('div', { class: 'hint-text', style: { marginTop: '4px' }, text: msg.status });
-        const main = node.querySelector('.msg-main');
-        if (main) main.append(line);
-      }
+    syncHints(node, msg);
+    const phaseEl = node.querySelector('.msg-phase');
+    if (phaseEl) {
+      const nextPhase = msg.phase || '生成中';
+      if (phaseEl.textContent !== nextPhase) phaseEl.textContent = nextPhase;
     }
   }
 
   function updateComposerStreaming(chat) {
     if (!composer) return;
-    composer.setStreaming(chat.streaming);
+    // 以消息自身的 streaming 为准，避免会话级标志被其他更新覆盖时输入器提前回到发送态
+    composer.setStreaming((chat.messages || []).some((m) => m.streaming));
   }
 
   function scheduleFrame() {
@@ -201,7 +219,7 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
         renderAll();
         return;
       }
-      const streamingMsg = chat.messages.find((m) => m.streaming);
+      const streamingMsg = (chat.messages || []).find((m) => m.streaming);
       if (streamingMsg) {
         updateStreamingNode(streamingMsg);
       }
@@ -221,7 +239,7 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
     if (disposed) return;
     const chat = state.chat;
     const extrasKey = JSON.stringify({
-      q: chat.queue.map((x) => x.id),
+      q: (chat.queue || []).map((x) => x.id),
       a: chat.approval && chat.approval.id,
       s: chat.streaming
     });
@@ -230,8 +248,9 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
       lastExtrasKey = extrasKey;
       scheduleFrame();
     } else {
-      const streamingMsg = chat.messages.find((m) => m.streaming);
-      if (streamingMsg) scheduleFrame();
+      const streamingMsg = (chat.messages || []).find((m) => m.streaming);
+      // 流式结束的那一帧也要排，否则收尾文案/内联动作会停在旧状态
+      if (streamingMsg || lastStreaming) scheduleFrame();
     }
   });
 

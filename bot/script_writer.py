@@ -112,7 +112,7 @@ class ScriptProject:
             "state": plan.get("status", "unknown"),
             "done": done, "total": len(scenes), "words": words,
             "running": self.running, "name": plan.get("scriptName", self.name),
-            "medium": "script", "form": plan.get("form", ""),
+            "medium": "script", "form": plan.get("formLabel") or plan.get("form", ""),
             "stage": meta.get("stage", ""), "paused": bool(meta.get("paused")),
         }
 
@@ -607,13 +607,19 @@ def discover_projects() -> list[dict]:
 
 
 def read_scene(key: str, no: int) -> str:
+    """读单场正文；场次缺/坏 fileName 时按冻结命名约定 第NNN场.md 兜底（见 write_scenes）。"""
     proj = get_project(key)
     if not proj:
         return ""
     plan = proj.plan() or {}
     for sc in plan.get("scenes") or []:
         if int(sc.get("no") or 0) == int(no):
-            return _read(os.path.join(proj.path, F_BODY, sc.get("fileName") or ""))
+            fn = sc.get("fileName")
+            if not isinstance(fn, str) or not fn.strip():
+                fn = f"第{int(no):03d}场.md"
+            # fileName 来自计划文件（可被用户手改），与 export.py 一致只取末段，杜绝 ../../ 逃逸
+            fn = os.path.basename(fn.strip()) or f"第{int(no):03d}场.md"
+            return _read(os.path.join(proj.path, F_BODY, fn))
     return ""
 
 

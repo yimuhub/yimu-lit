@@ -208,8 +208,13 @@ def gen_draft(cfg: dict, plan_text: str) -> str:
     form = normalize_form(cfg.get("form", "modern"))
     label = FORMS.get(form, "现代诗")
     if form == "ci":
-        extra = ("按所选词牌的句读字数逐句写，字数必须精确对上。\n"
-                 "词牌规格见「词牌格律表.md」。")
+        _pai = str(cfg.get("cipai") or "").strip()
+        extra = (f"词牌为「{_pai}」，" if _pai else "按所选词牌，") + (
+            "句读字数逐句写，字数必须精确对上。\n词牌规格见「词牌格律表.md」。")
+    elif form == "qu":
+        _pai = str(cfg.get("cipai") or "").strip()
+        extra = (f"曲牌为「{_pai}」，" if _pai else "按所选曲牌，") + (
+            "宫调与句数按谱，衬字不要滥用。")
     elif form in ("modern", "free"):
         extra = "自由诗，不拘格律，但必须有呼吸节奏与长短落差。"
     else:
@@ -280,6 +285,20 @@ def gen_critique(text: str, cfg: dict) -> str:
     return out if isinstance(out, dict) else {}
 
 
+def gen_extra(text: str, cfg: dict, kind: str) -> str:
+    """附产（向导勾选才生成）：kind = notes 创作手记 / translation 白话译文。"""
+    if kind == "translation":
+        task = ("给出这首诗的白话译文：逐句对应，忠实原意与顺序，不添解释、不做评价。\n"
+                "输出格式：每行「原句 → 白话」。")
+        label = "诗词 · 译文"
+    else:
+        task = ("写一则 150-250 字的「创作手记」：为什么选这个体式、核心意象从哪来、"
+                "哪一处最难落笔、成稿后自己最不满意的一点。用第一人称，不夸成果。")
+        label = "诗词 · 手记"
+    return _gen(label, task + f"\n\n诗：\n{text.strip()}", _ctx("F", cfg=cfg), cfg,
+                "review", max_tokens=900)
+
+
 # ---------------------------------------------------------------- 生命周期
 
 def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
@@ -327,6 +346,11 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
     # ---- K → R 循环 ----
     text = draft
     report: dict = {}
+    if cfg.get("metrical_check", True) is False:   # 向导里可关闭格律校验（现代诗/自由诗本就不校验）
+        max_rounds = 0
+        plan["meta"]["verdict"] = "skipped"
+        _write(os.path.join(pdir, F_CHECK),
+               f"# {name} · 格律报告\n\n- 判定：**已跳过**（本次关闭了格律校验）\n")
     for rnd in range(1, max_rounds + 1):
         proj.log(f"🔍 阶段 K：格律校验（第 {rnd} 轮）…")
         report = check_draft(text, form)
@@ -366,11 +390,28 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
                    f"声律 {dims.get('声律', 0)} / 情感 {dims.get('情感', 0)}\n\n")
     _write(os.path.join(pdir, F_FINAL), header + text.strip() + "\n")
 
+    # 附产：创作手记 / 白话译文（勾选才生成，追加到定稿末尾）
+    tail = ""
+    for _kind, _title, _flag in (("notes", "创作手记", "with_notes"),
+                                 ("translation", "白话译文", "with_translation")):
+        if cfg.get(_flag) is not True:
+            continue
+        proj.log(f"📎 阶段 F：生成附产（{_title}）…")
+        try:
+            extra = gen_extra(text, cfg, _kind).strip()
+        except Exception as e:
+            proj.log(f"⚠️ {_title}生成失败（跳过）：{e}")
+            continue
+        if extra:
+            tail += f"\n\n## {_title}\n\n" + extra
+    if tail:
+        _write(os.path.join(pdir, F_FINAL), header + text.strip() + "\n" + tail)
+
     plan["status"] = "completed"
     plan["meta"]["stage"] = "F"
     plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", text))
     plan["critique"] = crit
-    plan["meta"]["verdict"] = report.get("verdict", "")
+    plan["meta"]["verdict"] = report.get("verdict") or plan["meta"].get("verdict") or ""
     proj.save_plan(plan)
     proj.log("✅ 定稿完成")
     return proj

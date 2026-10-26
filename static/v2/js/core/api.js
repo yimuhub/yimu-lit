@@ -180,6 +180,8 @@ export const api = {
   bookLive: (key) => request('/api/book-live', { query: { key }, timeout: 12000 }),
 
   library: (params = {}) => request('/api/library', { query: params }),
+  /* 冷启动只有 key：用它解析作品属于哪种文体，再决定渲染哪套工作台。 */
+  project: (key) => request(`/api/library/${enc(key)}`),
   favorite: (key, on) => request(`/api/library/${enc(key)}/favorite`, jsonBody({ on: Boolean(on) })),
   archive: (key, on) => request(`/api/library/${enc(key)}/archive`, jsonBody({ on: Boolean(on) })),
   rename: (key, name) => request(`/api/library/${enc(key)}/rename`, jsonBody({ name })),
@@ -190,6 +192,23 @@ export const api = {
 
   chat: (payload) => request('/api/chat', { method: 'POST', body: payload, timeout: 180000 }),
   cmd: (payload) => request('/api/cmd', { method: 'POST', body: payload, timeout: 60000 }),
+
+  /* ---- 剧本/诗词/散文工作台（v2 原生渲染）----
+     三套引擎各有接口面：剧本按文档名分路由，诗词/散文用 part 参数。 */
+  scriptStatus: (key) => request('/api/script/status', { query: { key } }),
+  scriptDoc: (tab, key) => request(`/api/script/${tab}`, { query: { key } }),
+  scriptWrite: (key, sceneNo = 0) => request('/api/script/write', jsonBody(sceneNo ? { key, sceneNo } : { key })),
+  /* 单场正文与整本预览：预览一次取回全部场次（未写完的场 text 为空串）。 */
+  scriptScene: (key, no) => request('/api/script/scene', { query: { key, no } }),
+  scriptPreview: (key) => request('/api/script/preview', { query: { key } }),
+  scriptRevise: (key) => request('/api/script/revise', jsonBody({ key })),
+
+  poetryStatus: (key) => request('/api/poetry/status', { query: { key } }),
+  poetryPart: (key, part) => request('/api/poetry/part', { query: { key, part } }),
+  poetryRecheck: (key) => request('/api/poetry/recheck', { ...jsonBody({ key }), timeout: 180000 }),
+
+  proseStatus: (key) => request('/api/prose/status', { query: { key } }),
+  prosePart: (key, part) => request('/api/prose/part', { query: { key, part } }),
 
   create: (payload) => request('/api/create', { method: 'POST', body: payload, timeout: 30000 }),
   titles: (key) => request('/api/titles', { query: { key } }),
@@ -220,6 +239,7 @@ export const api = {
   plan: (key) => request('/api/plan', { query: { key }, timeout: 60000 }),
   planEnsure: (key) => request('/api/plan/ensure', jsonBody({ key }), { timeout: 120000 }),
   replan: (payload) => request('/api/plan/replan', jsonBody(payload), { timeout: 180000 }),
+  planMulti: (payload) => request('/api/plan/multi', jsonBody(payload), { timeout: 600000 }),
   applyPlan: (key, proposalId, allowPast = false) =>
     request('/api/plan/apply', jsonBody({ key, proposal_id: proposalId, allow_past: allowPast }), { timeout: 60000 }),
   rejectPlan: (key, proposalId, note = '') =>
@@ -252,6 +272,23 @@ export const api = {
     request('/api/skills/evolution/promote', jsonBody({ id, force, approver: 'user' })),
   rejectSkill: (id, note = '') => request('/api/skills/evolution/reject', jsonBody({ id, note })),
   rollbackSkill: (name, version) => request('/api/skills/evolution/rollback', jsonBody({ name, version })),
+
+  /* 技能库（#/skills）：树、单文件、统计、本书命中与注入预览 */
+  skillkitTree: (medium = '') => request('/api/skills/tree', { query: { medium } }),
+  skillkitFile: (relpath) => request('/api/skills/file', { query: { path: relpath } }),
+  skillkitStats: () => request('/api/skillkit/stats'),
+  skillsApplicable: (key) => request('/api/skills/applicable', { query: { key } }),
+  skillkitAdd: (payload) => request('/api/skillkit/add', jsonBody(payload), { timeout: 60000 }),
+  skillkitDelete: (name) => request(`/api/skillkit/custom/${enc(name)}`, { method: 'DELETE' }),
+
+  /* 多 Agent：岗位×模型×技能绑定 + 单书并行创作 */
+  agents: () => request('/api/agents'),
+  agentsSet: (payload) => request('/api/agents-set', jsonBody(payload)),
+  agentsMaxGlobal: (n) => request('/api/agents-maxglobal', jsonBody({ n })),
+  agentsSkills: (payload) => request('/api/agents-skills', jsonBody(payload)),
+  parallelWrite: (payload) => request('/api/parallel-write', jsonBody(payload), { timeout: 60000 }),
+  parallelLog: (key) => request('/api/parallel-log', { query: { key } }),
+  jobs: (key = '') => request('/api/jobs', { query: { key } }),
 
   chapter: (key, n) => request('/api/chapter', { query: { key, n } }),
   saveChapter: (key, n, text) => request('/api/chapter', { method: 'PUT', body: { key, n, text }, timeout: 60000 }),

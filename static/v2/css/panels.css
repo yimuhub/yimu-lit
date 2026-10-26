@@ -101,6 +101,13 @@
   min-height: 22px;
 }
 
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+
 .rp-section-head h3 {
   flex: 1;
   min-width: 0;
@@ -1194,6 +1201,48 @@
   padding: 10px;
 }
 
+.bench-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 7px 16px;
+  box-shadow: inset 0 0.5px 0 var(--line-2);
+  color: var(--ink-caption);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.bench-foot .sep {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bench-foot .bench-foot-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bench-foot .sep::before {
+  content: '·';
+  color: var(--ink-dimmed);
+}
+
+.bench-foot .bench-dirty {
+  color: var(--warn-label);
+}
+
+.session-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+}
+
 .bench-info {
   display: flex;
   flex-direction: column;
@@ -1326,6 +1375,243 @@
 
 .diff-line.meta {
   color: var(--ink-caption);
+}
+
+@media (max-width: 900px) {
+  .bench-body {
+    flex-direction: column;
+  }
+
+  .bench-side {
+    width: auto;
+    max-height: 34vh;
+    box-shadow: inset 0 0.5px 0 var(--line-2);
+  }
+
+  .bench-editor textarea {
+    padding: 22px 18px 56px;
+  }
+}
+
+/* Medium bench (script / poetry / prose) ----------------------------------- */
+
+.mb-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 32px;
+  padding: 0 14px;
+  box-shadow: inset 0 -0.5px 0 var(--line-2);
+}
+
+.mb-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-bar-info .sep {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--ink-dimmed);
+}
+
+.mb-bar .mb-track {
+  flex: none;
+  width: 160px;
+}
+
+.mb-bar .pct {
+  flex: none;
+  width: 32px;
+  color: var(--ink-tertiary);
+  font-size: 10.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mb-state {
+  flex: none;
+  color: var(--ink-tertiary);
+  font-size: 11px;
+}
+
+.mb-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.mb-tabs {
+  align-self: flex-start;
+  margin: 10px 14px 0;
+  max-width: calc(100% - 28px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.mb-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.mb-body {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 18px clamp(16px, 4vw, 40px) 64px;
+}
+
+.mb-doc {
+  color: var(--ink-primary);
+  font-family: var(--font-reading);
+  font-size: 16px;
+  line-height: 1.95;
+  letter-spacing: 0.01em;
+}
+
+.mb-scenes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.mb-scene {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.mb-scene:hover {
+  border-color: var(--line-3);
+  background: var(--hover);
+}
+
+.mb-scene .ms-no {
+  flex: none;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mb-scene .ms-head {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-primary);
+  font-size: 12.5px;
+}
+
+.mb-scene .ms-state {
+  flex: none;
+  color: var(--ink-caption);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mb-scene .btn {
+  flex: none;
+}
+
+.mb-scene[data-state="done"] .ms-no {
+  color: var(--ink-caption);
+}
+
+.mb-scene[data-state="done"] .ms-head {
+  color: var(--ink-secondary);
+}
+
+.mb-scene[data-state="done"] .ms-state {
+  color: var(--success);
+}
+
+/* 写过的场整卡可点开阅读，光标与键盘焦点都要跟得上。 */
+.mb-scene[role="button"] {
+  cursor: pointer;
+}
+
+/* 剧本预览浮层：外壳在 shell.css，这里只补正文区排版 ---------------------- */
+
+.mb-prev-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.mb-prev-meta,
+.mb-prev-count {
+  color: var(--ink-tertiary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mb-prev-meta {
+  margin-bottom: 10px;
+}
+
+/* 整本通读：每场一条分隔线加场景头，正文沿用 .md + .mb-doc 的阅读字号。 */
+.mb-prev-sep {
+  margin: 22px 0 10px;
+  padding-top: 14px;
+  border-top: 0.5px solid var(--line-2);
+  color: var(--ink-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.mb-prev-sep:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.mb-prev-pending {
+  margin: 12px 0;
+  color: var(--ink-caption);
+  font-size: 12.5px;
+}
+
+.mb-prev-empty {
+  padding: 12px 14px;
+  border: 0.5px dashed var(--line-3);
+  border-radius: var(--radius-sm);
+  color: var(--ink-tertiary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.mb-prev-empty .mb-prev-meta {
+  margin: 6px 0 0;
+}
+
+@media (max-width: 760px) {
+  .mb-body {
+    padding: 14px 14px 48px;
+  }
+
+  .mb-scenes {
+    grid-template-columns: 1fr;
+  }
+
+  .mb-bar .mb-track {
+    display: none;
+  }
 }
 
 /* Library ---------------------------------------------------------------- */
@@ -1544,6 +1830,17 @@
   font-weight: 500;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* 非小说作品的文体角标：这些作品的正文在经典版工作台渲染，先在这里说清它是什么 */
+.lib-medium {
+  flex: none;
+  padding: 1px 5px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.5;
 }
 
 .lib-star {
@@ -1906,4 +2203,23 @@
   .kv-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* 多岗位同时规划的对比卡：两张并排，窄屏自动回落单列。 */
+.proposal-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.proposal-card-wide {
+  margin-top: 0;
+}
+
+.proposal-diff-list {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }

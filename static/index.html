@@ -947,9 +947,9 @@ function benchState(st){
   $("bh_name").textContent=st.name||BENCHK;
   const pct=st.total?Math.round((st.done||0)/st.total*100):0;
   $("bh_pfill").style.width=pct+"%";
-  $("vsub").textContent=(st.form?st.form+" · ":"")+(st.done||0)+"/"+(st.total||0)+(CUR_M()!=="poetry"?" 场":" 轮")+" · "+((st.words||0)/1000).toFixed(1)+"k字";
+  $("vsub").textContent=(st.form?st.form+" · ":"")+(st.done||0)+"/"+(st.total||0)+" "+(UNIT_BY_MEDIUM[st.medium]||"场")+" · "+((st.words||0)/1000).toFixed(1)+"k字";
 }
-function CUR_M(){for(const m in BENCH){}return "script";}
+const UNIT_BY_MEDIUM={poetry:"轮",prose:"阶段"};
 async function benchTab(medium,key,tok){
   const cfg=BENCH[medium];
   $("bh_tabs").querySelectorAll("button").forEach(b=>b.classList.toggle("on",b.dataset.t===BENCHTAB));

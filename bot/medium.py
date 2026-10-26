@@ -224,6 +224,291 @@ def is_medium(name: str) -> bool:
     return name in MEDIUMS
 
 
+# ---------- v2.1：开书向导字段 schema（/api/onboarding.by_medium 的唯一事实源）----------
+# 三段对应向导三屏：brief=第1屏（体裁与模式）、basic=第2屏（基本信息）、style=第3屏（参考与风格）。
+# 字段：{key,label,type,options,default,required,hint,min,max,unit,when,options_from}
+#   type: select | radio | scale | number | text | textarea | chips | toggle | note
+#   scale = 小圆点快捷项 + 末项「自定义」（选中自定义才露出 customKey 数字框，fill 决定快捷项的数值）
+#   when  = {"field": "form", "in": ["ci"]} → 只在指定取值下出现
+#   options_from = 词表名，由 wizard_payload() 从调用方注入（题材/基调等词表仍归 app 与引擎所有）
+
+
+def _f(key: str, label: str, ftype: str, **kw) -> dict:
+    field = {"key": key, "label": label, "type": ftype}
+    field.update(kw)
+    return field
+
+
+def _opts(pairs) -> list[dict]:
+    out = []
+    for item in pairs:
+        if isinstance(item, str):
+            out.append({"value": item, "label": item})
+        elif isinstance(item, dict):
+            out.append(item)
+        else:
+            out.append({"value": item[0], "label": item[1]})
+    return out
+
+
+# 小说：题材一律给出 skillkit 的 craft key（skillkit._genre_key 实测结果），避免静默回落 _index。
+_NOVEL_TONES = ["爽文", "虐", "轻松", "暗黑", "复仇", "燃"]
+_NOVEL_PERSPECTIVES = ["男主", "女主", "不限", "第一人称"]
+_NOVEL_MODES = (
+    {"value": "rolling", "label": "滚动规划", "desc": "写一段、看反馈、再规划，适合连载。", "icon": "refresh"},
+    {"value": "outline", "label": "大纲优先", "desc": "先定全书骨架，再逐章落地。", "icon": "list"},
+    {"value": "one_shot", "label": "一次成稿", "desc": "适合短篇，一次生成再统一打磨。", "icon": "zap"},
+)
+# 规模快捷项：fill = 该档的章数目标（与前端 DEFAULT_CHAPTERS、longform.resolve_scale 一致）
+_NOVEL_SCALE = (
+    {"value": "short", "label": "短篇", "desc": "约 30 万字", "fill": 100},
+    {"value": "1m", "label": "百万字", "desc": "约 100 万字", "fill": 300},
+    {"value": "3m", "label": "三百万字", "desc": "约 300 万字", "fill": 900},
+    {"value": "5m", "label": "五百万字", "desc": "约 500 万字", "fill": 1500},
+)
+
+_NOVEL_SECTIONS = {
+    "style_title": "卖点与风格预设",
+    "brief": [
+        _f("platform", "发布平台", "chips", options_from="platforms", default="", effect="platform",
+           hint="选平台带入该站的分类习惯与更新节奏，创作不受限制。"),
+        _f("genre", "题材", "select", options_from="genres", default="悬疑/刑侦", required=True,
+           hint="题材决定注入哪套题材 craft（悬疑/言情/恐怖/玄幻…），之后仍可微调。"),
+        _f("tone", "基调", "select", options_from="tones", default="",
+           hint="留空表示不限。基调与题材共同决定文风预设。"),
+        _f("perspective", "叙事视角", "select", options_from="perspectives", default=""),
+        _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True),
+    ],
+    "basic": [
+        _f("title", "书名", "text", max_length=40,
+           hint="留空则由系统生成 8 个候选，创建后可随时换。"),
+        _f("idea", "一句话 premise", "textarea", rows=4, max_length=2000, required=True,
+           hint="写清「谁 / 想要什么 / 被什么挡住」最容易得到可用的规划。"),
+        _f("scale", "规模", "scale", options=_NOVEL_SCALE, default="1m", required=True,
+           custom_key="total_chapters", min=1, max=2000, unit="章",
+           hint="章节数作为规划目标，写作过程中仍可扩展。"),
+        _f("min_words_per_chapter", "每章字数", "number", default=3000, min=500, max=10000, unit="字",
+           hint="单章目标字数（写入 minWordsPerChapter）；网文通常 2000-4000。"),
+    ],
+    "style": [
+        _f("sells", "卖点", "chips", options_from="sells", multi=True,
+           hint="卖点写进风格技能，正文按这些爽点节拍安排冲突。"),
+        _f("style_preset", "风格预设", "chips", options_from="style_presets", default="",
+           hint="跟随题材表示按上面选定的题材自动取预设。"),
+        _f("style_preview", "本次生效", "preview",
+           hint="派生自题材与平台预设，只读；创建后仍可在作品规划里调整。"),
+    ],
+}
+
+# 剧本：引擎真实消费 title/idea/form/entryPath/scenes/pages/episodes/notes（见 bot/script_writer.py）。
+_SCRIPT_GENRES = ["悬疑/犯罪", "古装/历史", "都市/现实", "科幻", "战争/军事",
+                  "喜剧", "爱情", "家庭/伦理", "武侠/仙侠", "恐怖/灵异"]
+_SCRIPT_SCALE_SCENES = (
+    {"value": "s20", "label": "短片体量", "desc": "约 20 场", "fill": 20},
+    {"value": "s30", "label": "长片标准", "desc": "约 30 场", "fill": 30},
+    {"value": "s45", "label": "长片偏长", "desc": "约 45 场", "fill": 45},
+    {"value": "s60", "label": "多幕/戏曲", "desc": "约 60 场", "fill": 60},
+)
+_SCRIPT_SCALE_PAGES = (
+    {"value": "p60", "label": "精简", "desc": "约 60 页", "fill": 60},
+    {"value": "p90", "label": "长片下限", "desc": "约 90 页", "fill": 90},
+    {"value": "p100", "label": "行业标准", "desc": "约 100 页", "fill": 100},
+    {"value": "p120", "label": "偏长", "desc": "约 120 页", "fill": 120},
+)
+_SCRIPT_SCALE_EPISODES = (
+    {"value": "e6", "label": "短季", "desc": "6 集", "fill": 6},
+    {"value": "e12", "label": "一季", "desc": "12 集", "fill": 12},
+    {"value": "e16", "label": "长季", "desc": "16 集", "fill": 16},
+    {"value": "e24", "label": "季播", "desc": "24 集", "fill": 24},
+)
+
+_SCRIPT_SECTIONS = {
+    "style_title": "格式与交付",
+    "brief": [
+        _f("form", "媒介形式", "select", options_from="script_forms", default="film", required=True,
+           hint="形式决定页数/时长目标与结构模板；戏曲走板腔体或曲牌体阶段表。"),
+        _f("entryPath", "入口路径", "radio", options_from="script_entry_paths", default="idea",
+           required=True, hint="决定第一遍是搭引擎还是先读材料。"),
+        _f("genre", "类型", "select", options=_SCRIPT_GENRES, default="悬疑/犯罪",
+           hint="类型契约会影响引擎与观众预期两条线。"),
+    ],
+    "basic": [
+        _f("title", "剧名", "text", max_length=40, hint="留空则由系统按素材生成。"),
+        _f("idea", "logline / 素材", "textarea", rows=4, max_length=4000, required=True,
+           hint="有原著就写清原著与想保留的内核；只有想法就写「谁 / 想要什么 / 被什么挡住」。"),
+        # scale 的 token 槽位（*_scale）只给前端选中态用；数字落引擎 key（custom_key）。
+        # 两者绝不能同名：否则值袋里 token 与数字互相覆盖，选中态与校验都会错。
+        _f("episodes_scale", "集数", "scale", options=_SCRIPT_SCALE_EPISODES, default="e12",
+           custom_key="episodes", min=1, max=200, unit="集",
+           when={"field": "form", "in": ["series"]}),
+        _f("scenes_scale", "目标场次", "scale", options=_SCRIPT_SCALE_SCENES, default="s30",
+           custom_key="scenes", min=1, max=1000, unit="场",
+           hint="场次清单按这个规模生成，之后可增删。"),
+        _f("pages_scale", "目标页数", "scale", options=_SCRIPT_SCALE_PAGES, default="p100",
+           custom_key="pages", min=5, max=600, unit="页",
+           hint="行业惯例约 1 页 ≈ 1 分钟银幕时间。"),
+        _f("notes", "创作备注", "textarea", rows=3, max_length=2000,
+           hint="会原样进入引擎生成提示：想避开的套路、必须出现的场面、尺度边界。"),
+    ],
+    "style": [
+        _f("format_spec", "格式规范", "chips",
+           options=_opts(["标准场景头", "动作行现在时", "台词居中", "字幕/画外音标注", "分页每场一页"]),
+           default=["标准场景头", "动作行现在时"], multi=True,
+           hint="交付格式要求；导出与修订阶段按此核对。"),
+        _f("page_note", "页数换算", "note",
+           text="电影长片 90-120 页；单集剧本 45-60 页；舞台剧按幕/场计，通常 60-90 页。"),
+    ],
+}
+
+# 诗词：引擎消费 title/idea/form/maxRounds；词牌、韵部、情感核心等由向导折进 idea/校验开关。
+_CI_PAI = ["水调歌头", "念奴娇", "沁园春", "满江红", "西江月", "如梦令", "鹧鸪天",
+           "定风波", "虞美人", "蝶恋花", "临江仙", "渔家傲", "水仙子", "自定义"]
+_POETRY_SECTIONS = {
+    "style_title": "格律与附产",
+    "brief": [
+        _f("form", "体式", "select", options_from="poetry_forms", default="modern", required=True,
+           hint="体式即题材：近体四体 / 词 / 曲 / 现代诗，决定格律校验规则。"),
+        _f("cipai", "词牌 / 曲牌", "select", options=_CI_PAI, default="水调歌头",
+           when={"field": "form", "in": ["ci", "qu"]},
+           hint="写入题面，起草时按该牌调句读字数逐句对齐。"),
+        _f("maxRounds", "改稿轮数", "radio",
+           options=_opts([(1, "1 轮：快出稿"), (2, "2 轮：平衡"), (3, "3 轮：细磨")]),
+           default=3, required=True, hint="每轮 = 起草 → 确定性格律校验 → 按结果改稿。"),
+    ],
+    "basic": [
+        _f("title", "题目", "text", max_length=40, hint="留空表示「无题」或由系统自拟。"),
+        _f("idea", "题面 / 情境", "textarea", rows=4, max_length=2000, required=True,
+           hint="给出题材、场景、要寄的情感，越具体越不容易写成空泛套话。"),
+        _f("emotion", "情感核心", "text", max_length=120,
+           hint="一句话：这首诗要让谁、在什么时刻、感到什么。留空由引擎自行判定。"),
+    ],
+    "style": [
+        _f("rhyme_note", "韵书", "note",
+           text="格律校验按平水韵 106 部（确定性规则）判定平仄与押韵；"
+                "词林正韵、中华新韵暂不核验，规划阶段可按韵部自行取舍。",
+           when={"field": "form", "in": ["wujue", "qijue", "wulv", "qilv", "ci", "qu"]}),
+        _f("metrical_check", "格律校验", "toggle", default=True,
+           when={"field": "form", "in": ["wujue", "qijue", "wulv", "qilv", "ci", "qu"]},
+           hint="关闭则跳过确定性格律核对与改稿轮，只按审美定稿。"),
+        _f("with_notes", "附创作手记", "toggle", default=False,
+           hint="勾选后定稿末尾追加一段第一人称创作手记。"),
+        _f("with_translation", "附白话译文", "toggle", default=False,
+           hint="勾选后定稿末尾追加逐句白话译文。"),
+    ],
+}
+
+_PROSE_AUDIENCES = ["普通读者", "同行/专业读者", "平台订阅读者", "自己或小圈子"]
+_PROSE_PURPOSES = ["分享经验", "说服立场", "记录与纪念", "科普解释", "求助与讨论"]
+_PROSE_TONES = ["克制", "锐利", "温和", "冷", "幽默"]
+_PROSE_SCALE_WORDS = (
+    {"value": "w800", "label": "短", "desc": "约 800 字", "fill": 800},
+    {"value": "w1200", "label": "中", "desc": "约 1200 字", "fill": 1200},
+    {"value": "w2000", "label": "长", "desc": "约 2000 字", "fill": 2000},
+    {"value": "w3000", "label": "特稿", "desc": "约 3000 字", "fill": 3000},
+)
+_PROSE_SECTIONS = {
+    "style_title": "去味与核验",
+    "brief": [
+        _f("genre", "文体", "select", options_from="prose_genres", default="suibi", required=True,
+           hint="文体决定 brief 的七项侧重与语域。"),
+        _f("operation", "操作", "radio", options_from="prose_operations", default="write",
+           required=True, hint="审=只诊断不改；改=就地最小修改；重写=整篇重来。"),
+    ],
+    "basic": [
+        _f("title", "标题", "text", max_length=40),
+        _f("idea", "主题与素材", "textarea", rows=4, max_length=4000,
+           required=True, when={"field": "operation", "in": ["write", "recreate"]},
+           hint="写清要写的人/事/物、手头的具体细节与事实，缺的会标成待补。"),
+        _f("sourceText", "已有正文", "textarea", rows=8, max_length=20000,
+           required=True, when={"field": "operation", "in": ["review", "refactor", "recreate"]},
+           hint="审 / 改 / 重写需要贴入原稿；原稿会进入诊断与改写。"),
+        _f("audience", "受众", "select", options=_PROSE_AUDIENCES, default="普通读者"),
+        _f("purpose", "写作目的", "select", options=_PROSE_PURPOSES, default="分享经验"),
+        _f("tone", "语气", "select", options=_PROSE_TONES, default="克制"),
+        _f("words", "目标字数", "scale", options=_PROSE_SCALE_WORDS, default="w1200",
+           custom_key="target_words", min=100, max=20000, unit="字",
+           when={"field": "operation", "in": ["write", "recreate"]}),
+    ],
+    "style": [
+        _f("slop_depth", "去 AI 腔强度", "radio",
+           options=_opts([("light", "轻度：只标记不清改"),
+                          ("standard", "标准：三层诊断 + 改写"),
+                          ("deep", "深度：重写 AI 腔最重的段落")]),
+           default="standard", hint="三层 = 表达 / 用笔 / 故事逻辑，对应散文流水线的 A 阶段。"),
+        _f("fact_check", "事实核验", "toggle", default=True,
+           hint="开启后素材阶段标出待核实项，写不出来的地方留 [待补] 标记。"),
+    ],
+}
+
+_WIZARD: dict[str, dict[str, list[dict]]] = {
+    "novel": _NOVEL_SECTIONS,
+    "script": _SCRIPT_SECTIONS,
+    "poetry": _POETRY_SECTIONS,
+    "prose": _PROSE_SECTIONS,
+}
+
+
+def _copy_sections(medium: str) -> dict:
+    """深拷贝三段字段，避免调用方改写模块常量。"""
+    src = _WIZARD.get(medium) or {"brief": [], "basic": [], "style": []}
+    out = {group: [dict(f, **({"options": list(f.get("options") or [])} if f.get("options") else {}))
+                   for f in src.get(group, [])]
+           for group in ("brief", "basic", "style")}
+    out["style_title"] = src.get("style_title", "")
+    return out
+
+
+def wizard_schema(medium: str) -> dict:
+    """某文体的三段向导字段（结构；options_from 指向的词表由调用方注入）。"""
+    return _copy_sections(medium)
+
+
+def novel_genre_options(vocab: dict | None = None) -> list[dict]:
+    """小说题材：每项带 skillkit craft key（_genre_key 实测），未覆盖的题材显式标注走通用默认。"""
+    import os
+    from . import skillkit as sk
+    gen_dir = os.path.join("references", "genre")
+    have = {sf.genre for sf in sk.index() if gen_dir in sf.relpath and sf.genre and sf.genre != "_index"}
+    labels = list((vocab or {}).get("genres") or [])
+    out, seen = [], set()
+    for label in labels:
+        if label in seen:
+            continue
+        seen.add(label)
+        key = sk._genre_key(label)
+        out.append({"value": label, "label": label, "key": key,
+                    "desc": sk.GENRE_LABELS.get(key, key) + ("（通用默认）" if key not in have else "")})
+    # 有专属 craft 但词表没给的（如仙侠）补上，保证每套 craft 都可达
+    ordered = [k for k in sk.GENRE_ORDER if k in have]
+    for key in ordered:
+        if any(o["key"] == key for o in out):
+            continue
+        label = sk.GENRE_LABELS.get(key, key)
+        out.append({"value": label, "label": label, "key": key, "desc": label})
+    return out
+
+
+def wizard_payload(vocab: dict | None = None) -> dict:
+    """给 /api/onboarding 的 by_medium：四文体三屏字段 + 调用方注入的词表。
+
+    vocab 约定（由 app.py 从引擎与 _ONB 取，保证「引擎读什么，向导就问什么」）：
+      genres / tones / perspectives / sells / platforms / style_presets
+      script_forms / script_entry_paths / poetry_forms / prose_genres / prose_operations
+    """
+    vocab = vocab or {}
+    out = {}
+    for key in MEDIUMS:
+        sections = _copy_sections(key)
+        for group in ("brief", "basic", "style"):
+            for fld in sections[group]:
+                src = fld.pop("options_from", "")
+                if src and not fld.get("options"):
+                    fld["options"] = (novel_genre_options(vocab) if src == "genres"
+                                      else _opts(vocab.get(src) or []))
+        out[key] = sections
+    return out
+
+
 def registry() -> list[dict]:
     """给前端用的完整注册表。"""
     out = []

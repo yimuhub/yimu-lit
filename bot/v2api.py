@@ -15,6 +15,7 @@ import asyncio
 import importlib
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -37,6 +38,30 @@ def _mod(name: str):
 
 def _bad(msg: str, code: int = 400):
     return JSONResponse({"error": msg}, status_code=code)
+
+
+# 各文体的「写正文」阶段码（bot/medium.py 的 stages）。技能文件的 stages 用的是这些码，
+# 前端传来的泛化值（WRITE / 空）需要先落地成具体码，否则 pick 只会返回通用技能。
+_WRITE_STAGE = {"novel": "P2", "script": "S5", "poetry": "C", "prose": "D"}
+
+
+def _resolve_stage(stage: str, med: str) -> str:
+    """把前端传来的阶段值落地成该文体真实存在的阶段码。
+
+    空值或泛化的 WRITE/WRITING → 该文体「写正文」的阶段；已是合法码则原样保留；
+    无法识别时也回落到写正文阶段（技能文件的 stages 里查不到非法码会静默漏掉题材技能）。
+    """
+    s = str(stage or "").strip().upper()
+    write = _WRITE_STAGE.get(med, "P2")
+    if not s or s in ("WRITE", "WRITING", "WRITER"):
+        return write
+    try:
+        from bot import medium as medium_mod
+        if s in medium_mod.all_stage_codes(med):
+            return s
+    except Exception:
+        return s
+    return write
 
 
 def _read_json(path: str, default=None):
@@ -103,6 +128,30 @@ def _norm_list(value):
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# 会话流：等待期心跳间隔（秒）与「没有任何可用供应商」时的友好兜底文案。
+_HEARTBEAT_SECS = 2.0
+_NO_PROVIDER_TEXT = "您的消息已收到。由于未配置大模型，请配置模型。"
+
+
+def _waiting_text(elapsed: float) -> str:
+    """等待心跳文案：<8s 普通思考，>=8s 深入思考，>=60s 追加网关慢提示（单行）。"""
+    n = int(elapsed)
+    if elapsed >= 60:
+        return f"模型正在深入思考（已等待 {n}s），网关较慢，可点停止后稍后重试"
+    if elapsed >= 8:
+        return f"模型正在深入思考（已等待 {n}s）"
+    return f"模型正在思考中（已等待 {n}s）"
+
+
+def _provider_ready() -> bool:
+    """开跑前探测「有没有可用供应商」；探测自身出错时按有处理，避免掩盖真实错误。"""
+    try:
+        from bot import providers
+        return bool(providers.usable())
+    except Exception:
+        return True
 
 
 def _plan_view(proj, plan: dict) -> dict:
@@ -229,6 +278,34 @@ def register_v2_routes(app, get_project, chat_func=None):
             return _bad(str(e))
         except Exception as e:
             return _bad(f"生成重规划提案失败：{e}", 500)
+
+    @app.post("/api/plan/multi")
+    def api_plan_multi(payload: dict):
+        """v2.1 P2：多岗位同时规划 —— 规划师与总编各出一份提案，前端并排对比后选一份应用。"""
+        proj, err = _project(get_project, payload.get("key"))
+        if err:
+            return err
+        lf, err = _mod("longform")
+        if err:
+            return err
+        scope = str(payload.get("scope") or "window")
+        if scope not in ("book", "volume", "arc", "window", "chapter"):
+            return _bad("scope 只能是 book/volume/arc/window/chapter")
+        roles = payload.get("roles")
+        if not isinstance(roles, list):
+            roles = None
+        try:
+            fn = getattr(lf, "multi_replan", None)
+            if not callable(fn):
+                return _bad("多角色规划尚未就绪", 501)
+            cards = fn(proj, scope=scope,
+                       instruction=str(payload.get("instruction") or "")[:4000],
+                       roles=roles)
+            return {"ok": True, "key": payload.get("key"), "scope": scope, "cards": cards or []}
+        except ValueError as e:
+            return _bad(str(e))
+        except Exception as e:
+            return _bad(f"多角色规划失败：{e}", 500)
 
     @app.post("/api/plan/apply")
     def api_plan_apply(payload: dict):
@@ -610,6 +687,61 @@ def register_v2_routes(app, get_project, chat_func=None):
         except Exception as e:
             return _bad(f"读取技能库失败：{e}", 500)
 
+    @app.get("/api/skills/tree")
+    def api_skills_tree(medium: str = ""):
+        """技能库导航树：文体 → 题材分组（前端 #/skills 左栏）。"""
+        try:
+            from bot import skillkit
+            fn = getattr(skillkit, "tree", None)
+            if not fn:
+                return {"ok": True, "tree": []}
+            return {"ok": True, "tree": fn(medium or None)}
+        except Exception as e:
+            return _bad(f"读取技能树失败：{e}", 500)
+
+    @app.get("/api/skills/file")
+    def api_skills_file(path: str = ""):
+        """按相对路径读取单个技能文件（frontmatter + 正文）；越界路径返回 400。"""
+        try:
+            from bot import skillkit
+            return {"ok": True, **skillkit.read_skill(path)}
+        except ValueError as e:
+            return _bad(str(e), 400)
+        except Exception as e:
+            return _bad(f"读取技能文件失败：{e}", 500)
+
+    @app.get("/api/skills/applicable")
+    def api_skills_applicable(key: str = "", stage: str = ""):
+        """某本书在当前题材下会被注入的技能清单 + 注入预览。"""
+        proj, err = _project(get_project, key)
+        if err:
+            return err
+        try:
+            from bot import medium as medium_mod
+            from bot import skillkit
+            style = _read_json(os.path.join(proj.path, "style.json"), {}) or {}
+            plan = proj.plan() or {}
+            brief = plan.get("brief") or {}
+            meta = plan.get("meta") or {}
+            med = str(plan.get("medium") or meta.get("medium") or style.get("medium") or "novel")
+            if not medium_mod.is_medium(med):
+                med = "novel"
+            st = _resolve_stage(stage, med)
+            genre = str(style.get("genre") or brief.get("genre") or meta.get("genre") or plan.get("genre") or "")
+            picked = skillkit.pick(med, st, genre=genre)
+            items = [{"relpath": sf.relpath, "name": sf.name, "title": sf.title,
+                      "kind": sf.kind, "weight": sf.weight, "genre": sf.genre or "_index",
+                      "evolved": sf.evolved} for sf in picked]
+            preview = ""
+            try:
+                preview = skillkit.stage_inject(st, med, genre=genre, max_bytes=6000)
+            except Exception:
+                pass
+            return {"ok": True, "key": key, "medium": med, "genre": genre,
+                    "stage": st, "items": items, "injected_preview": preview}
+        except Exception as e:
+            return _bad(f"读取本书技能失败：{e}", 500)
+
     @app.get("/api/skills/validate")
     def api_skills_validate():
         try:
@@ -774,14 +906,54 @@ def register_v2_routes(app, get_project, chat_func=None):
         async def gen():
             t0 = time.time()
             yield _sse("start", {"session_id": sid, "ts": int(t0)})
-            yield _sse("status", {"stage": "thinking", "text": "正在理解你的需求…"})
-            try:
-                reply = await asyncio.to_thread(chat_func, sid, message)
-            except Exception as e:
-                yield _sse("error", {"error": f"处理失败：{e}"})
-                yield _sse("done", {"ok": False, "elapsed": round(time.time() - t0, 2)})
+
+            # 没有任何可用供应商：消息照收，直接给友好兜底；绝不进 chat_func
+            # （不碰网络、不推进会话状态机）。
+            if not _provider_ready():
+                yield _sse("status", {"stage": "thinking", "text": "正在检查模型配置…"})
+                yield _sse("delta", {"text": _NO_PROVIDER_TEXT})
+                yield _sse("done", {"ok": True, "fallback": True, "text": _NO_PROVIDER_TEXT,
+                                    "session_id": sid, "elapsed": round(time.time() - t0, 2)})
                 return
-            text = reply if isinstance(reply, str) else str(reply or "")
+
+            yield _sse("status", {"stage": "thinking", "text": "正在理解你的需求…"})
+
+            # chat_func 是同步阻塞的（一轮可能几分钟），丢到 daemon 线程里跑，
+            # 主协程每 ~2s 发一次心跳。用 Event 而不是 wait_for(queue.get())：
+            # Event 的状态不会被取消吞掉，边界时刻完成也不会丢结果。
+            loop = asyncio.get_running_loop()
+            ready = asyncio.Event()
+            box: list = []
+
+            def _work():
+                try:
+                    box.append((True, chat_func(sid, message)))
+                except BaseException as e:  # 原样带回事件循环，转成 error 帧
+                    box.append((False, e))
+                finally:
+                    try:
+                        loop.call_soon_threadsafe(ready.set)
+                    except RuntimeError:
+                        pass  # 事件循环已关闭（客户端早退）：结果丢弃，线程自然结束
+
+            worker = threading.Thread(target=_work, name="v2-chat-worker", daemon=True)
+            worker.start()
+
+            while not ready.is_set():
+                try:
+                    await asyncio.wait_for(ready.wait(), timeout=_HEARTBEAT_SECS)
+                except TimeoutError:
+                    yield _sse("status", {"stage": "thinking",
+                                          "text": _waiting_text(time.time() - t0)})
+
+            ok, value = box[0] if box else (False, RuntimeError("会话处理未返回结果"))
+            if not ok:
+                err = f"处理失败：{value}"
+                yield _sse("error", {"error": err})
+                yield _sse("done", {"ok": False, "error": err,
+                                    "elapsed": round(time.time() - t0, 2)})
+                return
+            text = value if isinstance(value, str) else str(value or "")
             # 旧状态机返回整段文本；按小段推送，让前端有真实的逐字阅读感。
             for i in range(0, len(text), 28):
                 yield _sse("delta", {"text": text[i:i + 28]})

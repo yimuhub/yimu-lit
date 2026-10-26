@@ -39,4 +39,12 @@ export const MEDIUM_FALLBACK = [
   { key: 'prose', label: '散文', icon: 'pen', desc: '抒情、叙事、哲理与游记。' }
 ];
 
+/* 后端 /api/mediums 的 icon 是 emoji（旧版界面直接渲染），v2 一律按体裁 key 取 SVG 名。 */
+const MEDIUM_ICON = { novel: 'book', script: 'film', poetry: 'feather', prose: 'pen' };
+
+export function mediumIcon(medium) {
+  const key = typeof medium === 'string' ? medium : (medium && medium.key) || '';
+  return MEDIUM_ICON[key] || 'book';
+}
+
 export const FEEDBACK_TAGS = ['剧情拖沓', '人物失真', '文风不对', '信息错误', '没按规划', '太像 AI'];

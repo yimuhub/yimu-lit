@@ -3,6 +3,7 @@
 import { h, icon, relTime, fmtNum } from '../core/dom.js';
 import { renderMarkdownInto } from '../core/markdown.js';
 import { updateMessage } from '../core/state.js';
+import { navigate } from '../core/router.js';
 import { usageLabel } from '../core/constants.js';
 import { toast, openFeedback } from '../core/ui.js';
 import { api } from '../core/api.js';
@@ -112,7 +113,7 @@ export function renderAssistantMessage(msg, handlers = {}) {
   if (msg.created_at) head.append(h('span', { class: 'msg-time', text: relTime(msg.created_at) }));
   if (msg.tag) head.append(h('span', { class: 'msg-tag', text: msg.tag }));
   if (msg.streaming) {
-    head.append(h('span', { class: 'msg-tag', text: msg.phase || '生成中' }));
+    head.append(h('span', { class: 'msg-tag msg-phase', text: msg.phase || '生成中' }));
   }
   main.append(head);
 
@@ -128,8 +129,20 @@ export function renderAssistantMessage(msg, handlers = {}) {
   else if (msg.streaming) body.append(thinkingDots());
   main.append(body);
 
-  if (msg.streaming && msg.status) {
-    main.append(h('div', { class: 'hint-text', style: { marginTop: '4px' }, text: msg.status }));
+  const hints = h('div', { class: 'msg-hints' });
+  if (msg.status) hints.append(h('div', { class: 'hint-text msg-status', text: msg.status }));
+  if (msg.notice) hints.append(h('div', { class: 'hint-text msg-notice', text: msg.notice }));
+  if (msg.streaming || hints.childNodes.length) main.append(hints);
+
+  if (msg.action && msg.action.text) {
+    main.append(
+      h('button', {
+        class: 'msg-link',
+        type: 'button',
+        text: msg.action.text,
+        on: { click: () => navigate(msg.action.path || '/settings') }
+      })
+    );
   }
 
   if (!msg.streaming) {

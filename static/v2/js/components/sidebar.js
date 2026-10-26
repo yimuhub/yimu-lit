@@ -2,7 +2,7 @@
 
 import { h, icon, fmtWords, groupByRecency, initials, statusMeta, debounce } from '../core/dom.js';
 import { store } from '../core/state.js';
-import { navigate } from '../core/router.js';
+import { navigate, openProject } from '../core/router.js';
 import { toast } from '../core/ui.js';
 import { api, errorText } from '../core/api.js';
 
@@ -70,7 +70,7 @@ function renderRow(item, ctx, { isActive }) {
   btn.append(actions);
 
   btn.addEventListener('click', () => {
-    navigate(`/work/${encodeURIComponent(item.key)}`);
+    openProject(item);
     ctx.closeDrawer();
   });
   return btn;
@@ -240,9 +240,20 @@ export function renderSidebar(container, ctx) {
       }
     },
     {
+      label: '技能库',
+      icon: 'wand',
+      trail: '',
+      active: store.get().route.name === 'skills',
+      onClick: () => {
+        navigate('/skills');
+        ctx.closeDrawer();
+      }
+    },
+    {
       label: '技能进化',
       icon: 'sparkles',
       trail: '',
+      active: store.get().route.name === 'evolution',
       onClick: () => {
         navigate('/evolution');
         ctx.closeDrawer();
@@ -254,13 +265,18 @@ export function renderSidebar(container, ctx) {
       trail: '',
       onClick: () => ctx.openSettings()
     },
-    {
-      label: '经典版',
-      icon: 'history',
-      trail: '/classic',
-      href: '/classic',
-      title: '回到旧版单栏界面'
-    }
+    /* 经典版入口默认隐藏，在「设置 → 高级」里打开 */
+    ...(store.get().ui.showClassic
+      ? [
+          {
+            label: '经典版',
+            icon: 'history',
+            trail: '/classic',
+            href: '/classic',
+            title: '回到旧版单栏界面'
+          }
+        ]
+      : [])
   ];
   for (const item of footItems) {
     const row = item.href
@@ -279,6 +295,7 @@ export function renderSidebar(container, ctx) {
           item.trail ? h('span', { class: 'foot-trail', text: item.trail }) : null
         );
     if (!item.href) row.addEventListener('click', item.onClick);
+    if (item.active) row.dataset.active = 'true';
     foot.append(row);
   }
   sidebar.append(foot);

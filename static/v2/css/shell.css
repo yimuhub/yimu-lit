@@ -442,6 +442,15 @@
   color: var(--ink-secondary);
 }
 
+.foot-row[data-active="true"] {
+  background: var(--bg-chip);
+  color: var(--ink-primary);
+}
+
+.foot-row[data-active="true"] .icon {
+  color: var(--ink-secondary);
+}
+
 .foot-row .foot-trail {
   margin-left: auto;
   color: var(--ink-caption);

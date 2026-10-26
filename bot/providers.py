@@ -223,6 +223,32 @@ def get_models(pid):
     return p.get("models", [])
 
 
+def usable():
+    """是否存在「能真正发一次请求」的供应商——只读判断，不落盘、不发网络请求。
+
+    口径与 resolve() 对齐（有没有 active 供应商），但额外要求 base_url 合法、
+    至少有一个模型名，否则请求必然失败。**不把「没有 API key」当成不可用**：
+    本地 Ollama / 自建免鉴权网关合法地不需要 key，误判会让这类用户永远走兜底。
+    真的发请求后失败（401/超时等）仍按真实错误上报，不在这里吞掉。
+    """
+    try:
+        data = _load_raw()
+        if data is None:
+            # 与 load_data 的迁移口径一致，但只在内存里算，不写 providers.json
+            data = _migrate_from_config()
+        provs = (data or {}).get("providers") or []
+    except Exception:
+        return False
+    for p in provs:
+        if not isinstance(p, dict) or not p.get("active"):
+            continue
+        if not _valid_base_url(p.get("base_url")):
+            continue
+        if p.get("default_model") or p.get("models"):
+            return True
+    return False
+
+
 # ---------- 写操作 ----------
 
 def add_provider(payload):

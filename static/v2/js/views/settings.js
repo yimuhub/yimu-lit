@@ -1,10 +1,12 @@
 /* 设置：外观、生成质量、模型与密钥。只发送后端支持的字段，其余只读展示。 */
 
 import { h, icon } from '../core/dom.js';
-import { store } from '../core/state.js';
+import { store, patchUi } from '../core/state.js';
 import { api, errorText } from '../core/api.js';
-import { toast, confirmDialog, openModal } from '../core/ui.js';
+import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { setTheme, themeLabel } from '../core/theme.js';
+import { setPref } from '../core/prefs.js';
+import { SKILL_TITLES, loadSkillCatalog } from '../core/skillCatalog.js';
 
 const QUALITY_MODES = [
   { value: 'off', label: '关', desc: '不做质量门禁，速度最快' },
@@ -18,6 +20,8 @@ const THEME_OPTIONS = [
   { value: 'system', icon: 'monitor' }
 ];
 
+/* 技能标题清单见 core/skillCatalog.js：设置页与右栏协作面板共用同一份缓存。 */
+
 export function renderSettings(container, ctx) {
   const view = h('div', { class: 'view-scroll' });
   const pad = h('div', { class: 'view-pad', style: { maxWidth: '760px' } });
@@ -29,6 +33,9 @@ export function renderSettings(container, ctx) {
     settingsError: '',
     providers: null,
     providerError: '',
+    collab: null,
+    collabError: '',
+    collabSaving: false,
     dirty: false,
     saving: false
   };
@@ -192,7 +199,7 @@ export function renderSettings(container, ctx) {
         h('div', { class: 'set-row-title', text: '并发与节奏' }),
         h('div', {
           class: 'set-row-desc',
-          text: `调用间隔 ${s.call_gap ?? '—'} 秒 · 全局并发上限 ${s.max_global_agents ?? '—'}（由 config.json 控制）`
+          text: `调用间隔 ${s.call_gap ?? '—'} 秒 · 全局并发上限见下方「模型与岗位」（可编辑）`
         })
       )
     );
@@ -517,6 +524,317 @@ export function renderSettings(container, ctx) {
     return wrap;
   }
 
+  /* ------------------------------------------------------- 模型与岗位 */
+
+  const collabSec = h('div', { class: 'set-section' });
+  const collabHead = h(
+    'div',
+    { class: 'set-section-head' },
+    h('h2', { text: '模型与岗位' }),
+    h(
+      'button',
+      {
+        class: 'btn btn-sm',
+        type: 'button',
+        html: `${icon('refresh', 13)}<span>重载</span>`,
+        on: { click: () => loadAgents() }
+      }
+    )
+  );
+  const collabBody = h('div', {});
+  collabSec.append(collabHead, collabBody);
+  pad.append(collabSec);
+
+  function collabCall(name, ...args) {
+    const fn = api && api[name];
+    if (typeof fn !== 'function') return Promise.reject(new Error(`api.${name} 尚未接入（core/api.js）`));
+    return Promise.resolve().then(() => fn.apply(api, args));
+  }
+
+  function collabSourceBadge(a) {
+    if (a.provider_id || a.model) return h('span', { class: 'badge badge-accent', text: '本岗位' });
+    if (a.stage) return h('span', { class: 'badge', text: '按阶段' });
+    return h('span', { class: 'badge', dataset: { tone: 'muted' }, text: '默认' });
+  }
+
+  async function loadAgents() {
+    model.collabError = '';
+    paintAgentsMatrix();
+    try {
+      model.collab = await collabCall('agents');
+    } catch (err) {
+      model.collabError = errorText(err, '岗位数据加载失败');
+    }
+    paintAgentsMatrix();
+    /* 技能标题清单异步到位后重绘一次，让绑定 chip 显示中文标题而不是 slug。 */
+    loadSkillCatalog().then(() => {
+      if (view.isConnected) paintAgentsMatrix();
+    });
+  }
+
+  async function saveMaxGlobal(btn, input) {
+    if (model.collabSaving) return;
+    const n = Math.floor(Number(input.value));
+    if (!Number.isFinite(n) || n < 1 || n > 64) {
+      toast('并发上限请输入 1-64 的整数', { tone: 'danger' });
+      input.focus();
+      return;
+    }
+    model.collabSaving = true;
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+      const res = await collabCall('agentsMaxGlobal', n);
+      toast(`全局并发上限已设为 ${res && res.max_global_agents != null ? res.max_global_agents : n}`, { tone: 'success', duration: 2000 });
+      await loadAgents();
+    } catch (err) {
+      toast(errorText(err, '保存失败'), { tone: 'danger' });
+      btn.disabled = false;
+      btn.textContent = '保存';
+    }
+    model.collabSaving = false;
+  }
+
+  async function setAgentModel(a, providerId, modelId) {
+    try {
+      await collabCall('agentsSet', { agent: a.agent, provider_id: providerId || '', model: modelId || '' });
+      toast(`${a.label}已改用 ${modelId || providerId || '阶段默认'}`, { tone: 'success', duration: 2200 });
+      await loadAgents();
+    } catch (err) {
+      toast(errorText(err, '换模型失败'), { tone: 'danger' });
+    }
+  }
+
+  function openAgentModelMenu(anchor, a) {
+    const options = (model.collab && Array.isArray(model.collab.options) && model.collab.options) || [];
+    if (!options.length) {
+      toast('还没有可选供应商：先在上方配置模型与密钥', { tone: 'warn', duration: 2600 });
+      return;
+    }
+    const items = [{ label: '回落 stage/默认（解除绑定）', icon: 'refresh', onSelect: () => setAgentModel(a, '', '') }];
+    for (const p of options) {
+      items.push({ separator: true });
+      items.push({
+        label: p.name || p.id,
+        sub: p.default_model ? `默认 ${p.default_model}` : '',
+        icon: 'plug',
+        onSelect: () => {
+          const models = Array.isArray(p.models) ? p.models : [];
+          const sub = [];
+          if (p.default_model) {
+            sub.push({
+              label: '供应商默认模型',
+              sub: p.default_model,
+              icon: 'dot',
+              checked: a.provider_id === p.id && !a.model,
+              onSelect: () => setAgentModel(a, p.id, '')
+            });
+          }
+          for (const m of models) {
+            sub.push({
+              label: String(m),
+              icon: 'dot',
+              checked: a.provider_id === p.id && a.model === m,
+              onSelect: () => setAgentModel(a, p.id, m)
+            });
+          }
+          popoverMenu(anchor, sub, { label: `${p.name || p.id} · 选模型` });
+        }
+      });
+    }
+    popoverMenu(anchor, items, { label: `${a.label} · 选供应商` });
+  }
+
+  function openAgentSkillsDialog(a) {
+    const selected = new Set((Array.isArray(a.skills) ? a.skills : []).map((x) => String(x).trim()).filter(Boolean));
+    let catalog = [];
+
+    const search = h('input', {
+      class: 'input',
+      type: 'search',
+      placeholder: '搜索技能名或标题',
+      'aria-label': '搜索技能'
+    });
+    const picker = h('div', { class: 'chip-row skill-pick' });
+    const count = h('span', { class: 'hint-text' });
+
+    function syncCount() {
+      count.textContent = selected.size ? `已选 ${selected.size} 个技能` : '未绑定技能（该岗位按文体默认注入即可）';
+    }
+
+    function paintPicker() {
+      picker.textContent = '';
+      const q = search.value.trim().toLowerCase();
+      const shown = catalog.filter((s) => !q || `${s.name} ${s.title}`.toLowerCase().includes(q));
+      if (!shown.length) {
+        picker.append(h('span', { class: 'hint-text', text: catalog.length ? '没有匹配的技能' : '技能清单加载中…' }));
+        return;
+      }
+      for (const s of shown) {
+        const on = selected.has(s.name);
+        const b = h('button', {
+          class: 'wiz-chip',
+          type: 'button',
+          'aria-pressed': on ? 'true' : 'false',
+          title: `${s.medium} · ${s.genre} · ${s.name}`
+        });
+        b.append(h('span', { text: s.title }));
+        b.addEventListener('click', () => {
+          if (selected.has(s.name)) selected.delete(s.name);
+          else selected.add(s.name);
+          syncCount();
+          paintPicker();
+        });
+        picker.append(b);
+      }
+    }
+
+    search.addEventListener('input', paintPicker);
+    syncCount();
+    paintPicker();
+    loadSkillCatalog().then((list) => {
+      catalog = list;
+      paintPicker();
+    });
+
+    const body = h(
+      'div',
+      { class: 'wiz-grid' },
+      fieldRow(`${a.label} · 绑定技能`, h('div', {}, search, picker, count), 'span-2',
+        '点选即可；保存后该岗位写正文/审校时会优先注入这些技能。留空保存即清空绑定。')
+    );
+    const footer = h(
+      'div',
+      { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' } },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+      h('button', {
+        class: 'btn btn-primary',
+        type: 'button',
+        text: '保存',
+        on: {
+          click: async (event) => {
+            const btn = event.currentTarget;
+            btn.disabled = true;
+            try {
+              const skills = Array.from(selected);
+              await collabCall('agentsSkills', { agent: a.agent, skills });
+              toast(`${a.label}技能已保存（${skills.length} 个）`, { tone: 'success', duration: 2000 });
+              modal.close();
+              await loadAgents();
+            } catch (err) {
+              if (err && (err.isMissing || err.status === 404)) {
+                toast('后端技能绑定接口尚未上线（/api/agents-skills），请稍后重试', { tone: 'warn', duration: 4200 });
+              } else {
+                toast(errorText(err, '保存技能失败'), { tone: 'danger' });
+              }
+            }
+            btn.disabled = false;
+          }
+        }
+      })
+    );
+    const modal = openModal({ title: `绑定技能：${a.label}`, body, footer, size: 'md' });
+  }
+
+  function agentMatrixRow(a) {
+    const modelText = a.model || (a.provider_id ? '供应商默认模型' : a.effective) || '未绑定';
+    const copy = h(
+      'div',
+      { class: 'set-row-copy' },
+      h('div', { class: 'set-row-title' }, h('span', { text: a.label || a.agent }), ' ', collabSourceBadge(a), a.stage ? h('span', { class: 'chip chip-muted', text: a.stage }) : null),
+      h('div', { class: 'set-row-desc', text: `${modelText}${a.desc ? ` · ${a.desc}` : ''}` })
+    );
+    /* skills 是并行同事新增字段：缺失就整块不渲染技能区，不能报错。 */
+    if (Array.isArray(a.skills) && a.skills.length) {
+      const chips = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' } });
+      for (const sk of a.skills) chips.append(h('span', { class: 'chip', text: SKILL_TITLES[String(sk)] || String(sk) }));
+      copy.append(chips);
+    }
+    return h(
+      'div',
+      { class: 'set-row' },
+      copy,
+      h(
+        'div',
+        { class: 'set-control', style: { display: 'flex', gap: '6px' } },
+        h('button', {
+          class: 'btn btn-sm',
+          type: 'button',
+          text: '改',
+          title: '为该岗位单独指定供应商/模型',
+          on: { click: (event) => openAgentModelMenu(event.currentTarget, a) }
+        }),
+        h('button', {
+          class: 'btn btn-sm',
+          type: 'button',
+          text: '绑技能',
+          on: { click: () => openAgentSkillsDialog(a) }
+        })
+      )
+    );
+  }
+
+  function paintAgentsMatrix() {
+    collabBody.textContent = '';
+    if (model.collabError) {
+      collabBody.append(
+        h(
+          'div',
+          { class: 'msg-error', role: 'alert' },
+          h('span', { html: icon('alert', 14) }),
+          h('span', { text: model.collabError }),
+          h('button', { class: 'err-btn', type: 'button', text: '重试', on: { click: loadAgents } })
+        )
+      );
+      return;
+    }
+    if (!model.collab) {
+      collabBody.append(h('div', { class: 'session-loading' }, h('span', { class: 'skeleton skeleton-line', style: { width: '45%' } })));
+      return;
+    }
+    const view = model.collab;
+    const maxInput = h('input', {
+      class: 'input',
+      type: 'number',
+      min: '1',
+      max: '64',
+      step: '1',
+      value: String(view.max_global_agents ?? 4),
+      'aria-label': '全局并发上限',
+      style: { width: '88px' }
+    });
+    collabBody.append(
+      h(
+        'div',
+        { class: 'set-row' },
+        h(
+          'div',
+          { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '全局并发上限' }),
+          h('div', { class: 'set-row-desc', text: '多 Agent / 多书同时创作时的在飞上限；超限的请求会排队，防止供应商 429。' })
+        ),
+        h(
+          'div',
+          { class: 'set-control', style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+          maxInput,
+          h('button', {
+            class: 'btn btn-primary btn-sm',
+            type: 'button',
+            text: '保存',
+            on: { click: (event) => saveMaxGlobal(event.currentTarget, maxInput) }
+          })
+        )
+      )
+    );
+
+    const agents = Array.isArray(view.agents) ? view.agents : [];
+    if (!agents.length) {
+      collabBody.append(h('div', { class: 'hint-text', text: '后端没有返回岗位数据（/api/agents 可能仍是旧版本）。' }));
+      return;
+    }
+    for (const a of agents) collabBody.append(agentMatrixRow(a));
+  }
+
   /* --------------------------------------------------------- 关于 */
 
   const aboutSec = h(
@@ -554,11 +872,58 @@ export function renderSettings(container, ctx) {
   );
   pad.append(aboutSec);
 
+  /* ----------------------------------------------------------- 高级 */
+
+  const advSec = h('div', { class: 'set-section' });
+  const advBody = h('div', {});
+  advSec.append(h('div', { class: 'set-section-head' }, h('h2', { text: '高级' })), advBody);
+  pad.append(advSec);
+
+  function paintAdvanced() {
+    advBody.textContent = '';
+    advBody.append(
+      switchRow(
+        '在侧栏显示经典版入口',
+        '旧版单栏界面仍然可用，只是默认不再出现在左侧。需要长期切回去写，再把它固定在侧栏。',
+        store.get().ui.showClassic,
+        (v) => {
+          setPref('showClassic', v);
+          ctx.rerenderPanel();
+        }
+      ),
+      h(
+        'div',
+        { class: 'set-row' },
+        h(
+          'div',
+          { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '经典版界面' }),
+          h('div', {
+            class: 'set-row-desc',
+            text: '作品、模型与设置完全共用，只是排版是旧版单栏；打开后停在 /classic，不会改动任何数据。'
+          })
+        ),
+        h(
+          'div',
+          { class: 'set-control' },
+          h('button', {
+            class: 'btn btn-sm',
+            type: 'button',
+            html: `${icon('external-link', 13)}<span>打开经典版</span>`,
+            on: { click: () => { window.location.href = '/classic'; } }
+          })
+        )
+      )
+    );
+  }
+
   /* ----------------------------------------------------------- start */
 
   paintTheme();
+  paintAdvanced();
   loadSettings();
   loadProviders();
+  loadAgents();
 
   let lastTheme = store.get().theme;
   const unsubTheme = store.subscribe((state) => {
@@ -583,6 +948,7 @@ export function renderSettings(container, ctx) {
       paintTheme();
       loadSettings();
       loadProviders();
+      loadAgents();
     },
     destroy() {
       unsubTheme();

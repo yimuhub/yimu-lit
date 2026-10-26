@@ -8,13 +8,16 @@ import {
   fmtDate,
   initials,
   statusMeta,
+  mediumChip,
+  MEDIUM_LABELS,
+  MEDIUM_UNITS,
   debounce,
   downloadUrl
 } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
 import { toast, confirmDialog, popoverMenu, openModal } from '../core/ui.js';
-import { navigate } from '../core/router.js';
+import { openProject } from '../core/router.js';
 
 const SORTS = [
   { value: 'updated', label: '最近更新' },
@@ -26,8 +29,9 @@ const SORTS = [
 
 const STATUS_OPTIONS = [
   { value: '', label: '全部状态' },
+  { value: 'planning', label: '规划中' },
   { value: 'in_progress', label: '创作中' },
-  { value: 'completed', label: '已出书' },
+  { value: 'completed', label: '已完成' },
   { value: 'passing', label: '质量达标' },
   { value: 'unrated', label: '未评分' },
   { value: 'archived', label: '回收站' }
@@ -42,6 +46,7 @@ export function renderLibrary(container, ctx) {
   const model = {
     q: '',
     genre: '',
+    medium: '',
     status: '',
     sort: 'updated',
     order: 'desc',
@@ -98,6 +103,7 @@ export function renderLibrary(container, ctx) {
       const res = await api.library({
         q: model.q,
         genre: model.genre,
+        medium: model.medium,
         status: model.status,
         sort: model.sort,
         order: model.order
@@ -153,6 +159,20 @@ export function renderLibrary(container, ctx) {
     search.addEventListener('input', () => {
       model.q = search.value.trim();
       runSearch();
+    });
+
+    const mediumSel = h('select', { class: 'select', 'aria-label': '文体筛选' });
+    mediumSel.append(h('option', { value: '', text: '全部文体' }));
+    for (const m of model.facets.mediums || ['novel']) {
+      mediumSel.append(h('option', {
+        value: m,
+        text: MEDIUM_LABELS[m] || m,
+        selected: m === model.medium
+      }));
+    }
+    mediumSel.addEventListener('change', () => {
+      model.medium = mediumSel.value;
+      load();
     });
 
     const genreSel = h('select', { class: 'select', 'aria-label': '题材筛选' });
@@ -217,7 +237,7 @@ export function renderLibrary(container, ctx) {
       })
     );
 
-    filterRow.append(search, genreSel, statusSel, sortSel, orderBtn, h('span', { style: { flex: '1' } }), seg);
+    filterRow.append(search, mediumSel, genreSel, statusSel, sortSel, orderBtn, h('span', { style: { flex: '1' } }), seg);
   }
 
   function setMode(mode) {
@@ -236,18 +256,24 @@ export function renderLibrary(container, ctx) {
 
   /* ------------------------------------------------------------ cards */
 
+  /* 章节工作台与导出走的是小说接口（02 计划 + /api/export），非小说作品不显示。 */
   function rowActions(item) {
+    const novelOnly = !item.medium || item.medium === 'novel';
     return [
       {
         label: '打开作品',
         icon: 'book-open',
-        onSelect: () => navigate(`/work/${encodeURIComponent(item.key)}`)
+        onSelect: () => openProject(item)
       },
-      {
-        label: '章节工作台',
-        icon: 'edit',
-        onSelect: () => ctx.openBench(Math.min((item.done || 0) + 1, item.total || 1))
-      },
+      ...(novelOnly
+        ? [
+            {
+              label: '章节工作台',
+              icon: 'edit',
+              onSelect: () => ctx.openBench(Math.min((item.done || 0) + 1, item.total || 1))
+            }
+          ]
+        : []),
       { separator: true },
       {
         label: item.favorite ? '取消收藏' : '收藏',
@@ -259,11 +285,15 @@ export function renderLibrary(container, ctx) {
         icon: 'edit',
         onSelect: () => renameDialog(item)
       },
-      {
-        label: '导出',
-        icon: 'download',
-        onSelect: (event) => exportMenu(event, item)
-      },
+      ...(novelOnly
+        ? [
+            {
+              label: '导出',
+              icon: 'download',
+              onSelect: (event) => exportMenu(event, item)
+            }
+          ]
+        : []),
       { separator: true },
       {
         label: item.archived ? '从回收站恢复' : '移入回收站',
@@ -461,6 +491,7 @@ export function renderLibrary(container, ctx) {
   function gridCard(item) {
     const meta = statusMeta(item.state, item.status_label);
     const pct = progressOf(item);
+    const unit = MEDIUM_UNITS[item.medium || 'novel'] || '章';
     const card = h('div', { class: 'lib-card', dataset: { key: item.key } });
     card.append(
       h(
@@ -478,6 +509,7 @@ export function renderLibrary(container, ctx) {
           'div',
           { class: 'lib-name-line' },
           h('span', { class: 'lib-name', text: item.name }),
+          mediumChip(item.medium),
           qualityChip(item)
         ),
         h(
@@ -488,7 +520,7 @@ export function renderLibrary(container, ctx) {
           h('span', { class: `dot dot-${meta.tone}` }),
           h('span', { text: meta.label }),
           h('span', { class: 'sep' }),
-          h('span', { text: `${item.done}/${item.total} 章` })
+          h('span', { text: `${item.done}/${item.total} ${unit}` })
         ),
         h(
           'div',
@@ -521,13 +553,14 @@ export function renderLibrary(container, ctx) {
         })
       )
     );
-    card.addEventListener('click', () => navigate(`/work/${encodeURIComponent(item.key)}`));
+    card.addEventListener('click', () => openProject(item));
     return card;
   }
 
   function listRow(item) {
     const meta = statusMeta(item.state, item.status_label);
     const pct = progressOf(item);
+    const unit = MEDIUM_UNITS[item.medium || 'novel'] || '章';
     const row = h('div', { class: 'lib-row', dataset: { key: item.key } });
     row.append(
       h('span', { class: 'lib-cover', text: initials(item.name) }),
@@ -538,6 +571,7 @@ export function renderLibrary(container, ctx) {
           'div',
           { class: 'lib-name-line' },
           h('span', { class: 'lib-name', text: item.name }),
+          mediumChip(item.medium),
           item.favorite ? h('span', { class: 'lib-star', html: icon('star', 12) }) : null
         ),
         h(
@@ -546,7 +580,7 @@ export function renderLibrary(container, ctx) {
           h('span', { text: item.genre || '未分类' }),
           h('span', { class: `dot dot-${meta.tone}` }),
           h('span', { text: meta.label }),
-          h('span', { text: `${item.done}/${item.total} 章 · ${fmtWords(item.total_words)}` }),
+          h('span', { text: `${item.done}/${item.total} ${unit} · ${fmtWords(item.total_words)}` }),
           qualityChip(item)
         )
       ),
@@ -572,7 +606,7 @@ export function renderLibrary(container, ctx) {
         })
       )
     );
-    row.addEventListener('click', () => navigate(`/work/${encodeURIComponent(item.key)}`));
+    row.addEventListener('click', () => openProject(item));
     return row;
   }
 

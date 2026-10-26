@@ -7,6 +7,7 @@ kind: method
 weight: 4
 license: MIT
 source: 原创（神笔小说 ShenBi NovelCraft，方法论吸收业界通用创作思想）
+genre: xuanhuan
 ---
 
 # 玄幻 / 仙侠（原创）

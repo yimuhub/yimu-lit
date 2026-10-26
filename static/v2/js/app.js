@@ -7,12 +7,13 @@ import {
   resetChat
 } from './core/state.js';
 import { initTheme, setTheme, toggleTheme } from './core/theme.js';
+import { loadPrefs } from './core/prefs.js';
 import { startRouter, navigate, routePath } from './core/router.js';
 import { api, errorText } from './core/api.js';
 import { installHotkeys } from './core/hotkeys.js';
 import { createLiveWatcher, pollBookLive } from './core/sse.js';
 import { toast, closeTopOverlay, closePopover } from './core/ui.js';
-import { clamp } from './core/dom.js';
+import { clamp, h } from './core/dom.js';
 import { renderSidebar } from './components/sidebar.js';
 import { renderTopbar } from './components/topbar.js';
 import { renderRightPanel } from './components/rightpanel.js';
@@ -23,7 +24,9 @@ import { renderSession } from './views/session.js';
 import { renderLibrary } from './views/library.js';
 import { renderSettings } from './views/settings.js';
 import { renderEvolution } from './views/evolution.js';
+import { renderSkillLib } from './views/skilllib.js';
 import { renderBench } from './views/bench.js';
+import { renderMediumBench, isMediumBench } from './views/mediumbench.js';
 
 const els = {
   app: document.getElementById('app'),
@@ -43,11 +46,35 @@ let liveStop = null;
 let pollStop = null;
 let loadedKey = '';
 const inflight = new Set();
+const mediumCache = new Map();
+
+/* 视图按文体分岔，而路由只带 key：文体先解析出来，才谈得上渲染哪套工作台。 */
+function mediumOf(key) {
+  if (!key) return '';
+  if (mediumCache.has(key)) return mediumCache.get(key);
+  const item = store.get().library.items.find((i) => i.key === key);
+  if (!item) return '';
+  const medium = item.medium || 'novel';
+  mediumCache.set(key, medium);
+  return medium;
+}
+
+async function resolveMedium(key) {
+  const res = await api.project(key);
+  const medium = (res && res.medium) || 'novel';
+  mediumCache.set(key, medium);
+  return medium;
+}
+
 
 /* ---------------------------------------------------------------- ctx */
 
 const ctx = {
   navigate,
+  /* 刚创建的作品还没落进作品库，先告诉路由它是什么文体，省一次"作品不存在"的竞态。 */
+  rememberMedium(key, medium) {
+    if (key) mediumCache.set(key, medium || 'novel');
+  },
   openWizard(preset = {}) {
     if (wizardModal) return wizardModal;
     wizardModal = openWizardModal(ctx, preset);
@@ -393,7 +420,8 @@ function syncShell(state, force = false) {
     state.library.loaded,
     state.route.key,
     state.route.name,
-    state.ui.sidebarExpanded
+    state.ui.sidebarExpanded,
+    state.ui.showClassic
   ].join('|');
   if (force || sidebarSig !== sigs.sidebar) {
     sigs.sidebar = sidebarSig;
@@ -452,12 +480,15 @@ function renderView(route) {
   currentView = null;
   els.view.textContent = '';
 
+  const medium = route.key ? store.get().workMedium : '';
   let handle = null;
-  if (route.name === 'work') handle = renderSession(els.view, ctx);
-  else if (route.name === 'bench') handle = renderBench(els.view, ctx);
-  else if (route.name === 'library') handle = renderLibrary(els.view, ctx);
+  if (route.name === 'library') handle = renderLibrary(els.view, ctx);
   else if (route.name === 'settings') handle = renderSettings(els.view, ctx);
   else if (route.name === 'evolution') handle = renderEvolution(els.view, ctx);
+  else if (route.name === 'skills') handle = renderSkillLib(els.view, ctx);
+  else if (isMediumBench(medium)) handle = renderMediumBench(els.view, ctx);
+  else if (route.name === 'bench') handle = renderBench(els.view, ctx);
+  else if (route.name === 'work') handle = renderSession(els.view, ctx);
   else handle = renderWelcome(els.view, ctx);
   currentView = handle;
 
@@ -466,8 +497,23 @@ function renderView(route) {
   const title =
     route.name === 'work' || route.name === 'bench'
       ? (state.work && state.work.name) || (item && item.name) || '作品'
-      : { welcome: '新会话', library: '作品库', evolution: '技能进化', settings: '设置' }[route.name] || '神笔';
+      : { welcome: '新会话', library: '作品库', skills: '技能库', evolution: '技能进化', settings: '设置' }[route.name] || '神笔';
   document.title = `${title} · 神笔创作台`;
+}
+
+/* 冷启动深链只带 key，文体要问一次后端；这期间先占位，避免把剧本当小说渲染。 */
+function renderPendingView() {
+  if (currentView && currentView.destroy) {
+    try {
+      currentView.destroy();
+    } catch (err) {
+      console.error('[view] destroy failed', err);
+    }
+  }
+  currentView = null;
+  els.view.textContent = '';
+  const box = h('div', { class: 'view-scroll' }, h('div', { class: 'session-loading' }, h('span', { class: 'skeleton skeleton-line', style: { width: '40%' } })));
+  els.view.append(box);
 }
 
 function stopLive() {
@@ -530,6 +576,9 @@ async function ensureWork(key) {
   loadedKey = key;
   patch('work', null);
   patch('workError', null);
+  /* 剧本/诗词/散文的进度与正文由各自工作台按文体接口拉取；
+     这里的规划、状态库、参考资料都是小说引擎的东西，套上去只会报"项目不存在"。 */
+  if (isMediumBench(store.get().workMedium)) return;
   await Promise.allSettled([
     ctx.refreshWork(),
     ctx.refreshPlan(),
@@ -554,6 +603,7 @@ function onRoute(route) {
     resetChat();
     store.set({
       currentKey: key,
+      workMedium: mediumOf(key),
       work: null,
       workError: null,
       plan: null,
@@ -569,6 +619,27 @@ function onRoute(route) {
   }
   store.set({ route });
   applyLayout();
+
+  if (key && !store.get().workMedium) {
+    /* 冷启动深链只有一个 key，作品库还没回来：先问清文体，否则会把剧本当小说渲染。 */
+    renderPendingView();
+    syncShell(store.get(), true);
+    resolveMedium(key)
+      .then((medium) => {
+        if (store.get().currentKey !== key) return;
+        patch('workMedium', medium);
+        renderView(store.get().route);
+        syncShell(store.get(), true);
+        ensureWork(key);
+      })
+      .catch((err) => {
+        if (store.get().currentKey !== key) return;
+        renderView(store.get().route);
+        toast(errorText(err, '作品加载失败'), { tone: 'danger', duration: 5000 });
+      });
+    return;
+  }
+
   renderView(route);
   syncShell(store.get(), true);
 
@@ -576,6 +647,7 @@ function onRoute(route) {
   else stopLive();
 
   if (route.name === 'library' && !store.get().library.loaded) ctx.refreshLibrary();
+  if (route.name === 'skills' && !store.get().library.loaded) ctx.refreshLibrary();
   if (route.name === 'evolution') {
     ctx.refreshSkills();
     if (window.innerWidth < 1200) els.view.focus?.();
@@ -673,6 +745,7 @@ async function loadBootstrap() {
 
 async function boot() {
   initTheme();
+  loadPrefs();
   applyLayout();
   syncShell(store.get(), true);
   bindResizers();
