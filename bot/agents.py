@@ -142,7 +142,8 @@ def bindings_view():
     binds = get_bindings()
     sbinds = get_skill_bindings()
     out = []
-    for agent, meta in AGENTS.items():
+    all_agents = _all_agents()
+    for agent, meta in all_agents.items():
         b = binds.get(agent, {}) or {}
         out.append({"agent": agent, "label": meta["label"], "stage": meta["stage"], "desc": meta["desc"],
                     "provider_id": b.get("provider_id"), "model": b.get("model"),
@@ -174,6 +175,73 @@ def set_max_global(n):
     c.setdefault("defaults", {})["max_global_agents"] = max(1, int(n))
     atomic_write_json(p, c)
     return c["defaults"]["max_global_agents"]
+
+
+def _custom_agents_path():
+    import os
+    return os.path.join(providers.ROOT, "config.json")
+
+def _load_custom_agents():
+    """从 config.json defaults.custom_agents 读取自定义 Agent 列表。"""
+    import json
+    try:
+        return json.load(open(_config_path(), encoding="utf-8")).get("defaults", {}).get("custom_agents", {}) or {}
+    except Exception:
+        return {}
+
+def _save_custom_agents(custom):
+    """持久化自定义 Agent 到 config.json。"""
+    import json
+    p = _config_path()
+    try:
+        c = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        c = {}
+    c.setdefault("defaults", {})["custom_agents"] = custom
+    atomic_write_json(p, c)
+    return custom
+
+def add_agent(name, desc, stage="writing", skills=None, label=None):
+    """添加一个自定义 Agent。
+    name: 英文 key（如 'xianxia_writer'）
+    label: 中文名（如 '玄幻作家'）
+    desc: 描述（如 '专门写玄幻小说'）
+    stage: 阶段码（planning/writing/review）
+    skills: 绑定的技能名列表
+    """
+    if not name or not isinstance(name, str):
+        raise ValueError("Agent 名称不能为空")
+    key = name.strip().lower().replace(" ", "_")
+    custom = _load_custom_agents()
+    custom[key] = {
+        "label": label or name,
+        "stage": stage or "writing",
+        "desc": desc or "",
+        "custom": True,
+    }
+    _save_custom_agents(custom)
+    # 如果有技能绑定，也写入
+    if skills and isinstance(skills, list):
+        asm = get_skill_bindings()
+        asm[key] = [s for s in skills if isinstance(s, str) and s.strip()]
+        import json
+        p = _config_path()
+        try:
+            c = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            c = {}
+        c.setdefault("defaults", {})["agent_skills"] = asm
+        atomic_write_json(p, c)
+    return custom[key]
+
+def _all_agents():
+    """合并内置 Agent + 自定义 Agent。"""
+    custom = _load_custom_agents()
+    merged = dict(AGENTS)
+    for k, v in custom.items():
+        if k not in merged:
+            merged[k] = v
+    return merged
 
 
 # ---------- 批量分发：多本书同时创作（受 ConcurrencyGuard 限并发） ----------

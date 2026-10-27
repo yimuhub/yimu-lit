@@ -391,6 +391,12 @@ export const api = {
     request('/api/skills/evolution/promote', jsonBody({ id, force, approver: 'user' })),
   rejectSkill: (id, note = '') => request('/api/skills/evolution/reject', jsonBody({ id, note })),
   rollbackSkill: (name, version) => request('/api/skills/evolution/rollback', jsonBody({ name, version })),
+  toggleSkill: (payload) => request('/api/skills/evolution/toggle', jsonBody(payload)),
+  fixConsistency: (issueId) => request('/api/fix-consistency', jsonBody({ id: issueId })),
+  chatHistory: (key) => request(`/api/chat/history?key=${encodeURIComponent(key)}`),
+  chatClear: (key) => request('/api/chat/clear', jsonBody({ key })),
+  addAgent: (data) => request('/api/agents/add', jsonBody(data)),
+  scoreBook: (key) => request('/api/score', jsonBody({ key }), { timeout: 120000 }),
 
   /* 技能库（#/skills）：树、单文件、统计、本书命中与注入预览 */
   skillkitTree: (medium = '') => request('/api/skills/tree', { query: { medium } }),
@@ -419,6 +425,10 @@ export const api = {
   exportUrl(key, fmt = 'docx') {
     return joinUrl('/api/export', { key, fmt });
   },
+
+  /* 版本与更新检查 */
+  version: () => request('/api/version'),
+  checkUpdate: () => request('/api/check-update', { timeout: 12000 }),
 
   /* 聊天 SSE：mock 模式模拟分段输出；真实模式走通用 streamSSE。 */
   async streamChat(payload, { onEvent, signal } = {}) {

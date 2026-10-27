@@ -204,6 +204,29 @@
   color: currentColor;
 }
 
+.composer-par-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+  white-space: nowrap;
+}
+.composer-par-btn:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--accent);
+}
+.composer-par-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .composer-trailing {
   display: flex;
   align-items: center;

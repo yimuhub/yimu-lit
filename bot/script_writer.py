@@ -474,35 +474,10 @@ def scene_heading(sc: dict) -> str:
 
 # ---------------------------------------------------------------- 项目生命周期
 
-def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
-    """建剧本项目 + 逐阶段生成。"""
-    cfg = _merge_cfg(cfg)
-    form = cfg.get("form", "film")
-    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    name = _safe(cfg.get("title") or cfg.get("idea") or "未命名剧本")
-    pdir = safe_join(PROJECTS_DIR, base_key or f"s_{ts}-{name}", label="项目 key")
-    os.makedirs(pdir, exist_ok=True)
-    proj = ScriptProject(pdir, name)
-    llm.book(os.path.basename(pdir), "planning")
-
-    era = _era_of(cfg)
-    plan = {
-        "version": 1, "scriptName": name, "projectPath": pdir, "medium": "script",
-        "form": form, "formLabel": FORMS.get(form, FORMS["film"])["label"],
-        "entryPath": cfg.get("entryPath", "idea"),
-        "totalScenes": int(cfg.get("scenes") or 30),
-        "targetPages": int(cfg.get("pages") or 100),
-        "episodes": int(cfg.get("episodes") or 12),
-        "createdAt": datetime.datetime.now().isoformat(),
-        "status": "planning", "stages": {}, "scenes": [],
-        "meta": {"setting": {
-            "era": era,
-            "era_label": script_checker.ERA_LABELS.get(era, ""),
-            "world": str(cfg.get("setting_world") or "").strip(),
-        }},
-        "config": {k: v for k, v in cfg.items() if k != "api_key"},
-    }
-    proj.save_plan(plan)
+def _run_planning(proj: "ScriptProject", plan: dict, cfg: dict) -> None:
+    """S0→S4 规划阶段（create_project 与断点恢复共用）。产物全部落盘，幂等可重跑。"""
+    name = plan.get("scriptName") or proj.name
+    pdir = proj.path
 
     proj.log("🎬 阶段 S0：生成创作引擎…")
     premise = gen_premise(cfg)
@@ -553,14 +528,51 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
         proj.save_plan(plan)
         terms = "、".join(it["term"] for it in guard["issues"][:8])
         proj.log(f"⛔ 场次表与时代设定冲突（{terms}），已暂停自动写作，请先修正时代/世界观或场次表")
-        return proj
+        return
     proj.save_plan(plan)
+
+
+def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
+    """建剧本项目 + 逐阶段生成。"""
+    cfg = _merge_cfg(cfg)
+    form = cfg.get("form", "film")
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    name = _safe(cfg.get("title") or cfg.get("idea") or "未命名剧本")
+    pdir = safe_join(PROJECTS_DIR, base_key or f"s_{ts}-{name}", label="项目 key")
+    os.makedirs(pdir, exist_ok=True)
+    proj = ScriptProject(pdir, name)
+    llm.book(os.path.basename(pdir), "planning")
+
+    era = _era_of(cfg)
+    plan = {
+        "version": 1, "scriptName": name, "projectPath": pdir, "medium": "script",
+        "form": form, "formLabel": FORMS.get(form, FORMS["film"])["label"],
+        "entryPath": cfg.get("entryPath", "idea"),
+        "totalScenes": int(cfg.get("scenes") or 30),
+        "targetPages": int(cfg.get("pages") or 100),
+        "episodes": int(cfg.get("episodes") or 12),
+        "createdAt": datetime.datetime.now().isoformat(),
+        "status": "planning", "stages": {}, "scenes": [],
+        "meta": {"setting": {
+            "era": era,
+            "era_label": script_checker.ERA_LABELS.get(era, ""),
+            "world": str(cfg.get("setting_world") or "").strip(),
+        }},
+        "config": {k: v for k, v in cfg.items() if k != "api_key"},
+    }
+    proj.save_plan(plan)
+
+    _run_planning(proj, plan, cfg)
+    plan = proj.plan() or plan
+    if (plan.get("meta") or {}).get("paused"):
+        return proj
 
     if cfg.get("form") == "series":
         proj.log("📺 生成季弧与分集…")
-        _write(os.path.join(pdir, F_SEASON), f"# {name} 季弧与分集\n\n" + (struct or ""))
+        _write(os.path.join(pdir, F_SEASON), f"# {name} 季弧与分集\n\n"
+               + _read(os.path.join(pdir, F_STRUCT)))
 
-    proj.log(f"✅ 规划就绪：《{name}》{len(scenes)} 场")
+    proj.log(f"✅ 规划就绪：《{name}》{len(plan.get('scenes') or [])} 场")
     # v1.2.2：规划完成后自动开写全部场次（后台线程），状态 planning → writing
     import threading as _th
     def _auto():
@@ -568,6 +580,43 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
             write_scenes(proj)
         except Exception as e:
             print(f"[bg] 剧本自动写作失败: {e}", flush=True)
+    _th.Thread(target=_auto, daemon=True).start()
+    return proj
+
+
+def resume_project(key: str) -> ScriptProject | None:
+    """断点恢复：服务重启/写作线程中断后，从盘上产物继续（缺哪段规划补哪段）。
+    场次清单已就绪 → 直接续写剩余场次；规划未完 → 重跑缺失阶段再开写。"""
+    import threading as _th
+    try:
+        pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
+    except ValueError:
+        return None
+    if not os.path.isdir(pdir):
+        return None
+    plan = {}
+    try:
+        plan = json.load(open(os.path.join(pdir, F_PLAN), encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(plan, dict) or not (plan.get("config") or plan.get("scriptName")):
+        return None
+    cfg = _merge_cfg(plan.get("config") or {})
+    proj = ScriptProject(pdir, plan.get("scriptName") or key)
+    plan.setdefault("stages", {})
+    if not plan.get("scenes"):
+        proj.log("▶ 断点恢复：规划未完成，补齐缺失阶段…")
+        _run_planning(proj, plan, cfg)
+        plan = proj.plan() or plan
+    if (plan.get("meta") or {}).get("paused"):
+        proj.log("⏸ 该剧本处于暂停状态（时代设定冲突），处理后再继续")
+        return proj
+    proj.log(f"▶ 断点恢复：继续写作《{proj.name}》剩余场次…")
+    def _auto():
+        try:
+            write_scenes(proj)
+        except Exception as e:
+            print(f"[bg] 剧本断点恢复写作失败: {e}", flush=True)
     _th.Thread(target=_auto, daemon=True).start()
     return proj
 

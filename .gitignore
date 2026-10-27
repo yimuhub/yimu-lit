@@ -49,3 +49,7 @@ schedules.json
 jobs.json
 llm_calls.jsonl
 llm_calls.jsonl.*
+
+# —— 运行时一次性令牌 / 探针（本地） ——
+.shenbi_token
+bot/.nlu_probe

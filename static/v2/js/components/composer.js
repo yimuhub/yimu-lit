@@ -20,7 +20,7 @@ function mediumOptions() {
 
 export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onStop, placeholder } = {}) {
   const startState = store.get();
-  let mode = 'draft';
+  let mode = store.get().ui.mode || 'draft';
   let attachments = [];
   let streaming = false;
   let composing = false;
@@ -54,7 +54,137 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
     title: '发送（Enter）',
     html: icon('arrow-up', 17)
   });
-  const tools = h('div', { class: 'composer-tools' }, addBtn, mediumChip, modeChip);
+  const parBtn = h('button', {
+    class: 'composer-chip composer-par-btn',
+    type: 'button',
+    title: '分章齐写：多个 Agent 同时写不同章节',
+    html: icon('zap', 14) + '<span style="margin-left:4px;font-size:12px">分章齐写</span>',
+    on: {
+      click: async () => {
+        const key = store.get().currentKey;
+        if (!key) { toast('请先打开一本作品', { tone: 'danger' }); return; }
+        const st = store.get().work || {};
+        if (st.running) { toast('当前已有创作任务在运行', { tone: 'warn', duration: 3000 }); return; }
+        const plan = store.get().plan;
+        if (!plan || !plan.chapters || !plan.chapters.length) {
+          toast('当前作品还没有章节规划，请先完成规划', { tone: 'danger', duration: 4000 }); return;
+        }
+        const pendings = plan.chapters.filter(c => c.status !== 'completed');
+        if (pendings.length === 0) { toast('所有章节已完成', { tone: 'info' }); return; }
+        parBtn.disabled = true;
+        parBtn.style.opacity = '0.6';
+        try {
+          const res = await api.parallelWrite({ key, workers: 5 });
+          toast((res && res.msg) || `分章齐写已启动：5 个 Agent 并行写 ${pendings.length} 章`, { tone: 'success', duration: 5000 });
+          if (ctx && ctx.refreshState) ctx.refreshState();
+        } catch (err) {
+          toast(errorText(err, '启动失败'), { tone: 'danger', duration: 4000 });
+        } finally {
+          parBtn.disabled = false;
+          parBtn.style.opacity = '';
+        }
+      }
+    }
+  });
+
+  // v2.6.1：邀请创作岗位 Agent 参与讨论（支持多选群聊）
+  const invitedAgents = new Set(); /* 已邀请的 Agent 名称集合 */
+  let invitePanel = null;
+  const inviteBtn = h('button', {
+    class: 'composer-chip composer-invite-btn',
+    type: 'button',
+    title: '邀请创作岗位的 Agent 参与讨论（可多选，自动升级为群聊）',
+    html: icon('users', 14) + '<span style="margin-left:4px;font-size:12px">邀请Agent</span>',
+    on: {
+      click: async () => {
+        const key = store.get().currentKey;
+        if (!key) { toast('请先打开一本作品', { tone: 'danger' }); return; }
+        /* 已有面板则切换显示 */
+        if (invitePanel) {
+          invitePanel.hidden = !invitePanel.hidden;
+          return;
+        }
+        try {
+          const res = await api.agents();
+          const agents = (res && res.view && res.view.agents) || [];
+          if (!agents.length) { toast('暂无可邀请的 Agent', { tone: 'warn' }); return; }
+          /* v2.6.1：多选浮动面板 */
+          invitePanel = h('div', { class: 'invite-panel' });
+          const header = h('div', { class: 'invite-panel-header' },
+            h('span', { text: '选择要邀请的 Agent（可多选）' }),
+            h('button', { class: 'invite-panel-close', type: 'button', html: '✕', on: { click: () => { invitePanel.hidden = true; } } })
+          );
+          const list = h('div', { class: 'invite-panel-list' });
+          for (const a of agents) {
+            const name = a.label || a.agent || 'Agent';
+            const row = h('div', { class: 'invite-panel-row', dataset: { checked: invitedAgents.has(name) ? 'true' : 'false' }, on: {
+              click: () => {
+                if (invitedAgents.has(name)) {
+                  invitedAgents.delete(name);
+                  row.dataset.checked = 'false';
+                } else {
+                  invitedAgents.add(name);
+                  row.dataset.checked = 'true';
+                }
+                updateInviteBtnLabel();
+              }
+            }},
+              h('span', { class: 'invite-panel-check', html: invitedAgents.has(name) ? '✓' : '' }),
+              h('div', { class: 'invite-panel-info' },
+                h('div', { class: 'invite-panel-name', text: name }),
+                h('div', { class: 'invite-panel-desc', text: a.desc || a.stage || '' })
+              )
+            );
+            list.append(row);
+          }
+          const footer = h('div', { class: 'invite-panel-footer' },
+            h('button', { class: 'invite-panel-confirm', type: 'button', text: '确认邀请并进入群聊', on: {
+              click: () => {
+                if (invitedAgents.size === 0) {
+                  toast('请至少选择一个 Agent', { tone: 'warn' });
+                  return;
+                }
+                const names = Array.from(invitedAgents).join(' @');
+                const input = el.querySelector('.composer-input');
+                if (input) {
+                  const prefix = `@${names} `;
+                  const cur = input.value || '';
+                  if (!cur.startsWith('@')) {
+                    input.value = prefix + cur;
+                  }
+                  input.focus();
+                }
+                invitePanel.hidden = true;
+                const count = invitedAgents.size;
+                toast(`已邀请 ${count} 位 Agent 参与群聊，输入你的问题后发送`, { tone: 'success', duration: 3000 });
+              }
+            }}),
+            h('button', { class: 'invite-panel-clear', type: 'button', text: '清空', on: {
+              click: () => {
+                invitedAgents.clear();
+                list.querySelectorAll('.invite-panel-row').forEach(r => { r.dataset.checked = 'false'; r.querySelector('.invite-panel-check').textContent = ''; });
+                updateInviteBtnLabel();
+              }
+            }})
+          );
+          invitePanel.append(header, list, footer);
+          el.append(invitePanel);
+        } catch (err) {
+          toast(errorText(err, '加载 Agent 列表失败'), { tone: 'danger' });
+        }
+      }
+    }
+  });
+
+  function updateInviteBtnLabel() {
+    const span = inviteBtn.querySelector('span');
+    if (span) {
+      span.textContent = invitedAgents.size > 0 ? `已选${invitedAgents.size}位` : '邀请Agent';
+    }
+    inviteBtn.dataset.invited = invitedAgents.size > 0 ? 'true' : 'false';
+  }
+
+  const tools = h('div', { class: 'composer-tools' }, addBtn, mediumChip, modeChip, parBtn, inviteBtn);
   const row = h('div', { class: 'composer-row' }, tools, h('div', { class: 'composer-trailing' }, hint, sendBtn));
   card.append(attachRow, inputWrap, row);
   el.append(card);
@@ -315,6 +445,7 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
       checked: m.value === mode,
       onSelect: () => {
         mode = m.value;
+        patchUi({ mode: m.value });
         refreshChips();
       }
     }));

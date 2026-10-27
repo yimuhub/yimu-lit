@@ -110,7 +110,8 @@ export const initialState = {
     providerId: null,
     model: null,
     medium: 'novel',
-    wizardPreset: null
+    wizardPreset: null,
+    mode: 'draft'
   }
 };
 

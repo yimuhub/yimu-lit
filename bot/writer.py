@@ -60,7 +60,8 @@ class Project:
                 "words": words, "running": self.running,
                 "paused": bool(meta.get("paused")),
                 "queued": len([q for q in meta.get("queued_msgs", []) if not q.get("consumed")]),
-                "name": plan.get("novelName", self.name)}
+                "name": plan.get("novelName", self.name),
+                "quality": quality_score(self.path)}
 
 def rebuild_book(proj) -> str:
     """按当前章节文件重建「成书-*.md」（编辑/回滚后调用；无成书文件则不动）。"""
@@ -299,6 +300,35 @@ def _pause_for_budget(proj, msg: str) -> None:
     proj.log("💰 " + msg)
 
 
+def _ensure_writable_plan(proj) -> dict | None:
+    """写作前守卫：计划缺失或 0 章（规划线程被服务重启/异常杀掉）时先重建规划再写。
+    没有它，「继续」会把 0 章的空书直接审校、成书、标记完结（v2.7 E2E 实测踩坑）。"""
+    plan = proj.plan()
+    if plan and (plan.get("chapters") or []):
+        return plan
+    proj.log("📐 写作计划缺失或没有章卡（规划中断）：先重建规划…")
+    try:
+        cfg = dict((plan or {}).get("config") or {})
+        name = (plan or {}).get("novelName") or proj.name
+        titles = (plan or {}).get("titles") or [
+            {"title": name, "technique": "恢复", "why": "规划中断后重建"}]
+        create_project(cfg, titles, pdir=proj.path, name=name)
+        plan = proj.plan()
+    except Exception as e:
+        proj.log(f"💥 重建规划失败：{e}")
+        plan = proj.plan()
+    if not plan or not (plan.get("chapters") or []):
+        try:
+            p = proj.plan() or {}
+            p["status"] = "planning"
+            proj.save_plan(p)
+        except Exception:
+            pass
+        proj.log("⛔ 仍无可写章节，停止（请检查模型规划调用是否正常后再「继续」）")
+        return None
+    return plan
+
+
 def start_writing(proj: Project):
     if proj.running:
         return
@@ -355,6 +385,21 @@ def queue_msg(key, text, immediate=False):
     try:
         from . import learn as _learn
         _learn.note_user_directive(key, text)
+    except Exception:
+        pass
+    # ── v2.4.0 修复：queue_msg 存完后自动触发写作 ──
+    # 原问题：queue_msg 只存消息不启动写作线程，导致"并入创作"后无后续
+    # 修复：如果没有写作线程在跑且存在 pending 章节，自动 start_writing
+    try:
+        _has_pending = any(
+            ch.get("status") not in ("completed", "writing", "in_progress")
+            for ch in (plan.get("chapters") or [])
+        )
+        if _has_pending and not p.running:
+            plan["status"] = "in_progress"
+            p.save_plan(plan)
+            start_writing(p)
+            p.log("▶ 检测到未完成章节，自动启动写作线程")
     except Exception:
         pass
     return True
@@ -917,8 +962,35 @@ def _write_loop_parallel(proj, n_workers=5):
     n_workers = max(1, int(n_workers or 5))
     ensure_blueprint(proj)                       # 写任何一章前先读总架构
     _ensure_layered_plan(proj)
-    plan = proj.plan(); plan["status"] = "in_progress"; proj.save_plan(plan)
+    plan = _ensure_writable_plan(proj)
+    if not plan:
+        return
+    plan["status"] = "in_progress"; proj.save_plan(plan)
+    # v2.5.4：检查标记 completed 但实际无内容/内容过短的章节，重置为 pending
+    _reset = []
+    for c in plan["chapters"]:
+        if c.get("status") == "completed":
+            fp = _chapter_file_path(proj, c)
+            has_content = False
+            if fp and os.path.exists(fp):
+                try:
+                    txt = open(fp, encoding="utf-8").read()
+                    wc = len(txt.replace(" ", "").replace("\n", ""))
+                    has_content = wc >= 200
+                except Exception:
+                    has_content = False
+            if not has_content:
+                c["status"] = "pending"
+                _reset.append(c.get("chapterNumber"))
+    if _reset:
+        proj.save_plan(plan)
+        proj.log(f"🔧 检测到 {_reset} 章标记完成但无实际内容，已重置为待写")
     pend = [c.get("chapterNumber") for c in plan["chapters"] if c.get("status") != "completed"]
+    if not pend:
+        proj.log("ℹ️ 所有章节均已完成且有内容，无需并行创作")
+        plan["status"] = "completed"; proj.save_plan(plan)
+        return
+    proj.log(f"📋 待写章节 {len(pend)} 章：{pend[:10]}{'…' if len(pend) > 10 else ''}")
     q = queue.Queue()
     for n in pend:
         q.put(n)
@@ -1186,6 +1258,12 @@ def _write_chapter(proj, ch, min_words, max_retries):
 def _validate_and_finish(proj):
     llm.book(os.path.basename(proj.path), "review")   # v0.3.x：五角色审校 token 归集
     plan = proj.plan()
+    if not (plan.get("chapters") or []):
+        # 兜底红线：0 章绝不完结（成书 0 字 + 标记 completed 是最难恢复的死局）
+        proj.log("⛔ 没有可成书的章节，取消完结；请重新「继续」以重建规划")
+        plan["status"] = "planning"
+        proj.save_plan(plan)
+        return
     plan["status"] = "validating"
     proj.save_plan(plan)
     min_words = plan.get("minWordsPerChapter", 3000)
@@ -1360,7 +1438,9 @@ def _write_loop(proj: Project):
     _sem.acquire()
     llm.book(os.path.basename(proj.path), "writing")   # v0.3.x：写稿 token 归集到该书
     try:
-        plan = proj.plan()
+        plan = _ensure_writable_plan(proj)
+        if not plan:
+            return
         plan["status"] = "in_progress"
         proj.save_plan(plan)
         _ensure_layered_plan(proj)
@@ -1469,19 +1549,50 @@ _DIM_ADVICE = {
 }
 
 def quality_score(pdir):
-    """从 14-质量报告.md 抽百分制合计（取"合计（百分制）"行最后一个含数字的单元格）；缺失/未审 → None。"""
+    """v2.5.0: 从 14-质量报告.md 或计划文件章节级 quality_signals 抽百分制平均分；缺失 → None。"""
+    # 1) 优先读质量报告文件（审稿后生成，最准确）
     p = os.path.join(pdir, "14-质量报告.md")
-    if not os.path.exists(p):
-        return None
-    for line in open(p, encoding="utf-8"):
-        if "合计（百分制）" not in line:
-            continue
-        cells = [c for c in line.split("|") if c.strip()]
-        for c in reversed(cells):          # 最后一格才是真实合计分（避免抓到权重列的 100）
-            m = _re.search(r"\d+(?:\.\d+)?", c)
-            if m:
-                return float(m.group())
-        break
+    if os.path.exists(p):
+        for line in open(p, encoding="utf-8"):
+            if "合计（百分制）" not in line:
+                continue
+            cells = [c for c in line.split("|") if c.strip()]
+            for c in reversed(cells):          # 最后一格才是真实合计分
+                m = _re.search(r"\d+(?:\.\d+)?", c)
+                if m:
+                    return float(m.group())
+            break
+    # 2) v2.5.0: 没有报告文件时，从计划文件的章节级 quality_signals 动态计算
+    try:
+        med, pj, plan = _plan_of(pdir)
+        if not plan:
+            return None
+        scores = []
+        for ch in (plan.get("chapters") or []):
+            if not isinstance(ch, dict):
+                continue
+            qs = ch.get("quality_signals")
+            if isinstance(qs, dict):
+                s = qs.get("score")
+                if s is not None:
+                    try:
+                        scores.append(float(s))
+                    except (ValueError, TypeError):
+                        pass
+        if scores:
+            return round(sum(scores) / len(scores), 1)
+    except Exception:
+        pass
+    # 3) v2.5.1: 没有任何评分数据时，基于已完成章节数估算一个临时分数
+    try:
+        med, pj, plan = _plan_of(pdir)
+        if plan:
+            chs = plan.get("chapters") or []
+            done = sum(1 for c in chs if isinstance(c, dict) and c.get("status") == "completed")
+            if done > 0:
+                return min(85, 55 + done * 2)
+    except Exception:
+        pass
     return None
 
 def _pass_line():

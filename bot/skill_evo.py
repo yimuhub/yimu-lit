@@ -66,6 +66,49 @@ _DANGER: list[tuple[str, str]] = [
 ]
 
 _LOCK = threading.Lock()
+_TOGGLES_PATH = os.path.join(DATA_DIR, "skill_toggles.json")
+
+
+def _load_toggles() -> dict:
+    """读取已禁用技能列表 {skill_name: False}"""
+    try:
+        with open(_TOGGLES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_toggles(toggles: dict) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    atomic_write_text(_TOGGLES_PATH, json.dumps(toggles, ensure_ascii=False, indent=2))
+
+
+def is_disabled(skill_name: str) -> bool:
+    """检查某技能是否被手动禁用"""
+    return not _load_toggles().get(skill_name, True)
+
+
+def toggle(skill_name: str, enabled: bool) -> dict:
+    """启用/禁用一个技能。禁用后的技能不会被 stage_inject 注入 prompt。
+
+    参数：
+        skill_name: 技能名
+        enabled: True=启用, False=禁用
+
+    返回：{"ok": True, "enabled": bool, "name": str}
+    """
+    name = str(skill_name or "").strip()
+    if not name:
+        return {"ok": False, "error": "缺少技能名"}
+    with _LOCK:
+        toggles = _load_toggles()
+        if enabled:
+            toggles.pop(name, None)
+        else:
+            toggles[name] = False
+        _save_toggles(toggles)
+    return {"ok": True, "enabled": enabled, "name": name}
 
 
 # ---------------------------------------------------------------- 小工具

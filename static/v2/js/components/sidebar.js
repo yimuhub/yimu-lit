@@ -283,6 +283,72 @@ export function renderSidebar(container, ctx) {
       trail: '',
       onClick: () => ctx.openSettings()
     },
+    /* 版本号：显示当前版本，点击检查 GitHub 最新 release */
+    {
+      label: '',
+      icon: 'tag',
+      trail: '',
+      custom: true,
+      render: () => {
+        const row = h('div', {
+          class: 'side-foot-version',
+          title: '点击检查更新',
+          role: 'button',
+          tabindex: '0',
+          style: { cursor: 'pointer' }
+        });
+        const verSpan = h('span', { class: 'sfv-label', text: '版本 ' });
+        const verNum = h('span', { class: 'sfv-num', text: '…' });
+        verSpan.append(verNum);
+        row.append(h('span', { html: icon('tag', 14), class: 'sfv-icon' }), verSpan);
+
+        /* 加载本地版本 */
+        api.version().then((res) => {
+          if (res && res.version) verNum.textContent = 'v' + res.version;
+        }).catch(() => { verNum.textContent = 'v?'; });
+
+        /* 点击检查更新 */
+        const checkUpdate = async () => {
+          if (row.dataset.checking === 'true') return;
+          row.dataset.checking = 'true';
+          verNum.textContent = '检查中…';
+          try {
+            const res = await api.checkUpdate();
+            if (!res || !res.ok) {
+              verNum.textContent = res && res.error ? '⚠' : 'v?';
+              toast((res && res.error) || '检查更新失败', 'error');
+              return;
+            }
+            const local = res.local_version || '?';
+            const latest = res.latest_version || '?';
+            if (res.has_update) {
+              verNum.textContent = `v${local} → v${latest}`;
+              verNum.style.color = 'var(--accent, #4ecb89)';
+              toast(`发现新版本 v${latest}，点击前往更新`, 'info');
+              row.onclick = () => {
+                if (res.release_url) window.open(res.release_url, '_blank');
+              };
+              /* 闪烁提示 */
+              row.dataset.update = 'true';
+            } else {
+              verNum.textContent = `v${local}`;
+              verNum.style.color = '';
+              toast('已是最新版本', 'success');
+            }
+          } catch (e) {
+            verNum.textContent = '⚠';
+            toast('检查更新失败：网络错误', 'error');
+          } finally {
+            row.dataset.checking = 'false';
+          }
+        };
+        row.addEventListener('click', checkUpdate);
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); checkUpdate(); }
+        });
+        return row;
+      }
+    },
     /* 经典版入口默认隐藏，在「设置 → 高级」里打开 */
     ...(store.get().ui.showClassic
       ? [
@@ -297,6 +363,11 @@ export function renderSidebar(container, ctx) {
       : [])
   ];
   for (const item of footItems) {
+    if (item.custom && typeof item.render === 'function') {
+      const row = item.render();
+      if (row) foot.append(row);
+      continue;
+    }
     const row = item.href
       ? h(
           'a',

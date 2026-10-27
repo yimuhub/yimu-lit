@@ -95,9 +95,13 @@ class ProseProject:
     def status(self) -> dict:
         plan = self.plan() or {}
         meta = plan.get("meta") or {}
+        state = plan.get("status", "unknown")
+        done = meta.get("stageIdx", 0)
+        if state == "completed":
+            done = 6   # 完成态按 6/6 报：stageIdx 只到 5（定稿），别让「已完成」显示 5/6
         return {
-            "state": plan.get("status", "unknown"),
-            "done": meta.get("stageIdx", 0), "total": 6,
+            "state": state,
+            "done": done, "total": 6,
             "words": meta.get("words", 0), "running": self.running,
             "name": plan.get("proseName", self.name), "medium": "prose",
             "form": plan.get("genreLabel", ""), "stage": meta.get("stage", ""),
@@ -418,6 +422,91 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
                             "verdict": slop_rep.get("verdict", ""),
                             "summary": slop_rep.get("summary", "")}
     proj.save_plan(plan)
+
+    proj.log("📋 阶段 F：定稿…")
+    _write(os.path.join(pdir, F_FINAL), f"# {name}\n\n" + polished.strip() + "\n")
+    plan["status"] = "completed"
+    plan["meta"]["stage"] = "F"
+    plan["meta"]["stageIdx"] = 5
+    plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", polished))
+    proj.save_plan(plan)
+    proj.log("✅ 定稿完成")
+    return proj
+
+
+def resume_project(key: str) -> ProseProject | None:
+    """断点恢复：服务重启/线程中断后，从盘上产物继续（简报/素材/初稿缺哪段补哪段）。
+    同步执行（调用方放后台线程）。"""
+    try:
+        pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
+    except ValueError:
+        return None
+    if not os.path.isdir(pdir):
+        return None
+    plan = {}
+    try:
+        plan = json.load(open(os.path.join(pdir, F_PLAN), encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(plan, dict) or not (plan.get("config") or plan.get("proseName")):
+        return None
+    cfg = _merge_cfg(plan.get("config") or {})
+    op = normalize_op(plan.get("operation") or cfg.get("operation", "write"))
+    name = plan.get("proseName") or key
+    proj = ProseProject(pdir, name)
+    plan.setdefault("meta", {})
+    if plan.get("status") == "completed":
+        proj.log("✅ 该作品已定稿，无需恢复")
+        return proj
+    proj.log("▶ 断点恢复：检查已有产物…")
+    source_text = cfg.get("sourceText") or ""
+
+    brief = _read(os.path.join(pdir, F_BRIEF))
+    if not brief.strip():
+        proj.log("📋 阶段 B：创作简报…")
+        brief = gen_brief(cfg) or ""
+        _write(os.path.join(pdir, F_BRIEF), f"# {name} · 创作简报\n\n" + (brief or "（简报生成失败）"))
+    material = _read(os.path.join(pdir, F_MATERIAL))
+    if not material.strip():
+        proj.log("🗂 阶段 S：素材与细节库…")
+        material = gen_material(cfg, brief) or ""
+        _write(os.path.join(pdir, F_MATERIAL), f"# {name} · 素材\n\n" + (material or "（素材生成失败）"))
+    draft = _read(os.path.join(pdir, F_DRAFT))
+    if not draft.strip():
+        proj.log(f"✍️ 阶段 D：{OPERATIONS[op]}…")
+        draft = gen_draft(cfg, brief, material, op, source_text) or "（生成失败，请重试）"
+        _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
+    plan["meta"]["stage"] = "A"
+    plan["meta"]["stageIdx"] = 3
+    proj.save_plan(plan)
+
+    # review 模式到此为止（不动原文）
+    if op == "review":
+        _write(os.path.join(pdir, F_SLOP), draft.strip() + "\n")
+        plan["status"] = "completed"
+        plan["meta"]["stage"] = "A"
+        plan["meta"]["stageIdx"] = 4
+        plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", draft))
+        proj.save_plan(plan)
+        proj.log("✅ 审稿完成（未改动原文）")
+        return proj
+
+    polished = _read(os.path.join(pdir, F_SLOP))
+    if polished.strip() and os.path.exists(os.path.join(pdir, F_FINAL)):
+        pass   # 去味与定稿都已在盘上：只补状态，不重写
+    elif not polished.strip():
+        proj.log("🔍 阶段 A：去味与精修…")
+        polished = gen_polish(draft, cfg)
+        if not polished.strip():
+            polished = draft
+        polished, slop_rep = slop_pass(polished, cfg)
+        if slop_rep:
+            proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
+                     f"{slop_rep.get('summary', '')}")
+        _write(os.path.join(pdir, F_SLOP), polished.strip() + "\n")
+        plan["meta"]["slop"] = {"depth": str(cfg.get("slop_depth") or "standard"),
+                                "verdict": slop_rep.get("verdict", ""),
+                                "summary": slop_rep.get("summary", "")}
 
     proj.log("📋 阶段 F：定稿…")
     _write(os.path.join(pdir, F_FINAL), f"# {name}\n\n" + polished.strip() + "\n")

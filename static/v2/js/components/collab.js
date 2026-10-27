@@ -216,6 +216,110 @@ export function createCollabPanel(ctx) {
     popoverMenu(anchor, items, { label: `${p.name || p.id} · 选模型` });
   }
 
+  function openAgentChat(a) {
+    const agentName = a.label || a.agent || '助手';
+    /* 如果已有同 Agent 的对话窗，前置即可 */
+    const existing = document.querySelector(`.agent-chat-window[data-agent="${agentName}"]`);
+    if (existing) { existing.remove(); return; }
+    const win = h('div', { class: 'agent-chat-window', dataset: { agent: agentName } });
+    const header = h('div', { class: 'agent-chat-header' },
+      h('span', { class: 'agent-chat-title', html: `${icon('message-square', 14)} ${agentName}` }),
+      h('button', { class: 'agent-chat-close', type: 'button', html: icon('x', 14),
+        on: { click: () => win.remove() } })
+    );
+    const msgs = h('div', { class: 'agent-chat-msgs' });
+    msgs.append(h('div', { class: 'agent-chat-msg agent-chat-msg-bot', text: `你好，我是 ${agentName}。请问有什么需要？` }));
+    const inputRow = h('div', { class: 'agent-chat-input-row' });
+    const input = h('input', { class: 'input agent-chat-input', type: 'text', placeholder: `输入消息与 ${agentName} 交流…` });
+    const sendBtn = h('button', { class: 'btn btn-sm btn-primary', type: 'button', text: '发送' });
+    async function send() {
+      const text = input.value.trim();
+      if (!text) return;
+      msgs.append(h('div', { class: 'agent-chat-msg agent-chat-msg-user', text }));
+      input.value = '';
+      const thinking = h('div', { class: 'agent-chat-msg agent-chat-msg-bot agent-chat-thinking', text: '思考中…' });
+      msgs.append(thinking);
+      msgs.scrollTop = msgs.scrollHeight;
+      try {
+        const key = store.get().currentKey || '';
+        const res = await api.chat({ key, message: `@${agentName} ${text}` });
+        const reply = (res && (res.text || res.reply || res.message)) || '（已收到，正在处理）';
+        thinking.remove();
+        msgs.append(h('div', { class: 'agent-chat-msg agent-chat-msg-bot', text: reply }));
+      } catch (err) {
+        thinking.remove();
+        msgs.append(h('div', { class: 'agent-chat-msg agent-chat-msg-bot', text: `通信失败：${errorText(err, '请稍后重试')}` }));
+      }
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+    inputRow.append(input, sendBtn);
+    win.append(header, msgs, inputRow);
+    document.body.append(win);
+    /* 拖拽支持 */
+    let dragging = false, dx = 0, dy = 0;
+    header.addEventListener('mousedown', (e) => {
+      dragging = true;
+      const rect = win.getBoundingClientRect();
+      dx = e.clientX - rect.left;
+      dy = e.clientY - rect.top;
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      win.style.left = `${e.clientX - dx}px`;
+      win.style.top = `${e.clientY - dy}px`;
+      win.style.right = 'auto';
+      win.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+    input.focus();
+  }
+
+  function openAddAgentDialog() {
+    const overlay = h('div', { class: 'add-agent-overlay', role: 'dialog', 'aria-label': '添加 Agent' });
+    const dialog = h('div', { class: 'add-agent-dialog' });
+    const header = h('div', { class: 'add-agent-header' });
+    header.append(
+      h('span', { class: 'add-agent-title', text: '添加创作 Agent' }),
+      h('button', { class: 'icon-btn icon-btn-sm', type: 'button', html: icon('x', 14), on: { click: () => overlay.remove() } })
+    );
+    const desc = h('textarea', {
+      class: 'input add-agent-desc',
+      placeholder: '描述你需要的 Agent，例如：\n• 我需要一个专门写玄幻小说的 Agent\n• 我需要一个擅长悬疑推理的作家\n• 我需要一个负责世界观设定的规划师',
+      rows: 4
+    });
+    const hint = h('div', { class: 'hint-text', text: '输入一句话描述，系统会自动匹配岗位、技能和创作框架。' });
+    const addBtn = h('button', { class: 'btn btn-primary', type: 'button', text: '创建 Agent' });
+    const status = h('div', { class: 'add-agent-status' });
+    addBtn.addEventListener('click', async () => {
+      const text = desc.value.trim();
+      if (!text) { toast('请输入 Agent 描述', { tone: 'warn' }); return; }
+      addBtn.disabled = true;
+      status.textContent = '正在创建 Agent…';
+      try {
+        const res = await api.addAgent({ desc: text });
+        if (res && res.ok) {
+          const ag = res.agent || {};
+          toast(`Agent「${ag.label || res.name || '新 Agent'}」已创建`, { tone: 'success', duration: 3000 });
+          overlay.remove();
+          loadAgents();
+        } else {
+          status.textContent = (res && res.error) || '创建失败';
+          addBtn.disabled = false;
+        }
+      } catch (err) {
+        status.textContent = errorText(err, '创建失败，请稍后重试');
+        addBtn.disabled = false;
+      }
+    });
+    dialog.append(header, desc, hint, addBtn, status);
+    overlay.append(dialog);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.append(overlay);
+    desc.focus();
+  }
+
   function agentCard(a) {
     const card = h('div', { class: 'collab-card' });
     const modelText = a.model || (a.provider_id ? '供应商默认模型' : a.effective) || '未绑定';
@@ -239,6 +343,19 @@ export function createCollabPanel(ctx) {
       h('div', { class: 'mono collab-agent-model', text: modelText })
     );
     if (a.desc) card.append(h('div', { class: 'hint-text', text: a.desc }));
+    /* v2.5.1: 与该 Agent 单独交流 — 弹出浮动对话窗 */
+    card.append(
+      h('div', { class: 'collab-agent-actions' },
+        h('button', {
+          class: 'btn btn-sm',
+          type: 'button',
+          html: `${icon('message-square', 12)}<span>对话</span>`,
+          on: {
+            click: () => openAgentChat(a)
+          }
+        })
+      )
+    );
     /* skills 为同事并行新增字段：没有该字段就整块不渲染，绝不报错。 */
     if (Array.isArray(a.skills)) {
       const chips = h('div', { class: 'chip-row' });
@@ -257,6 +374,14 @@ export function createCollabPanel(ctx) {
     const sec = h('div', { class: 'rp-section' });
     const list = s.view && Array.isArray(s.view.agents) ? s.view.agents : [];
     sec.append(sectionHead('创作岗位', list.length ? `${list.length} 个岗位` : ''));
+    sec.append(h('div', { class: 'collab-add-agent-bar' },
+      h('button', {
+        class: 'btn btn-sm btn-accent',
+        type: 'button',
+        html: `${icon('plus', 12)}<span>添加 Agent</span>`,
+        on: { click: () => openAddAgentDialog() }
+      })
+    ));
     if (s.viewError) {
       sec.append(errorLine(s.viewError, loadAgents));
     } else if (!s.view) {
@@ -399,16 +524,31 @@ export function createCollabPanel(ctx) {
     if (!s.key) sec.append(h('div', { class: 'hint-text', text: '打开一本作品后才能启动并行创作。' }));
 
     if (s.running) {
+      // v2.5.4：实时显示进度
+      const st = store.get().work || {};
+      const done = st.done || 0;
+      const total = st.total || 0;
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
       sec.append(
-        h(
-          'div',
-          { class: 'hint-text collab-row' },
+        h('div', { class: 'hint-text collab-row' },
           h('span', { class: 'spinner' }),
-          h('span', { text: `${s.workers} 个 Agent 分章齐写中：先熔炼总架构，写完一本立即取下一章…` })
+          h('span', { text: `${s.workers} 个 Agent 分章齐写中：${done}/${total} 章完成（${pct}%）` })
         )
       );
+      if (total > 0) {
+        const bar = h('div', { class: 'progress-bar', style: 'width:100%;height:6px;background:var(--bg-3);border-radius:3px;margin-top:4px' });
+        bar.append(h('div', { style: `width:${pct}%;height:100%;background:var(--accent);border-radius:3px;transition:width 0.5s` }));
+        sec.append(bar);
+      }
     } else if (s.logResult === 'ok') {
-      sec.append(h('div', {}, h('span', { class: 'badge', dataset: { tone: 'success' }, text: '上一轮并行创作已完成' })));
+      const st = store.get().work || {};
+      const done = st.done || 0;
+      const total = st.total || 0;
+      if (total > 0 && done >= total) {
+        sec.append(h('div', {}, h('span', { class: 'badge', dataset: { tone: 'success' }, text: `全部 ${total} 章已完成 ✅` })));
+      } else {
+        sec.append(h('div', {}, h('span', { class: 'badge', dataset: { tone: 'success' }, text: `上一轮并行创作已完成（${done}/${total || '?'} 章）` })));
+      }
     } else if (s.logResult && typeof s.logResult === 'object' && s.logResult.error) {
       sec.append(h('div', { class: 'error-text', text: `上次并行创作失败：${String(s.logResult.error).slice(0, 160)}` }));
     }

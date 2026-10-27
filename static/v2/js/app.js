@@ -44,6 +44,7 @@ let currentView = null;
 let wizardModal = null;
 let liveStop = null;
 let pollStop = null;
+let progressTimer = null;
 let loadedKey = '';
 const inflight = new Set();
 const mediumCache = new Map();
@@ -679,6 +680,10 @@ function stopLive() {
     pollStop();
     pollStop = null;
   }
+  if (progressTimer) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+  }
 }
 
 function startLive(key) {
@@ -723,6 +728,26 @@ function startLive(key) {
     () => {},
     2500
   );
+
+  /* 全界面进度自动刷新：每 10 秒拉取一次规划状态、作品库列表与状态库，
+     让左侧菜单栏进度、对话界面上方整体进度、右侧面板进度都实时更新，
+     无需手动按刷新。仅在写作中或规划非 completed 时轮询。 */
+  progressTimer = setInterval(async () => {
+    const s = store.get();
+    if (!s.currentKey) return;
+    const w = s.work;
+    if (w && (w.running || w.phase === 'planning' || (w.done != null && w.total != null && w.done < w.total))) {
+      try {
+        await Promise.allSettled([
+          ctx.refreshPlan(),
+          ctx.refreshState(),
+          ctx.refreshLibrary(),
+        ]);
+      } catch (e) {
+        /* 静默失败，下次 tick 再试 */
+      }
+    }
+  }, 10000);
 }
 
 async function ensureWork(key) {
@@ -835,7 +860,8 @@ function installHotkeyHandlers() {
 
 function installGlobalListeners() {
   window.addEventListener('shenbi:unauthorized', () => {
-    toast('登录状态已失效，请从 http://127.0.0.1 重新打开创作台', { tone: 'danger', duration: 6000 });
+    toast('登录状态已失效，正在自动刷新…', { tone: 'warning', duration: 3000 });
+    setTimeout(() => { location.href = '/'; }, 1500);
   });
 
   window.addEventListener(

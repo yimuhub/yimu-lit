@@ -19,6 +19,17 @@ SAMPLE_DIR = os.path.join(ROOT, "samples", "示例书-雨夜出租车")
 _NO_MODEL_REPLY = ("您的消息已收到。由于未配置大模型，请配置模型。"
                    "在「设置 → 模型供应商」里绑定一个可用模型后，再发一次主题。")
 
+# 打招呼/求助类闲聊不进主题提取（E2E 实测：「你好」被当成悬疑小说主题提取出整份配置）
+_GREETING_RE = re.compile(
+    r"(你好|您好|hi|hello|嗨|哈喽|在吗|在不在|你是谁|你叫什么|你能(做|干)(什么|啥)|"
+    r"你都会(什么|啥)|怎么用|帮助|help|谢谢|多谢|感谢|辛苦了)[!！?？。~～\s]*", re.I)
+
+_GREETING_REPLY = (
+    "👋 你好！我是你的创作助手，支持四种文体：**小说 / 剧本 / 诗词 / 散文**。\n"
+    "· 开新书：直接说主题（如「写一部悬疑小说」），或点左侧『新建作品』走向导；\n"
+    "· 继续创作：打开作品后说「继续」「把第3章重写一下」「节奏再紧一点」；\n"
+    "· 查进度：随时问「进度」；导出在作品面板的「导出」按钮。")
+
 @asynccontextmanager
 async def _lifespan(_app):
     threading.Thread(target=_scheduler_loop, daemon=True).start()
@@ -94,22 +105,36 @@ def chat(session_id, message, key=None):
         s["project"] = str(key)
         s["state"] = "attached"
 
-    # ---- 文体自动分流：用户直接写诗词/散文/剧本 指令时，不走小说流水线 ----
+    # ---- v2.4.0：文体自动分流 + NLU 意图理解（统一入口）----
+    # 旧逻辑：idle 时检测到诗词/散文/剧本只返回提示，不进入创作
+    # 新逻辑：用 NLU 识别用户意图，如果是创作类意图（start_writing/start_writing_all/resume_writing），
+    #         则自动选择对应文体的创作流水线，不再只返回提示文字
     if s["state"] == "idle":
         try:
             med = medium_mod.detect(msg)
         except Exception:
             med = "novel"
+        # 如果检测到非小说文体，先尝试 NLU 识别是否有明确创作意图
         if med in ("poetry", "prose", "script") and len(msg) >= 6:
-            s["state"] = "routed"
-            s["routed_medium"] = med
-            from bot import prose_writer as _pw, poetry_writer as _pyw, script_writer as _sw
-            hint = {
-                "poetry": "🎵 识别为诗词创作。在左侧「诗词」面板里点「新建」，粘贴同样需求；或直接告诉我「诗词 七绝 写秋夜」，我用诗词流水线处理。",
-                "prose": "✒️ 识别为散文创作。在左侧「散文」面板里点「新建」，粘贴同样需求；或直接告诉我「散文 写一段关于母亲的回忆」，我用散文流水线处理。",
-                "script": "🎬 识别为剧本创作。在左侧「剧本」面板里点「新建」，粘贴同样需求；或直接告诉我「剧本 电影 写一个短片前提」，我用剧本流水线处理。",
-            }[med]
-            return hint + "\n\n（自动分流：此请求不进入小说流水线，避免文体错配。）"
+            from bot.nlu import parse_intent as _nlu_pi
+            _idle_nlu = _nlu_pi(msg, project_status={"state": "idle"})
+            _idle_intent = _idle_nlu["intent"]
+            # 如果是创作类意图，自动进入对应文体的创作流程（而非只返回提示）
+            if _idle_intent in ("start_writing", "start_writing_all", "resume_writing"):
+                # 设置 routed 状态和媒介类型，让后续流程走对应文体
+                s["state"] = "routed"
+                s["routed_medium"] = med
+                # 继续往下走新作品触发逻辑（用对应文体创建）
+                # 不 return，让下面的新作品提取逻辑接管
+            else:
+                # 非创作意图（如查询、修改），仍走提示引导
+                from bot import prose_writer as _pw, poetry_writer as _pyw, script_writer as _sw
+                hint = {
+                    "poetry": "🎵 识别为诗词创作。请告诉我具体需求，例如「诗词 七绝 写秋夜」，我直接用诗词流水线处理。",
+                    "prose": "✒️ 识别为散文创作。请告诉我具体需求，例如「散文 写一段关于母亲的回忆」，我直接用散文流水线处理。",
+                    "script": "🎬 识别为剧本创作。请告诉我具体需求，例如「剧本 电影 写一个短片前提」，我直接用剧本流水线处理。",
+                }[med]
+                return hint + "\n\n（自动分流：此请求将使用对应文体流水线处理。直接说「开始创作」即可启动。）"
     # ---- 重复投递保护：同一会话的 LLM 重操作进行中，短消息/重复消息直接给状态提示 ----
     if s.get("busy"):
         if len(msg) <= 4 or s.get("state") in ("planning", "writing"):
@@ -135,6 +160,8 @@ def chat(session_id, message, key=None):
         s["project"] = None
     # ---- 新作品触发（仅 idle；options 状态下重复丢主题 → 重显菜单，不重复提取）----
     # v2.3.0 保护：idle 但已有 project 的会话不得进新主题提取（attached 已在上面截获）。
+    if s["state"] == "idle" and not s.get("project") and _GREETING_RE.fullmatch(msg):
+        return _GREETING_REPLY
     if (s["state"] == "idle" and not s.get("project")) or re.search(r"^(写|帮我写|新|再|来)(一|个)?(部|本)?|新作品|新的小说|重新", msg):
         if s["state"] == "options" and not re.search(r"^(写|帮我写|新|再|来)|新作品|新的小说|重新", msg):
             pass
@@ -487,12 +514,126 @@ def _chat_title_cmd(s, key, msg):
         return _chat_apply_title(s, key, m.group(1))
     return "关于标题：说「给我几个书名」生成候选；「采用N」用第 N 个；或直接说「改名为Y」。"
 
+def _chat_group(s, proj, msg, plan, st, name):
+    """v2.6.1：@Agent 群聊模式。
+    解析被 @ 的 Agent 列表，注入完整作品上下文（计划摘要、已写进度、人物设定），
+    让每个被 @ 的 Agent 都能看到全部交流内容并有序回复。"""
+    # 解析 @Agent名 列表（支持中文 Agent 名称）
+    at_names = re.findall(r"@([^\s@]+)", msg)
+    if not at_names:
+        return "请在 @ 后输入要邀请的 Agent 名称。"
+    # 去掉 @Agent 前缀，提取实际问题
+    question = re.sub(r"@[^\s@]+\s*", "", msg).strip()
+    if not question:
+        question = "请汇报当前进度和遇到的问题。"
+
+    # 构建作品上下文摘要
+    chs = plan.get("chapters") or []
+    done = sum(1 for c in chs if c.get("status") == "completed")
+    total = len(chs)
+    chars = plan.get("characters") or plan.get("cast") or []
+    char_summary = ""
+    if chars:
+        char_summary = "\n".join(
+            f"  - {c.get('name','')}：{c.get('role','') or c.get('desc','')}"[:120]
+            for c in chars[:10]
+        )
+    outline_tail = ""
+    for fn in ("02-大纲.md", "01-大纲.md"):
+        p = os.path.join(proj.path, fn)
+        if os.path.exists(p):
+            try:
+                outline_tail = open(p, encoding="utf-8").read()[-600:].strip()
+            except Exception:
+                pass
+            break
+
+    context = (
+        f"【作品上下文】\n"
+        f"书名：{name}\n"
+        f"进度：{done}/{total} 章已完成，已写 {st.get('words', 0)} 字\n"
+        f"状态：{'创作中' if st.get('running') else '已暂停' if st.get('paused') else '在库'}\n"
+    )
+    if char_summary:
+        context += f"主要角色：\n{char_summary}\n"
+    if outline_tail:
+        context += f"大纲尾部摘要：\n{outline_tail}\n"
+    context += f"\n【用户问题】\n{question}\n"
+
+    # 构建 Agent 角色映射
+    try:
+        av = agents.bindings_view() or {}
+        all_agents = av.get("agents") or []
+    except Exception:
+        all_agents = []
+    agent_map = {}
+    for a in all_agents:
+        label = a.get("label") or ""
+        agent_key = a.get("key") or a.get("agent") or ""
+        stage = a.get("stage") or ""
+        desc = a.get("desc") or ""
+        if label:
+            agent_map[label] = a
+        if agent_key:
+            agent_map[agent_key] = a
+
+    # 为每个被 @ 的 Agent 构建回复
+    replies = []
+    for aname in at_names:
+        a = agent_map.get(aname)
+        if not a:
+            # 模糊匹配
+            for k, v in agent_map.items():
+                if aname in k or k in aname:
+                    a = v
+                    aname = a.get("label") or k
+                    break
+        if not a:
+            replies.append(f"【{aname}】未找到此 Agent，请检查名称。")
+            continue
+
+        label = a.get("label") or aname
+        stage = a.get("stage") or ""
+        desc = a.get("desc") or ""
+        system_prompt = (
+            f"你是《{name}》创作团队中的「{label}」岗位（{stage}）。"
+            f"职责：{desc}。\n"
+            f"你正在参与群聊讨论。其他 Agent 也在场，你们各自从自己的专业角度回复。"
+            f"不要重复其他人的发言，直接给出你的专业意见和行动建议。\n"
+            f"{context}"
+        )
+        try:
+            resp = llm.chat([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question}
+            ], cfg=plan.get("config") or {})
+            text = resp.strip() if isinstance(resp, str) else str(resp).strip()
+            if text:
+                replies.append(f"【{label}】{text}")
+        except Exception as e:
+            replies.append(f"【{label}】（暂时无法响应：{e}）")
+
+    header = f"👥 群聊讨论（{len(at_names)} 位 Agent 参与）\n问题：{question}\n"
+    return header + "\n\n".join(replies)
+
 def _chat_attached(s, proj, msg):
     """attached 分支路由：标题 > 继续 > 进度/状态 > 第N章局部重写 > 新建意图引导 > 即时指令。
     章号重写必须排在新建意图之前：「第12章重新写一下」是改本书，不是开新书。"""
     key = s["project"]
     plan = proj.plan() or {}
     st = proj.status()
+    if st.get("state") in ("missing", "", None):
+        # 剧本/诗词/散文没有 02-写作计划.json：用全文体元数据补齐，
+        # 否则「进度」会按小说口径回「第 0/0 章」这种死胡同回复。
+        it = writer.library_item(key)
+        if it:
+            st["state"] = it.get("state") or st.get("state")
+            st["name"] = it.get("name") or st.get("name")
+            st["done"] = it.get("done", 0)
+            st["total"] = it.get("total", 0)
+            st["words"] = it.get("total_words", 0)
+            st["running"] = bool(it.get("running"))
+            st["paused"] = bool(it.get("paused"))
     name = st.get("name") or plan.get("novelName") or os.path.basename(proj.path)
     # 只信线程级 running（Project.running）。plan 的 state=in_progress 会跨重启残留，
     # 拿它当「活着」会让「继续」误报正在创作而不真正续写。
@@ -504,39 +645,106 @@ def _chat_attached(s, proj, msg):
     # 1) 标题命令
     if re.search(r"标题|书名|改名|换名|重命名", msg):
         return _chat_title_cmd(s, key, msg)
-    # 2) 继续创作
-    if re.search(r"继续|续写|接着写|写下去|下一章", msg):
-        if running:
-            return (f"📖 《{name}》正在创作中：第 {st['done']}/{st['total']} 章，"
-                    f"说「进度」随时可查。")
-        if writer.resume_book(key):
-            st2 = proj.status()
-            return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）…"
-        return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
-    # 3) 进度/状态（只认明确问询，短修改指令不得被进度回复吞掉）
-    if re.search(r"进度|状态|写到哪|怎么样了|status", msg):
+    # ── v2.6.1：@Agent 群聊模式 ──
+    # 消息以 @ 开头时，解析被 @ 的 Agent 列表，注入完整作品上下文后调用 LLM 群聊
+    if msg.startswith("@"):
+        return _chat_group(s, proj, msg, plan, st, name)
+
+    # ── v2.4.0：NLU 自然语言意图理解（替换原步骤 2-6 的硬编码正则）──
+    # 任意自然语言均可被解析为结构化意图，再路由到对应操作
+    from bot.nlu import parse_intent, format_intent_result
+    _nlu_status = {"state": st.get("state", "unknown")}
+    _nlu = parse_intent(msg, project_status=_nlu_status)
+    _intent = _nlu["intent"]
+    try:
+        _trace("nlu", sid=s.get("session", ""), intent=_intent, conf=_nlu["confidence"], src=_nlu["source"])
+    except Exception:
+        pass
+
+    # query_status → 进度回复
+    if _intent == "query_status":
         mark = ("正在创作中" if st.get("running") else
                 "已暂停" if st.get("paused") else
                 "已完结" if st.get("state") == "completed" else "在库待写")
-        return (f"📖 《{name}》{mark}：第 {st['done']}/{st['total']} 章，已写 {st['words']} 字。"
+        # 单位随文体：剧本=场、诗词=轮、散文=阶段、小说=章
+        _unit = {"s_": "场", "p_": "轮", "e_": "阶段"}.get(str(key)[:2], "章")
+        return (f"📖 《{name}》{mark}：{st['done']}/{st['total']} {_unit}，已写 {st['words']} 字。"
                 f"可随时问「进度」，或直接下修改指令。")
-    # 4) 指明章号 → 既有局部重写通道（与 /api/rewrite 同一引擎与 _REWRITING 表）
-    no = _parse_chapter_no(msg)
-    if no:
-        if _REWRITING.get(key, {}).get("running"):
-            return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
-        if _start_rewrite(key, chapters=[no], dimensions=[msg]):
-            return f"已安排第{no}章局部重写，完成后状态 pane 可见。"
-        return "⚠️ 重写任务启动失败，请稍后再试。"
-    # 5) 新建意图：不执行，只引导（版权确认仍只在新向导里）
-    if re.search(_NEW_BOOK_PAT, msg):
+
+    # set_title → 标题命令
+    if _intent == "set_title":
+        _t = _nlu["params"].get("title")
+        return _chat_title_cmd(s, key, msg if not _t else f"改名叫{_t}")
+
+    # rewrite_chapter → 局部重写通道
+    if _intent == "rewrite_chapter":
+        no = _nlu["params"].get("chapter_number") or _parse_chapter_no(msg)
+        if no:
+            if _REWRITING.get(key, {}).get("running"):
+                return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
+            if _start_rewrite(key, chapters=[no], dimensions=[msg]):
+                return f"已安排第{no}章局部重写，完成后状态 pane 可见。"
+            return "⚠️ 重写任务启动失败，请稍后再试。"
+
+    # pause_writing → 暂停
+    if _intent == "pause_writing":
+        if writer.pause_book(key):
+            return f"⏸ 已暂停《{name}》的创作，说「继续」即可恢复。"
+        return f"⚠️ 无法暂停《{name}》。"
+
+    # query_outline → 大纲
+    if _intent == "query_outline":
+        chs = plan.get("chapters") or []
+        if not chs:
+            return f"📖 《{name}》暂无大纲。"
+        lines = [f"📖 《{name}》目录（共 {len(chs)} 章）："]
+        for c in chs[:30]:
+            mark = "✅" if c.get("status") == "completed" else "⏳" if c.get("status") == "in_progress" else "⬜"
+            lines.append(f"  {mark} 第{c.get('chapterNumber', '?')}章 {c.get('title', '')}")
+        if len(chs) > 30:
+            lines.append(f"  …（还有 {len(chs) - 30} 章）")
+        return "\n".join(lines)
+
+    # export_book → 导出
+    if _intent == "export_book":
+        return f"📥 请在「作品」面板点击《{name}》的「导出」按钮，可导出 Markdown / EPUB / PDF。"
+
+    # new_project → 引导
+    if _intent == "new_project":
         return (f"当前对话已绑定《{name}》。要改这本书直接说（例如「第12章节奏再紧一点」"
                 f"「给女主加一场反击」）；要开新书请用左侧『新建作品』。")
-    # 6) 其余消息 → 读者即时指令，并入创作
+
+    # start_writing_all / start_writing / resume_writing → 启动或继续写作
+    if _intent in ("start_writing_all", "start_writing", "resume_writing"):
+        if str(key)[:2] in ("s_", "p_", "e_"):
+            # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
+            import threading as _th
+            from bot import script_writer, poetry_writer, prose_writer
+            _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer}[str(key)[:2]]
+            _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
+            return f"▶ 恢复《{name}》的创作，工作台可见进度…"
+        if running:
+            st2 = proj.status()
+            return (f"📖 《{name}》正在创作中：第 {st2['done']}/{st2['total']} 章，"
+                    f"说「进度」随时可查。")
+        if writer.resume_book(key):
+            st2 = proj.status()
+            _extra = "" if _intent != "start_writing_all" else "（全章批量模式）"
+            return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
+        return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
+
+    # set_style / add_constraint / creative_hint → 并入创作
+    # 读者即时指令：存入队列，由写作线程在后续章节消费
     if not writer.queue_msg(key, msg):
         return f"⚠️ 这条要求没能并入《{name}》的创作（写作计划缺失？），可在『作品』里检查该书。"
     nxt = _next_pending_chapter(plan)
-    return f"已把这条要求并入创作：第{nxt}章起生效。" if nxt else "已把这条要求并入创作。"
+    _hint = ""
+    if _intent == "set_style":
+        _hint = "（风格调整）"
+    elif _intent == "add_constraint":
+        _hint = "（追加设定）"
+    return (f"已把这条要求并入创作{_hint}：第{nxt}章起生效。" if nxt
+            else f"已把这条要求并入创作{_hint}。")
 
 # ---------- 路由 ----------
 
@@ -1234,7 +1442,16 @@ def api_rewrite_plan(payload: dict):
     key = payload.get("key")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        # 内存中未命中时尝试从磁盘加载
+        try:
+            pdir = writer._project_dir(key)
+            if os.path.isdir(pdir):
+                PROJECT_INDEX[key] = writer.Project(pdir, key)
+                proj = PROJECT_INDEX[key]
+        except ValueError:
+            pass
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     cfg = (proj.plan() or {}).get("config") or {}
     brief = writer.rewrite_brief(proj, cfg)
     return brief
@@ -1244,7 +1461,16 @@ def api_rewrite(payload: dict):
     key = payload.get("key")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        # 内存中未命中时尝试从磁盘加载
+        try:
+            pdir = writer._project_dir(key)
+            if os.path.isdir(pdir):
+                PROJECT_INDEX[key] = writer.Project(pdir, key)
+                proj = PROJECT_INDEX[key]
+        except ValueError:
+            pass
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     if _REWRITING.get(key, {}).get("running"):
         return {"ok": True, "running": True, "msg": "重写进行中，请稍候…"}
     _start_rewrite(key, chapters=payload.get("chapters"), dimensions=payload.get("dimensions"),
@@ -1303,7 +1529,16 @@ def api_audit(payload: dict):
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        # 内存中未命中时尝试从磁盘加载
+        try:
+            pdir = writer._project_dir(key)
+            if os.path.isdir(pdir):
+                PROJECT_INDEX[key] = writer.Project(pdir, key)
+                proj = PROJECT_INDEX[key]
+        except ValueError:
+            pass
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     scope = str(payload.get("scope") or "book")
     from bot import longform as _lf
     if scope.startswith("arc:"):
@@ -1965,6 +2200,21 @@ def api_status(key: str):
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     st = proj.status()
+    if st.get("state") in ("missing", "", None):
+        # 剧本/诗词/散文没有 02-写作计划.json，Project.status 会误报 missing；
+        # 工作台 refreshWork 对当前作品调的就是本接口，必须回退到全文体元数据，
+        # 否则打开非小说文体直接变死胡同。
+        it = writer.library_item(key)
+        if it:
+            st["state"] = it.get("state") or "planning"
+            st["name"] = it.get("name") or st.get("name")
+            st["medium"] = it.get("medium")
+            st["status_label"] = it.get("status_label")
+            st["done"] = it.get("done", 0)
+            st["total"] = it.get("total", 0)
+            st["words"] = it.get("total_words", 0)
+            st["running"] = bool(it.get("running"))
+            st["paused"] = bool(it.get("paused"))
     st["events"] = proj.events[-15:]
     st["path"] = proj.path
     st["has_book"] = os.path.exists(os.path.join(proj.path, f"成书-{st.get('name', key)}.md"))
@@ -1977,9 +2227,35 @@ def api_continue(payload: dict):
         extra = max(0, int(payload.get("extra") or 0))
     except (ValueError, TypeError):
         extra = 0
+    # ---- 非小说文体：走各自引擎的断点恢复（服务重启/线程中断后的唯一续跑通道）----
+    _medium_mod = {"s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer"}.get(str(key)[:2])
+    if _medium_mod:
+        import threading as _th
+        from bot import script_writer, poetry_writer, prose_writer
+        mod = {"script_writer": script_writer, "poetry_writer": poetry_writer,
+               "prose_writer": prose_writer}[_medium_mod]
+        fn = getattr(mod, "resume_project", None)
+        if not callable(fn):
+            return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
+        def _bg():
+            try:
+                fn(key)
+            except Exception as e:
+                print(f"[bg] {_medium_mod} 断点恢复失败: {e}", flush=True)
+        _th.Thread(target=_bg, daemon=True).start()
+        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。"}
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        # 内存中未命中时尝试从磁盘加载
+        try:
+            pdir = writer._project_dir(key)
+            if os.path.isdir(pdir):
+                PROJECT_INDEX[key] = writer.Project(pdir, key)
+                proj = PROJECT_INDEX[key]
+        except ValueError:
+            pass
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     st = proj.status()
     if st.get("running"):
         return {"ok": True, "msg": f"《{proj.name}》正在创作中，请稍候。"}
@@ -2125,6 +2401,48 @@ def api_agents():
     # 分章齐写的默认并发（config.json defaults.chapter_workers），前端滑杆据此初始化。
     view["default_workers"] = max(1, min(8, int(writer._cfg_defaults().get("chapter_workers") or 5)))
     return view
+
+@app.post("/api/agents/add")
+def api_agents_add(payload: dict):
+    """v2.6.0：添加自定义 Agent。
+    payload: {name, label, desc, stage?, skills?}
+    其中 name 可以是英文 key 或自然语言描述。
+    如果只传 desc，用 LLM 自动生成 name/label/stage/skills。
+    """
+    from bot import agents as _ag
+    try:
+        desc = str(payload.get("desc") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        label = str(payload.get("label") or "").strip()
+        stage = str(payload.get("stage") or "writing").strip()
+        skills = payload.get("skills")
+        if not name and not desc:
+            return JSONResponse({"error": "请提供 Agent 名称或描述"}, status_code=400)
+        # 如果只传了自然语言描述，用 LLM 自动解析
+        if not name and desc:
+            try:
+                from bot import llm as _llm
+                prompt = f"""请根据以下描述创建一个创作 Agent，返回 JSON：
+描述：{desc}
+返回格式：{{"name": "english_key", "label": "中文名称", "stage": "planning|writing|review", "skills": []}}
+注意：name 用英文下划线格式，label 用中文，stage 选最匹配的阶段。"""
+                res = _llm.chat_json([{"role": "user", "content": prompt}], cfg=_cfg())
+                if isinstance(res, dict):
+                    name = res.get("name", "")
+                    label = res.get("label", desc[:8])
+                    stage = res.get("stage", "writing")
+                    skills = res.get("skills", [])
+            except Exception:
+                # LLM 不可用时，从描述生成简单 name
+                import re as _re
+                name = _re.sub(r"[^\w]", "_", desc[:20]).strip("_").lower() or "custom_agent"
+                label = desc[:8]
+                stage = "writing"
+        result = _ag.add_agent(name, desc, stage=stage, skills=skills, label=label)
+        return {"ok": True, "agent": result, "name": name}
+    except Exception as e:
+        return JSONResponse({"error": f"添加 Agent 失败：{e}"}, status_code=500)
+
 
 @app.post("/api/agents-set")
 def api_agents_set(payload: dict):

@@ -6,7 +6,7 @@ import { api, errorText } from '../core/api.js';
 import { toast } from '../core/ui.js';
 
 const STORE_KEY = 'shenbi.v2.chatfloat';
-const MAX_MESSAGES = 40;
+const MAX_MESSAGES = 500;
 const EDGE = 8;
 const PANEL_W = 420;
 const PANEL_H = 560;
@@ -149,6 +149,9 @@ export function mountChatFloat({ getContext, onApplied, root } = {}) {
       /* 换了作品，上一轮会话与目标都不该沿用。 */
       manualFocus = false;
       sessionId = '';
+      historyLoaded = false; /* v2.6.1：切换作品后重置历史加载状态 */
+      /* v2.6.1：清空对话区，加载新作品的历史 */
+      clearThread();
     }
     if (nextKey) currentKey = nextKey;
     const medium = normalizeMedium(ctx.medium);
@@ -1042,12 +1045,69 @@ export function mountChatFloat({ getContext, onApplied, root } = {}) {
     }
   }
 
+  /* v2.6.1：清空对话区所有消息（不删除磁盘历史） */
+  function clearThread() {
+    for (const m of messages) {
+      const refs = nodes.get(m.id);
+      if (refs && refs.wrap) refs.wrap.remove();
+    }
+    messages.length = 0;
+    nodes.clear();
+    paintEmpty();
+  }
+
+  /* v2.6.1：加载该作品的全部聊天历史到对话区（仅首次打开、对话区为空时） */
+  let historyLoaded = false;
+  async function loadChatHistory(key, medium) {
+    if (historyLoaded || !key) return;
+    historyLoaded = true;
+    try {
+      const res = await api.assistHistory(key, medium);
+      const msgs = (res && res.ok && res.messages) || [];
+      for (const m of msgs) {
+        if (m.role === 'user' || m.role === 'assistant') {
+          const msg = {
+            id: uid('cfm'),
+            role: m.role,
+            key,
+            content: String(m.content || ''),
+            streaming: false
+          };
+          if (m.role === 'assistant') {
+            msg.status = '';
+            msg.error = '';
+            msg.notice = '';
+            msg.intent = m.intent || null;
+            msg.patch = null;
+          }
+          messages.push(msg);
+          if (messages.length > MAX_MESSAGES) {
+            const dropped = messages.shift();
+            const refs = nodes.get(dropped.id);
+            if (refs) refs.wrap.remove();
+            nodes.delete(dropped.id);
+          }
+          if (emptyEl.parentNode) emptyEl.remove();
+          const node = msg.role === 'user' ? buildUserMessage(msg) : buildAssistantMessage(msg);
+          thread.append(node);
+        }
+      }
+      stick(true);
+    } catch {
+      historyLoaded = false;
+    }
+  }
+
   function openPanel(shouldFocus = true) {
     if (disposed || open) {
       if (open && shouldFocus && !input.disabled) input.focus();
       return;
     }
     syncContext();
+    /* v2.6.1：打开面板时自动加载该作品的全部聊天历史到对话区 */
+    if (messages.length === 0 && currentKey) {
+      loadChatHistory(currentKey, currentMedium);
+    }
     panel.style.visibility = 'hidden';
     panel.hidden = false;
     open = true;

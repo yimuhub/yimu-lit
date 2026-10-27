@@ -343,8 +343,17 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
     plan["meta"]["stage"] = "K"
     proj.save_plan(plan)
 
+    _check_and_finalize(proj, plan, cfg, form, draft)
+    return proj
+
+
+def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str, text: str) -> None:
+    """K→R 循环 + F 定稿 + 附产（create_project 与断点恢复共用）。"""
+    pdir = proj.path
+    name = plan.get("poemName") or proj.name
+    max_rounds = int(cfg.get("maxRounds", plan.get("maxRounds", 3)))
+
     # ---- K → R 循环 ----
-    text = draft
     report: dict = {}
     if cfg.get("metrical_check", True) is False:   # 向导里可关闭格律校验（现代诗/自由诗本就不校验）
         max_rounds = 0
@@ -414,6 +423,51 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
     plan["meta"]["verdict"] = report.get("verdict") or plan["meta"].get("verdict") or ""
     proj.save_plan(plan)
     proj.log("✅ 定稿完成")
+
+
+def resume_project(key: str) -> PoetryProject | None:
+    """断点恢复：服务重启/线程中断后，从盘上产物继续（题记/规划/初稿缺哪段补哪段）。
+    同步执行（调用方放后台线程）。"""
+    try:
+        pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
+    except ValueError:
+        return None
+    if not os.path.isdir(pdir):
+        return None
+    plan = {}
+    try:
+        plan = json.load(open(os.path.join(pdir, F_PLAN), encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(plan, dict) or not (plan.get("config") or plan.get("poemName")):
+        return None
+    cfg = _merge_cfg(plan.get("config") or {})
+    form = normalize_form(cfg.get("form", "modern"))
+    name = plan.get("poemName") or key
+    proj = PoetryProject(pdir, name)
+    plan.setdefault("meta", {})
+    if plan.get("status") == "completed":
+        proj.log("✅ 该作品已定稿，无需恢复")
+        return proj
+    proj.log("▶ 断点恢复：检查已有产物…")
+
+    note = _read(os.path.join(pdir, F_NOTE))
+    if not note.strip():
+        proj.log("🖋 阶段 I：释读…")
+        note = gen_note(cfg) or ""
+        _write(os.path.join(pdir, F_NOTE), f"# {name} · 题记\n\n" + (note or "（释读生成失败）"))
+    plan_md = _read(os.path.join(pdir, F_IMAGERY))
+    if not plan_md.strip():
+        proj.log("📋 阶段 P：创作规划…")
+        plan_md = gen_plan(cfg) or ""
+        _write(os.path.join(pdir, F_IMAGERY), f"# {name} · 创作规划\n\n" + (plan_md or "（规划生成失败）"))
+    draft = _read(os.path.join(pdir, F_DRAFT))
+    if not draft.strip():
+        proj.log("✍️ 阶段 C：起草…")
+        draft = gen_draft(cfg, plan_md) or "（起草失败，请重试）"
+        _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
+
+    _check_and_finalize(proj, plan, cfg, form, draft.strip())
     return proj
 
 

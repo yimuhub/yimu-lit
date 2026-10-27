@@ -298,6 +298,50 @@ _VOL_WORDS = [
     "云涌", "归途", "破阵", "重光", "无声", "惊雷", "落子", "终局", "余波", "回响",
 ]
 _ARC_WORDS = ["破局", "试探", "交锋", "转机", "危机", "反击", "真相", "抉择", "收束", "余波", "暗线", "合流"]
+
+# v2.5.0: 多套题材化弧模板——每本书根据题材选择不同的弧名序列，不再千篇一律
+_ARC_TEMPLATES = {
+    "fantasy": ["觉醒", "试炼", "结盟", "异变", "鏖战", "觉醒", "破围", "代价", "逆转", "飞升", "暗涌", "收束"],
+    "urban":   ["初遇", "试探", "入局", "暗流", "对峙", "抉择", "撕裂", "弥合", "真相", "释然", "余温", "归途"],
+    "mystery": ["迷雾", "线索", "误导", "逼近", "反转", "困局", "破壁", "拼图", "真相", "清算", "余波", "回响"],
+    "romance": ["邂逅", "心动", "试探", "误会", "靠近", "甜蜜", "裂痕", "放手", "挽回", "坦诚", "相依", "圆满"],
+    "history": ["起兵", "布局", "征伐", "权谋", "变局", "险胜", "扩张", "内乱", "中兴", "鼎盛", "衰落", "回响"],
+    "scifi":   ["发现", "探索", "接触", "异变", "危机", "抉择", "对抗", "牺牲", "突破", "重构", "新序", "余烬"],
+    "default": ["破局", "试探", "交锋", "转机", "危机", "反击", "真相", "抉择", "收束", "余波", "暗线", "合流"],
+}
+
+# v2.5.0: 多套题材化卷名模板
+_VOL_TEMPLATES = {
+    "fantasy": ["天命", "风云", "龙渊", "烽火", "帝业", "逆天", "苍穹", "归墟", "劫火", "涅槃"],
+    "urban":   ["初入", "浮沉", "暗涌", "博弈", "风云", "蜕变", "逆行", "归途", "余烬", "重生"],
+    "mystery": ["迷局", "暗线", "拼图", "疑云", "深渊", "破晓", "真相", "清算", "余音", "落幕"],
+    "romance": ["初春", "盛夏", "秋意", "冬暖", "重逢", "心语", "承诺", "同行", "余生", "圆满"],
+    "history": ["起势", "逐鹿", "鼎革", "治世", "乱世", "中兴", "鼎盛", "风雨", "残阳", "回望"],
+    "scifi":   ["启航", "星海", "接触", "裂变", "暗物质", "奇点", "维度", "坍缩", "新生", "余烬"],
+    "default": ["起势", "入局", "暗涌", "裂变", "远征", "迷局", "争锋", "转折", "低谷", "反攻"],
+}
+
+
+def _arc_words_for(cfg: dict) -> list:
+    """v2.5.0: 根据题材/类型选择弧名模板，避免所有作品千篇一律。"""
+    genre = ""
+    if isinstance(cfg, dict):
+        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "").lower()
+    for key in _ARC_TEMPLATES:
+        if key in genre:
+            return _ARC_TEMPLATES[key]
+    return _ARC_TEMPLATES["default"]
+
+
+def _vol_words_for(cfg: dict) -> list:
+    """v2.5.0: 根据题材/类型选择卷名模板。"""
+    genre = ""
+    if isinstance(cfg, dict):
+        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "").lower()
+    for key in _VOL_TEMPLATES:
+        if key in genre:
+            return _VOL_TEMPLATES[key]
+    return _VOL_TEMPLATES["default"]
 _STAGES = [(0.0, "开局铺陈"), (0.15, "试炼升级"), (0.35, "全面对抗"),
            (0.55, "至暗低谷"), (0.72, "绝地反攻"), (0.88, "终局收束")]
 
@@ -341,7 +385,8 @@ def _build_structure(total: int, cfg: dict, existing: dict | None = None) -> dic
         ratio = (start - 1) / max(1, total)
         stage = _stage_label(ratio)
         old_v = old_vols.get(vno) or {}
-        vtitle = _clean_title(old_v.get("title"), f"第{_cn_no(vno)}卷·{_VOL_WORDS[(vno - 1) % len(_VOL_WORDS)]}")
+        _vol_words = _vol_words_for(cfg)
+        vtitle = _clean_title(old_v.get("title"), f"第{_cn_no(vno)}卷·{_vol_words[(vno - 1) % len(_vol_words)]}")
         vpurpose = _text(old_v.get("purpose"), 300) or stage
         vgoal = _text(old_v.get("goal"), 600) or (
             f"完成{stage}阶段的结构目标（第{start}–{end}章）")
@@ -351,8 +396,9 @@ def _build_structure(total: int, cfg: dict, existing: dict | None = None) -> dic
         for local_no, (astart, aend) in enumerate(_split_ranges(end - start + 1, ARC_TARGET, 8, 15), 1):
             arc_no += 1
             old_a = old_arcs.get(arc_no) or {}
+            _arc_words = _arc_words_for(cfg)
             atitle = _clean_title(old_a.get("title"),
-                                  f"第{arc_no}弧·{_ARC_WORDS[(local_no - 1) % len(_ARC_WORDS)]}")
+                                  f"第{arc_no}弧·{_arc_words[(local_no - 1) % len(_arc_words)]}")
             agoal = _text(old_a.get("goal"), 600) or (
                 f"承接「{vtitle}」，完成本弧的小高潮与章末钩子（第{start + astart - 1}–{start + aend - 1}章）")
             arcs.append({

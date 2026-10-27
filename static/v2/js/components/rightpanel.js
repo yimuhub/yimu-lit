@@ -180,6 +180,186 @@ function featureMissing(name) {
   );
 }
 
+/* ------------------------------------------------------- v2.5.0 弹窗系统 */
+
+function _modalBox(title, bodyNode, opts = {}) {
+  const overlay = h('div', { class: 'rp-modal-overlay', on: {
+    click: (e) => { if (e.target === overlay) overlay.remove(); }
+  }});
+  const box = h('div', { class: 'rp-modal-box' },
+    h('div', { class: 'rp-modal-head' },
+      h('span', { class: 'rp-modal-title', text: title }),
+      h('button', { class: 'rp-modal-close', type: 'button', html: icon('x', 14),
+        on: { click: () => overlay.remove() } })
+    ),
+    h('div', { class: 'rp-modal-body' }, bodyNode)
+  );
+  if (opts.footer) box.append(h('div', { class: 'rp-modal-foot' }, opts.footer));
+  overlay.append(box);
+  document.body.append(overlay);
+  return overlay;
+}
+
+function showQualityDetail(ctx, work) {
+  const q = work.quality;
+  const body = h('div', { class: 'rp-detail' });
+  const kv = h('div', { class: 'kv-grid' });
+  kv.append(h('div', { class: 'kv-cell' },
+    h('span', { class: 'kv-k', text: '当前评分' }),
+    h('span', { class: 'kv-v', text: q == null ? '未评分' : `${q} 分` })
+  ));
+  kv.append(h('div', { class: 'kv-cell' },
+    h('span', { class: 'kv-k', text: '评分来源' }),
+    h('span', { class: 'kv-v', text: q == null ? '尚无质量报告' : '章节级 quality_signals 均值' })
+  ));
+  kv.append(h('div', { class: 'kv-cell' },
+    h('span', { class: 'kv-k', text: '已写章节' }),
+    h('span', { class: 'kv-v', text: `${work.done} / ${work.total} 章` })
+  ));
+  kv.append(h('div', { class: 'kv-cell' },
+    h('span', { class: 'kv-k', text: '总字数' }),
+    h('span', { class: 'kv-v', text: fmtWords(work.total_words) })
+  ));
+  body.append(kv);
+  if (q == null) {
+    body.append(h('div', { class: 'hint-text', text: '当前作品尚无质量评分。点击下方按钮可立即生成评分。评分基于五维质量信号（文笔、节奏、钩子、连续性、爽点），每章 0–100 分。' }));
+    body.append(h('div', { class: 'rp-modal-foot', style: 'margin-top:16px' },
+      h('button', {
+        class: 'btn btn-primary btn-sm', type: 'button', text: '立即评分',
+        on: { click: async () => {
+          const btn = arguments[0] || event?.target;
+          try {
+            toast('正在生成评分…', { tone: 'info' });
+            if (btn) btn.disabled = true;
+            const key = store.get().currentKey || '';
+            const res = await api.scoreBook(key);
+            if (res && res.score != null) {
+              toast(`评分完成：${res.score} 分`, { tone: 'success' });
+              document.querySelector('.rp-modal-overlay')?.remove();
+              ctx.refreshState?.();
+              ctx.refreshLibrary?.();
+            } else {
+              toast('评分已提交，请稍后刷新查看结果', { tone: 'info' });
+              document.querySelector('.rp-modal-overlay')?.remove();
+            }
+          } catch (err) {
+            toast(errorText(err, '评分失败'), { tone: 'danger' });
+            if (btn) btn.disabled = false;
+          }
+        } }
+      })
+    ));
+  } else {
+    const bar = h('div', { class: 'progress-track' },
+      h('span', { style: `width:${Math.min(q, 100)}%` })
+    );
+    body.append(h('div', { class: 'rp-section' },
+      h('div', { class: 'section-head', text: '评分分布' }), bar
+    ));
+  }
+  _modalBox('质量评分详情', body);
+}
+
+function showEntityDetail(ctx, entity, type) {
+  if (!entity || typeof entity !== 'object') {
+    _modalBox('详情', h('div', { class: 'hint-text', text: '该实体暂无详细数据。可能是状态文件尚未生成，请先创作几章后再查看。' }));
+    return;
+  }
+  const body = h('div', { class: 'rp-detail' });
+  const kv = h('div', { class: 'kv-grid' });
+  const fields = {
+    character: [['名称', entity.name], ['身份', entity.role || entity.identity || '—'], ['当前状态', entity.status || entity.state || '—'], ['关联章节', (entity.chapters || []).join(', ') || '—']],
+    location: [['名称', entity.name], ['描述', entity.desc || entity.description || '—'], ['关联章节', (entity.chapters || []).join(', ') || '—']],
+    event: [['事件', entity.name || entity.title], ['描述', entity.desc || entity.description || '—'], ['关联章节', (entity.chapters || []).join(', ') || '—']],
+    foreshadow: [['线索', entity.name || entity.id], ['埋设章节', entity.planted_at || entity.plant || '—'], ['兑现章节', entity.due || entity.payoff_at || '—'], ['状态', entity.status || 'pending']],
+  };
+  const fieldSet = fields[type] || fields.character;
+  for (const [k, v] of fieldSet) {
+    kv.append(h('div', { class: 'kv-cell' },
+      h('span', { class: 'kv-k', text: k }),
+      h('span', { class: 'kv-v', text: String(v) })
+    ));
+  }
+  body.append(kv);
+  if (entity.summary || entity.desc) {
+    body.append(h('div', { class: 'rp-section' },
+      h('div', { class: 'section-head', text: '详细描述' }),
+      h('div', { class: 'rp-text', text: entity.summary || entity.desc || entity.description || '' })
+    ));
+  }
+  _modalBox(`详情 · ${entity.name || entity.id || type}`, body);
+}
+
+function showConsistencyIssue(ctx, issue) {
+  const body = h('div', { class: 'rp-detail' });
+  const kv = h('div', { class: 'kv-grid' });
+  kv.append(h('div', { class: 'kv-cell' },
+    h('span', { class: 'kv-k', text: '问题类型' }),
+    h('span', { class: 'kv-v', text: issue.type || issue.kind || '一致性' })
+  ));
+  kv.append(h('div', { class: 'kv-cell' },
+    h('span', { class: 'kv-k', text: '严重程度' }),
+    h('span', { class: 'kv-v', text: issue.severity || '中' })
+  ));
+  kv.append(h('div', { class: 'kv-cell' },
+    h('span', { class: 'kv-k', text: '涉及章节' }),
+    h('span', { class: 'kv-v', text: String(issue.chapter || issue.chapters || '—') })
+  ));
+  body.append(kv);
+  body.append(h('div', { class: 'rp-section' },
+    h('div', { class: 'section-head', text: '问题描述' }),
+    h('div', { class: 'rp-text', text: issue.desc || issue.description || issue.message || '' })
+  ));
+  if (issue.suggestion || issue.fix) {
+    body.append(h('div', { class: 'rp-section' },
+      h('div', { class: 'section-head', text: '修复建议' }),
+      h('div', { class: 'rp-text', text: issue.suggestion || issue.fix || '' })
+    ));
+  }
+  _modalBox('一致性问题详情', body, {
+    footer: h('button', { class: 'btn btn-primary btn-sm', type: 'button', text: '一键修复',
+      on: { click: async () => {
+        try {
+          toast('正在修复…', { tone: 'info' });
+          await ctx.api.fixConsistency(issue.id || issue.type);
+          toast('修复完成', { tone: 'success' });
+          ctx.refreshState();
+          document.querySelector('.rp-modal-overlay')?.remove();
+        } catch (err) { toast(errorText(err, '修复失败'), { tone: 'danger' }); }
+      } }
+    })
+  });
+}
+
+function showSkillDetail(ctx, skill, type) {
+  if (!skill || typeof skill !== 'object') {
+    _modalBox('技能详情', h('div', { class: 'hint-text', text: '该技能暂无详细数据。可能是技能系统尚未初始化，或该作品还没有适用的技能数据。' }));
+    return;
+  }
+  const body = h('div', { class: 'rp-detail' });
+  const kv = h('div', { class: 'kv-grid' });
+  const fields = {
+    candidate: [['技能名', skill.name], ['版本', skill.version || 'draft'], ['状态', skill.pending ? '待评测' : '已评测'], ['来源', skill.source || '反馈蒸馏'], ['评分差', skill.delta || '—']],
+    active: [['技能名', skill.name], ['生效版本', skill.version || '—'], ['启用状态', skill.enabled ? '已启用' : '已禁用'], ['样本数', skill.samples || 0], ['平均评分', skill.avg_rating || '—']],
+    feedback: [['反馈样本', skill.total || 0], ['正向', skill.positive || 0], ['负向', skill.negative || 0], ['平均评分', skill.avg_rating || '—']],
+  };
+  const fieldSet = fields[type] || fields.active;
+  for (const [k, v] of fieldSet) {
+    kv.append(h('div', { class: 'kv-cell' },
+      h('span', { class: 'kv-k', text: k }),
+      h('span', { class: 'kv-v', text: String(v) })
+    ));
+  }
+  body.append(kv);
+  if (skill.desc || skill.description) {
+    body.append(h('div', { class: 'rp-section' },
+      h('div', { class: 'section-head', text: '技能描述' }),
+      h('div', { class: 'rp-text', text: skill.desc || skill.description || '' })
+    ));
+  }
+  _modalBox(`技能详情 · ${skill.name}`, body);
+}
+
 function exportWork(key, fmt, label) {
   if (IS_MOCK) {
     toast(`演示模式不生成文件；正式环境会导出 ${label}`, { duration: 2600 });
@@ -432,26 +612,48 @@ function mediumWorkPane(work, ctx) {
   }
   pane.append(kv);
   /* 创作过程中就地蒸馏：不用跳去技能库，蒸完当场可用。 */
-  pane.append(
-    h('div', { class: 'rp-actions rp-actions-pad' },
+  const actions = h('div', { class: 'rp-actions rp-actions-pad' });
+  /* 断点恢复：服务重启/线程中断后（planning/writing 但没有活动线程），一键续跑。 */
+  if (!work.running && ['planning', 'writing', 'in_progress'].includes(work.state)) {
+    actions.append(
       h('button', {
-        class: 'btn btn-sm',
+        class: 'btn btn-primary btn-sm',
         type: 'button',
-        html: `${icon('sparkles', 13)}<span>蒸馏风格</span>`,
-        title: '把目标作者的文本蒸馏成风格卡片',
+        html: `${icon('play', 13)}<span>继续创作</span>`,
+        title: '从上次中断处继续',
         on: {
-          click: () => {
-            openDistillModal({
-              medium: work.medium || 'script',
-              /* work.form 是"体式/媒介形式"（电影剧本、现代诗），不是题材，别拿来填错字段。 */
-              genre: '',
-              onDone: () => ctx && ctx.refreshWork && ctx.refreshWork()
-            });
+          click: async () => {
+            try {
+              await api.continueWork(work.key);
+              toast('已从中断处恢复创作', { tone: 'success' });
+              ctx && ctx.refreshWork && ctx.refreshWork();
+            } catch (err) {
+              toast(errorText(err, '恢复失败'), { tone: 'danger' });
+            }
           }
         }
       })
-    )
+    );
+  }
+  actions.append(
+    h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
+      html: `${icon('sparkles', 13)}<span>蒸馏风格</span>`,
+      title: '把目标作者的文本蒸馏成风格卡片',
+      on: {
+        click: () => {
+          openDistillModal({
+            medium: work.medium || 'script',
+            /* work.form 是"体式/媒介形式"（电影剧本、现代诗），不是题材，别拿来填错字段。 */
+            genre: '',
+            onDone: () => ctx && ctx.refreshWork && ctx.refreshWork()
+          });
+        }
+      }
+    })
   );
+  pane.append(actions);
   pane.append(
     h('div', { class: 'hint-text rp-note', text: '正文与写作动作在中间的工作台里，按文体分页签展开。' })
   );
@@ -507,14 +709,14 @@ function workPane(ctx) {
     ['体裁', work.genre || '小说', '']
   ];
   for (const [k, v, unit] of cells) {
-    kv.append(
-      h(
-        'div',
-        { class: 'kv-cell' },
-        h('span', { class: 'kv-k', text: k }),
-        h('span', { class: 'kv-v' }, `${v}`, unit ? h('span', { class: 'kv-unit', text: unit }) : null)
-      )
+    const cellEl = h(
+      'div',
+      { class: 'kv-cell', style: (k === '平均质量') ? 'cursor:pointer' : '',
+        ...(k === '平均质量' ? { on: { click: () => showQualityDetail(ctx, work) } } : {}) },
+      h('span', { class: 'kv-k', text: k }),
+      h('span', { class: 'kv-v' }, `${v}`, unit ? h('span', { class: 'kv-unit', text: unit }) : null)
     );
+    kv.append(cellEl);
   }
   pane.append(kv);
 
@@ -808,7 +1010,7 @@ function planPane(ctx) {
   const proposalSection = h('div', { class: 'rp-section' });
   proposalSection.append(sectionHead('重规划提案', `${proposals.length} 条`));
   if (!proposals.length) {
-    proposalSection.append(h('div', { class: 'hint-text', text: '还没有提案。需要调整结构时，点上方「重规划」。' }));
+    proposalSection.append(h('div', { class: 'hint-text', text: '还没有提案。需要调整结构时，点上方「重规划」。v2.5.0 默认双岗位同时规划，会生成多视角对比提案供你选择。' }));
   }
   /* 多岗位同时规划（v2.1 P2）：带 agent 的提案并排成对比卡，其余按原列表展示。 */
   const roleProps = proposals.filter((p) => p && p.agent);
@@ -889,17 +1091,18 @@ function openReplanDialog(ctx) {
     h('option', { value: 'arc', text: '当前弧' }),
     h('option', { value: 'book', text: '全书' })
   );
+  /* v2.5.0: 默认双岗位同时规划，确保多视角提案对所有作品可用 */
+  const mode = h(
+    'select',
+    { class: 'select' },
+    h('option', { value: 'dual', text: '双岗位同时规划（多视角对比）', selected: true }),
+    h('option', { value: 'single', text: '单个岗位' })
+  );
   const instruction = h('textarea', {
     class: 'textarea',
     rows: 4,
     placeholder: '例如：第 46 章留存回落，压缩两章调查，把对峙提前到第 48 章。'
   });
-  const mode = h(
-    'select',
-    { class: 'select' },
-    h('option', { value: 'single', text: '单个岗位（总编视角）' }),
-    h('option', { value: 'multi', text: '双岗位同时规划（规划师 + 总编）' })
-  );
   const body = h(
     'div',
     { class: 'feedback-form' },
@@ -924,7 +1127,7 @@ function openReplanDialog(ctx) {
             return;
           }
           btn.disabled = true;
-          const multi = mode.value === 'multi';
+          const multi = mode.value === 'dual' || mode.value === 'multi';
           try {
             if (multi) {
               const res = await api.planMulti({
@@ -1036,6 +1239,34 @@ function entityGroup(title, iconName, items, renderRight) {
   return wrap;
 }
 
+/* v2.5.0: 可点击的实体分组——每个实体行可点击展开详情弹窗 */
+function entityGroupClickable(title, iconName, items, renderRight, ctx, groupType) {
+  const typeMap = { '人物': 'character', '地点': 'location', '事件': 'event', '线索 / 伏笔': 'foreshadow', '物件': 'location' };
+  const entType = typeMap[groupType] || 'character';
+  const wrap = h('div', { class: 'rp-section' });
+  wrap.append(sectionHead(title, String(items.length)));
+  const list = h('div', { class: 'entity-group' });
+  for (const item of items) {
+    list.append(
+      h(
+        'div',
+        { class: 'entity-row', style: 'cursor:pointer',
+          on: { click: () => showEntityDetail(ctx, item, entType) } },
+        h('span', { class: 'ent-icon', html: icon(iconName, 12) }),
+        h(
+          'span',
+          { class: 'ent-main' },
+          h('span', { class: 'ent-name', text: item.name || item.text || '' }),
+          h('span', { class: 'ent-sub', text: item.role || item.note || item.status || '' })
+        ),
+        renderRight ? renderRight(item) : null
+      )
+    );
+  }
+  wrap.append(list);
+  return wrap;
+}
+
 /* v2.3 一致性体检入口：后端把结果落在 state.last_audit {at, scope, issues[str]}，
    这里展示上次记录并提供「一致性体检」按钮；完成后走既有 refreshState 刷新本 pane。 */
 function auditSection(ctx, payload) {
@@ -1105,7 +1336,8 @@ function auditSection(ctx, payload) {
       sec.append(
         h(
           'div',
-          { class: 'issue-row' },
+          { class: 'issue-row', style: 'cursor:pointer',
+            on: { click: () => showConsistencyIssue(ctx, { type: '一致性', desc: String(text), severity: '中' }) } },
           h('span', { class: 'issue-dot' }),
           h('span', { class: 'issue-text', text: String(text) })
         )
@@ -1184,7 +1416,8 @@ function statePane(ctx) {
       sec.append(
         h(
           'div',
-          { class: 'issue-row', dataset: { severity: overdue ? 'high' : 'medium' } },
+          { class: 'issue-row', style: 'cursor:pointer', dataset: { severity: overdue ? 'high' : 'medium' },
+            on: { click: () => showEntityDetail(ctx, { name: f.text || f.note || '', desc: `伏笔「${f.text || f.note || ''}」计划在第 ${f.due} 章回收${overdue ? '（已逾期）' : ''}。`, status: overdue ? '逾期' : '待回收' }, 'foreshadowing') } },
           h('span', { class: 'issue-dot' }),
           h('span', { class: 'issue-text', text: f.text || f.note || '' }),
           h('span', { class: 'due-chip', dataset: { overdue: overdue ? 'true' : 'false', soon: !overdue }, text: `第${f.due}章` })
@@ -1205,7 +1438,8 @@ function statePane(ctx) {
       sec.append(
         h(
           'div',
-          { class: 'issue-row', dataset: { severity: (typeof issue === 'object' && issue && issue.severity) || 'medium' } },
+          { class: 'issue-row', style: 'cursor:pointer', dataset: { severity: (typeof issue === 'object' && issue && issue.severity) || 'medium' },
+            on: { click: () => showConsistencyIssue(ctx, typeof issue === 'object' && issue ? issue : { type: '一致性', desc: String(text), severity: 'medium', ref: '' }) } },
           h('span', { class: 'issue-dot' }),
           h('span', { class: 'issue-text', text }),
           (typeof issue === 'object' && issue && issue.ref) ? h('span', { class: 'issue-ref', text: issue.ref }) : null
@@ -1225,7 +1459,7 @@ function statePane(ctx) {
   ];
   for (const [title, ic, items, right] of entities) {
     const filtered = filter(items);
-    if (filtered.length) pane.append(entityGroup(title, ic, filtered.slice(0, 10), right));
+    if (filtered.length) pane.append(entityGroupClickable(title, ic, filtered.slice(0, 10), right, ctx, title));
   }
 
   if (Array.isArray(payload.timeline) && payload.timeline.length) {
@@ -1236,7 +1470,9 @@ function statePane(ctx) {
       tl.append(
         h(
           'div',
-          { class: 'timeline-item', dataset: { current: item.current ? 'true' : 'false' } },
+          { class: 'timeline-item', dataset: { current: item.current ? 'true' : 'false' },
+            style: 'cursor:pointer',
+            on: { click: () => showEntityDetail(ctx, item, 'event') } },
           h('span', { class: 'tl-at', text: item.at || '' }),
           h('span', { class: 'tl-main', text: item.text || '' })
         )
@@ -1609,7 +1845,19 @@ function applicableCard(ctx) {
     }
     const chips = h('div', { class: 'chip-row' });
     for (const it of items.slice(0, 12)) {
-      chips.append(h('span', { class: 'chip', text: it.title || it.name, title: it.genre || '' }));
+      const enabled = it.enabled !== false; /* 默认启用 */
+      chips.append(h('span', {
+        class: `chip chip-toggle${enabled ? ' chip-active' : ' chip-inactive'}`,
+        text: it.title || it.name,
+        title: it.genre || (enabled ? '已启用·点击禁用' : '已禁用·点击启用'),
+        on: { click: async () => {
+          try {
+            await api.toggleSkill({ name: it.name || it.title, enabled: !enabled });
+            toast(!enabled ? `已启用「${it.title || it.name}」` : `已禁用「${it.title || it.name}」`, { tone: 'success' });
+            load(); /* 重新加载 */
+          } catch (err) { toast(errorText(err, '切换失败'), { tone: 'danger' }); }
+        } }
+      }));
     }
     if (items.length > 12) chips.append(h('span', { class: 'chip chip-muted', text: `+${items.length - 12}` }));
     body.append(chips);
@@ -1639,16 +1887,18 @@ function skillsPane(ctx) {
   const stats = payload.stats || {};
   const feedback = payload.feedback || {};
   const kv = h('div', { class: 'kv-grid' });
-  [
-    ['候选技能', (payload.candidates || []).filter((c) => c.pending).length, '个'],
-    ['生效版本', stats.active || (payload.history || []).filter((v) => v.active).length, '个'],
-    ['反馈样本', feedback.total || 0, '条'],
-    ['平均评分', feedback.avg_rating || '—', '分']
-  ].forEach(([k, v, unit]) => {
+  const skillCells = [
+    ['候选技能', (payload.candidates || []).filter((c) => c.pending).length, '个', 'candidate', { candidates: payload.candidates || [] }],
+    ['生效版本', stats.active || (payload.history || []).filter((v) => v.active).length, '个', 'active', { history: payload.history || [] }],
+    ['反馈样本', feedback.total || 0, '条', 'feedback', feedback],
+    ['平均评分', feedback.avg_rating || '—', '分', 'feedback', feedback]
+  ];
+  skillCells.forEach(([k, v, unit, detailType, detailData]) => {
     kv.append(
       h(
         'div',
-        { class: 'kv-cell' },
+        { class: 'kv-cell', style: 'cursor:pointer',
+          on: { click: () => showSkillDetail(ctx, detailData, detailType) } },
         h('span', { class: 'kv-k', text: k }),
         h('span', { class: 'kv-v' }, `${v}`, unit ? h('span', { class: 'kv-unit', text: unit }) : null)
       )

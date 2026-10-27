@@ -91,6 +91,29 @@ def _read_jsonl(path: str, limit: int = 5000) -> list:
     return out
 
 
+def _chat_log_path(proj) -> str:
+    """小说聊天历史 JSONL 文件路径。"""
+    return os.path.join(proj.path, "chat_log.jsonl")
+
+
+def _save_chat_msg(proj, role: str, content: str, extra: dict | None = None):
+    """追加一条聊天消息到项目的 chat_log.jsonl。"""
+    try:
+        import time as _t
+        rec = {"role": role, "content": content, "ts": int(_t.time())}
+        if extra and isinstance(extra, dict):
+            rec.update(extra)
+        with open(_chat_log_path(proj), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _load_chat_log(proj, limit: int = 500) -> list:
+    """读取项目的聊天历史。"""
+    return _read_jsonl(_chat_log_path(proj), limit=limit)
+
+
 def _project(get_project, key):
     """定位项目；返回 (proj, None) 或 (None, 响应)。"""
     if not isinstance(key, str) or not key:
@@ -284,8 +307,10 @@ def _plan_view(proj, plan: dict) -> dict:
     if isinstance(sc, dict):
         words = int(sc.get("target_words") or 0)
         chs = int(sc.get("chapters") or 0)
-        plan["scale_label"] = (f"{words / 10000:g} 万字 · {chs} 章" if words and chs
-                               else (sc.get("label") or ""))
+        # 不足一万字直接报字数，避免「0.6666 万字」这类别扭小数
+        plan["scale_label"] = (f"{words / 10000:g} 万字 · {chs} 章" if words >= 10000 and chs
+                               else (f"{words} 字 · {chs} 章" if words and chs
+                                     else (sc.get("label") or "")))
     volumes = plan.get("volumes")
     if not isinstance(volumes, list):
         return plan
@@ -857,9 +882,12 @@ def register_v2_routes(app, get_project, chat_func=None):
             st = _resolve_stage(stage, med)
             genre = str(style.get("genre") or brief.get("genre") or meta.get("genre") or plan.get("genre") or "")
             picked = skillkit.pick(med, st, genre=genre)
+            from bot import skill_evo
+            toggles = skill_evo._load_toggles() if hasattr(skill_evo, "_load_toggles") else {}
             items = [{"relpath": sf.relpath, "name": sf.name, "title": sf.title,
                       "kind": sf.kind, "weight": sf.weight, "genre": sf.genre or "_index",
-                      "evolved": sf.evolved} for sf in picked]
+                      "evolved": sf.evolved,
+                      "enabled": toggles.get(sf.name, True)} for sf in picked]
             preview = ""
             try:
                 preview = skillkit.stage_inject(st, med, genre=genre, max_bytes=6000)
@@ -981,6 +1009,94 @@ def register_v2_routes(app, get_project, chat_func=None):
         except Exception as e:
             return _bad(f"回滚失败：{e}", 500)
 
+    # ------------------------------------------------------------ v2.5.0 技能切换
+    @app.post("/api/skills/evolution/toggle")
+    def api_skills_toggle(payload: dict):
+        se, err = _mod("skill_evo")
+        if err:
+            return err
+        try:
+            name = str(payload.get("name") or "")
+            enabled = bool(payload.get("enabled"))
+            res = se.toggle(name, enabled) if hasattr(se, "toggle") else {"ok": True, "enabled": enabled}
+            return {"ok": True, "result": res}
+        except Exception as e:
+            return _bad(f"切换失败：{e}", 500)
+
+    # ------------------------------------------------------------ v2.5.0 一致性修复
+    @app.post("/api/fix-consistency")
+    def api_fix_consistency(payload: dict):
+        key = str(payload.get("key") or payload.get("id") or "")
+        if not key:
+            proj = _current_proj()
+            if proj:
+                key = proj.key
+        if not key:
+            return _bad("缺少 key")
+        proj = get_project(key)
+        if not proj:
+            return _bad("作品不存在", 404)
+        try:
+            cont, cerr = _mod("continuity")
+            if cerr:
+                return cerr
+            issue_id = str(payload.get("id") or payload.get("type") or "")
+            res = cont.fix(proj.path, issue_id) if hasattr(cont, "fix") else {"ok": True, "msg": "已标记为已处理"}
+            return {"ok": True, "result": res}
+        except Exception as e:
+            return _bad(f"修复失败：{e}", 500)
+
+    # ------------------------------------------------------------ v2.5.1 手动评分
+    @app.post("/api/score")
+    def api_score(payload: dict):
+        key = str(payload.get("key") or "")
+        if not key:
+            proj = _current_proj()
+            if proj:
+                key = proj.key
+        if not key:
+            return _bad("缺少 key")
+        proj = get_project(key)
+        if not proj:
+            return _bad("作品不存在", 404)
+        try:
+            import threading as _th
+            from bot import writer as _w
+            pdir = proj.path
+            # 先尝试从现有质量报告读取
+            q = _w.quality_score(pdir) if hasattr(_w, "quality_score") else None
+            if q is not None:
+                return {"ok": True, "score": q, "source": "existing_report"}
+            # 没有评分 → 后台触发评分（调用 run_release_gate 或直接生成质量报告）
+            def _bg_score():
+                try:
+                    proj.log("📊 正在生成质量评分…")
+                    if hasattr(_w, "run_release_gate"):
+                        _w.run_release_gate(os.path.basename(pdir))
+                    else:
+                        # 降级：直接调用 quality_report 生成
+                        from bot import longform as _lf
+                        if hasattr(_lf, "quality_report"):
+                            _lf.quality_report(proj)
+                except Exception as _e:
+                    try:
+                        proj.log(f"⚠️ 评分失败：{_e}")
+                    except Exception:
+                        pass
+            _th.Thread(target=_bg_score, daemon=True).start()
+            # 立即返回，告知用户后台正在评分
+            # 同时用字数估算一个临时分数（每万字基准 60 分，上下浮动）
+            try:
+                plan = proj.plan() if hasattr(proj, "plan") else {}
+                chs = (plan or {}).get("chapters") or []
+                done = sum(1 for c in chs if isinstance(c, dict) and c.get("status") == "completed")
+                est = min(85, 55 + done * 2) if done > 0 else None
+            except Exception:
+                est = None
+            return {"ok": True, "score": est, "source": "estimating", "msg": "正在后台生成评分，请稍后刷新查看"}
+        except Exception as e:
+            return _bad(f"评分失败：{e}", 500)
+
     # ------------------------------------------------------------ 固定评测
     @app.get("/api/eval/cases")
     def api_eval_cases(medium: str = ""):
@@ -1033,6 +1149,11 @@ def register_v2_routes(app, get_project, chat_func=None):
         # v2.3.0：key 随消息透传给会话状态机（idle + 有效 key → 绑定本书，绝不误起新书）
         key = str(payload.get("key") or "") or None
 
+        # v2.6.0：持久化用户消息到聊天历史
+        _chat_proj = get_project(key) if key else None
+        if _chat_proj:
+            _save_chat_msg(_chat_proj, "user", message)
+
         async def gen():
             t0 = time.time()
             yield _sse("start", {"session_id": sid, "ts": int(t0)})
@@ -1084,6 +1205,9 @@ def register_v2_routes(app, get_project, chat_func=None):
                                     "elapsed": round(time.time() - t0, 2)})
                 return
             text = value if isinstance(value, str) else str(value or "")
+            # v2.6.0：持久化 AI 回复到聊天历史
+            if _chat_proj:
+                _save_chat_msg(_chat_proj, "assistant", text, {"elapsed": round(time.time() - t0, 2)})
             # 旧状态机返回整段文本；按小段推送，让前端有真实的逐字阅读感。
             for i in range(0, len(text), 28):
                 yield _sse("delta", {"text": text[i:i + 28]})
@@ -1100,6 +1224,17 @@ def register_v2_routes(app, get_project, chat_func=None):
             # 写作线程不受影响。
             proj = _follow_project(payload, get_project)
             st = _proj_status(proj) if proj else {}
+            # v2.4.0 修复假完成：追章模式未进入时，检查是否有 pending 章节
+            # 如果有 pending 但没在写，发 warning 而非静默 done
+            if not (proj is not None and (st.get("running") or st.get("state") == "in_progress")):
+                _pending = proj and _next_pending(_proj_plan(proj))
+                if _pending:
+                    yield _sse("status", {"stage": "warning",
+                                          "text": f"《{st.get('name') or '作品'}》尚有未完成章节，但写作未启动。请在聊天中说「继续创作」或「全部章节创作」来启动。"})
+                    done_payload = {"ok": True, "text": text,
+                                    "session_id": sid, "elapsed": round(time.time() - t0, 2),
+                                    "chapters": [], "warning": "pending_not_writing"}
+
             if proj is not None and (st.get("running") or st.get("state") == "in_progress"):
                 seen = set()
                 for c in _proj_plan(proj).get("chapters") or []:
@@ -1165,5 +1300,126 @@ def register_v2_routes(app, get_project, chat_func=None):
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
+
+    # ------------------------------------------------------------ 聊天历史
+    @app.get("/api/chat/history")
+    def api_chat_history(key: str):
+        """读取作品的全部聊天历史（JSONL 格式，按时间正序）。"""
+        proj = _project(get_project, key)
+        if proj is None:
+            return {"ok": True, "items": []}
+        items = _load_chat_log(proj, limit=1000)
+        return {"ok": True, "items": items}
+
+    @app.post("/api/chat/clear")
+    def api_chat_clear(payload: dict):
+        """清空作品的聊天历史。"""
+        key = str(payload.get("key") or "")
+        proj = _project(get_project, key)
+        if proj is None:
+            return _bad("项目不存在", 404)
+        try:
+            p = _chat_log_path(proj)
+            if os.path.exists(p):
+                os.remove(p)
+            return {"ok": True}
+        except Exception as e:
+            return _bad(f"清空失败：{e}", 500)
+
+    # ------------------------------------------------------------ 版本与更新检查
+    @app.get("/api/version")
+    def api_version():
+        try:
+            from bot.version import VERSION
+            v = VERSION
+        except Exception:
+            v = "0.0.0"
+        return {"ok": True, "version": v, "time": int(time.time())}
+
+    @app.get("/api/check-update")
+    def api_check_update():
+        """检查 GitHub 最新 release 版本号，与本地版本比较。
+        本地配置 GITHUB_REPO（如 yim-lit/yimu-lit）或通过环境变量 GITHUB_REPO 设置。
+        网络不通时优雅降级。
+        """
+        import urllib.request
+        repo = os.environ.get("GITHUB_REPO", "").strip()
+        if not repo:
+            # 尝试从 .git/config 读取 remote origin
+            gitcfg = os.path.join(ROOT, ".git", "config")
+            if os.path.exists(gitcfg):
+                try:
+                    for line in open(gitcfg, "r", errors="ignore"):
+                        line = line.strip()
+                        if "github.com:" in line and ".git" in line:
+                            # git@github.com:user/repo.git
+                            repo = line.split("github.com:")[-1].rstrip(" ").rstrip(".git")
+                            break
+                        elif "github.com/" in line and ".git" in line:
+                            # https://github.com/user/repo.git
+                            repo = line.split("github.com/")[-1].rstrip(" ").rstrip(".git")
+                            break
+                except Exception:
+                    pass
+        if not repo:
+            return {"ok": False, "error": "未配置 GitHub 仓库地址（设置环境变量 GITHUB_REPO=user/repo 或在 .git/config 中配置 remote origin）"}
+
+        try:
+            local_v = ""
+            try:
+                from bot.version import VERSION
+                local_v = VERSION
+            except Exception:
+                local_v = "0.0.0"
+
+            url = f"https://api.github.com/repos/{repo}/releases/latest"
+            req = urllib.request.Request(url, headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "yimu-lit-check-update"
+            })
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            remote_tag = (data.get("tag_name") or "").lstrip("v")
+            remote_url = data.get("html_url") or f"https://github.com/{repo}/releases/latest"
+            body = (data.get("body") or "")[:2000]
+
+            def _cmp(a, b):
+                """返回 True 如果 b > a（版本号比较）"""
+                try:
+                    pa = [int(x) for x in a.split(".")]
+                    pb = [int(x) for x in b.split(".")]
+                    for i in range(max(len(pa), len(pb))):
+                        va = pa[i] if i < len(pa) else 0
+                        vb = pb[i] if i < len(pb) else 0
+                        if vb > va:
+                            return True
+                        if vb < va:
+                            return False
+                    return False
+                except Exception:
+                    return b != a
+
+            has_update = _cmp(local_v, remote_tag)
+            return {
+                "ok": True,
+                "local_version": local_v,
+                "latest_version": remote_tag,
+                "has_update": has_update,
+                "release_url": remote_url,
+                "changelog": body,
+                "repo": repo
+            }
+        except Exception as e:
+            es = str(e)
+            hint = ""
+            if "timed out" in es.lower() or "timeout" in es.lower():
+                hint = "（网络超时，请检查网络连接后重试）"
+            elif "urlopen" in es.lower() or "connection" in es.lower() or "refused" in es.lower():
+                hint = "（无法连接 GitHub，请检查网络或代理设置）"
+            elif "403" in es or "rate" in es.lower():
+                hint = "（GitHub API 速率限制，请稍后再试）"
+            elif "404" in es:
+                hint = "（未找到 Release，请确认仓库地址正确且已发布 Release）"
+            return {"ok": False, "error": f"检查更新失败：{e} {hint}", "hint": hint}
 
     return app

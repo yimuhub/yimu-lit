@@ -125,6 +125,37 @@ export function renderSession(container, ctx = {}) {
   const dock = h('div', { class: 'composer-dock' }, bindRow, composer.el);
   el.append(planSlot, bannerSlot, chat.el, dock);
 
+  // v2.6.0：切换作品时自动加载聊天历史
+  let histLoaded = false;
+  async function loadChatHistory() {
+    if (histLoaded) return;
+    histLoaded = true;
+    const key = store.get().currentKey;
+    if (!key) return;
+    const medium = store.get().workMedium || store.get().ui?.medium || 'novel';
+    if (medium !== 'novel') return;  // 剧本/诗词/散文走 assist history
+    try {
+      const res = await api.chatHistory(key);
+      if (res && res.ok && Array.isArray(res.items) && res.items.length) {
+        patchChat((cs) => {
+          // 只有当前没有消息时才填充历史（避免覆盖正在进行的对话）
+          if (cs.messages && cs.messages.length > 0) return cs;
+          const msgs = res.items.map((item, i) => ({
+            id: `hist_${i}_${item.ts || 0}`,
+            role: item.role || 'assistant',
+            content: item.content || '',
+            ts: item.ts || 0,
+            historical: true,
+          }));
+          return { ...cs, messages: msgs };
+        });
+      }
+    } catch (e) {
+      // 静默失败：历史加载失败不影响正常聊天
+    }
+  }
+  loadChatHistory();
+
   // v2.3 对话绑定提示：小说且当前打开了作品时，composer 上方挂一枚「已绑定《X》」chip。
   // 纯展示，判断口径与 buildStreamPayload 的 withWork 一致；不碰追章流逻辑。
   function paintBind() {
