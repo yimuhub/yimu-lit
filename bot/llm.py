@@ -27,6 +27,12 @@ def book(key: str, stage: str = ""):
     _TL.book = key
     _TL.stage = stage or "writing"
 
+
+def set_chapter(no):
+    """v2.9.0：标记当前线程正在写哪一章（章号），token 精确归到章。
+    传 None 清除（审校/成书阶段不计入任何章）。"""
+    _TL.chapter = no
+
 def _load_json_loose(path: str, default: dict) -> dict:
     """读账本/配置：文件损坏（历史并发写、截断）时尽量抢救第一个 JSON 对象，救不出用默认值。"""
     try:
@@ -74,6 +80,11 @@ def _record_usage(book_key: str, stage: str, usage: dict):
                 bs = u.setdefault("by_stage", {})
                 sb = bs.setdefault(stage, {"prompt": 0, "completion": 0, "total": 0, "calls": 0})
                 sb["prompt"] += pt; sb["completion"] += ct; sb["total"] += tt; sb["calls"] += 1
+                # v2.9.0：线程标记了章号时，token 同步归到章（并行写作下每章互不串账）
+                chno = getattr(_TL, "chapter", None)
+                if chno:
+                    cb = u.setdefault("by_chapter", {}).setdefault(str(chno), {"total": 0, "calls": 0})
+                    cb["total"] += tt; cb["calls"] += 1
                 u["last"] = {"stage": stage, "prompt": pt, "completion": ct, "total": tt}
                 atomic_write_json(uf, u)
             # 全局
@@ -100,6 +111,15 @@ def book_tokens(book_key: str) -> int:
     """该书已用 token（读 usage.json；损坏/不存在按 0）。"""
     try:
         return int(read_usage(book_key).get("total_tokens") or 0)
+    except Exception:
+        return 0
+
+
+def book_chapter_tokens(book_key: str, no) -> int:
+    """v2.9.0：该书某章已用 token（usage.json by_chapter；无记录按 0）。"""
+    try:
+        u = read_usage(book_key)
+        return int(((u.get("by_chapter") or {}).get(str(no)) or {}).get("total") or 0)
     except Exception:
         return 0
 

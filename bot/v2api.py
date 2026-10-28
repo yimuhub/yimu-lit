@@ -345,6 +345,7 @@ def _attach_digest(proj, lf, plan: dict) -> dict:
 
 
 def register_v2_routes(app, get_project, chat_func=None):
+    from bot import chatsum
     """在 app 上注册 v2 接口。由 app.py 在 `_get_project` 定义后调用。"""
 
     # ------------------------------------------------------------ 能力探测
@@ -1162,6 +1163,19 @@ def register_v2_routes(app, get_project, chat_func=None):
 
         async def gen():
             t0 = time.time()
+            # v2.9.0：对话上下文自动压缩（只影响展示对话的摘要与 @Agent 上下文，
+            # 后台创作流水线不经此路径）。压缩结果落 chat_summary.json 并随 start 帧告知前端。
+            _digest = None
+            if _chat_proj:
+                try:
+                    _hist = _load_chat_log(_chat_proj, limit=5000)
+                    _cres = chatsum.maybe_compress(_chat_proj.path, _hist) if _hist else None
+                    if _cres and _cres.get("compressed"):
+                        _digest = _cres["summary"]
+                        yield _sse("compressed", {"count": _cres["count"],
+                                                  "summary": _cres["summary"]})
+                except Exception:
+                    _digest = None
             yield _sse("start", {"session_id": sid, "ts": int(t0)})
 
             # 没有任何可用供应商：消息照收，直接给友好兜底；绝不进 chat_func
@@ -1184,7 +1198,11 @@ def register_v2_routes(app, get_project, chat_func=None):
 
             def _work():
                 try:
-                    result = chat_func(sid, message, key)
+                    # v2.9.0：压缩摘要随调用传入（chat() 支持 digest 参数时）；旧签名自动回退
+                    try:
+                        result = chat_func(sid, message, key, digest=_digest)
+                    except TypeError:
+                        result = chat_func(sid, message, key)
                     # v2.8.0：AI 回复落盘移到 worker 线程——原来放在生成器里，
                     # 客户端中途断开（等待期常达几分钟）会取消生成器，落盘被跳过，
                     # 造成聊天记录「只有问没有答」。
@@ -1272,8 +1290,23 @@ def register_v2_routes(app, get_project, chat_func=None):
                         for i in range(0, len(body), _CHAPTER_CHUNK):
                             yield _sse("chapter_delta", {"no": no, "text": body[i:i + _CHAPTER_CHUNK]})
                             await asyncio.sleep(_CHAPTER_DELTA_GAP)
-                        yield _sse("chapter_done", {"no": no, "words": words})
+                        # v2.9.0：章节完成卡片元数据（完成时间/字数/token/质量分）
+                        _meta = (plan.get("meta") or {})
+                        _score = ((_meta.get("chapter_scores") or {}).get(str(no)) or {}).get("score")
+                        _card = {"no": no, "title": str(c.get("title") or f"第{no}章"),
+                                 "words": words,
+                                 "tokens": _as_int(c.get("tokens")),
+                                 "quality": _score,
+                                 "ts": c.get("completedAt") or "",
+                                 "key": str(payload.get("key") or "")}
+                        yield _sse("chapter_done", _card)
                         pushed.append({"no": no, "words": words})
+                        # v2.9.0：章节完成记录也进聊天留档（type=chapter），刷新后历史完整重放
+                        if _chat_proj:
+                            _save_chat_msg(_chat_proj, "assistant", body,
+                                           {"type": "chapter", "no": no, "title": _card["title"],
+                                            "words": words, "tokens": _card["tokens"],
+                                            "quality": _score, "completedAt": _card["ts"]})
 
                     st = _proj_status(proj)
                     state = str(st.get("state") or "")

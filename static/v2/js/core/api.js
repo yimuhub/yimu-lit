@@ -393,6 +393,7 @@ export const api = {
   rollbackSkill: (name, version) => request('/api/skills/evolution/rollback', jsonBody({ name, version })),
   toggleSkill: (payload) => request('/api/skills/evolution/toggle', jsonBody(payload)),
   fixConsistency: (issueId, key) => request('/api/fix-consistency', jsonBody({ id: issueId, key })),
+  branchBook: (key, chapter) => request('/api/branch', jsonBody({ key, chapter }), { timeout: 60000 }),
   chatHistory: (key) => request(`/api/chat/history?key=${encodeURIComponent(key)}`),
   chatClear: (key) => request('/api/chat/clear', jsonBody({ key })),
   addAgent: (data) => request('/api/agents/add', jsonBody(data)),

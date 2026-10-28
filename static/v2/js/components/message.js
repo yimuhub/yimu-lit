@@ -6,7 +6,7 @@ import { updateMessage } from '../core/state.js';
 import { navigate } from '../core/router.js';
 import { usageLabel } from '../core/constants.js';
 import { toast, openFeedback } from '../core/ui.js';
-import { api } from '../core/api.js';
+import { api, errorText } from '../core/api.js';
 
 function thinkingDots() {
   return h('span', { class: 'thinking', 'aria-label': '正在思考' }, h('span', { class: 'tdot' }), h('span', { class: 'tdot' }), h('span', { class: 'tdot' }));
@@ -103,6 +103,104 @@ export function renderUserMessage(msg) {
   return el;
 }
 
+/* v2.9.0：章节完成卡片。
+   默认折叠（标题 + 完成时间/字数/token/质量分 + 开头摘录），点开看全文、再点收起；
+   操作：复制本章 / 从此章分支创作（分支成新书）/ 章节工作台。 */
+function chapterExcerpt(text, chars = 260) {
+  const t = String(text || '').trim();
+  if (t.length <= chars) return t;
+  return `${Array.from(t).slice(0, chars).join('')}…`;
+}
+
+function renderChapterCard(msg, handlers = {}) {
+  const meta = msg.chapterMeta || {};
+  const expanded = !msg.collapsed;
+  const card = h('div', { class: `chapter-card${expanded ? ' is-open' : ''}` });
+
+  const head = h('button', {
+    class: 'cc-head',
+    type: 'button',
+    'aria-expanded': expanded ? 'true' : 'false',
+    title: expanded ? '收起本章' : '展开本章全文',
+    on: { click: () => updateMessage(msg.id, { collapsed: expanded }) }
+  },
+    h('span', { class: 'cc-icon', html: icon('book-open', 14) }),
+    h('span', { class: 'cc-title', text: `第${meta.no ?? '?'}章 · ${meta.title || ''}` }),
+    h('span', { class: 'cc-chev', html: icon(expanded ? 'pause' : 'play', 12) })
+  );
+  card.append(head);
+
+  const chips = h('div', { class: 'cc-meta' });
+  const items = [];
+  if (meta.ts) items.push(['完成于', String(meta.ts).replace('T', ' ').slice(5, 16)]);
+  if (meta.words) items.push(['字数', fmtNum(meta.words)]);
+  if (meta.tokens) items.push(['消耗', `${fmtNum(meta.tokens)} tokens`]);
+  if (meta.quality != null && meta.quality !== '') items.push(['质量', `${meta.quality} 分`]);
+  for (const [k, v] of items) {
+    chips.append(h('span', { class: 'cc-chip' },
+      h('span', { class: 'cc-k', text: k }),
+      h('span', { class: 'cc-v', text: String(v) })));
+  }
+  card.append(chips);
+
+  const body = h('div', { class: 'cc-body md' });
+  if (expanded) {
+    renderMarkdownInto(body, msg.content || '');
+  } else {
+    body.append(h('div', { class: 'cc-preview', text: chapterExcerpt(msg.content) }));
+  }
+  card.append(body);
+
+  const acts = h('div', { class: 'cc-actions' });
+  acts.append(h('button', {
+    class: 'msg-action', type: 'button',
+    html: `${icon(expanded ? 'pause' : 'eye', 12)}<span>${expanded ? '收起' : '展开全文'}</span>`,
+    on: { click: () => updateMessage(msg.id, { collapsed: expanded }) }
+  }));
+  acts.append(h('button', {
+    class: 'msg-action', type: 'button',
+    html: `${icon('copy', 12)}<span>复制本章</span>`,
+    on: {
+      click: async () => {
+        try {
+          await navigator.clipboard.writeText(msg.content || '');
+          toast('本章全文已复制', { duration: 1600 });
+        } catch {
+          toast('复制失败，请手动选择文本', { tone: 'danger' });
+        }
+      }
+    }
+  }));
+  if (handlers.workKey) {
+    acts.append(h('button', {
+      class: 'msg-action', type: 'button',
+      html: `${icon('branch', 12)}<span>从此章分支创作</span>`,
+      title: '复制 1..N 章成一本新书，从下一章开始新思路',
+      on: {
+        click: async (event) => {
+          const btn = event.currentTarget;
+          btn.disabled = true;
+          try {
+            const res = await api.branchBook(handlers.workKey, meta.no);
+            toast(`已创建分支《${res.name || res.key}》，第${(meta.no || 0) + 1}章起按新思路创作`, { tone: 'success', duration: 4200 });
+            navigate(`/work/${encodeURIComponent(res.key)}`);
+          } catch (err) {
+            toast(errorText(err, '分支失败'), { tone: 'danger' });
+            btn.disabled = false;
+          }
+        }
+      }
+    }));
+    acts.append(h('button', {
+      class: 'msg-action', type: 'button',
+      html: `${icon('edit', 12)}<span>章节工作台</span>`,
+      on: { click: () => navigate(`/work/${encodeURIComponent(handlers.workKey)}/bench/${meta.no || 1}`) }
+    }));
+  }
+  card.append(acts);
+  return card;
+}
+
 export function renderAssistantMessage(msg, handlers = {}) {
   const assistant = h('div', { class: 'msg msg-assistant', dataset: { id: msg.id } });
   assistant.append(h('div', { class: 'msg-avatar', html: icon('quill', 14) }));
@@ -125,7 +223,11 @@ export function renderAssistantMessage(msg, handlers = {}) {
   }
 
   const body = h('div', { class: `msg-body md${msg.streaming ? ' is-streaming' : ''}` });
-  if (msg.content) renderMarkdownInto(body, msg.content);
+  if (msg.chapterMeta && !msg.streaming) {
+    /* v2.9.0：章节完成卡片（折叠/展开 + 复制/分支/工作台） */
+    body.classList.add('has-chapter-card');
+    body.append(renderChapterCard(msg, handlers));
+  } else if (msg.content) renderMarkdownInto(body, msg.content);
   else if (msg.streaming) body.append(thinkingDots());
   main.append(body);
 

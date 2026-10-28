@@ -9,6 +9,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
+from bot import chatsum
 from bot import export as export_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -37,6 +38,18 @@ async def _lifespan(_app):
 
 app = FastAPI(title="神笔文学创作台", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=security.trusted_hosts())
+
+@app.middleware("http")
+async def _static_no_cache(request: Request, call_next):
+    """v2.9.0：静态资源禁缓存。run.py 主打热更新，升级后浏览器必须立刻拿到新
+    JS/CSS；Chromium 对 ES module 的启发式/内存缓存会长期复用旧模块，
+    导致界面与后端版本错位（E2E 实测踩坑：升级后界面仍跑旧逻辑）。"""
+    resp = await call_next(request)
+    p = request.url.path
+    if p.startswith("/v2/") or p in ("/classic",) or p.endswith((".js", ".css", ".html")):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
 
 @app.middleware("http")
 async def _auth_guard(request: Request, call_next):
@@ -88,10 +101,12 @@ import sys
 def _trace(tag, **kw):
     print(f"[TRACE] {tag} {kw}", file=sys.stderr, flush=True)
 
-def chat(session_id, message, key=None):
+def chat(session_id, message, key=None, digest=None):
     s = SESSIONS.get(session_id) or {"id": session_id, "state": "idle", "cfg": None,
                                      "project": None, "titles": None, "busy": False}
     SESSIONS[session_id] = s
+    if digest:
+        s["digest"] = digest   # v2.9.0：对话上下文压缩摘要，@Agent 群聊注入用
     msg = message.strip()
     _trace("chat-in", sid=session_id, state=s["state"], msg=msg[:40], busy=s.get("busy"))
     reply = []
@@ -556,6 +571,8 @@ def _chat_group(s, proj, msg, plan, st, name):
     )
     if char_summary:
         context += f"主要角色：\n{char_summary}\n"
+    if s.get("digest"):
+        context += f"对话进度摘要（自动压缩）：\n{s['digest'][:2000]}\n"
     if outline_tail:
         context += f"大纲尾部摘要：\n{outline_tail}\n"
     context += f"\n【用户问题】\n{question}\n"
@@ -1886,12 +1903,14 @@ def api_settings():
     mode = "off" if val.get("enabled") is False else ("auto" if val.get("mode") == "autofix" else "report")
     return {"quality_mode": mode, "token_budget": llm.budget_tokens(),
             "lorebook": bool(d.get("lorebook", True)), "llm_trace": bool(d.get("llm_trace", True)),
-            "call_gap": d.get("call_gap", 2), "max_global_agents": d.get("max_global_agents", 4)}
+            "call_gap": d.get("call_gap", 2), "max_global_agents": d.get("max_global_agents", 4),
+            "chat_context_limit": chatsum.load_limit(),
+            "chat_auto_compress": chatsum.compress_enabled()}
 
 
 @app.post("/api/settings")
 def api_settings_save(payload: dict):
-    """收口关键开关：审稿强度、token 预算、Lorebook 检索、调用日志。"""
+    """收口关键开关：审稿强度、token 预算、Lorebook 检索、调用日志、对话压缩。"""
     cf = os.path.join(ROOT, "config.json")
     try:
         cfg = json.load(open(cf, encoding="utf-8")) if os.path.exists(cf) else {}
@@ -1914,6 +1933,13 @@ def api_settings_save(payload: dict):
         d["lorebook"] = bool(payload.get("lorebook"))
     if "llm_trace" in payload:
         d["llm_trace"] = bool(payload.get("llm_trace"))
+    if "chat_context_limit" in payload:
+        v = str(payload.get("chat_context_limit") or "").lower()
+        if v not in chatsum.CONTEXT_LIMITS:
+            return JSONResponse({"error": "chat_context_limit 只能是 200k/400k/500k/1m"}, status_code=400)
+        d["chat_context_limit"] = v
+    if "chat_auto_compress" in payload:
+        d["chat_auto_compress"] = bool(payload.get("chat_auto_compress"))
     atomic_write_json(cf, cfg)
     return api_settings()
 
@@ -2268,6 +2294,105 @@ def api_continue(payload: dict):
         return {"ok": True, "msg": f"《{proj.name}》已完成。想加章请在作品上点「▶ 续写」。"}
     writer.start_writing(proj)
     return {"ok": True, "msg": f"继续写作《{proj.name}》…"}
+
+@app.post("/api/branch")
+def api_branch(payload: dict):
+    """v2.9.0：从第 N 章分支出一本新书（复制 1..N 章与全部设定，从 N+1 章按新思路续写）。
+    payload: {key, chapter}。原书完全不受影响；新书 key 加「-分支N」后缀。"""
+    import shutil as _shutil
+    from datetime import datetime as _dt
+    key = str(payload.get("key") or "")
+    try:
+        ch = int(payload.get("chapter") or 0)
+    except (TypeError, ValueError):
+        ch = 0
+    if not key or ch <= 0:
+        return JSONResponse({"error": "缺少 key 或章节号"}, status_code=400)
+    src = _get_project(key)
+    if not src:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    plan = src.plan()
+    if not plan:
+        return JSONResponse({"error": "仅支持小说作品的分支"}, status_code=400)
+    name = plan.get("novelName") or key
+    safe_name = re.sub(r'[\\/:*?"<>|\s]+', "", f"{name}·分支{ch}")[:40] or f"分支{ch}"
+    # 目录名带时间戳避免冲突；同秒重名递增后缀
+    stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+    n = 0
+    while True:
+        cand = f"{stamp}-{safe_name}{f'-{n}' if n else ''}"
+        new_pdir = os.path.join(writer.PROJECTS_DIR, cand)
+        if not os.path.exists(new_pdir):
+            break
+        n += 1
+    try:
+        _shutil.copytree(src.path, new_pdir)
+    except Exception as e:
+        return JSONResponse({"error": f"复制作品失败：{e}"}, status_code=500)
+
+    # 新计划：截断到第 ch 章，之后全部回 pending，状态 in_progress 等待新思路
+    plan_path = os.path.join(new_pdir, "02-写作计划.json")
+    try:
+        new_plan = json.load(open(plan_path, encoding="utf-8"))
+        new_plan["novelName"] = f"{name}·分支{ch}"
+        new_plan["meta"] = {k: v for k, v in (new_plan.get("meta") or {}).items()
+                            if k in ("favorite", "tags", "agent_skills")}
+        for c in new_plan.get("chapters") or []:
+            if isinstance(c, dict) and isinstance(c.get("chapterNumber"), int) and c["chapterNumber"] > ch:
+                c["status"] = "pending"
+                c["wordCount"] = None
+                c["wordCountPass"] = None
+                c["retryCount"] = 0
+                c.pop("tokens", None)
+                c.pop("completedAt", None)
+        new_plan["status"] = "in_progress"
+        new_plan["branchedFrom"] = {"key": key, "chapter": ch,
+                                    "at": _dt.now().isoformat(timespec="seconds")}
+        atomic_write_json(plan_path, new_plan)
+    except Exception as e:
+        return JSONResponse({"error": f"重置分支计划失败：{e}"}, status_code=500)
+
+    # 分支是对话的新起点：清掉原书聊天留档与候选书名等会话性文件
+    for junk in ("chat_log.jsonl", "05-标题候选.json", "22-规划体检.json"):
+        p = os.path.join(new_pdir, junk)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    for extra in os.listdir(new_pdir):
+        if extra.startswith("chat-") and extra.endswith(".json"):
+            try:
+                os.remove(os.path.join(new_pdir, extra))
+            except OSError:
+                pass
+
+    # 状态库裁剪到第 ch 章（时间线/最近章回退），best-effort
+    try:
+        from bot import state as _stmod
+        stp = os.path.join(new_pdir, "18-状态库.json")
+        if os.path.exists(stp):
+            st = json.load(open(stp, encoding="utf-8")) or {}
+            st["timeline"] = [t for t in (st.get("timeline") or [])
+                              if isinstance(t, dict) and (t.get("chapter") or 0) <= ch]
+            m = st.get("metrics") or {}
+            m["last_chapter"] = ch
+            st["metrics"] = m
+            atomic_write_json(stp, st)
+    except Exception:
+        pass
+
+    # 成书文件按 1..N 章重建（原成书含后续章节）
+    new_proj = writer.Project(new_pdir, new_plan.get("novelName", safe_name))
+    try:
+        writer.rebuild_book(new_proj)
+    except Exception:
+        pass
+    new_proj.log(f"🌿 已从《{name}》第{ch}章分支创建本书；第{ch + 1}章起按新思路创作。")
+    PROJECT_INDEX[os.path.basename(new_pdir)] = new_proj
+    return {"ok": True, "key": os.path.basename(new_pdir),
+            "name": new_plan.get("novelName"), "from": key, "chapter": ch}
+
 
 @app.get("/api/jobs")
 def api_jobs(key: str = "", kind: str = "", limit: int = 50):
@@ -3553,6 +3678,33 @@ def v2_index():
 
 
 _V2_DIR = os.path.join(ROOT, "static", "v2")
+
+# v2.9.0：热更新缓存击穿。浏览器对 ES module 的启发式缓存会在升级后长期复用旧模块
+# （界面与后端版本错位，E2E 实测踩坑）。做法：JS 由本路由代为伺服，把所有相对
+# import 重写为带当前 VERSION 查询参数——版本一升级，整张模块图的 URL 全部变化，
+# 天然全量击穿；同时响应带 no-cache，模块图内永远走协商校验。
+_V2_JS_IMPORT_RE = re.compile(
+    r"(from\s+['\"]|\bimport\(\s*['\"])(\.{1,2}/[^'\"]+?\.js)(['\"])")
+
+@app.get("/v2/js/{file_path:path}")
+def v2_js_versioned(file_path: str):
+    if not file_path or ".." in file_path or file_path.startswith("/"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    fp = os.path.join(_V2_DIR, "js", file_path)
+    if not os.path.isfile(fp):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        txt = open(fp, encoding="utf-8").read()
+    except OSError:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        ver = open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip() or "dev"
+    except OSError:
+        ver = "dev"
+    txt = _V2_JS_IMPORT_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}?v={ver}{m.group(3)}", txt)
+    return Response(txt, media_type="text/javascript; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
 if os.path.isdir(_V2_DIR):
     app.mount("/v2", StaticFiles(directory=_V2_DIR), name="v2-static")
 

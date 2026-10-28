@@ -960,6 +960,7 @@ def _write_loop_parallel(proj, n_workers=5):
     先熔炼『总架构』，各 worker 领 1..N 章，写完一个立即取下一未完成章；
     真 LLM 并发由 providers.ConcurrencyGuard 兜底防 429。"""
     n_workers = max(1, int(n_workers or 5))
+    llm.book(os.path.basename(proj.path), "writing")   # v2.9.0 修复：并行模式下主线程（蓝图/规划）token 也要归集到书
     ensure_blueprint(proj)                       # 写任何一章前先读总架构
     _ensure_layered_plan(proj)
     plan = _ensure_writable_plan(proj)
@@ -998,6 +999,9 @@ def _write_loop_parallel(proj, n_workers=5):
     done_log = []
 
     def _worker(wid):
+        # v2.9.0 修复：worker 是新线程，threading.local 不继承——不打标记的话
+        # 并行模式的写作 token 全部漏记（usage.json 少计 + 每章 token 无法归集）
+        llm.book(os.path.basename(proj.path), "writing")
         while True:
             if is_paused(proj):
                 break
@@ -1169,6 +1173,11 @@ def _write_chapter(proj, ch, min_words, max_retries):
     if paused:
         proj.log(f"⏸ 第{no}章未开写即暂停")
         return
+    # v2.9.0：每章 token 消耗精确记账（线程标记章号 → usage.json by_chapter，
+    # 并行写作下各章互不串账；含本章的重试/扩充/评分重写全部消耗）
+    _bk = os.path.basename(proj.path)
+    llm.set_chapter(no)
+    _ch_started_at = datetime.datetime.now().isoformat(timespec="seconds")
     with proj.lock:   # 必须读最新计划再改；ch 是调用方手里的旧快照，直接 save 会覆盖并发写入
         plan0 = proj.plan() or {}
         for c in plan0.get("chapters", []):
@@ -1238,6 +1247,13 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 c["wordCount"] = words
                 c["wordCountPass"] = ok
                 c["retryCount"] = i
+                # v2.9.0：章节完成卡片数据源（对话卡片展示：完成时间/字数/token/质量分）
+                if soft_ok:
+                    c["completedAt"] = _ch_started_at
+                    try:
+                        c["tokens"] = llm.book_chapter_tokens(_bk, no)
+                    except Exception:
+                        c["tokens"] = None
         proj.save_plan(plan)
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
              if (ok or words >= int(min_words * 0.6)) else f"❌ 第{no}章未达标（{words}字）")
@@ -1254,6 +1270,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
             proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
     _index_chapter_continuity(proj, ch, ctx.get("cfg"))
     _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
+    llm.set_chapter(None)   # v2.9.0：本章结束，之后的审校/成书调用不再计入任何章
 
 def _validate_and_finish(proj):
     llm.book(os.path.basename(proj.path), "review")   # v0.3.x：五角色审校 token 归集

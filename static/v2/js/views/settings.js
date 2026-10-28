@@ -312,12 +312,14 @@ export function renderSettings(container, ctx) {
   async function loadSettings() {
     model.settingsError = '';
     paintQuality();
+    paintChatCtx();
     try {
       model.settings = await api.settings();
     } catch (err) {
       model.settingsError = errorText(err, '设置加载失败');
     }
     paintQuality();
+    paintChatCtx();
   }
 
   async function saveSettings() {
@@ -329,9 +331,12 @@ export function renderSettings(container, ctx) {
         quality_mode: model.settings.quality_mode,
         token_budget: Number(model.settings.token_budget) || 90000,
         lorebook: Boolean(model.settings.lorebook),
-        llm_trace: Boolean(model.settings.llm_trace)
+        llm_trace: Boolean(model.settings.llm_trace),
+        chat_context_limit: model.settings.chat_context_limit || '200k',
+        chat_auto_compress: model.settings.chat_auto_compress !== false
       });
       model.dirty = false;
+      paintChatCtx();
       toast('设置已保存', { tone: 'success', duration: 1800 });
     } catch (err) {
       toast(errorText(err, '保存失败'), { tone: 'danger' });
@@ -965,34 +970,58 @@ export function renderSettings(container, ctx) {
 
   /* ---------------------------------------------------- 对话与上下文 */
 
-  /* v2.9.0 将在此分组提供：对话留档策略、上下文窗口档位（200K/400K/500K/1M）
-     与自动压缩开关。当前给出明确的说明空态，不留死胡同。 */
-  panes.chat.append(
-    h(
-      'div',
-      { class: 'set-row' },
-      h(
-        'div',
-        { class: 'set-row-copy' },
-        h('div', { class: 'set-row-title', text: '会话留档' }),
-        h('div', { class: 'set-row-desc', text: '小说会话的全部对话（含写作过程中断的回复）都会完整保存在作品目录的 chat_log.jsonl 里，进入作品即可回读。' })
+  const chatBody = h('div', {});
+  panes.chat.append(chatBody);
+
+  function paintChatCtx() {
+    chatBody.textContent = '';
+    if (model.settingsError || !model.settings) {
+      chatBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-40' })));
+      return;
+    }
+    const s = model.settings;
+    const seg = h('div', { class: 'segmented', role: 'group', 'aria-label': '上下文窗口' });
+    for (const [k, v] of Object.entries({ '200k': '200K', '400k': '400K', '500k': '500K', '1m': '1M' })) {
+      seg.append(h('button', {
+        class: 'seg-btn', type: 'button',
+        'aria-pressed': s.chat_context_limit === k ? 'true' : 'false',
+        text: v,
+        title: `${v} tokens`,
+        on: { click: () => { model.settings.chat_context_limit = k; model.dirty = true; paintChatCtx(); } }
+      }));
+    }
+    chatBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '会话留档' }),
+          h('div', { class: 'set-row-desc', text: '小说会话的全部对话（含写作过程中断的回复）都会完整保存在作品目录的 chat_log.jsonl 里，进入作品即可回读。' })
+        ),
+        h('div', { class: 'set-control' },
+          h('span', { class: 'badge badge-accent', text: '已启用' }))
       ),
-      h('div', { class: 'set-control' },
-        h('span', { class: 'badge badge-accent', text: '已启用' }))
-    ),
-    h(
-      'div',
-      { class: 'set-row' },
-      h(
-        'div',
-        { class: 'set-row-copy' },
-        h('div', { class: 'set-row-title', text: '上下文自动压缩' }),
-        h('div', { class: 'set-row-desc', text: '对话展示超过上下文窗口后自动把早期对话压缩成「创作进度摘要」，帮助对话 Agent 记住全书进度；后台创作不受影响。档位（200K/400K/500K/1M）将在 v2.9.0 提供设置。' })
-      ),
-      h('div', { class: 'set-control' },
-        h('span', { class: 'badge', dataset: { tone: 'muted' }, text: 'v2.9.0' }))
-    )
-  );
+      switchRow('上下文自动压缩', '对话展示超过上下文窗口后，自动把早期对话压缩成「创作进度摘要」并注入对话 Agent；后台创作不受影响。', s.chat_auto_compress, (v) => {
+        model.settings.chat_auto_compress = v;
+        model.dirty = true;
+        paintQuality();
+      }),
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '上下文窗口' }),
+          h('div', { class: 'set-row-desc', text: '超过该 token 数后自动压缩早期对话；按模型上下文能力选择。默认 200K。' })
+        ),
+        h('div', { class: 'set-control' }, seg)
+      )
+    );
+    const saveBtn = h('button', {
+      class: 'btn btn-primary btn-sm',
+      type: 'button',
+      text: model.dirty ? '保存改动' : '已保存',
+      disabled: !model.dirty || model.saving,
+      on: { click: saveSettings }
+    });
+    chatBody.append(h('div', { class: 'set-actions' }, saveBtn));
+  }
+  paintChatCtx();
 
   /* ------------------------------------------------------ 技能与数据 */
 

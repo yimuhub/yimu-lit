@@ -142,13 +142,33 @@ export function renderSession(container, ctx = {}) {
         patchChat((cs) => {
           // 正在流式输出的对话不覆盖；其余情况以落盘记录为准全量替换
           if (cs.streaming) return cs;
-          const msgs = res.items.map((item, i) => ({
-            id: `hist_${i}_${item.ts || 0}`,
-            role: item.role || 'assistant',
-            content: item.content || '',
-            ts: item.ts || 0,
-            historical: true,
-          }));
+          const msgs = res.items.map((item, i) => {
+            const base = {
+              id: `hist_${i}_${item.ts || 0}`,
+              role: item.role || 'assistant',
+              content: item.content || '',
+              ts: item.ts || 0,
+              historical: true,
+            };
+            // v2.9.0：章节完成记录 → 章节卡片（默认折叠，可展开/复制/分支）
+            if (item.type === 'chapter') {
+              return {
+                ...base,
+                chapter: item.no,
+                tag: `第${item.no}章 · ${item.title || ''}`,
+                collapsed: true,
+                chapterMeta: {
+                  no: item.no,
+                  title: item.title || `第${item.no}章`,
+                  words: item.words,
+                  tokens: item.tokens == null ? null : Number(item.tokens),
+                  quality: item.quality == null ? null : Number(item.quality),
+                  ts: String(item.completedAt || '')
+                }
+              };
+            }
+            return base;
+          });
           return { ...cs, messages: msgs };
         });
       }
@@ -521,7 +541,30 @@ export function renderSession(container, ctx = {}) {
         b.words = Number(data.words) || 0;
         b.done = true;
         paintChapter(no);
+        // v2.9.0：完成后切换为章节卡片（默认折叠，含 完成时间/字数/token/质量分 + 分支/复制）
+        updateMessage(b.id, (m) => ({
+          ...m,
+          streaming: false,
+          phase: '',
+          collapsed: true,
+          chapterMeta: {
+            no,
+            title: String(data.title || `第${no}章`),
+            words: b.words,
+            tokens: data.tokens == null ? null : Number(data.tokens),
+            quality: data.quality == null ? null : Number(data.quality),
+            ts: String(data.ts || '')
+          }
+        }));
         scrollIfNear();
+        return;
+      }
+      if (event === 'compressed' && data) {
+        // v2.9.0：对话上下文自动压缩提示（仅影响展示对话；后台创作不受影响）
+        patchChat((cs) => ({
+          ...cs,
+          compressed: { count: Number(data.count) || 0, summary: String(data.summary || '') }
+        }));
         return;
       }
       if (event === 'error') {

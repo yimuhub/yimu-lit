@@ -12,7 +12,11 @@ import {
 } from './message.js';
 
 function messageSignature(chat) {
-  return (chat.messages || []).map((m) => m.id).join('|');
+  /* v2.9.0：章节卡的折叠/展开要触发整行重渲染（正文在 card 内按状态渲染），
+     所以签名里带上章节卡状态位。 */
+  return (chat.messages || [])
+    .map((m) => `${m.id}${m.chapterMeta ? (m.collapsed ? '~c' : '~o') : ''}`)
+    .join('|');
 }
 
 export function createChatView({ ctx, composer, handlers = {} } = {}) {
@@ -130,6 +134,18 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
     const state = store.get();
     const chat = state.chat;
     extras.textContent = '';
+    /* v2.9.0：上下文自动压缩提示（仅展示对话被压缩；点开可看摘要） */
+    if (chat.compressed && chat.compressed.count) {
+      const details = h('details', { class: 'compress-chip' });
+      details.append(
+        h('summary', {},
+          h('span', { html: icon('database', 12) }),
+          h('span', { text: `已压缩 ${chat.compressed.count} 条早期对话为创作进度摘要` })
+        ),
+        h('div', { class: 'compress-summary', text: chat.compressed.summary || '（摘要生成中）' })
+      );
+      extras.append(details);
+    }
     const queueRow = renderQueueRow(chat.queue, { onRemove: handlers.onRemoveQueue });
     if (queueRow) extras.append(queueRow);
     if (chat.approval) {
@@ -241,7 +257,8 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
     const extrasKey = JSON.stringify({
       q: (chat.queue || []).map((x) => x.id),
       a: chat.approval && chat.approval.id,
-      s: chat.streaming
+      s: chat.streaming,
+      c: chat.compressed && chat.compressed.count
     });
     const sig = messageSignature(chat);
     if (sig !== currentSig || extrasKey !== lastExtrasKey) {

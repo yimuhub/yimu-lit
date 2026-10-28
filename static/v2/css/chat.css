@@ -1138,3 +1138,109 @@
     padding: 0 0 6px;
   }
 }
+
+/* ---------------------------------------------------------------- v2.9.0 章节完成卡片 */
+
+.msg-body.has-chapter-card { padding: 0; background: transparent; border: 0; }
+
+.chapter-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg);
+  background: var(--panel-2, var(--bg-2));
+}
+
+.chapter-card.is-open { border-color: var(--accent-soft); }
+
+.cc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-icon { display: inline-flex; color: var(--accent); }
+.cc-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-chev { display: inline-flex; margin-left: auto; color: var(--ink-caption); }
+
+.cc-meta { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.cc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: 10.5px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-chip .cc-k { color: var(--ink-caption); }
+.cc-chip .cc-v { color: var(--ink-secondary); font-weight: 600; }
+
+.cc-body { min-width: 0; }
+
+.cc-preview {
+  color: var(--ink-secondary);
+  font-size: 12.5px;
+  line-height: 1.7;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line-1);
+}
+
+/* 上下文压缩提示胶囊 */
+.compress-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px 35px;
+  padding: 8px 12px;
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--fill-1, transparent);
+  font-size: 11.5px;
+  color: var(--ink-caption);
+}
+
+.compress-chip summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.compress-chip summary::-webkit-details-marker { display: none; }
+.compress-chip summary span:first-child { display: inline-flex; color: var(--accent); }
+
+.compress-summary {
+  white-space: pre-wrap;
+  color: var(--ink-secondary);
+  line-height: 1.7;
+  max-height: 260px;
+  overflow: auto;
+}
