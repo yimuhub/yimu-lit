@@ -290,6 +290,32 @@ function showEntityDetail(ctx, entity, type) {
   _modalBox(`详情 · ${entity.name || entity.id || type}`, body);
 }
 
+/* v4.1.0：时间线节点详情弹窗（右栏列表是提要，点开看全文） */
+function showTimelineDetail(ctx, item) {
+  const body = h('div', { class: 'rp-detail' });
+  const kv = h('div', { class: 'kv-grid' });
+  for (const [k, v] of [
+    ['章节', `第${item.chapter || '?'}章`],
+    ['故事内时间', item.time || '—'],
+    ['地点', item.location || '—'],
+  ]) {
+    kv.append(h('div', { class: 'kv-cell' },
+      h('span', { class: 'kv-k', text: k }),
+      h('span', { class: 'kv-v', text: String(v) })));
+  }
+  body.append(kv);
+  const chars = Array.isArray(item.characters) ? item.characters.filter(Boolean) : [];
+  if (chars.length) {
+    const row = h('div', { class: 'tl-meta', style: { marginTop: '8px' } });
+    for (const c of chars) row.append(h('span', { class: 'tl-tag tl-tag-person', text: String(c) }));
+    body.append(row);
+  }
+  body.append(h('div', { class: 'rp-section' },
+    h('div', { class: 'section-head', text: '事件详情' }),
+    h('div', { class: 'rp-text', text: item.event || item.text || '（无事件描述）' })));
+  _modalBox(`第${item.chapter || '?'}章 · 时间线详情`, body);
+}
+
 function showConsistencyIssue(ctx, issue) {
   const body = h('div', { class: 'rp-detail' });
   const kv = h('div', { class: 'kv-grid' });
@@ -764,6 +790,23 @@ function workPane(ctx) {
       title: '修改书名',
       html: icon('pen', 13),
       on: { click: () => startTitleEdit(top, work, ctx) }
+    }),
+    h('button', {
+      class: 'icon-btn icon-btn-sm',
+      type: 'button',
+      'aria-label': '回填章名',
+      title: '为仍是「第N章」的章节批量起章名（后台跑完所有章）',
+      html: icon('tag', 13),
+      on: {
+        click: async () => {
+          try {
+            await api.chapterNamesBackfill(work.key);
+            toast('章名回填已后台启动，完成后工作台可见新章名', { tone: 'success', duration: 3000 });
+          } catch (err) {
+            toast(errorText(err, '回填失败'), { tone: 'danger' });
+          }
+        }
+      }
     }),
     h('span', { class: 'status-chip', dataset: { tone: meta.tone }, text: meta.label })
   );
@@ -1556,7 +1599,9 @@ function statePane(ctx) {
         tags.push(h('span', { class: 'tl-tag tl-tag-person', text: String(c) }));
       }
       tl.append(
-        h('div', { class: 'timeline-item', dataset: { current: item.current ? 'true' : 'false' } },
+        h('div', { class: 'timeline-item', dataset: { current: item.current ? 'true' : 'false' },
+          style: 'cursor:pointer',
+          on: { click: () => showTimelineDetail(ctx, item) } },
           h('span', { class: 'tl-ch', text: `第${item.chapter || '?'}章` }),
           h('div', { class: 'tl-body' },
             h('div', { class: 'tl-main', text: item.event || item.text || '（无事件描述）' }),

@@ -210,8 +210,13 @@ export function confirmDialog({
 }
 
 let currentPopover = null;
+let currentDocHandler = null;   // v4.1.0：与弹层绑定的 document 监听，closePopover 一并移除
 
 export function closePopover() {
+  if (currentDocHandler) {
+    document.removeEventListener('mousedown', currentDocHandler, true);
+    currentDocHandler = null;
+  }
   if (currentPopover) {
     currentPopover.remove();
     currentPopover = null;
@@ -267,9 +272,12 @@ export function popoverMenu(anchor, items, { align = 'end', label = '' } = {}) {
   const onDoc = (event) => {
     if (!pop.contains(event.target) && !anchor.contains(event.target)) {
       closePopover();
-      document.removeEventListener('mousedown', onDoc, true);
     }
   };
+  /* v4.1.0：监听登记到 currentDocHandler——此前只有点外部才移除，点菜单项时
+     closePopover() 不清监听 → 残留监听在下一次弹层打开时把它提前关掉，
+     「讨论/写作/重写」等菜单选完一次就再也换不回来。 */
+  currentDocHandler = onDoc;
   setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0);
   return pop;
 }

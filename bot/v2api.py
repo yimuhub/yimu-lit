@@ -1377,8 +1377,8 @@ def register_v2_routes(app, get_project, chat_func=None):
     @app.get("/api/version")
     def api_version():
         try:
-            from bot.version import VERSION
-            v = VERSION
+            from bot.version import current as _version_current
+            v = _version_current()
         except Exception:
             v = "0.0.0"
         return {"ok": True, "version": v, "time": int(time.time())}
@@ -1414,8 +1414,8 @@ def register_v2_routes(app, get_project, chat_func=None):
         try:
             local_v = ""
             try:
-                from bot.version import VERSION
-                local_v = VERSION
+                from bot.version import current as _version_current
+                local_v = _version_current()
             except Exception:
                 local_v = "0.0.0"
 

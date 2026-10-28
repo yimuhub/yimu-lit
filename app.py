@@ -2493,8 +2493,16 @@ def api_chapter_names_backfill(payload: dict):
     import threading as _th
 
     def _run():
+        # v4.1.0：一轮跑完所有默认标题章（每轮 1 次 LLM 批量调用，直到无默认章）
         try:
-            writer._backfill_chapter_names(proj, limit=60)
+            total = 0
+            while True:
+                n = writer._backfill_chapter_names(proj, limit=60)
+                total += n
+                if n == 0:
+                    break
+            if total:
+                print(f"[bg] 章名回填完成：共 {total} 章定名", flush=True)
         except Exception as e:
             print(f"[bg] 章名回填失败: {e}", flush=True)
     _th.Thread(target=_run, daemon=True).start()
@@ -3134,7 +3142,7 @@ def api_quality(key: str):
 
 @app.get("/api/version")
 async def api_version():
-    return {"version": version.VE}
+    return {"version": version.current()}
 
 # ---------- v1.0.0：文体路由 + 技能库（神笔文学创作台） ----------
 

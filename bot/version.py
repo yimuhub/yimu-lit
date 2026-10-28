@@ -8,3 +8,8 @@ def _read():
         return "0.0.0"
 VERSION = _read()
 VE = VERSION  # 兼容别名
+
+
+def current() -> str:
+    """v4.1.0：每次重读 VERSION 文件——热更新后版本号立即生效，不再吃 import 快照。"""
+    return _read()

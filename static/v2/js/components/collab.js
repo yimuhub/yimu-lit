@@ -284,47 +284,61 @@ export function createCollabPanel(ctx) {
   }
 
   function openAddAgentDialog() {
-    const overlay = h('div', { class: 'add-agent-overlay', role: 'dialog', 'aria-label': '添加 Agent' });
-    const dialog = h('div', { class: 'add-agent-dialog' });
-    const header = h('div', { class: 'add-agent-header' });
-    header.append(
-      h('span', { class: 'add-agent-title', text: '添加创作 Agent' }),
-      h('button', { class: 'icon-btn icon-btn-sm', type: 'button', html: icon('x', 14), on: { click: () => overlay.remove() } })
-    );
+    /* v4.1.0：换 openModal——主题自适应、Esc/遮罩关闭、分组表单 + 示例一键填充 */
+    const EXAMPLES = [
+      '我需要一个专门写玄幻小说的 Agent',
+      '我需要一个擅长悬疑推理的作家',
+      '我需要一个负责世界观设定的规划师',
+      '我需要一个专精宋词的诗词 Agent'
+    ];
     const desc = h('textarea', {
       class: 'input add-agent-desc',
-      placeholder: '描述你需要的 Agent，例如：\n• 我需要一个专门写玄幻小说的 Agent\n• 我需要一个擅长悬疑推理的作家\n• 我需要一个负责世界观设定的规划师',
+      placeholder: '用一句话描述你需要的 Agent……',
       rows: 4
     });
-    const hint = h('div', { class: 'hint-text', text: '输入一句话描述，系统会自动匹配岗位、技能和创作框架。' });
-    const addBtn = h('button', { class: 'btn btn-primary', type: 'button', text: '创建 Agent' });
-    const status = h('div', { class: 'add-agent-status' });
-    addBtn.addEventListener('click', async () => {
-      const text = desc.value.trim();
-      if (!text) { toast('请输入 Agent 描述', { tone: 'warn' }); return; }
-      addBtn.disabled = true;
-      status.textContent = '正在创建 Agent…';
-      try {
-        const res = await api.addAgent({ desc: text });
-        if (res && res.ok) {
-          const ag = res.agent || {};
-          toast(`Agent「${ag.label || res.name || '新 Agent'}」已创建`, { tone: 'success', duration: 3000 });
-          overlay.remove();
-          loadAgents();
-        } else {
-          status.textContent = (res && res.error) || '创建失败';
-          addBtn.disabled = false;
+    const status = h('div', { class: 'hint-text', style: { minHeight: '18px' } });
+    const exampleChips = h('div', { class: 'chip-row', style: { marginTop: '8px' } });
+    for (const ex of EXAMPLES) {
+      exampleChips.append(h('button', {
+        class: 'wiz-chip', type: 'button', title: '点击填入',
+        on: { click: () => { desc.value = ex; desc.focus(); } }
+      }, h('span', { text: ex })));
+    }
+    const addBtn = h('button', {
+      class: 'btn btn-primary', type: 'button', text: '创建 Agent',
+      on: {
+        click: async () => {
+          const text = desc.value.trim();
+          if (!text) { toast('请输入 Agent 描述', { tone: 'warn' }); return; }
+          addBtn.disabled = true;
+          status.textContent = '正在创建 Agent…';
+          try {
+            const res = await api.addAgent({ desc: text });
+            if (res && res.ok) {
+              const ag = res.agent || {};
+              toast(`Agent「${ag.label || res.name || '新 Agent'}」已创建`, { tone: 'success', duration: 3000 });
+              modal.close();
+              loadAgents();
+            } else {
+              status.textContent = (res && res.error) || '创建失败';
+              addBtn.disabled = false;
+            }
+          } catch (err) {
+            status.textContent = errorText(err, '创建失败，请稍后重试');
+            addBtn.disabled = false;
+          }
         }
-      } catch (err) {
-        status.textContent = errorText(err, '创建失败，请稍后重试');
-        addBtn.disabled = false;
       }
     });
-    dialog.append(header, desc, hint, addBtn, status);
-    overlay.append(dialog);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    document.body.append(overlay);
-    desc.focus();
+    const body = h('div', { class: 'wiz-stack' },
+      desc,
+      h('div', { class: 'hint-text', text: '输入一句话描述，系统会自动匹配岗位、技能和创作框架。也可以从下面的示例开始：' }),
+      exampleChips,
+      status
+    );
+    const footer = h('div', { class: 'set-actions' }, addBtn);
+    const modal = openModal({ title: '添加创作 Agent', body, footer, size: 'sm' });
+    setTimeout(() => desc.focus(), 60);
   }
 
   function agentCard(a) {

@@ -115,7 +115,17 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
             h('span', { text: '选择要邀请的 Agent（可多选）' }),
             h('button', { class: 'invite-panel-close', type: 'button', html: '✕', on: { click: () => { invitePanel.hidden = true; } } })
           );
+          /* v4.1.0：顶部搜索框——按名称/职责实时筛选 */
+          const search = h('input', { class: 'invite-panel-search', type: 'search',
+            placeholder: '搜索 Agent 名称或职责，如：诗 / 编辑 / 喜剧…', 'aria-label': '搜索 Agent' });
           const list = h('div', { class: 'invite-panel-list' });
+          search.addEventListener('input', () => {
+            const q = search.value.trim().toLowerCase();
+            for (const row of list.querySelectorAll('.invite-panel-row')) {
+              const hit = !q || row.textContent.toLowerCase().includes(q);
+              row.hidden = !hit;
+            }
+          });
           for (const a of agents) {
             const name = a.label || a.agent || 'Agent';
             const row = h('div', { class: 'invite-panel-row', dataset: { checked: invitedAgents.has(name) ? 'true' : 'false' }, on: {
@@ -168,8 +178,25 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
               }
             }})
           );
-          invitePanel.append(header, list, footer);
+          invitePanel.append(header, search, list, footer);
           el.append(invitePanel);
+          /* v4.1.0：点外部/Escape 关闭（面板挂在 composer 内，点页面其它区域即收起） */
+          const closeOnOutside = (e) => {
+            if (invitePanel.hidden) { cleanup(); return; }
+            if (!invitePanel.contains(e.target) && !inviteBtn.contains(e.target)) {
+              invitePanel.hidden = true;
+              cleanup();
+            }
+          };
+          const onEsc = (e) => { if (e.key === 'Escape') { invitePanel.hidden = true; cleanup(); } };
+          const cleanup = () => {
+            document.removeEventListener('mousedown', closeOnOutside, true);
+            document.removeEventListener('keydown', onEsc, true);
+          };
+          setTimeout(() => {
+            document.addEventListener('mousedown', closeOnOutside, true);
+            document.addEventListener('keydown', onEsc, true);
+          }, 0);
         } catch (err) {
           toast(errorText(err, '加载 Agent 列表失败'), { tone: 'danger' });
         }
