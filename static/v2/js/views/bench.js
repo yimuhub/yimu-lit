@@ -5,6 +5,7 @@ import { store } from '../core/state.js';
 import { api, errorText } from '../core/api.js';
 import { toast, confirmDialog, openModal } from '../core/ui.js';
 import { navigate } from '../core/router.js';
+import { mountChatFloat } from '../components/chatfloat.js';
 
 
 /* v3.1.0：复制口径＝引子+正文（剥 ## 本章概要 / ## 章节备注），与成书/导出一致。
@@ -48,6 +49,21 @@ export function renderBench(container, ctx) {
   /* -------------------------------------------------------------- head */
 
   const head = h('div', { class: 'bench-head' });
+  /* v3.2.0：小说章节工作台也有对话改稿（与其他文体同一套副驾，目标定位到当前章） */
+  const chatCtx = { doc: String(n), block: null, title: '' };
+  const chatFloat = mountChatFloat({
+    getContext: () => ({
+      key,
+      medium: 'novel',
+      doc: String(model.n || n),
+      block: chatCtx.block,
+      docTitle: model.title ? `第 ${model.n} 章 · ${model.title}` : `第 ${model.n} 章`
+    }),
+    onApplied: () => {
+      /* 应用后正文已变：重新拉章节 */
+      loadChapter();
+    }
+  });
   const saveBtn = h('button', {
     class: 'btn btn-primary btn-sm bench-save',
     type: 'button',
@@ -336,6 +352,7 @@ export function renderBench(container, ctx) {
       clearTimeout(autosaveTimer);
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('beforeunload', onBeforeUnload);
+      if (chatFloat) chatFloat.destroy();
       view.remove();
     }
   };

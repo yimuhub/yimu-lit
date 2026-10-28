@@ -21,7 +21,7 @@ from bot.safeio import atomic_write_text
 
 from . import llm, poetry_writer, prose_writer, script_writer
 
-MEDIA = ("script", "poetry", "prose")
+MEDIA = ("script", "poetry", "prose", "novel")   # v3.2.0：小说工作台也有对话改稿
 
 # 版本快照：剧本沿用 04-正文/.versions/第NNN场-时间.md，其余文体放作品根 .versions/
 VERSIONS_DIR = ".versions"
@@ -39,6 +39,9 @@ _DIGITS = {
 # 场/段定位（组合写法必须先于单写法，避免「第3场第2段」把 3 误当段号）
 _RE_SCENE_BLOCK_SHORT = re.compile(rf"场\s*({_NUM})\s*段\s*({_NUM})")
 _RE_SCENE_BLOCK_LONG = re.compile(rf"第\s*({_NUM})\s*[场幕]\s*(?:第\s*)?({_NUM})\s*段")
+# v3.2.0：小说「第N章 / 第N章第M段」定位
+_RE_CHAPTER_BLOCK = re.compile(r"第\s*(" + _NUM + r")\s*章\s*第\s*(" + _NUM + r")\s*段")
+_RE_CHAPTER_A = re.compile(r"第\s*(" + _NUM + r")\s*章")
 _RE_SCENE_A = re.compile(rf"第\s*({_NUM})\s*[场幕]")
 _RE_SCENE_B = re.compile(rf"场\s*({_NUM})")
 _RE_BLOCK_A = re.compile(rf"第\s*({_NUM})\s*段")
@@ -68,7 +71,7 @@ _ACK_RE = re.compile(r"^(好的|好|以下是|下面是|这是|明白|收到)[^\
 _NAME_RE = re.compile(r"姓名[^\n：:]{0,20}[：:]\s*([^\s，,、。；;：:（(【\[]+)")
 
 # 文体名（给模型看的自称）
-_MEDIUM_NAME = {"script": "剧本", "poetry": "诗词", "prose": "散文"}
+_MEDIUM_NAME = {"script": "剧本", "poetry": "诗词", "prose": "散文", "novel": "小说"}
 
 # 诗词/散文可改文档：id → (标题, 文件名)
 _POETRY_DOCS = (("final", "定稿", poetry_writer.F_FINAL), ("draft", "草稿", poetry_writer.F_DRAFT))
@@ -159,6 +162,18 @@ def _proj(key: str, medium: str):
         return poetry_writer.get_project(key)
     if medium == "prose":
         return prose_writer.get_project(key)
+    if medium == "novel":
+        # v3.2.0：小说走通用 Project（复用 writer 的目录规则）
+        try:
+            from bot import writer as _wr
+            from bot.safeio import safe_join
+            pdir = safe_join(_wr.PROJECTS_DIR, key, label="作品 key")
+            import os as _os
+            if not _os.path.isdir(pdir):
+                return None
+            return _wr.Project(pdir, key)
+        except Exception:
+            return None
     return None
 
 
@@ -195,7 +210,25 @@ def docs_for(key: str, medium: str) -> list[dict]:
         return _flat_docs(_POETRY_DOCS)
     if medium == "prose":
         return _flat_docs(_PROSE_DOCS)
+    if medium == "novel":
+        return _novel_docs(proj)
     return []
+
+
+def _novel_docs(proj) -> list[dict]:
+    """v3.2.0：小说的可改文档 = 各章正文（已完成/进行中）。"""
+    plan = proj.plan() or {}
+    out = []
+    for ch in plan.get("chapters") or []:
+        no = ch.get("chapterNumber")
+        fp = str(ch.get("filePath") or "").strip()
+        if not no or not fp:
+            continue
+        out.append({"id": str(no), "kind": "chapter", "no": int(no),
+                    "title": f"第 {no} 章 · {ch.get('title') or ''}".rstrip(" ·"),
+                    "rel": os.path.basename(fp),
+                    "words": ch.get("wordCount") or 0})
+    return out
 
 
 def resolve_doc(key: str, medium: str, doc_id) -> dict | None:
@@ -212,7 +245,9 @@ def resolve_doc(key: str, medium: str, doc_id) -> dict | None:
     return None
 
 
-def _default_doc(medium: str) -> str:
+def _default_doc(medium: str) -> str | None:
+    if medium == "novel":
+        return None   # 小说必须指到具体章（第N章），无"定稿"概念
     return "final"
 
 
@@ -228,6 +263,20 @@ def parse_target(text: str, medium: str = "script") -> dict:
                 return {"doc": _cn_to_int(m.group(1)), "block": _cn_to_int(m.group(2))}
         doc = None
         m = _RE_SCENE_A.search(t) or _RE_SCENE_B.search(t)
+        if m:
+            doc = _cn_to_int(m.group(1))
+        block = None
+        m = _RE_BLOCK_A.search(t) or _RE_BLOCK_B.search(t)
+        if m:
+            block = _cn_to_int(m.group(1))
+        return {"doc": doc, "block": block}
+    if medium == "novel":
+        # v3.2.0：小说「第N章第M段 / 第N章 / 第M段」
+        m = _RE_CHAPTER_BLOCK.search(t)
+        if m:
+            return {"doc": _cn_to_int(m.group(1)), "block": _cn_to_int(m.group(2))}
+        doc = None
+        m = _RE_CHAPTER_A.search(t)
         if m:
             doc = _cn_to_int(m.group(1))
         block = None
@@ -322,6 +371,12 @@ def _looks_like_heading(text: str) -> bool:
 # ---------------------------------------------------------------- 生成
 
 _GEN_SYS = {
+    "novel": [
+        "你是一位资深中文小说作者，本次任务只做「单段替换」。",
+        "你只输出替换后的这一段正文：不要章题、不要「## 小节标题」、不要解释、不要代码围栏，"
+        "不要「好的」「以下是」这类开场白。",
+        "只改这一段，不要动其它段落；保持与上下文一致的人称、时态与叙事声音，保持张力与节奏。",
+    ],
     "script": [
         "你是一位资深中文剧本编剧，本次任务只做「单段替换」。",
         "你只输出替换后的这一段正文：不要场景头（内景/外景/INT/EXT），不要场次编号，"
@@ -550,8 +605,9 @@ def assist(key: str, medium: str, message: str, focus: dict | None = None,
     if not doc_id:
         doc_id = _default_doc(medium) if medium != "script" else None
     if not doc_id:
-        if medium == "script":
-            return _result(True, "请说明改哪一场第几段，比如「第3场第2段」——我只改那一段，"
+        if medium in ("script", "novel"):
+            unit = "章" if medium == "novel" else "场"
+            return _result(True, f"请说明改哪一{unit}第几段，比如「第3{unit}第2段」——我只改那一段，"
                                  "其余内容逐字不变。", "clarify", None, block)
         return _result(True, "请说明改哪一段，比如「第2段」——我只改那一段，其余内容逐字不变。",
                        "clarify", None, block)
@@ -664,6 +720,13 @@ def _update_word_count(proj, medium: str, doc_id: str, words: int) -> None:
             if str(_as_int(sc.get("no"))) == str(doc_id):
                 sc["wordCount"] = words
                 break
+    elif medium == "novel":
+        # v3.2.0：改稿后同步章节字数到写作计划
+        for ch in plan.get("chapters") or []:
+            if str(ch.get("chapterNumber")) == str(doc_id):
+                ch["wordCount"] = words
+                ch["editedAt"] = _now()
+                break
     else:
         meta = plan.setdefault("meta", {})
         dw = meta.setdefault("docWords", {})
@@ -770,3 +833,103 @@ def restore_version(key: str, medium: str, doc_id, version: str) -> dict:
     _update_word_count(proj, medium, doc["id"], words)
     log_edit(key, medium, doc["id"], doc.get("title") or "", 0, "", text, name, words)
     return {"ok": True, "text": text, "wordCount": words, "version": name, "doc": doc["id"]}
+
+# ---------------------------------------------------------------- v3.2.0 跨文体 @Agent
+
+def _medium_context(proj, key: str, medium: str, plan: dict, limit: int = 1800) -> str:
+    """按文体拼一份作品上下文（@Agent 与讨论共用口径）。"""
+    name = _work_name(proj, plan, medium)
+    if medium == "script":
+        scenes = plan.get("scenes") or []
+        done = sum(1 for x in scenes if x.get("status") == "completed")
+        bible = _read(os.path.join(proj.path, script_writer.F_BIBLE))
+        return (f"【剧本上下文】《{name}》：{done}/{len(scenes)} 场已写。\n"
+                + (f"创作圣经（节选）：\n{bible[:limit]}" if bible.strip() else ""))
+    if medium == "novel":
+        chs = plan.get("chapters") or []
+        done = sum(1 for c in chs if c.get("status") == "completed")
+        outline = ""
+        for fn in ("02-大纲.md", "01-大纲.md"):
+            p = os.path.join(proj.path, fn)
+            if os.path.exists(p):
+                outline = _read(p)[-limit:]
+                break
+        chars = _read(os.path.join(proj.path, "00-人物档案.md"))[:800]
+        return (f"【小说上下文】《{name}》：{done}/{len(chs)} 章已完成。\n"
+                + (f"人物档案（节选）：\n{chars}\n" if chars.strip() else "")
+                + (f"大纲（尾部）：\n{outline}" if outline else ""))
+    docs = docs_for(key, medium)
+    tail = ""
+    for d in docs[-2:]:
+        tail += f"\n【{d.get('title')}（节选）】\n" + _read(os.path.join(proj.path, d["rel"]))[:limit]
+    return f"【{_MEDIUM_NAME.get(medium, '作品')}上下文】《{name}》\n{tail}"
+
+
+def agent_reply(key: str, medium: str, message: str, history_msgs: list | None = None) -> str:
+    """v3.2.0：对话改稿/主对话里的 @Agent —— 任意文体可邀请岗位 Agent（带岗位技能与文体上下文）。
+    多个 @ 依次作答；未匹配到任何 Agent 时返回引导文案。"""
+    from bot import agents as _agents
+    from bot import skillkit as _skillkit
+    at_names = re.findall(r"@([^\s@]+)", message or "")
+    question = re.sub(r"@[^\s@]+\s*", "", message or "").strip() or "请汇报当前进度和遇到的问题。"
+    proj = _proj(key, medium)
+    if not proj:
+        return "找不到项目。"
+    plan = proj.plan() or {}
+
+    registry = {}
+    try:
+        src = _agents._all_agents()
+        items = (src.values() if isinstance(src, dict) else src) or []
+        for a in items:
+            if not isinstance(a, dict):
+                continue
+            registry[a.get("label") or a.get("agent")] = a
+            registry[a.get("agent")] = a
+    except Exception:
+        pass
+    matched, seen = [], set()
+    for nm in at_names:
+        a = registry.get(nm)
+        if a is None:
+            for lbl, cand in registry.items():
+                if nm in lbl or lbl in nm:
+                    a = cand
+                    break
+        if a and a.get("agent") not in seen:
+            seen.add(a.get("agent"))
+            matched.append(a)
+    if not matched:
+        know = "、".join(k for k in registry if not k.isascii()) or "规划师/作家/审稿人/改写师/去味师/总编"
+        return f"没有找到 {('、'.join('@' + n for n in at_names))}。可邀请的 Agent：{know}（也可以在设置页添加自定义岗位）。"
+
+    ctx = _medium_context(proj, key, medium, plan)
+    name = _work_name(proj, plan, medium)
+    mname = _MEDIUM_NAME.get(medium, "作品")
+    out = []
+    for a in matched:
+        agent_key = a.get("agent") or ""
+        label = a.get("label") or agent_key
+        sys_lines = [
+            f"你是《{name}》（{mname}）创作团队的{label}。",
+            str(a.get("desc") or "").strip(),
+            "回答要具体、可执行，指到具体段落/场次/词句；这是讨论，你没有修改任何文件。",
+        ]
+        try:
+            stage_map = {"planning": "P0", "writing": "P2", "review": "P4"}
+            blk = _skillkit.stage_inject(stage_map.get(a.get("stage") or "", "P2"), medium,
+                                         agent=agent_key, max_bytes=3000)
+            if blk:
+                sys_lines.append(blk)
+        except Exception:
+            pass
+        sys_lines.append(ctx)
+        msgs = [{"role": "system", "content": "\n\n".join(x for x in sys_lines if x)}]
+        msgs.extend(_history_msgs(history_msgs))
+        msgs.append({"role": "user", "content": question})
+        try:
+            rep = llm.chat(msgs, stage="review", max_tokens=2000)
+        except Exception as e:
+            rep = f"（{label} 调用失败：{e}）"
+        out.append(f"**{label}**：{(rep or '').strip()}")
+    return "\n\n".join(x for x in out if x.strip())

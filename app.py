@@ -552,6 +552,20 @@ def _chat_group(s, proj, msg, plan, st, name):
         question = "请汇报当前进度和遇到的问题。"
 
     # 构建作品上下文摘要
+    # v3.2.0：剧本/诗词/散文的 @Agent 也用各自文体的上下文（此前全是小说口径空壳）
+    _kb = os.path.basename(proj.path)
+    _med = {"s_": "script", "p_": "poetry", "e_": "prose"}.get(_kb[:2])
+    if _med:
+        try:
+            from bot import assist as _assist
+            ctx_block = _assist._medium_context(proj, _kb, _med, plan if isinstance(plan, dict) else {})
+            if question:
+                ctx_block += f"\n\n【用户问题】\n{question}\n"
+            context = ctx_block
+            # 跳到统一的 LLM 调用段（下方小说上下文构建逻辑不适用）
+            return _chat_group_llm(s, context, question, at_names, name)
+        except Exception:
+            pass
     chs = plan.get("chapters") or []
     done = sum(1 for c in chs if c.get("status") == "completed")
     total = len(chs)
@@ -580,12 +594,17 @@ def _chat_group(s, proj, msg, plan, st, name):
     )
     if char_summary:
         context += f"主要角色：\n{char_summary}\n"
-    if s.get("digest"):
-        context += f"对话进度摘要（自动压缩）：\n{s['digest'][:2000]}\n"
     if outline_tail:
         context += f"大纲尾部摘要：\n{outline_tail}\n"
     context += f"\n【用户问题】\n{question}\n"
 
+    if s.get("digest"):
+        context += f"\n对话进度摘要（自动压缩）：\n{s['digest'][:1500]}\n"
+    return _chat_group_llm(s, context, question, at_names, name)
+
+
+def _chat_group_llm(s, context, question, at_names, name):
+    """@Agent 群聊的统一 LLM 调用段（v3.2.0：小说/剧本/诗词/散文共用）。"""
     # 构建 Agent 角色映射
     try:
         av = agents.bindings_view() or {}
@@ -744,6 +763,8 @@ def _chat_attached(s, proj, msg):
     if _intent in ("start_writing_all", "start_writing", "resume_writing"):
         if str(key)[:2] in ("s_", "p_", "e_"):
             # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
+            if writer.pipeline_running(key):
+                return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
             import threading as _th
             from bot import script_writer, poetry_writer, prose_writer
             _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer}[str(key)[:2]]
@@ -3368,7 +3389,7 @@ async def api_script_rewrite_scenes(payload: dict):
 
 def _assist_medium(payload: dict) -> str:
     med = str(payload.get("medium") or "script").strip()
-    return med if med in ("script", "poetry", "prose") else "script"
+    return med if med in ("script", "poetry", "prose", "novel") else "script"
 
 
 def _assist_project(medium: str, key: str):
@@ -3376,6 +3397,8 @@ def _assist_project(medium: str, key: str):
         return poetry_writer.get_project(key)
     if medium == "prose":
         return prose_writer.get_project(key)
+    if medium == "novel":
+        return _get_project(key)   # v3.2.0：小说工作台也有对话改稿
     return script_writer.get_project(key)
 
 
@@ -3415,8 +3438,13 @@ async def _assist_stream_response(payload: dict):
 
         def _work():
             try:
-                box.append((True, assist_mod.assist(
-                    key, medium, message, focus=focus, history_msgs=history)))
+                if message.startswith("@"):
+                    # v3.2.0：对话改稿里也能 @Agent（任意文体，带岗位技能与文体上下文）
+                    box.append((True, {"ok": True, "reply": assist_mod.agent_reply(
+                        key, medium, message, history), "intent": {"kind": "discussion"}}))
+                else:
+                    box.append((True, assist_mod.assist(
+                        key, medium, message, focus=focus, history_msgs=history)))
             except BaseException as e:
                 box.append((False, e))
             finally:
@@ -3454,6 +3482,17 @@ async def _assist_stream_response(payload: dict):
             assist_mod.log_chat(key, medium, "assistant", text.strip(),
                                 kind=intent.get("kind"), doc=intent.get("doc"),
                                 block=intent.get("block"))
+        # v3.2.0：同步进主对话留档（chat_log.jsonl，type=assist）——主对话上下文与
+        # 压缩摘要都能看到改稿讨论，会话页回读时完整可见
+        from bot.v2api import _save_chat_msg as _save_msg
+        _sync_proj = _get_project(key)
+        if _sync_proj:
+            _save_msg(_sync_proj, "user", message, {"type": "assist", "medium": medium})
+            if text.strip():
+                _save_msg(_sync_proj, "assistant", text.strip(),
+                          {"type": "assist", "medium": medium,
+                           "kind": intent.get("kind"), "doc": intent.get("doc"),
+                           "block": intent.get("block")})
         yield _sse("done", {
             "ok": bool(res.get("ok", True)),
             "text": text,
