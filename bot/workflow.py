@@ -74,17 +74,25 @@ def _craft_genre(cfg):
     return str(cfg.get("genre_key") or cfg.get("genre") or "").strip()
 
 def agent_skills_block(agent, cfg, stage, max_bytes=6000):
-    """岗位×技能绑定（v2.1 P2）：该岗位在设置里绑了技能才注入，没绑定返回空串。
+    """岗位×技能绑定（v2.1 P2 → v3.0.0 双维度）：全局绑定（设置页）∪ 本书绑定（右栏协作）。
 
-    这样默认路径的提示词体积与旧版一致，只有用户显式给某个岗位配了技能，
-    那部分技能内容才会进入该岗位的上下文。
+    全局没绑、本书也没绑 → 返回空串（提示词体积与旧版一致）。
+    cfg["_book_agent_skills"] = {agent: [skills]} 由 writer 注入（计划 meta.agent_skills）。
     """
     try:
         from . import agents as _agents, skillkit as _skillkit
-        if not _agents.skills_for(agent):
+        book_sk = []
+        if isinstance(cfg, dict):
+            bmap = cfg.get("_book_agent_skills")
+            if isinstance(bmap, dict):
+                v = bmap.get(agent)
+                if isinstance(v, list):
+                    book_sk = [str(x) for x in v if str(x).strip()]
+        if not (_agents.skills_for(agent) or book_sk):
             return ""
         return _skillkit.stage_inject(stage, cfg.get("medium") or "novel",
                                       genre=_craft_genre(cfg), agent=agent,
+                                      agent_extra=book_sk,
                                       max_bytes=max_bytes)
     except Exception:
         return ""

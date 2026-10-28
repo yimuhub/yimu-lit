@@ -2394,6 +2394,35 @@ def api_branch(payload: dict):
             "name": new_plan.get("novelName"), "from": key, "chapter": ch}
 
 
+@app.get("/api/book-skills")
+def api_book_skills(key: str):
+    """v3.0.0：某本书的按岗位技能绑定 + 全局绑定（前端合并展示来源徽标）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    from bot import agents as _ag
+    return {"ok": True, "key": key,
+            "book": _ag.book_skill_bindings(proj.path),
+            "global": _ag.get_skill_bindings()}
+
+
+@app.post("/api/book-skills")
+def api_book_skills_set(payload: dict):
+    """v3.0.0：设置某本书某岗位的技能绑定（仅本书生效；空列表=清空回落全局）。"""
+    key = str(payload.get("key") or "")
+    agent = str(payload.get("agent") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    if agent not in agents.AGENTS and agent not in (agents.get_skill_bindings() or {}):
+        return JSONResponse({"error": f"未知岗位：{agent}"}, status_code=400)
+    try:
+        binds = agents.set_book_skills(proj.path, agent, payload.get("skills") or [])
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return {"ok": True, "key": key, "agent": agent, "book": binds}
+
+
 @app.get("/api/jobs")
 def api_jobs(key: str = "", kind: str = "", limit: int = 50):
     """后台任务表（排队/运行/完成/失败），支持按作品/类型过滤。"""

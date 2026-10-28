@@ -59,13 +59,76 @@ def set_binding(agent, provider_id=None, model=None):
 
 
 # ---------- 岗位 × 技能绑定（v2.1 P1；defaults.agent_skills） ----------
+
+# v3.0.0：内置默认技能包。岗位从未配置过技能时首次读取自动填入并落盘
+# （用户显式绑定过——包括清空为空列表——则完全尊重用户配置）。
+DEFAULT_AGENT_SKILLS = {
+    "planner":   ["novel-volume-arc-planning", "novel-multithread-pov", "core-longform-continuity"],
+    "writer":    ["novel-references-guides-golden3", "novel-references-guides-dialogue-writing",
+                  "novel-hangup-curve", "core-anti-slop"],
+    "reviewer":  ["core-anti-slop", "core-longform-continuity"],
+    "rewriter":  ["core-feedback-revision", "novel-hangup-curve"],
+    "title":     ["novel-hangup-curve"],
+    "deslopper": ["core-anti-slop"],
+    "editor":    ["core-ten-genre", "core-longform-continuity"],
+}
+
 def get_skill_bindings():
-    """返回 {agent: [skill name, ...]} —— 从 config.json defaults.agent_skills。"""
+    """返回 {agent: [skill name, ...]} —— 从 config.json defaults.agent_skills。
+    v3.0.0：内置岗位从未配置过时自动填入默认技能包（一次性落盘，之后用户可随意改）。"""
     import json
+    p = _config_path()
     try:
-        return json.load(open(_config_path(), encoding="utf-8")).get("defaults", {}).get("agent_skills", {}) or {}
+        c = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        return dict(DEFAULT_AGENT_SKILLS)   # 无 config（如测试环境）：只返回默认包，不落盘
+    d = c.setdefault("defaults", {})
+    asm = d.get("agent_skills")
+    if not isinstance(asm, dict):
+        asm = {}
+    changed = False
+    for agent, defaults in DEFAULT_AGENT_SKILLS.items():
+        if agent not in asm:
+            asm[agent] = list(defaults)
+            changed = True
+    if changed:
+        d["agent_skills"] = asm
+        atomic_write_json(p, c)
+    return asm
+
+# ---------- 按作品绑定（v3.0.0；<书>/02-写作计划.json meta.agent_skills） ----------
+
+def book_skill_bindings(pdir):
+    """某本书的按岗位技能绑定 {agent: [skills]}；非小说/缺失一律返回 {}。"""
+    import json, os
+    try:
+        plan = json.load(open(os.path.join(pdir, "02-写作计划.json"), encoding="utf-8"))
+        v = (plan.get("meta") or {}).get("agent_skills")
+        return v if isinstance(v, dict) else {}
     except Exception:
         return {}
+
+def set_book_skills(pdir, agent, names):
+    """把某本书的岗位技能绑定写进 02-写作计划.json 的 meta.agent_skills。
+    空列表 = 清空该岗位的本书绑定（回落全局绑定）。"""
+    import json, os, datetime
+    from .safeio import atomic_write_json as _aw
+    cleaned = _clean_skills(names)
+    _check_skills_exist(cleaned)
+    fp = os.path.join(pdir, "02-写作计划.json")
+    try:
+        plan = json.load(open(fp, encoding="utf-8"))
+    except Exception:
+        raise ValueError("作品计划缺失或不可读（仅支持小说作品的按作品绑定）")
+    meta = plan.setdefault("meta", {})
+    binds = meta.get("agent_skills")
+    if not isinstance(binds, dict):
+        binds = {}
+    binds[agent] = cleaned
+    meta["agent_skills"] = binds
+    plan["updatedAt"] = datetime.datetime.now().isoformat()
+    _aw(fp, plan)
+    return binds
 
 def _clean_skills(names):
     """names 必须是字符串列表：去空白、去重、排序；非法输入抛 ValueError。"""

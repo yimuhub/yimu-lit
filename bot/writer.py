@@ -446,11 +446,24 @@ def _pop_queue_note(proj, ch_no):
 def _chapter_file_path(proj, ch):
     return os.path.join(proj.path, ch["filePath"])
 
+def _book_skills_into(cfg, plan):
+    """v3.0.0：把计划 meta.agent_skills（按作品岗位技能绑定）注入 cfg，
+    供 workflow.agent_skills_block 双维度合并。原 cfg 就地补键。"""
+    try:
+        if isinstance(cfg, dict) and isinstance(plan, dict):
+            cfg.setdefault("_book_agent_skills",
+                           (plan.get("meta") or {}).get("agent_skills") or {})
+    except Exception:
+        pass
+    return cfg
+
+
 def _build_ctx(proj, ch):
     """v2：优先用分层上下文编译器（章卡/状态库/伏笔/预算/参考资料）；
     任何异常都退回旧版拼装，保证老项目与弱环境仍可写。"""
     plan = proj.plan() or {}
     cfg = plan.get("config") if isinstance(plan.get("config"), dict) else {}
+    _book_skills_into(cfg, plan)   # v3.0.0：按作品岗位技能绑定
     _lf = cfg.get("longform") if isinstance(cfg.get("longform"), dict) else None
     _lf = _lf or (_cfg_defaults().get("longform") or {})
     if _lf.get("enabled", True):
@@ -1340,6 +1353,7 @@ def _run_layered(proj, mode, max_rounds):
     """L1 确定性引擎 + 五角色审校 + 百分制；autofix 且未达标时对 high 项有界重写并重评。
     写 13-修订记录.md + 14-质量报告.md。"""
     plan = proj.plan(); cfg = plan["config"]
+    _book_skills_into(cfg, plan)   # v3.0.0：审校/总编同样吃到本书绑定
     pdir = proj.path
     min_words = plan.get("minWordsPerChapter", 3000)
 
@@ -1954,6 +1968,7 @@ def one_shot_end(key):
 
 def rewrite_brief(proj, cfg, pass_line=None):
     """从 L1 + 五角色 + 百分制 + 读者 提炼『重写要求书』（全局主攻方向 + 逐章待修）。并写 16-重写要求书.md。"""
+    _book_skills_into(cfg, proj.plan())   # v3.0.0：本书绑定在定向重写同样生效
     pass_line = pass_line or _pass_line()
     book = workflow.list_chapters_text(proj.path) or ""
     l1 = continuity.run_project(proj.path, min_words=1)
@@ -2040,6 +2055,7 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
     _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
     plan = proj.plan()
+    _book_skills_into(cfg, plan)   # v3.0.0：本书绑定
     cfg = dict((plan.get("config") or {}))
     cfg.update(cfg_over or {})
     brief = rewrite_brief(proj, cfg)

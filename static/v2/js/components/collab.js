@@ -5,7 +5,7 @@
 import { h, icon, fmtNum, fmtWords, relTime, statusMeta } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { api, errorText } from '../core/api.js';
-import { toast, popoverMenu } from '../core/ui.js';
+import { toast, popoverMenu, openModal } from '../core/ui.js';
 import { SKILL_TITLES, loadSkillCatalog } from '../core/skillCatalog.js';
 
 const POLL_MS = 2500;
@@ -26,6 +26,13 @@ function callApi(name, ...args) {
     return Promise.reject(new Error(`界面方法 api.${name} 尚未接入（core/api.js）`));
   }
   return Promise.resolve().then(() => fn.apply(api, args));
+}
+
+function fieldRowStatic(label, control, extra = '', hint = '') {
+  const wrap = h('div', { class: `wiz-group${extra ? ` ${extra}` : ''}` });
+  wrap.append(h('span', { class: 'wiz-label', text: label }), control);
+  if (hint) wrap.append(h('span', { class: 'hint-text', text: hint }));
+  return wrap;
 }
 
 function sectionHead(title, countText) {
@@ -356,17 +363,113 @@ export function createCollabPanel(ctx) {
         })
       )
     );
-    /* skills 为同事并行新增字段：没有该字段就整块不渲染，绝不报错。 */
-    if (Array.isArray(a.skills)) {
+    /* skills 为同事并行新增字段：没有该字段就整块不渲染，绝不报错。
+       v3.0.0：本书绑定优先展示并带「本书」徽标，其后是全局绑定技能。 */
+    if (Array.isArray(a.skills) || (a.bookSkills && a.bookSkills.length)) {
       const chips = h('div', { class: 'chip-row' });
-      if (a.skills.length) {
-        for (const sk of a.skills) chips.append(h('span', { class: 'chip', text: SKILL_TITLES[String(sk)] || String(sk) }));
-      } else {
+      const bookSet = new Set(a.bookSkills || []);
+      const globalList = (a.skills || []).filter((sk) => !bookSet.has(String(sk)));
+      if (bookSet.size) {
+        for (const sk of a.bookSkills) {
+          chips.append(h('span', { class: 'chip chip-active', title: '仅本书生效',
+            text: `${SKILL_TITLES[String(sk)] || String(sk)} ·本书` }));
+        }
+      }
+      if (globalList.length) {
+        for (const sk of globalList) chips.append(h('span', { class: 'chip', text: SKILL_TITLES[String(sk)] || String(sk) }));
+      }
+      if (!bookSet.size && !globalList.length) {
         chips.append(h('span', { class: 'chip chip-muted', text: '未绑定技能' }));
       }
       card.append(chips);
     }
+    /* v3.0.0：按作品绑定技能（右栏 = 只对当前作品生效；全局绑定在设置页）。 */
+    if (s.bookSkills && s.bookSkills.loaded) {
+      card.append(
+        h('div', { class: 'collab-agent-actions' },
+          h('button', {
+            class: 'btn btn-sm',
+            type: 'button',
+            html: `${icon('zap', 12)}<span>绑技能（本书）</span>`,
+            title: '为当前作品单独绑定该岗位的技能；全局绑定在设置页配置',
+            on: { click: () => openBookSkillsDialog(a) }
+          })
+        )
+      );
+    }
     return card;
+  }
+
+  /* v3.0.0：按作品绑定技能弹窗（写入 02-写作计划.json meta.agent_skills，仅本书生效） */
+  function openBookSkillsDialog(a) {
+    const key = store.get().currentKey;
+    if (!key) { toast('先打开一部作品', { tone: 'warn' }); return; }
+    const selected = new Set(((s.bookSkills.map || {})[a.agent]) || []);
+    let catalog = [];
+    const search = h('input', { class: 'input', type: 'search',
+      placeholder: '搜索技能名或标题', 'aria-label': '搜索技能' });
+    const picker = h('div', { class: 'chip-row skill-pick' });
+    const count = h('span', { class: 'hint-text' });
+    function syncCount() {
+      count.textContent = selected.size ? `已选 ${selected.size} 个（仅本书生效）` : '未绑定（该岗位回落全局绑定）';
+    }
+    function paintPicker() {
+      picker.textContent = '';
+      const q = search.value.trim().toLowerCase();
+      const shown = catalog.filter((x) => !q || `${x.name} ${x.title}`.toLowerCase().includes(q));
+      if (!shown.length) { picker.append(h('span', { class: 'hint-text', text: catalog.length ? '没有匹配的技能' : '技能清单加载中…' })); return; }
+      for (const sk of shown) {
+        const on = selected.has(sk.name);
+        const b = h('button', { class: 'wiz-chip', type: 'button', 'aria-pressed': on ? 'true' : 'false',
+          title: `${sk.medium} · ${sk.genre} · ${sk.name}` }, h('span', { text: sk.title }));
+        b.addEventListener('click', () => {
+          if (selected.has(sk.name)) selected.delete(sk.name); else selected.add(sk.name);
+          syncCount(); paintPicker();
+        });
+        picker.append(b);
+      }
+    }
+    search.addEventListener('input', paintPicker);
+    syncCount(); paintPicker();
+    loadSkillCatalog().then((list) => { catalog = list; paintPicker(); });
+    const body = h('div', { class: 'wiz-grid' },
+      fieldRowStatic(`${a.label} · 本书技能绑定`, h('div', {}, search, picker, count), 'span-2',
+        '只对当前作品生效；与全局绑定叠加注入，本书绑定优先置顶。空保存即清空本书绑定。'));
+    const footer = h('div', { class: 'set-actions' },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+      h('button', {
+        class: 'btn btn-primary', type: 'button', text: '保存',
+        on: {
+          click: async (event) => {
+            const btn = event.currentTarget;
+            btn.disabled = true;
+            try {
+              await callApi('setBookSkills', { key, agent: a.agent, skills: Array.from(selected) });
+              toast(`${a.label} 本书技能已保存（${selected.size} 个）`, { tone: 'success', duration: 2000 });
+              modal.close();
+              await loadBookSkills();
+              paintAgents();
+            } catch (err) {
+              toast(errorText(err, '保存失败'), { tone: 'danger' });
+              btn.disabled = false;
+            }
+          }
+        }
+      })
+    );
+    const modal = openModal({ title: `本书技能：${a.label}`, body, footer, size: 'md' });
+  }
+
+  async function loadBookSkills() {
+    const key = store.get().currentKey;
+    if (!key) { s.bookSkills = { loaded: false, map: {} }; return; }
+    try {
+      const res = await callApi('bookSkills', key);
+      s.bookSkills = { loaded: true, map: (res && res.book) || {} };
+    } catch {
+      s.bookSkills = { loaded: false, map: {} };
+    }
+    if (s.view) paintAgents();   // 绑定数据到位后重绘，绑技能（本书）按钮才会上场
   }
 
   function paintAgents() {
@@ -388,8 +491,12 @@ export function createCollabPanel(ctx) {
       sec.append(loadingSkeleton());
     } else {
       if (!list.length) sec.append(h('div', { class: 'hint-text', text: '后端没有返回岗位数据。' }));
+      const bmap = (s.bookSkills && s.bookSkills.map) || {};
       const wrap = h('div', { class: 'rp-stack' });
-      for (const a of list) wrap.append(agentCard(a));
+      for (const a of list) {
+        a.bookSkills = Array.isArray(bmap[a.agent]) ? bmap[a.agent] : [];
+        wrap.append(agentCard(a));
+      }
       sec.append(wrap);
     }
     agentsBody.append(sec);
@@ -709,6 +816,7 @@ export function createCollabPanel(ctx) {
   paintJobs();
   paintUsage();
   loadAgents();
+  loadBookSkills();   // v3.0.0：按作品技能绑定（右栏绑技能按钮的数据源）
   if (s.key) {
     loadJobs();
     loadUsage();

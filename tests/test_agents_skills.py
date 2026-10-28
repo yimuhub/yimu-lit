@@ -23,11 +23,15 @@ def tmp_config(tmp_path, monkeypatch):
 
 
 def test_skills_for_unbound_returns_empty(tmp_config):
-    assert agents.skills_for("writer") == []
+    # v3.0.0：未配置的内置岗位 → 自动填默认技能包（不再返回空）
+    assert agents.skills_for("writer") == agents.DEFAULT_AGENT_SKILLS["writer"]
     assert agents.skills_for("not-an-agent") == []
-    # 坏 JSON 也永不抛异常
-    tmp_config.write_text("{broken", encoding="utf-8")
+    # 显式清空 → 尊重用户配置返回空
+    agents.set_skills("writer", [])
     assert agents.skills_for("writer") == []
+    # 坏 JSON 也永不抛异常（此时回落默认包）
+    tmp_config.write_text("{broken", encoding="utf-8")
+    assert agents.skills_for("writer") == agents.DEFAULT_AGENT_SKILLS["writer"]
 
 
 def test_set_skills_validates_agent(tmp_config):
@@ -85,7 +89,9 @@ def test_bindings_view_fields(tmp_config, monkeypatch):
     assert by["planner"]["skills"] == ["世界观构建"]
     assert by["writer"]["provider_id"] == "prov-x" and by["writer"]["model"] == "model-y"
     assert by["writer"]["effective"].startswith("已绑定")
-    assert by["title"]["skills"] == [] and by["title"]["effective"] == "回落 stage/默认"
+    # v3.0.0：title 未显式配置 → 默认技能包自动填入
+    assert by["title"]["skills"] == agents.DEFAULT_AGENT_SKILLS["title"]
+    assert by["title"]["effective"] == "回落 stage/默认"
 
 
 def test_view_keeps_original_fields_and_adds_skills(tmp_config, monkeypatch):

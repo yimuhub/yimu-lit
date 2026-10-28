@@ -390,7 +390,8 @@ def _agent_skill_names(agent: str) -> list[str] | None:
 
 def stage_inject(stage: str, med: str, extra: list[str] | None = None,
                  include_case: bool = False, max_bytes: int = 26000,
-                 limit: int = 8, genre: str = "", agent: str = "") -> str:
+                 limit: int = 8, genre: str = "", agent: str = "",
+                 agent_extra: list[str] | None = None) -> str:
     """按「文体 + 阶段」拼出最小上下文。
 
     - 只取该阶段必需文件（默认 3–6 个）
@@ -400,10 +401,14 @@ def stage_inject(stage: str, med: str, extra: list[str] | None = None,
     - genre: 小说题材定向（只优先注入该题材 craft，不注入其它题材）
     - agent: 岗位名（如 writer/reviewer）；从 agents.skills_for 取绑定技能名，
       与 extra 合并强制注入，并在 pick 排序中置顶。默认空串，行为与旧版一致。
+    - agent_extra: v3.0.0 按作品绑定的岗位技能（与全局绑定合并，本书绑定优先置顶）
     """
     if not medium_mod.is_medium(med):
         med = "novel"
     agent_names = _agent_skill_names(agent) if agent else None
+    if agent and agent_extra is not None:
+        agent_names = list(dict.fromkeys([*(agent_names or []),
+                                          *[str(x) for x in agent_extra if str(x).strip()]]))
     boost = set(agent_names) if agent_names else None
     files = pick(med, stage, include_case=include_case, limit=limit,
                  genre=genre, boost=boost)

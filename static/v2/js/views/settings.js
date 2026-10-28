@@ -732,6 +732,7 @@ export function renderSettings(container, ctx) {
     }
 
     function paintPicker() {
+      /* v3.0.0：按文体分组展示（小说/剧本/诗词/散文/通用），每组一行小标题。 */
       picker.textContent = '';
       const q = search.value.trim().toLowerCase();
       const shown = catalog.filter((s) => !q || `${s.name} ${s.title}`.toLowerCase().includes(q));
@@ -739,22 +740,32 @@ export function renderSettings(container, ctx) {
         picker.append(h('span', { class: 'hint-text', text: catalog.length ? '没有匹配的技能' : '技能清单加载中…' }));
         return;
       }
+      const groups = new Map();
       for (const s of shown) {
-        const on = selected.has(s.name);
-        const b = h('button', {
-          class: 'wiz-chip',
-          type: 'button',
-          'aria-pressed': on ? 'true' : 'false',
-          title: `${s.medium} · ${s.genre} · ${s.name}`
-        });
-        b.append(h('span', { text: s.title }));
-        b.addEventListener('click', () => {
-          if (selected.has(s.name)) selected.delete(s.name);
-          else selected.add(s.name);
-          syncCount();
-          paintPicker();
-        });
-        picker.append(b);
+        const g = s.medium || '通用';
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(s);
+      }
+      for (const [medium, list] of groups) {
+        picker.append(h('div', { class: 'skill-pick-group' },
+          h('span', { class: 'skill-pick-group-label', text: `${medium} · ${list.length}` })));
+        for (const s of list) {
+          const on = selected.has(s.name);
+          const b = h('button', {
+            class: 'wiz-chip',
+            type: 'button',
+            'aria-pressed': on ? 'true' : 'false',
+            title: `${s.medium} · ${s.genre} · ${s.name}`
+          });
+          b.append(h('span', { text: s.title }));
+          b.addEventListener('click', () => {
+            if (selected.has(s.name)) selected.delete(s.name);
+            else selected.add(s.name);
+            syncCount();
+            paintPicker();
+          });
+          picker.append(b);
+        }
       }
     }
 

@@ -1213,3 +1213,16 @@
   .set-nav-item { width: auto; }
   .set-nav-desc { display: none; }
 }
+
+/* v3.0.0：绑技能弹窗按文体分组 */
+.skill-pick-group-label {
+  display: inline-block;
+  width: 100%;
+  margin-top: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+.skill-pick-group:first-child .skill-pick-group-label { margin-top: 0; }
