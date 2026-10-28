@@ -3161,3 +3161,8 @@
   white-space: nowrap;
   font-weight: 600;
 }
+
+/* v4.5.0：分镜表弹窗 */
+.sb-wrap { max-height: 60vh; overflow: auto; font-size: 11.5px; line-height: 1.7; }
+.sb-head { color: var(--ink-primary); font-weight: 600; margin: 10px 0 4px; }
+.sb-row { color: var(--ink-secondary); overflow-wrap: anywhere; padding: 2px 0; }

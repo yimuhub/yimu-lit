@@ -297,6 +297,9 @@ export const api = {
   scriptCheck: (key) => request('/api/script/check', jsonBody({ key }), { timeout: 180000 }),
   scriptAudit: (key) => request('/api/script/audit', jsonBody({ key }), { timeout: 120000 }),
   scriptAuditGet: (key) => request('/api/script/audit', { query: { key } }),
+  scriptStoryboard: (key) => request('/api/script/storyboard', { query: { key } }),
+  scriptStoryboardRun: (key, sceneNo) => request('/api/script/storyboard', jsonBody({ key, sceneNo }), { timeout: 20000 }),
+  novelToDrama: (payload) => request('/api/novel-to-drama', jsonBody(payload), { timeout: 30000 }),
   scriptRewriteScenes: (key, sceneNos, instruction = '') =>
     request('/api/script/rewrite-scenes', jsonBody({ key, sceneNos, instruction, force: true }), { timeout: 600000 }),
   /* 通用副驾（剧本/诗词/散文）：讨论或定向改写；改写只回 diff，应用走 assistApply。 */

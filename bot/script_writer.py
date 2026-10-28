@@ -42,6 +42,8 @@ F_BODY = "04-正文"
 F_REVISIONS = "05-修订记录.md"
 F_SEASON = "06-季弧与分集.md"
 F_QUALITY = "07-质量报告.md"
+F_STORYBOARD = "08-分镜表.md"        # v4.5.0：AI 短剧/漫剧分镜头
+F_STORYBOARD_JSON = "08-分镜表.json"
 F_PLAN = "剧本计划.json"
 
 # 媒介形式
@@ -51,6 +53,9 @@ FORMS = {
     "short": {"label": "短片", "scenes": "场", "unit": "分钟", "target_pages": 20},
     "stage": {"label": "舞台剧", "scenes": "场", "unit": "分钟", "target_pages": 90},
     "opera": {"label": "戏曲", "scenes": "场", "unit": "折", "target_pages": 60},
+    # v4.5.0：AI 短剧 / AI 漫剧（竖屏微短剧管线：3-5 分钟一集、前 3 秒钩子、逐集反转）
+    "short_drama": {"label": "AI短剧", "scenes": "场", "unit": "集", "target_pages": 30},
+    "comic_drama": {"label": "AI漫剧", "scenes": "场", "unit": "集", "target_pages": 30},
     "custom": {"label": "自定义", "scenes": "场", "unit": "页", "target_pages": 60},
 }
 
@@ -268,6 +273,18 @@ def _gen(stage: str, task: str, ctx: str, cfg: dict, stage_code: str = "planning
 def gen_premise(cfg: dict) -> str:
     """S0 引擎：前提 / 主题 / 控制思想 / logline / 类型契约。"""
     form = FORMS.get(cfg.get("form", "film"), FORMS["film"])
+    # v4.5.0：AI 短剧/漫剧的体裁纪律（竖屏、强钩子、逐集反转）
+    drama_extra = ""
+    if cfg.get("form") in ("short_drama", "comic_drama"):
+        drama_extra = (
+            "\n8. **短剧体裁纪律**（必须逐条落实）：\n"
+            "   - 竖屏微短剧：每集 3-5 分钟、约 1-2 场，集尾必须有强钩子（反转/危机/悬念）；\n"
+            "   - 开场前 3 秒必须抓人（冲突画面/悬念台词/视觉奇观）；\n"
+            "   - 节奏极快：每集至少 1 个反转，3 集内立住主角欲望线；\n"
+            "   - 台词短促、信息密度高，删掉一切过场。\n"
+            + ("   - AI 漫剧：场景与人物描写兼顾「可绘制性」（构图/表情/色调可提示词化）。\n"
+               if cfg.get("form") == "comic_drama" else "")
+        )
     task = (
         f"为一部【{form['label']}】写「创作引擎」部分，包含：\n"
         f"1. **logline**（一到两句，念出来不拗口）\n"
@@ -280,6 +297,7 @@ def gen_premise(cfg: dict) -> str:
         f"{_world_block(cfg)}\n\n"
         f"用户给的素材/想法：{cfg.get('idea') or '（用户未给，请基于给定前提自行设计）'}\n"
         f"补充说明：{cfg.get('notes') or '无'}"
+        f"{drama_extra}"
     )
     return _gen("剧本 · 引擎", task, _ctx("S0", cfg=cfg), cfg, "planning")
 
@@ -502,6 +520,78 @@ def parse_scenes(md: str) -> list[dict]:
         seen.add(sc["no"])
         dedup.append(sc)
     return dedup
+
+
+# ---------------------------------------------------------------- v4.5.0 分镜头
+
+def gen_storyboard(key: str, only_scene: int | None = None) -> dict:
+    """S4b：把场次拆成分镜头脚本（镜号/景别/画面/台词/音效/时长）。
+    AI 短剧/漫剧写作完成后自动跑；其它形式可从工作台「分镜」页签手动触发。
+    产物：08-分镜表.md + 08-分镜表.json（结构化，供逐镜编辑/导出提示词）。"""
+    proj = get_project(key)
+    if not proj:
+        return {"ok": False, "error": "项目不存在"}
+    plan = proj.plan() or {}
+    scenes = plan.get("scenes") or []
+    targets = [sc for sc in scenes
+               if sc.get("status") == "completed" and (only_scene is None or sc.get("no") == only_scene)]
+    if not targets:
+        return {"ok": False, "error": "没有已写完的场次可拆分镜"}
+    cfg = _merge_cfg(plan.get("config") or {})
+    is_comic = cfg.get("form") == "comic_drama"
+    md_parts = [f"# {plan.get('scriptName') or key} · 分镜表\n"]
+    all_shots: list[dict] = []
+    for sc in targets:
+        no = sc.get("no")
+        body = read_scene(key, no)
+        if not body.strip():
+            continue
+        task = (
+            f"把下面这场{'漫剧' if is_comic else '短剧'}戏拆成分镜头脚本，输出 JSON：\n"
+            '{"shots":[{"shot":1,"size":"景别(远/全/中/近/特)","picture":"画面描述(构图/人物动作/表情'
+            + ('/色调/构图风格，可直接转绘画提示词' if is_comic else '')
+            + '，40-80字)","lines":"该镜头台词或旁白(无则空串)","sfx":"音效/BGM","secs":秒数}]}\n'
+            "要求：竖屏短剧节奏——每场 6-15 个镜头；开场第一个镜头必须是钩子；单镜头 2-10 秒。\n"
+            f"【场次信息】第 {no} 场 · {scene_heading(sc)}\n"
+            f"【场次正文】\n{body[:5000]}"
+        )
+        try:
+            out = llm.chat_json([{"role": "user", "content": task}], stage="writing")
+        except Exception as e:
+            return {"ok": False, "error": f"第 {no} 场分镜失败：{e}"}
+        shots = out.get("shots") if isinstance(out, dict) else None
+        if not isinstance(shots, list) or not shots:
+            continue
+        md_parts.append(f"\n## 第 {no} 场 · {scene_heading(sc)}\n")
+        md_parts.append("| 镜号 | 景别 | 画面 | 台词/旁白 | 音效/BGM | 时长(s) |")
+        md_parts.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
+        for sh in shots:
+            sh["scene"] = no
+            all_shots.append(sh)
+            md_parts.append(
+                f"| {no}-{sh.get('shot', '')} | {sh.get('size', '')} | {sh.get('picture', '')} | "
+                f"{str(sh.get('lines', '')).replace(chr(10), ' ')} | {sh.get('sfx', '')} | {sh.get('secs', '')} |")
+    if not all_shots:
+        return {"ok": False, "error": "分镜生成结果为空"}
+    _write(os.path.join(proj.path, F_STORYBOARD), "\n".join(md_parts) + "\n")
+    atomic_write_json(os.path.join(proj.path, F_STORYBOARD_JSON),
+                      {"form": cfg.get("form", "short_drama"), "shots": all_shots})
+    meta = plan.setdefault("meta", {})
+    meta["storyboard_done"] = True
+    proj.save_plan(plan)
+    proj.log(f"🎬 分镜表已生成：{len(all_shots)} 个镜头（{len(targets)} 场）→ 08-分镜表.md")
+    return {"ok": True, "shots": len(all_shots), "scenes": len(targets)}
+
+
+def storyboard_data(key: str) -> dict:
+    """读分镜表 JSON（工作台「分镜」页签数据源）。"""
+    proj = get_project(key)
+    if not proj:
+        return {"shots": [], "form": ""}
+    try:
+        return json.load(open(os.path.join(proj.path, F_STORYBOARD_JSON), encoding="utf-8")) or {"shots": []}
+    except Exception:
+        return {"shots": [], "form": ""}
 
 
 def scene_heading(sc: dict) -> str:
@@ -837,6 +927,20 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None) ->
         plan["status"] = "in_progress" if done else plan.get("status", "planning")
     proj.save_plan(plan)
     proj.log(f"✅ 本轮写完 {done} 场")
+    # v4.5.0：AI 短剧/漫剧 → 写完自动拆分镜头（后台线程，不阻塞收尾）
+    try:
+        if cfg.get("form") in ("short_drama", "comic_drama") and not (plan.get("meta") or {}).get("storyboard_done"):
+            import threading as _th
+            _key = os.path.basename(proj.path)
+            def _sb():
+                try:
+                    gen_storyboard(_key)
+                except Exception as e:
+                    print(f"[bg] 分镜生成失败: {e}", flush=True)
+            _th.Thread(target=_sb, daemon=True).start()
+            proj.log("🎬 已自动启动分镜头拆解（08-分镜表）…")
+    except Exception:
+        pass
     return {"ok": True, "written": done, "total": len(scenes)}
 
 
@@ -950,7 +1054,7 @@ def read_file_part(key: str, part: str) -> str:
     mapping = {
         "bible": F_BIBLE, "chars": F_CHARS, "struct": F_STRUCT,
         "scenes": F_SCENES, "revisions": F_REVISIONS, "season": F_SEASON,
-        "quality": F_QUALITY,
+        "quality": F_QUALITY, "storyboard": F_STORYBOARD,
     }
     fn = mapping.get(part, part)
     return _read(os.path.join(proj.path, fn))

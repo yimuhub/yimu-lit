@@ -875,6 +875,22 @@ function workPane(ctx) {
     h('button', {
       class: 'btn btn-sm',
       type: 'button',
+      html: `${icon('film', 13)}<span>转短剧</span>`,
+      title: '把已完成的章节一键改编成 AI 短剧分集剧本并自动分镜',
+      on: {
+        click: async () => {
+          try {
+            const res = await api.novelToDrama({ key: work.key, form: 'short_drama' });
+            toast(res.msg || '改编已后台启动', { tone: 'success', duration: 4000 });
+          } catch (err) {
+            toast(errorText(err, '改编失败'), { tone: 'danger' });
+          }
+        }
+      }
+    }),
+    h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
       html: `${icon(work.running ? 'pause' : 'play', 13)}<span>${work.running ? '暂停' : '继续'}</span>`,
       on: {
         click: async () => {

@@ -3726,6 +3726,120 @@ async def api_script_export(key: str):
                              f"attachment; filename=\"script.txt\"; filename*=UTF-8''{_q(key)}.txt"})
 
 
+@app.post("/api/script/storyboard")
+def api_script_storyboard(payload: dict):
+    """v4.5.0：把已写场次拆成分镜头脚本（后台线程）。payload: {key, sceneNo?}"""
+    import threading as _th
+    key = str(payload.get("key") or "")
+    scene_no = payload.get("sceneNo")
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    def _bg():
+        try:
+            script_writer.gen_storyboard(key, only_scene=int(scene_no) if scene_no else None)
+        except Exception as e:
+            print(f"[bg] 分镜生成失败: {e}", flush=True)
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "async": True, "msg": "分镜拆解已后台启动"}
+
+
+@app.get("/api/script/storyboard")
+async def api_script_storyboard_get(key: str):
+    """v4.5.0：分镜表数据（结构化 JSON）。"""
+    if not script_writer.get_project(key):
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"key": key, "text": script_writer.read_file_part(key, "storyboard"),
+            **script_writer.storyboard_data(key)}
+
+
+@app.post("/api/novel-to-drama")
+def api_novel_to_drama(payload: dict):
+    """v4.5.0：小说一键转 AI 短剧/漫剧剧本——按章改编成分集剧本 + 自动分镜。
+    payload: {key, chapters?: [章号]， form?: short_drama|comic_drama, episodes_per_chapter?: 1}
+    生成独立剧本项目（key 加 -短剧 后缀），原书不动。"""
+    import threading as _th
+    src_key = str(payload.get("key") or "")
+    form = str(payload.get("form") or "short_drama")
+    if form not in ("short_drama", "comic_drama"):
+        return JSONResponse({"error": "form 只能是 short_drama/comic_drama"}, status_code=400)
+    proj = _get_project(src_key)
+    if not proj:
+        return JSONResponse({"error": "小说不存在"}, status_code=404)
+    plan = proj.plan() or {}
+    chs = [c for c in (plan.get("chapters") or [])
+           if c.get("status") == "completed" and _chapter_path(proj, c)]
+    want = payload.get("chapters")
+    if isinstance(want, list) and want:
+        want_set = {int(x) for x in want if str(x).isdigit()}
+        chs = [c for c in chs if c.get("chapterNumber") in want_set] or chs[:1]
+    if not chs:
+        return JSONResponse({"error": "没有已完成可改编的章节"}, status_code=400)
+    chs = chs[:12]   # 单次改编上限 12 章，防失控
+    new_key_base = f"{src_key}-{'漫剧' if form == 'comic_drama' else '短剧'}"
+
+    def _run():
+        try:
+            _novel_to_drama_impl(src_key, form, chs, new_key_base, plan)
+        except Exception as e:
+            print(f"[bg] 小说转短剧失败: {e}", flush=True)
+    _th.Thread(target=_run, daemon=True).start()
+    return {"ok": True, "async": True, "msg": f"改编已后台启动（{len(chs)} 章 → {len(chs)} 集）",
+            "key_hint": new_key_base}
+
+
+def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan):
+    """小说→短剧改编实现（后台线程）：逐章 → 分集剧本正文 → 场次清单 → 自动分镜。"""
+    import threading as _th
+    from datetime import datetime as _dt
+    from bot import llm as _llm
+    name = re.sub(r'[\/:*?"<>|\s]+', "", f"{src_plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}")[:40]
+    pdir = safe_join(script_writer.PROJECTS_DIR, new_key_base, label="项目 key")
+    os.makedirs(pdir, exist_ok=True)
+    sp = script_writer.ScriptProject(pdir, name)
+    script_writer.llm.book(new_key_base, "planning")
+    sp.log(f"🎬 从《{src_plan.get('novelName') or src_key}》改编 {form}：{len(chapters)} 章逐集剧本化")
+    era = "modern"
+    scenes = []
+    plan_doc = {
+        "version": 1, "scriptName": name, "projectPath": pdir, "medium": "script",
+        "form": form, "formLabel": script_writer.FORMS.get(form, {})["label"],
+        "entryPath": "adapt", "totalScenes": 0, "targetPages": 30, "episodes": len(chapters),
+        "createdAt": _dt.now().isoformat(), "status": "writing", "stages": {"S0": {"done": True}},
+        "scenes": [], "adaptedFrom": {"key": src_key, "chapters": [c.get("chapterNumber") for c in chapters]},
+        "config": {"form": form, "title": name, "idea": f"由小说《{src_plan.get('novelName') or src_key}》改编"},
+    }
+    for c in chapters:
+        no = c.get("chapterNumber")
+        src_text = writer._clean_chapter_text(open(_chapter_path(proj, c), encoding="utf-8").read()) if _chapter_path(proj, c) and os.path.exists(_chapter_path(proj, c)) else ""
+        sp.log(f"🎬 第 {no} 章 → 第 {no} 集：剧本化…")
+        body = _llm.chat([
+            {"role": "system", "content":
+                f"你是竖屏微短剧编剧。把小说章节改编成{script_writer.FORMS[form]['label']}第 {no} 集剧本（3-5 分钟一集）。"
+                "格式：场标题行（内/外 地点 时间）+ 动作行 + 短促台词（角色名：台词）。"
+                "开场前 3 秒必须抓人；集尾强钩子；台词短促信息密度高；删掉一切过场与心理描写。"},
+            {"role": "user", "content": f"【原章节】第{no}章 {c.get('title','')}\n\n{src_text[:9000]}"}],
+            stage="writing", max_tokens=6000) or ""
+        if not body.strip():
+            continue
+        os.makedirs(os.path.join(pdir, script_writer.F_BODY), exist_ok=True)
+        fn = f"第{no:03d}场.md"
+        script_writer._write(os.path.join(pdir, script_writer.F_BODY, fn), body)
+        scenes.append({"no": no, "kind": "集", "place": f"第 {no} 集", "time": "",
+                       "cast": "", "status": "completed",
+                       "fileName": fn, "wordCount": len(body)})
+    if not scenes:
+        sp.log("💥 改编失败：没有生成任何剧本内容")
+        return
+    plan_doc["totalScenes"] = len(scenes)
+    sp.save_plan(plan_doc)
+    sp.log(f"✅ 改编完成：{len(scenes)} 集；启动分镜头拆解…")
+    writer.mark_pipeline(new_key_base, True)
+    try:
+        script_writer.gen_storyboard(new_key_base)
+    finally:
+        writer.mark_pipeline(new_key_base, False)
+
+
 @app.get("/api/script/forms")
 async def api_script_forms():
     """媒介形式与入口路径选项。"""

@@ -238,6 +238,7 @@ export function renderMediumBench(container, ctx) {
           confirm: { title: '通读修订？', message: '会整本重读并出一份修订记录，是分钟级的模型任务。', confirmText: '开始修订' },
           run: () => api.scriptRevise(key)
         },
+        { label: '分镜表', iconName: 'grid', kind: 'sync', run: () => openStoryboard() },
         { label: '导出剧本', iconName: 'download', kind: 'file', run: () => downloadUrl(`/api/script/export?key=${encodeURIComponent(key)}`) }
       ];
     }
@@ -245,6 +246,46 @@ export function renderMediumBench(container, ctx) {
       return [{ label: '重新格律校验', iconName: 'shield', kind: 'sync', run: () => api.poetryRecheck(key) }];
     }
     return [];
+  }
+
+  /* v4.5.0：分镜表——查看 / 生成（AI 短剧/漫剧写完自动生成，其它形式可手动触发） */
+  async function openStoryboard() {
+    let data;
+    try {
+      data = await api.scriptStoryboard(key);
+    } catch (err) {
+      toast(errorText(err, '分镜数据读取失败'), { tone: 'danger' });
+      return;
+    }
+    const shots = (data && data.shots) || [];
+    if (!shots.length) {
+      const ok = await confirmDialog({
+        title: '生成分镜头脚本？',
+        message: '把已写完的场次逐场拆成分镜（镜号/景别/画面/台词/音效/时长），分钟级模型任务；AI 短剧/漫剧写完也会自动生成。',
+        confirmText: '开始生成'
+      });
+      if (!ok) return;
+      toast('分镜拆解已后台启动', { tone: 'success' });
+      await api.scriptStoryboardRun(key);
+      return;
+    }
+    const body = h('div', { class: 'sb-wrap' });
+    for (const line of String(data.text || '').split('\n')) {
+      body.append(h('div', { class: line.startsWith('|') ? 'sb-row' : 'sb-head', text: line }));
+    }
+    const foot = h('div', { class: 'set-actions' },
+      h('button', {
+        class: 'btn btn-sm', type: 'button', text: '重新生成',
+        on: {
+          click: async () => {
+            await api.scriptStoryboardRun(key);
+            toast('分镜拆解已后台启动，完成后重新打开查看', { tone: 'success' });
+            modal.close();
+          }
+        }
+      })
+    );
+    const modal = openModal({ title: `分镜表（${shots.length} 个镜头）`, body, footer: foot, size: 'lg' });
   }
 
   function sceneWriteAction(no) {
