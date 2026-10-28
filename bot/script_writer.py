@@ -64,6 +64,15 @@ ENTRY_PATHS = {
 }
 
 
+def _pipeline_running_for(path: str) -> bool:
+    """v3.1.0：流水线计数器（write 线程 mark/unmark），让任意实例读到的 running 都一致。"""
+    try:
+        from bot import writer as _wr
+        return _wr.pipeline_running(os.path.basename(str(path or "")))
+    except Exception:
+        return False
+
+
 class ScriptProject:
     """一个剧本项目。字段与小说 Project 对齐，便于前端统一处理。"""
 
@@ -111,7 +120,7 @@ class ScriptProject:
         return {
             "state": plan.get("status", "unknown"),
             "done": done, "total": len(scenes), "words": words,
-            "running": self.running, "name": plan.get("scriptName", self.name),
+            "running": self.running or _pipeline_running_for(self.path), "name": plan.get("scriptName", self.name),
             "medium": "script", "form": plan.get("formLabel") or plan.get("form", ""),
             "stage": meta.get("stage", ""), "paused": bool(meta.get("paused")),
             "setting": meta.get("setting") or {},
@@ -430,33 +439,69 @@ def score_script(text: str, cfg: dict) -> dict:
 # ---------------------------------------------------------------- 解析场次
 
 _SCENE_ROW = re.compile(r"^\|\s*(\d+)\s*\|(.+)$", re.M)
+# v3.1.0：LLM 的场次表首列常写「第1场」「１」（全角）——旧正则一条都不匹配 → plan.scenes 空 → 预览「没有场次」
+_SCENE_ROW_CN = re.compile(r"^\|\s*第\s*([0-9０-９]+)\s*场\s*\|(.+)$", re.M)
+_SCENE_HEADING = re.compile(r"^#{1,4}\s*第\s*([0-9０-９]+)\s*场\s*[:：、\.\s]?\s*(.+)$", re.M)
+
+
+def _scene_no(s: str) -> int:
+    s = s.strip()
+    if s.isdigit():
+        return int(s)
+    try:
+        return int(s.translate(str.maketrans("０１２３４５６７８９", "0123456789")))
+    except ValueError:
+        return 0
+
+
+def _cells_to_scene(no: int, cells_raw: str) -> dict:
+    cells = [c.strip() for c in cells_raw.split("|")]
+    while cells and not cells[0]:
+        cells.pop(0)
+    while cells and not cells[-1]:
+        cells.pop()
+    return {
+        "no": no,
+        "kind": cells[0] if len(cells) > 0 else "",
+        "place": cells[1] if len(cells) > 1 else "",
+        "time": cells[2] if len(cells) > 2 else "",
+        "cast": cells[3] if len(cells) > 3 else "",
+        "props": cells[4] if len(cells) > 4 else "",
+        "setup": cells[5] if len(cells) > 5 else "",
+        "trigger": cells[6] if len(cells) > 6 else "",
+        "obstacle": cells[7] if len(cells) > 7 else "",
+        "outcome": cells[8] if len(cells) > 8 else "",
+        "pages": cells[9] if len(cells) > 9 else "",
+    }
 
 
 def parse_scenes(md: str) -> list[dict]:
-    """从场次清单表格解析出场次。"""
+    """从场次清单解析出场次。v3.1.0：兼容 数字/第N场/全角数字 三种表格首列 + 「## 第N场」标题式清单。"""
     scenes: list[dict] = []
     for m in _SCENE_ROW.finditer(md or ""):
-        no = int(m.group(1))
-        cells = [c.strip() for c in m.group(2).split("|")]
-        # 去掉首尾空列
-        while cells and not cells[0]:
-            cells.pop(0)
-        while cells and not cells[-1]:
-            cells.pop()
-        scenes.append({
-            "no": no,
-            "kind": cells[0] if len(cells) > 0 else "",
-            "place": cells[1] if len(cells) > 1 else "",
-            "time": cells[2] if len(cells) > 2 else "",
-            "cast": cells[3] if len(cells) > 3 else "",
-            "props": cells[4] if len(cells) > 4 else "",
-            "setup": cells[5] if len(cells) > 5 else "",
-            "trigger": cells[6] if len(cells) > 6 else "",
-            "obstacle": cells[7] if len(cells) > 7 else "",
-            "outcome": cells[8] if len(cells) > 8 else "",
-            "pages": cells[9] if len(cells) > 9 else "",
-        })
-    return scenes
+        scenes.append(_cells_to_scene(int(m.group(1)), m.group(2)))
+    if not scenes:
+        for m in _SCENE_ROW_CN.finditer(md or ""):
+            no = _scene_no(m.group(1))
+            if no > 0:
+                scenes.append(_cells_to_scene(no, m.group(2)))
+    if not scenes:
+        # 标题式清单：## 第N场 场景描述（信息量少，但至少让预览/场次列表有内容）
+        for m in _SCENE_HEADING.finditer(md or ""):
+            no = _scene_no(m.group(1))
+            if no > 0:
+                head = re.sub(r"[*`]", "", m.group(2)).strip()
+                scenes.append({"no": no, "kind": "", "place": head, "time": "", "cast": "",
+                               "props": "", "setup": "", "trigger": "", "obstacle": "",
+                               "outcome": "", "pages": ""})
+    scenes.sort(key=lambda x: x["no"])
+    seen, dedup = set(), []
+    for sc in scenes:
+        if sc["no"] in seen:
+            continue
+        seen.add(sc["no"])
+        dedup.append(sc)
+    return dedup
 
 
 def scene_heading(sc: dict) -> str:
@@ -681,6 +726,40 @@ def _act_hint(struct_md: str, no: int, total: int) -> str:
 
 def write_scenes(proj: ScriptProject, only: list[int] | None = None) -> dict:
     """S5：按场次清单逐场写正文。"""
+    plan = proj.plan() or {}
+    scenes = plan.get("scenes") or []
+    if not scenes:
+        return {"ok": False, "error": "没有场次清单，请先生成规划"}
+    cfg = _merge_cfg(plan.get("config") or {})
+    cfg.setdefault("title", plan.get("scriptName") or "")
+    setting = (plan.get("meta") or {}).get("setting") or {}
+    # 旧项目没有 setting 字段，但计划里一旦补上，就以它为准覆盖 config 里的缺省。
+    if setting.get("era"):
+        cfg["setting_era"] = setting["era"]
+    if setting.get("world"):
+        cfg["setting_world"] = setting["world"]
+    bible = _read(os.path.join(proj.path, F_BIBLE))
+    chars = _read(os.path.join(proj.path, F_CHARS))
+    struct_md = _read(os.path.join(proj.path, F_STRUCT))
+    body_dir = proj.body_dir()
+    era = _era_of(cfg)
+    world = _world_block(cfg)
+    total = len(scenes)
+
+    plan["status"] = "writing"
+    from bot import writer as _wr
+    _key = os.path.basename(proj.path)
+    _wr.mark_pipeline(_key, True)   # v3.1.0：右栏「继续创作/创作中」状态需要（跨实例可见）
+    proj.running = True
+    try:
+        return _write_scenes_inner(proj, only)
+    finally:
+        _wr.mark_pipeline(_key, False)
+        proj.running = False
+
+
+def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None) -> dict:
+    """（write_scenes 的原实现体；v3.1.0 拆出以便维护 running 标志）"""
     plan = proj.plan() or {}
     scenes = plan.get("scenes") or []
     if not scenes:

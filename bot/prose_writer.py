@@ -54,6 +54,15 @@ GENRES = {
 }
 
 
+def _pipeline_running_for(path: str) -> bool:
+    """v3.1.0：流水线计数器（write 线程 mark/unmark），让任意实例读到的 running 都一致。"""
+    try:
+        from bot import writer as _wr
+        return _wr.pipeline_running(os.path.basename(str(path or "")))
+    except Exception:
+        return False
+
+
 class ProseProject:
     """散文项目。字段与小说 / 剧本 / 诗词 Project 对齐。"""
 
@@ -102,7 +111,7 @@ class ProseProject:
         return {
             "state": state,
             "done": done, "total": 6,
-            "words": meta.get("words", 0), "running": self.running,
+            "words": meta.get("words", 0), "running": self.running or _pipeline_running_for(self.path),
             "name": plan.get("proseName", self.name), "medium": "prose",
             "form": plan.get("genreLabel", ""), "stage": meta.get("stage", ""),
             "operation": plan.get("operation", ""),

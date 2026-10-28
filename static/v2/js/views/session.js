@@ -5,6 +5,7 @@ import { h, icon } from '../core/dom.js';
 import {
   store,
   patchChat,
+  patchUi,
   addMessage,
   updateMessage,
   removeMessage
@@ -179,6 +180,17 @@ export function renderSession(container, ctx = {}) {
     }
   }
   loadChatHistory();
+
+  // v3.1.0：新建作品向导留下的首条引导消息 → 自动以用户身份发出，Agent 开始工作
+  // （消除"创建完毫无反应、右侧已完成、章节待规划"的断层体验）
+  function maybeSendPendingFirstMessage() {
+    const pending = store.get().ui && store.get().ui.pendingFirstMessage;
+    if (!pending || pending.key !== store.get().currentKey) return;
+    if (store.get().chat.streaming || turn) return;   // 有对话在进行就先不打断
+    patchUi({ pendingFirstMessage: null });
+    runTurn({ text: String(pending.text || '') }, { appendUser: true });
+  }
+  setTimeout(maybeSendPendingFirstMessage, 400);
 
   // v2.3 对话绑定提示：小说且当前打开了作品时，composer 上方挂一枚「已绑定《X》」chip。
   // 纯展示，判断口径与 buildStreamPayload 的 withWork 一致；不碰追章流逻辑。

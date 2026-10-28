@@ -34,6 +34,15 @@ _GREETING_REPLY = (
 @asynccontextmanager
 async def _lifespan(_app):
     threading.Thread(target=_scheduler_loop, daemon=True).start()
+    # v3.1.0：启动时后台恢复「校验中/放行中但线程已死」的书（服务重启遗留卡死）
+    def _recover():
+        try:
+            n = writer.recover_all_stale()
+            if n:
+                print(f"[recover] 已救回 {n} 本陈旧卡死状态的书", flush=True)
+        except Exception as e:
+            print(f"[recover] 陈旧状态恢复失败：{e}", flush=True)
+    threading.Thread(target=_recover, daemon=True).start()
     yield
 
 app = FastAPI(title="神笔文学创作台", lifespan=_lifespan)
@@ -983,11 +992,14 @@ def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: s
     base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
 
     def _bg():
+        writer.mark_pipeline(base, True)   # v3.1.0：规划+写作全程「创作中」可见
         try:
             create_fn(cfg, base_key=base)
             _link_references(base, ref_ids)
         except Exception as e:
             print(f"[bg] {medium}创作失败: {e}", flush=True)
+        finally:
+            writer.mark_pipeline(base, False)
 
     _th.Thread(target=_bg, daemon=True).start()
     return {"key": base, "pid": base, "project": base, "medium": medium,
@@ -2225,6 +2237,11 @@ def api_status(key: str):
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
+    # v3.1.0：validating/releasing 且线程已死 → 立即恢复，前端不再永远转圈
+    try:
+        writer.recover_stale_book(key, live_proj=proj)
+    except Exception:
+        pass
     st = proj.status()
     if st.get("state") in ("missing", "", None):
         # 剧本/诗词/散文没有 02-写作计划.json，Project.status 会误报 missing；
@@ -2264,10 +2281,13 @@ def api_continue(payload: dict):
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
         def _bg():
+            writer.mark_pipeline(key, True)   # v3.1.0：恢复期间「创作中」可见
             try:
                 fn(key)
             except Exception as e:
                 print(f"[bg] {_medium_mod} 断点恢复失败: {e}", flush=True)
+            finally:
+                writer.mark_pipeline(key, False)
         _th.Thread(target=_bg, daemon=True).start()
         return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。"}
     proj = _get_project(key)
@@ -2421,6 +2441,24 @@ def api_book_skills_set(payload: dict):
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     return {"ok": True, "key": key, "agent": agent, "book": binds}
+
+
+@app.post("/api/chapter-names/backfill")
+def api_chapter_names_backfill(payload: dict):
+    """v3.1.0：老书一次性章名回填——把仍是「第N章」的已完成章用章节摘要批量起名（后台线程）。"""
+    key = str(payload.get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    import threading as _th
+
+    def _run():
+        try:
+            writer._backfill_chapter_names(proj, limit=60)
+        except Exception as e:
+            print(f"[bg] 章名回填失败: {e}", flush=True)
+    _th.Thread(target=_run, daemon=True).start()
+    return {"ok": True, "msg": "章名回填已后台启动，每次最多处理 60 章；再点可继续。"}
 
 
 @app.get("/api/jobs")
@@ -2881,6 +2919,9 @@ def api_chapter(key: str, n: int):
     fp = _chapter_path(proj, ch)
     text = open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
     return {"chapter": n, "title": ch.get("title") or "", "text": text,
+            # v3.1.0：cleanText = 章题+引子+正文（剥本章概要/章节备注），复制与对外分享用；
+            # text 保留原结构供编辑器与 PUT 回写
+            "cleanText": writer._clean_chapter_text(text),
             "words": ch.get("wordCount") or 0,
             "updatedAt": ch.get("editedAt") or "",
             "versions": len(versions.list_versions(proj.path, n))}
@@ -3186,15 +3227,43 @@ async def api_script_struct(key: str):
     return {"key": key, "text": script_writer.read_file_part(key, "struct")}
 
 
+def _script_scenes_or_reparse(proj, key=""):
+    """v3.1.0：plan.scenes 为空但 03-场次清单.md 有内容时，现场解析并回填计划。
+    旧剧本常因场次表格式解析不出而永远「没有场次」。返回 scenes 列表。"""
+    plan = proj.plan() or {}
+    scenes = plan.get("scenes") or []
+    if scenes:
+        return scenes
+    try:
+        md = script_writer.read_file_part(key or os.path.basename(proj.path), "scenes") or ""
+    except Exception:
+        md = ""
+    parsed = script_writer.parse_scenes(md) if md else []
+    if parsed:
+        for i, sc in enumerate(parsed, 1):
+            sc.setdefault("no", i)
+            sc.setdefault("status", "pending")
+            sc.setdefault("fileName", f"第{sc['no']:03d}场.md")
+            sc.setdefault("wordCount", None)
+        plan["scenes"] = parsed
+        try:
+            proj.save_plan(plan)
+            proj.log(f"🧭 场次清单重新解析成功：{len(parsed)} 场（原计划里缺失，已回填）")
+        except Exception:
+            pass
+        return parsed
+    return []
+
+
 @app.get("/api/script/scenes")
 async def api_script_scenes(key: str):
     """场次清单（表格 + 解析后的结构化场次）。"""
     proj = script_writer.get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    plan = proj.plan() or {}
+    scenes = _script_scenes_or_reparse(proj, key)
     return {"key": key, "text": script_writer.read_file_part(key, "scenes"),
-            "scenes": plan.get("scenes") or []}
+            "scenes": scenes}
 
 
 @app.get("/api/script/scene")
@@ -3217,7 +3286,7 @@ async def api_script_preview(key: str):
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     plan = proj.plan() or {}
     scenes = []
-    for sc in plan.get("scenes") or []:
+    for sc in _script_scenes_or_reparse(proj, key):
         no = sc.get("no")
         text = script_writer.read_scene(key, no) if no is not None else ""
         scenes.append({

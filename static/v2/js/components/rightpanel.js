@@ -615,8 +615,15 @@ function mediumWorkPane(work, ctx) {
   pane.append(kv);
   /* 创作过程中就地蒸馏：不用跳去技能库，蒸完当场可用。 */
   const actions = h('div', { class: 'rp-actions rp-actions-pad' });
-  /* 断点恢复：服务重启/线程中断后（planning/writing 但没有活动线程），一键续跑。 */
-  if (!work.running && ['planning', 'writing', 'in_progress'].includes(work.state)) {
+  /* 断点恢复：服务重启/线程中断后（planning/writing 但没有活动线程），一键续跑。
+     v3.1.0：running 时切换为「创作中」状态展示，动作必须有明确变化。 */
+  if (work.running) {
+    actions.append(
+      h('span', { class: 'status-chip', dataset: { tone: 'running' },
+        text: '创作中…' },
+        h('span', { class: 'hint-text', text: '进度见工作台运行日志' }))
+    );
+  } else if (['planning', 'writing', 'in_progress'].includes(work.state)) {
     actions.append(
       h('button', {
         class: 'btn btn-primary btn-sm',

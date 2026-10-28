@@ -6,6 +6,21 @@ import { api, errorText } from '../core/api.js';
 import { toast, confirmDialog, openModal } from '../core/ui.js';
 import { navigate } from '../core/router.js';
 
+
+/* v3.1.0：复制口径＝引子+正文（剥 ## 本章概要 / ## 章节备注），与成书/导出一致。
+   实时基于编辑器内容计算，编辑后未保存也能复制正确口径。 */
+function stripChapterMeta(text) {
+  const out = [];
+  let skipping = null;
+  for (const line of String(text || '').split('\n')) {
+    if (/^##\s*本章概要/.test(line)) { skipping = true; continue; }
+    if (/^##\s*章节备注/.test(line)) { skipping = true; continue; }
+    if (/^##\s/.test(line)) skipping = false;   // 章首引子 / 正文 保留
+    if (!skipping) out.push(line);
+  }
+  return out.join('\n').trim();
+}
+
 export function renderBench(container, ctx) {
   const state0 = store.get();
   const key = state0.route.key || state0.currentKey;
@@ -89,8 +104,10 @@ export function renderBench(container, ctx) {
         on: {
           click: async () => {
             try {
-              await copyText(editor.value);
-              toast('已复制到剪贴板', { tone: 'success', duration: 1600 });
+              /* v3.1.0：复制「引子+正文」口径（剥本章概要/章节备注），与成书/导出一致 */
+              const raw = stripChapterMeta(editor.value) || editor.value;
+              await copyText(raw);
+              toast('已复制到剪贴板（引子+正文，不含概要与备注）', { tone: 'success', duration: 2200 });
             } catch {
               toast('复制失败，请手动选择文本', { tone: 'danger' });
             }
@@ -204,6 +221,7 @@ export function renderBench(container, ctx) {
       const [ch, vers] = await Promise.all([api.chapter(key, model.n), api.chapterVersions(key, model.n)]);
       model.title = ch.title || '';
       model.text = ch.text || '';
+      model.cleanText = ch.cleanText || '';   // v3.1.0：复制用（引子+正文口径）
       model.savedText = model.text;
       model.words = ch.words || 0;
       model.updatedAt = ch.updatedAt || '';

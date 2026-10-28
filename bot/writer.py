@@ -85,11 +85,37 @@ def rebuild_book(proj) -> str:
 # ---------- 阶段2 落盘 ----------
 
 def _parse_outline_titles(outline_md, total):
-    """从大纲表格解析每章标题，失败则兜底"""
+    """从大纲表格解析每章标题，失败则兜底。
+
+    v3.1.0：LLM 的大纲表格首列常写「01」「1」甚至全角数字，旧正则只认「第N章」
+    导致 21/28 本书 100% 落入默认标题。现在兼容三种写法。"""
+    def _cn_int(s):
+        s = s.strip()
+        if s.isdigit():
+            return int(s)
+        try:
+            return int(s.translate(str.maketrans("０１２３４５６７８９", "0123456789")))
+        except ValueError:
+            return None
+
     titles = []
+    # 形式一：| 第N章 | 标题 |
     for m in re.finditer(r"^\|\s*第(\d+)章\s*\|\s*([^|]+)\|", outline_md, re.M):
         n, t = int(m.group(1)), re.sub(r"[*`]", "", m.group(2)).strip()
         titles.append((n, t or f"第{n}章"))
+    # 形式二：| 01 | 标题 |（首列纯数字/全角数字的表格行）
+    for m in re.finditer(r"^\|\s*([0-9０-９]{1,4})\s*\|\s*([^|\n]+)\|", outline_md, re.M):
+        n = _cn_int(m.group(1))
+        if not n or n > max(total * 2, 200):
+            continue
+        t = re.sub(r"[*`]", "", m.group(2)).strip()
+        if t and not any(x[0] == n for x in titles):
+            titles.append((n, t))
+    # 形式三：### 第N章 标题
+    for m in re.finditer(r"^#{1,4}\s*第(\d+)章\s*[:：、\.]?\s*(\S[^\n]{0,40})", outline_md, re.M):
+        n, t = int(m.group(1)), re.sub(r"[*`]", "", m.group(2)).strip()
+        if t and not any(x[0] == n for x in titles):
+            titles.append((n, t))
     titles.sort(key=lambda x: x[0])
     if len(titles) < total:
         for n in range(1, total + 1):
@@ -99,7 +125,8 @@ def _parse_outline_titles(outline_md, total):
     return out or [f"第{n}章" for n in range(1, total + 1)]
 
 def _clean_chapter_text(text):
-    """成书时剥离规划元信息（本章概要/章节备注），保留 章题+章首引子+正文"""
+    """成书时剥离规划元信息（本章概要/章节备注），保留 章题+章首引子+正文。
+    v3.1.0：补「仅有概要、无引子」分支——旧实现此时会把概要原样带进成书。"""
     m_sum = re.search(r"\n## 本章概要", text)
     m_intro = re.search(r"\n## 章首引子", text)
     m_notes = re.search(r"\n## 章节备注", text)
@@ -108,6 +135,11 @@ def _clean_chapter_text(text):
         return (text[:m_sum.start()] + text[m_intro.start():end]).strip()
     if m_intro:
         return (text[:m_intro.start() + 1] + text[m_intro.start():end]).strip()
+    if m_sum:
+        # 只有概要没有引子：剥掉概要段（从标题行到下一个 ## 或文末）
+        nxt = re.search(r"\n## ", text[m_sum.end():])
+        cut = m_sum.end() + (nxt.start() if nxt else len(text) - m_sum.end())
+        return (text[:m_sum.start()] + text[cut:]).strip()
     if m_notes:
         return text[:m_notes.start()].strip()
     return text.strip()
@@ -366,6 +398,93 @@ def resume_book(key):
     p.log("▶ 继续写作（从上次进度接着写剩余章节）")
     start_writing(p)
     return True
+
+# ---------- v3.1.0：陈旧状态恢复（服务重启/线程死亡后的 validating 卡死） ----------
+
+# ---------- v3.1.0：非小说流水线运行标志（跨实例可见；计数器防多线程误清） ----------
+_PIPELINE_LOCK = threading.Lock()
+_PIPELINE_COUNT: dict[str, int] = {}
+
+
+def mark_pipeline(key, on=True):
+    """按作品 key 增/减流水线运行计数（线程启动 +1，结束 -1）。"""
+    k = os.path.basename(str(key or ""))
+    if not k:
+        return
+    with _PIPELINE_LOCK:
+        _PIPELINE_COUNT[k] = max(0, _PIPELINE_COUNT.get(k, 0) + (1 if on else -1))
+
+
+def pipeline_running(key) -> bool:
+    return _PIPELINE_COUNT.get(os.path.basename(str(key or "")), 0) > 0
+
+
+def _chapter_has_content(proj, c, min_words):
+    """章文件是否有实质内容（≥ 0.6*min 字），供陈旧恢复判定。"""
+    fp = _chapter_file_path(proj, c)
+    if not fp or not os.path.exists(fp):
+        return False
+    try:
+        txt = open(fp, encoding="utf-8").read()
+        wc = len(txt.replace(" ", "").replace("\n", ""))
+        return wc >= int(min_words * 0.6)
+    except Exception:
+        return False
+
+
+def recover_stale_book(key, live_proj=None):
+    """v3.1.0：校验中/放行中但写作线程已死（服务重启）的书自动救回：
+    有实质内容的 in_progress/failed 章复位 completed，status 回 in_progress（可「继续」）。
+    幂等：非 stale 状态直接返回 None。返回复位章数或 None。
+    live_proj：调用方若持有写作线程使用的同一 Project 实例（app.PROJECT_INDEX），
+    其 running 标志才是「线程还活着」的权威来源；临时实例一律 False 不可信。"""
+    try:
+        p = live_proj if live_proj is not None else Project(_project_dir(key), key)
+        if p.path != _project_dir(key):
+            return None
+    except ValueError:
+        return None
+    plan = p.plan()
+    if not plan or plan.get("status") not in ("validating", "releasing"):
+        return None
+    if p.running:
+        return None   # 线程还活着，不动
+    min_words = plan.get("minWordsPerChapter", 3000)
+    changed = 0
+    for c in (plan.get("chapters") or []):
+        if c.get("status") in ("in_progress", "failed") and _chapter_has_content(p, c, min_words):
+            c["status"] = "completed"
+            if not c.get("wordCount"):
+                try:
+                    fp = _chapter_file_path(p, c)
+                    c["wordCount"] = len(open(fp, encoding="utf-8").read().replace(" ", "").replace("\n", ""))
+                except Exception:
+                    pass
+            changed += 1
+    plan["status"] = "in_progress"
+    p.save_plan(plan)
+    p.log(f"🛟 检测到「{plan.get('status') or 'validating'}」状态残留（写作线程已中断），"
+          f"已复位 {changed} 章并恢复为可继续；说「继续」即可续跑校验收尾。")
+    try:
+        rebuild_book(p)   # 成书文件同步到当前章节状态
+    except Exception:
+        pass
+    return changed
+
+
+def recover_all_stale():
+    """启动时全量扫一遍（后台线程调用，绝不阻塞 boot）。"""
+    n = 0
+    try:
+        for d in sorted(os.listdir(PROJECTS_DIR)):
+            if not os.path.isdir(os.path.join(PROJECTS_DIR, d)):
+                continue
+            if recover_stale_book(d) is not None:
+                n += 1
+    except Exception:
+        pass
+    return n
+
 
 def queue_msg(key, text, immediate=False):
     """存一条读者即时指令。immediate=下一章立即用；否则下一条生效（用完标 consumed）。"""
@@ -937,6 +1056,132 @@ def _append_title_candidates(proj, items) -> int:
     return added
 
 
+# ---------- v3.1.0：章名回流（默认“第N章”的章写完/里程碑时起真名） ----------
+
+def _set_chapter_title(proj, no, title):
+    """回填章名：计划 + 章节文件头 + 02d 章卡（best-effort）。filePath 不动（保护版本/快照）。"""
+    title = re.sub(r'[\\/:*?"<>|\n\r]', "", str(title or "").strip())[:16]
+    if not title:
+        return False
+    ch = None
+    with proj.lock:
+        plan = proj.plan() or {}
+        ch = next((c for c in (plan.get("chapters") or []) if c.get("chapterNumber") == no), None)
+        if not ch:
+            return False
+        old = ch.get("title") or ""
+        if old == title:
+            return False
+        ch["title"] = title
+        proj.save_plan(plan)
+    # 章节文件头：# 第NN章 旧名 → 新名
+    try:
+        fp = _chapter_file_path(proj, ch)
+        if fp and os.path.exists(fp):
+            head = f"# 第{no:02d}章 "
+            txt = open(fp, encoding="utf-8").read()
+            if txt.startswith(head):
+                rest = txt.split("\n", 1)
+                new_head = f"# 第{no:02d}章 {title}"
+                open(fp, "w", encoding="utf-8").write(new_head + ("\n" + rest[1] if len(rest) > 1 else "\n"))
+    except Exception:
+        pass
+    # 02d 章卡标题同步（best-effort，失败不影响计划）
+    try:
+        from . import longform as _lf
+        cards_fp = os.path.join(proj.path, "02d-章卡.jsonl")
+        if os.path.exists(cards_fp):
+            lines = [l for l in open(cards_fp, encoding="utf-8").read().splitlines() if l.strip()]
+            changed = False
+            out = []
+            for l in lines:
+                try:
+                    d = json.loads(l)
+                except Exception:
+                    out.append(l); continue
+                if d.get("n") == no and d.get("title") != title:
+                    d["title"] = title
+                    changed = True
+                out.append(json.dumps(d, ensure_ascii=False))
+            if changed:
+                atomic_write_text(cards_fp, "\n".join(out) + "\n")
+    except Exception:
+        pass
+    return True
+
+
+def _is_default_title(t):
+    return bool(re.fullmatch(r"第\d+章", (t or "").strip()))
+
+
+def _name_chapter(proj, no, digest):
+    """写完一章后用本章摘要起 4-8 字章名（已有真名则跳过）。零额外读盘：digest 来自 chapter_meta。"""
+    try:
+        if not digest or len(digest) < 20 or not _cfg_defaults().get("chapter_naming", True):
+            return
+        plan = proj.plan() or {}
+        ch = next((c for c in (plan.get("chapters") or []) if c.get("chapterNumber") == no), None)
+        if not ch or not _is_default_title(ch.get("title")):
+            return
+        out = llm.chat_json(
+            [{"role": "system",
+              "content": "给小说章节起名。根据本章摘要输出 4-8 字章名，像实体书目录那样有信息量与悬念，"
+                         "不剧透结局，不要出现“第X章”字样或书名号。只输出 JSON：{\"title\": \"...\"}"},
+             {"role": "user", "content": str(digest)[:600]}],
+            stage="naming")
+        t = str((out or {}).get("title") or "").strip()
+        if t and _set_chapter_title(proj, no, t):
+            proj.log(f"🏷️ 第{no}章定名「{t}」")
+    except Exception:
+        pass
+
+
+def _backfill_chapter_names(proj, limit=10):
+    """里程碑批量回填：把仍是默认标题的已完成章，用 21-章摘要.jsonl 批量起名（1 次 LLM 调用）。"""
+    try:
+        plan = proj.plan() or {}
+        todo = [c for c in (plan.get("chapters") or [])
+                if c.get("status") == "completed" and _is_default_title(c.get("title"))][:limit]
+        if not todo:
+            return 0
+        summaries = {}
+        fp = os.path.join(proj.path, "21-章摘要.jsonl")
+        if os.path.exists(fp):
+            for line in open(fp, encoding="utf-8"):
+                try:
+                    d = json.loads(line)
+                    summaries[d.get("n")] = d.get("summary") or ""
+                except Exception:
+                    pass
+        items = [{"no": c["chapterNumber"], "summary": (summaries.get(c["chapterNumber"]) or "")[:300]}
+                 for c in todo]
+        items = [i for i in items if i["summary"]]
+        if not items:
+            return 0
+        out = llm.chat_json(
+            [{"role": "system",
+              "content": "给下列小说章节各起一个 4-8 字章名，像实体书目录那样有信息量与悬念，不剧透结局。"
+                         '只输出 JSON：{"names":[{"no":1,"title":"..."},...]}，no 必须与输入一致。'},
+             {"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
+            stage="naming")
+        n = 0
+        for it in (out or {}).get("names") or []:
+            try:
+                if _set_chapter_title(proj, int(it.get("no") or 0), str(it.get("title") or "")):
+                    n += 1
+            except (TypeError, ValueError):
+                continue
+        if n:
+            proj.log(f"🏷️ 章名回填：{n} 章定名")
+        return n
+    except Exception as e:
+        try:
+            proj.log(f"⚠️ 章名回填失败（不阻断写作）：{e}")
+        except Exception:
+            pass
+        return 0
+
+
 def _maybe_backflow_titles(proj, ch_no=None):
     """v2.3.0 任务一挂点：每累计完成 10 章触发一次标题回流，追加 3 个更贴合的书名候选。
     用 plan['meta']['title_milestone'] 记录上次回流时的里程碑（10 的整数倍）；在 proj.lock 内读改写，
@@ -959,6 +1204,7 @@ def _maybe_backflow_titles(proj, ch_no=None):
         added = _append_title_candidates(proj, items)
         if added:
             proj.log(f"📚 新增 {added} 个标题候选（第{target}章里程碑）")
+        _backfill_chapter_names(proj)   # v3.1.0：里程碑同时批量回填默认章名
         return added
     except Exception as e:
         try:
@@ -1240,6 +1486,10 @@ def _write_chapter(proj, ch, min_words, max_retries):
                     f.write(f"- 线索：{t.get('name','')}（已知：{t.get('known','')}，真相：{t.get('truth','')}）→ 需计划兑现\n")
     except Exception as e:
         proj.log(f"⚠️ 第{no}章元数据提取失败：{e}")
+        summary = ""
+    # v3.1.0：默认章名 → 用本章摘要起真名（写完即定名，不额外读全文）
+    if summary:
+        _name_chapter(proj, no, summary)
     # 第1章：文风校准回填
     if no == 1:
         try:
@@ -1297,12 +1547,19 @@ def _validate_and_finish(proj):
     plan["status"] = "validating"
     proj.save_plan(plan)
     min_words = plan.get("minWordsPerChapter", 3000)
+    soft_floor = int(min_words * 0.6)
     for round_no in range(3):
-        failed = [c for c in plan["chapters"] if not c.get("wordCountPass")]
+        # v3.1.0：只重写「真失败」的章。旧逻辑把 soft-pass（完成但未达标，wcp=False）
+        # 也当失败整章重写，几百章的书等效无限循环、服务一重启就永远卡在「校验中」。
+        failed = [c for c in plan["chapters"]
+                  if c.get("status") == "failed"
+                  or (c.get("status") == "completed" and (c.get("wordCount") or 0) < soft_floor)]
         if not failed:
             break
-        proj.log(f"🔁 校验第{round_no+1}轮：{len(failed)}章未达标，重写中")
-        for ch in failed:
+        capped, overflow = failed[:10], failed[10:]
+        proj.log(f"🔁 校验第{round_no+1}轮：{len(failed)}章真失败，本轮重写 {len(capped)} 章"
+                 + (f"（其余 {len(overflow)} 章下轮继续）" if overflow else ""))
+        for ch in capped:
             ch["status"] = "failed"
             _write_chapter(proj, ch, min_words, 3)
         plan = proj.plan()
@@ -1696,7 +1953,7 @@ def _other_medium_item(key, pdir, med, plan):
             "state": state, "status_label": _OTHER_LABEL.get(state, state),
             "done": done, "total": total,
             "progress": round(100 * done / total) if total else 0,
-            "total_words": words, "running": False,
+            "total_words": words, "running": bool(st.get("running")),
             "quality": None, "passing": None, "pass_line": _pass_line(),
             "released": None, "final_quality": None, "awaiting_title": False,
             "gate_rounds": None, "paused": bool(meta.get("paused")), "queued": 0,
@@ -1729,7 +1986,9 @@ def library_item(key, with_quality=True):
     final_q = meta.get("final_quality")
     awaiting_title = bool(meta.get("awaiting_title"))
     label = {"completed": "已出书", "in_progress": "创作中", "validating": "校验中",
-             "awaiting_title": "选书名", "failed": "失败", "idle": "草稿"}.get(state, "未完成" if st.get("done", 0) < st.get("total", 1) else "已完成")
+             "awaiting_title": "选书名", "failed": "失败", "idle": "草稿"}.get(state,
+             "规划中" if state in ("planning", "awaiting_title") or not (st.get("total") or 0)
+             else ("未完成" if st.get("done", 0) < st.get("total", 1) else "已完成"))
     return {"key": key, "name": st.get("name") or key, "medium": "novel", "form": "",
             "genre": genre, "state": state,
             "status_label": label, "done": st.get("done", 0), "total": st.get("total", 0),

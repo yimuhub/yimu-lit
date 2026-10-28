@@ -1,42 +1,39 @@
-## 升级改造方案（三个版本，逐版实现、逐版提交推送）
+## 升级改造方案（四版递进，每版独立提交推送）
 
-基于代码勘察确认的事实：`fixConsistency` 报错根因是 rightpanel.js:324 用了不存在的 `ctx.api`（应为已导入的 `api`）；时间线空白根因是前端读 `item.at/item.text` 而后端字段是 `item.event/item.chapter` 且后端只回 30 条；聊天记录丢失根因是 `/api/chat/stream` 客户端断开时 AI 回复不落盘（用户消息已落盘，造成"只有问没有答"）。
+所有根因已定位（探索报告含 file:line）。四个版本：**v3.1.0 数据正确性修复 → v3.2.0 全平台对话统一 → v3.3.0 剧本一致性+拟题泛化 → v4.0.0 UI 统一升级**。
 
 ---
 
-### v2.8.0 —— 修复 + 设置界面重设计 + 时间线全节点 + 聊天留档
+### v3.1.0 —— 数据正确性修复（9 个 bug 全部根因修复）
 
-1. **一致性体检修复链路修复**
-   - rightpanel.js:324 `ctx.api.fixConsistency` → `api.fixConsistency`（修崩溃）。
-   - 修复弹窗补全体检上下文（scope、体检时间、问题等级）；`/api/fix-consistency`（v2api.py:1027）对无确定性修复的问题返回明确说明而非假装成功。
-2. **时间线全节点渲染**（rightpanel.js:1465-1483 + v2api.py:547）
-   - 后端放开 `[-30:]` 截断（返回全部，上限 2000 条）；前端按字段 `chapter/time/event/location/characters` 渲染成竖向时间轴：章号徽标 + 故事内时间 + 事件全文 + 地点/人物标签；空数据时给出明确空态。
-3. **聊天记录完整保留**
-   - `/api/chat/stream`（v2api.py:1208 附近）：客户端断开时在 finally 里把已生成的部分回复落盘（带 `partial: true` 标记），不再"只有问没有答"。
-   - session.js `loadChatHistory`（128-157）：去掉"已有消息就跳过"，每次进入作品都重新拉取；`/api/chat/history` limit 1000 → 5000。
-4. **设置页重设计为分组标签页**（settings.js 重构 + settings.css）
-   - 左侧竖向导航 + 右侧内容区，分组：①外观 ②创作质量 ③模型与供应商 ④创作岗位（全局并发上限、岗位×模型、岗位×技能、新增「添加自定义 Agent」入口，调已有 /api/agents/add）⑤技能与数据（进化入口+本地说明）⑥高级（经典版入口等）。
-   - 修正现有混乱：并发从"生成质量"迁到"创作岗位"；call_gap 归位；命名与内容对齐。
-   - 预留「对话与上下文」分组（v2.9.0 填充）。
-   - 全部复用现有 tokens.css 组件（btn/switch/segmented/badge），新样式进 settings.css。
+1. **章节标题缺失**（21/28 本书 100% 默认"第N章"）：`writer.py:90` 与 `longform.py:569` 的解析正则放宽（接受 `| 01 |`/`| 1 |`/全角数字）；`workflow.py:119` 大纲提示词强制首列写"第N章"；新增**章名回流**：`_write_chapter` 完成后用已有 chapter_meta 摘要让 LLM 起 4-8 字章名回填计划（不额外读全文），并同步重写章节文件头；每 10 章批量回填已完成章（复用里程碑机制）。老书提供一次性回填（右栏触发）。
+2. **"校验中"永久卡死**：启动时 `_lifespan` 加 `_recover_stale`——`validating/releasing` 且线程死亡的书：有内容的 in_progress/failed 章复位 completed、status 回 in_progress；`/api/book-live` 与 `Project.status()` 同样判定 stale，前端立刻不再转圈。长安诡案、民国·半仙、卡片验证三本实测卡死书自动救回。
+3. **"差一章"卡住**：校验循环只重写真失败章（`status==failed` 或字数 < 0.6*min）；soft-pass（完成但未达标）直接放行编译；重写进度逐轮落盘可续；单轮重写有界（≤10 章）。并行循环全完成的捷径补跑成书编译。
+4. **复制全文含概要/备注**：`GET /api/chapter` 增加 `cleanText`（复用 `_clean_chapter_text`：章题+引子+正文，剥概要/备注，并补"仅概要无引子"分支）；bench.js 复制改用 cleanText。成书/导出已干净，不动。**口径＝引子+正文**（与成书一致）。
+5. **邀请 Agent 报"没有 Agent"**：composer.js:109 `res.view.agents` → `res.agents`（后端结构本就是顶层 agents）。
+6. **剧本预览"没有场次"**：`/api/script/preview|scenes` 在 plan.scenes 为空时回退现场解析 03-场次清单.md 并回填计划；`_SCENE_ROW` 正则放宽（第N场/全角数字/标题式）。
+7. **"继续创作"按钮状态不变化**：script/poetry/prose 引擎维护 `self.running`（写线程启动置位/finally 复位）；`writer.py:1699` library 的 running 不再硬编码 False；按钮按 running 切换「继续创作 ↔ 停止创作」，各引擎阶段写入运行日志（已有）并配合 /api/book-live 式阶段展示。
+8. **向导完成后断层**：修 `writer.py:1732` label bug（0 章 plan 显示"已完成"→ 规划中）；向导 submit 成功后把所选配置合成一条用户消息，进入对话后自动发送，Agent 反馈并开写（v3.2 深化，本版先修状态断层与自动开写）。
+9. **风格预设可点**：`style_preview` 从只读 preview 改为逐维度可点选 chips（金手指/基调/爽点/节奏/语言/卷），值并入 `payload.style`（后端 `/api/create` 已支持 cfg.style）。
 
-### v2.9.0 —— 对话式创作工作台（章节卡片 + 分支成书 + 上下文自动压缩）
+### v3.2.0 —— 全平台对话统一 + 对话改稿同步
 
-1. **每章 token 统计**：writer.py `_write_chapter` 写前/写后 diff `usage.json` 总量，写入计划章节 `meta.tokens`；后端不再需要新表。
-2. **章节完成卡片**：扩展 `/api/chat/stream` 的 `chapter_done` 事件，携带 `{n, title, words, tokens, quality, ts}`；session.js 在对话流中渲染卡片——默认折叠（标题+完成时间+字数/token/质量分+正文前 3 行），点击展开全文、再点收起；卡片操作按钮：📋 复制本章、🌿 从此章分支、📖 在章节工作台打开；卡片事件本身也写入 chat_log.jsonl（带 type 字段），刷新后历史完整重放。
-3. **分支成新书**：新增 `POST /api/branch {key, chapter}`——复制项目目录中第 1..N 章正文 + 写作计划/章卡/状态库/故事圣经等，新 key 加 `-分支N` 后缀、状态 in_progress，在作品库可见；对话卡片返回新书 key，前端可直接跳转；原书不受影响。
-4. **对话上下文自动压缩（只影响展示对话，不影响后台创作）**：
-   - 设置页新分组「对话与上下文」：上下文窗口档位 200K/400K/500K/1M（`defaults.chat_context_limit`，默认 200K）+ 压缩开关。
-   - `/api/chat/stream` 组装历史时按 token 估算检查：超限的早期消息用 LLM 压缩成「创作进度摘要」存 `chat_summary.json`，作为 system 上下文注入；对话顶部显示"已压缩 N 条早期对话"胶囊，点击可查看摘要。
-   - 后台写作流水线完全不经此路径，行为不变。
+1. **创建即对话**：四种文体新建完成后都进入对话界面，向导所选配置自动作为用户消息发出，Agent 确认并开始创作（复用 chat 流的 attached 机制与追章/追进度事件；剧本/诗词/散文的"追进度"用各自引擎的阶段事件映射成 chapter_start/done 风格的 SSE）。
+2. **小说工作台加"对话改稿"**：assist 的 MEDIA 白名单加 novel；`docs_for` 加小说分支（章节文件）；段落定位加"第N章第M段"；bench.js 挂 chatfloat。
+3. **对话改稿 ↔ 主对话同步**：assist 落盘时同步写 chat_log.jsonl（带 type=assist 徽标），主对话上下文能看到改稿讨论；压缩摘要/@Agent 均可见。
+4. **跨文体 @Agent**：assist 与主对话支持 @ Agent 分流；`_chat_group` 上下文按文体取（剧本读场次/圣经，诗词/散文读 docs_for）；被 @ 的 Agent 注入其岗位技能（skillkit stage_inject 已支持 medium）。
 
-### v3.0.0 —— Agent 技能体系（默认技能包 + 全局/按作品双维度绑定）
+### v3.3.0 —— 剧本一致性 + 拟题泛化 + 进度可视
 
-1. **内置默认技能包**：agents.py 为 7 个岗位（规划师/作家/审稿人/改写师/拟题师/去味师/总编）配置默认技能名集合，首次读取时若该岗位未绑定过则自动填入（不覆盖用户已绑定的）。
-2. **全局绑定**：设置页「创作岗位」的绑技能弹窗增强（按文体分组、搜索、显示技能简介），绑定写入 `defaults.agent_skills`（现有 /api/agents-skills）。
-3. **按作品绑定**：计划文件 `meta.agent_skills = {agent: [skills]}`；新增 `GET/POST /api/book-skills`（key + agent + skills）；`workflow.agent_skills_block`（workflow.py:76）合并维度：本书绑定 ∪ 全局绑定（去重）；`/api/skills/applicable` 标注每个技能来源（全局/本书）。
-4. **右栏协作面板**（collab.js 岗位行）：每个岗位加「绑技能」按钮，作用域为当前作品；显示 已绑技能 chips（本书/全局来源徽标区分）。
+1. **剧本一致性体系**（借鉴小说）：新建剧本状态库（人物表/场景表，来源：场次清单+创作圣经）；逐场体检（人物在场校验/场景重复跳场 + 既有时代校验）落 `22-剧本体检.json`；新端点 `/api/script/audit`；右栏复用体检区 UI；违规场次接现成的 `/api/script/rewrite-scenes` 按设定重写。
+2. **拟题泛化**：修 `_apply_title` 只写小说计划的 bug（改走 `_plan_of`/rename_book）；`gen_titles` 加 medium 参数；标题候选区进剧本/诗词/散文的右栏；对话内"换标题"命令三文体通用。
+3. **进度可视**：各工作台/对话顶条展示当前阶段（S0-S7/I-P-C-K-R-F/B-S-D-A-P-F），来自运行日志阶段事件的统一解析。
 
-### 交付与质量门槛（每版相同）
-- 每版完成：pytest 全量回归（当前 439 用例）+ 新增针对修复点的回归用例 + `tools/check_frontend_js.py` 语法检查 + 启动服务浏览器实测（设置页逐项操作、体检弹窗、时间线、章节卡片、分支、压缩胶囊、技能绑定）。
-- 每版单独提交（中文规范信息）+ 打 tag（v2.8.0 / v2.9.0 / v3.0.0）+ 推送 GitHub；VERSION 单一来源同步更新；问题修复记录.md 逐版补记录。
+### v4.0.0 —— UI 统一升级
+
+1. **章节工作台美化**：对齐设置页卡片风格（分组卡片、统一间距与层次），编辑器/版本历史/对话改稿三区协调。
+2. **作品库 / 技能库 / 技能进化页面**升级为设置页同款风格：左侧或顶部分组导航 + 内容卡片化 + 统计条（复用 set-nav/set-group 样式体系）。
+3. **左侧栏作品展开面板**（点开书后）视觉升级：分组清晰、状态徽标统一、操作按钮层级化。
+
+### 交付门槛（每版相同）
+pytest 全量回归（现 453 用例）+ 每个修复点带回归用例 + 前端语法检查 + 服务启动浏览器实测（含三本卡死书的救回验证）+ 中文提交 + tag + 推送 GitHub + 问题修复记录.md 逐版补记。

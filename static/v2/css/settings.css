@@ -1226,3 +1226,10 @@
 }
 
 .skill-pick-group:first-child .skill-pick-group-label { margin-top: 0; }
+
+/* v3.1.0：风格维度被用户改过的值 chip 高亮 */
+.wiz-chip.is-overridden {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}

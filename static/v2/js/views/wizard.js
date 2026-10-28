@@ -8,7 +8,7 @@ import {
   ATTACH_ACCEPT
 } from '../core/dom.js';
 import { store, patchUi } from '../core/state.js';
-import { openModal, toast } from '../core/ui.js';
+import { openModal, toast, popoverMenu } from '../core/ui.js';
 import { GENRE_OPTIONS, SCALE_OPTIONS, WRITING_MODES, USAGE_MODES, MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
 import { api, errorText } from '../core/api.js';
 import { openDistillModal } from '../components/distill.js';
@@ -276,10 +276,18 @@ export function openWizard(ctx, preset = {}) {
     return found || { key: 'genre', type: 'select', options: [], default: '' };
   }
 
+  /* v3.1.0：用户对风格维度的逐项覆盖（点「本次生效」里的值 chip 修改） */
+  const styleOverrides = {};
   function resolvedStyle() {
     const v = values();
     const presets = styleDims().preset || {};
-    return presets[v.genre] || presets[v.style_preset] || null;
+    const base = presets[v.genre] || presets[v.style_preset] || null;
+    if (!base) return null;
+    const merged = { ...base };
+    for (const [k, val] of Object.entries(styleOverrides)) {
+      if (val) merged[k] = val;
+    }
+    return merged;
   }
 
   /* 字段语义效果登记表：schema 用 effect 声明，渲染器只认这个名字，不含体裁分支。 */
@@ -512,13 +520,41 @@ export function openWizard(ctx, preset = {}) {
   }
 
   function previewControl() {
+    /* v3.1.0：「本次生效」每个维度值可点击 → 弹出该维度候选（含自定义输入），改完本次创建生效 */
     const row = h('div', { class: 'wiz-chips' });
     const resolved = resolvedStyle();
     if (!resolved) {
       row.append(h('span', { class: 'hint-text', text: ONB === null ? '维度数据尚未加载完，创建后仍可在作品规划里调整。' : '暂无可用预设。' }));
       return row;
     }
-    for (const [k, val] of Object.entries(resolved)) row.append(h('span', { class: 'wiz-chip static', text: `${k}：${val}` }));
+    const dims = styleDims() || {};
+    for (const [k, val] of Object.entries(resolved)) {
+      const chip = h('button', {
+        class: 'wiz-chip' + (styleOverrides[k] ? ' is-overridden' : ''),
+        type: 'button',
+        title: '点击更换该维度（本次创建生效）',
+        'aria-haspopup': 'menu'
+      });
+      chip.append(h('span', { text: `${k}：${val}` }));
+      chip.addEventListener('click', (event) => {
+        const options = (Array.isArray(dims[k]) ? dims[k] : []).filter((x) => x !== '自定义');
+        const items = options.map((opt) => ({
+          label: opt,
+          icon: 'dot',
+          checked: opt === resolved[k],
+          onSelect: () => { styleOverrides[k] = opt; render(); }
+        }));
+        items.push({ separator: true });
+        items.push({
+          label: '恢复题材预设',
+          icon: 'refresh',
+          onSelect: () => { delete styleOverrides[k]; render(); }
+        });
+        popoverMenu(event.currentTarget, items, { label: `${k} · 选择` });
+      });
+      row.append(chip);
+    }
+    row.append(h('span', { class: 'hint-text', text: '点值可改，本次创建生效' }));
     return row;
   }
 
@@ -1138,6 +1174,41 @@ export function openWizard(ctx, preset = {}) {
     return payload;
   }
 
+  /* v3.1.0：创建后自动以用户消息形式把配置发给对话 Agent（消除"创建完毫无反应"断层） */
+  function buildFirstMessage(payload, awaitingTitle) {
+    const v = values();
+    if (model.medium === 'novel') {
+      const lines = [];
+      if (awaitingTitle) {
+        lines.push(`开新书：${payload.idea || '（详见参考设定）'}`);
+        lines.push('请先生成几个书名候选给我挑选。');
+      } else {
+        lines.push(`开新书《${payload.title || v.title || ''}》，请确认设定后直接开始规划并创作。`);
+      }
+      const bits = [];
+      if (payload.genre) bits.push(`题材：${payload.genre}`);
+      if (payload.tone) bits.push(`基调：${payload.tone}`);
+      if (payload.perspective) bits.push(`视角：${payload.perspective}`);
+      if (payload.total_chapters) bits.push(`规模：${payload.total_chapters} 章`);
+      if (payload.min_words_per_chapter) bits.push(`每章约 ${payload.min_words_per_chapter} 字`);
+      if (payload.style && typeof payload.style === 'object') {
+        bits.push('风格：' + Object.entries(payload.style).map(([k, val]) => `${k}=${val}`).join('、'));
+      }
+      if (bits.length) lines.push(bits.join('；') + '。');
+      return lines.join('\n');
+    }
+    if (model.medium === 'script') {
+      return `开新剧本：${payload.title || payload.idea || ''}\n形式：${payload.form || 'film'}；入口：${payload.entryPath || 'idea'}；题材：${payload.genre || ''}。请开始规划。`;
+    }
+    if (model.medium === 'poetry') {
+      return `创作诗词：${payload.title || payload.idea || ''}\n体式：${payload.form || 'modern'}；改稿轮数：${payload.maxRounds || 3}。请开始。`;
+    }
+    if (model.medium === 'prose') {
+      return `创作散文：${payload.title || payload.idea || ''}\n文体：${payload.genre || 'suibi'}；操作：${payload.operation || 'write'}${payload.target_words ? `；目标 ${payload.target_words} 字` : ''}。请开始。`;
+    }
+    return `开始创作：${payload.title || payload.idea || ''}`;
+  }
+
   async function submit() {
     if (model.submitting) return;
     if (!model.copyright) {
@@ -1173,6 +1244,8 @@ export function openWizard(ctx, preset = {}) {
       if (ctx.addPendingWork) ctx.addPendingWork({ key, name: res.name, medium: med });
       if (ctx.refreshLibrary) await ctx.refreshLibrary().catch(() => {});
       patchUi({ medium: model.medium, rightTab: 'work' });
+      // v3.1.0：把所选配置合成首条用户消息，进入对话后由 session 自动发出
+      patchUi({ pendingFirstMessage: { key, text: buildFirstMessage(payload, Boolean(res.awaiting_title)) } });
       modal.close();
       ctx.navigate(`/work/${encodeURIComponent(key)}`);
       if (med === 'novel') {

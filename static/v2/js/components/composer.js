@@ -106,7 +106,8 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
         }
         try {
           const res = await api.agents();
-          const agents = (res && res.view && res.view.agents) || [];
+          /* v3.1.0 修复：/api/agents 返回顶层 {agents:[...]}，此前读 res.view.agents 永远为空 → 「暂无可邀请的 Agent」 */
+          const agents = (res && res.agents) || (res && res.view && res.view.agents) || [];
           if (!agents.length) { toast('暂无可邀请的 Agent', { tone: 'warn' }); return; }
           /* v2.6.1：多选浮动面板 */
           invitePanel = h('div', { class: 'invite-panel' });

@@ -44,6 +44,15 @@ FORM_ALIASES = {
 }
 
 
+def _pipeline_running_for(path: str) -> bool:
+    """v3.1.0：流水线计数器（write 线程 mark/unmark），让任意实例读到的 running 都一致。"""
+    try:
+        from bot import writer as _wr
+        return _wr.pipeline_running(os.path.basename(str(path or "")))
+    except Exception:
+        return False
+
+
 class PoetryProject:
     """诗词项目。字段与小说 / 剧本 Project 对齐。"""
 
@@ -88,7 +97,7 @@ class PoetryProject:
         return {
             "state": plan.get("status", "unknown"),
             "done": meta.get("rounds", 0), "total": plan.get("maxRounds", 3),
-            "words": meta.get("words", 0), "running": self.running,
+            "words": meta.get("words", 0), "running": self.running or _pipeline_running_for(self.path),
             "name": plan.get("poemName", self.name), "medium": "poetry",
             "form": plan.get("formLabel", ""), "stage": meta.get("stage", ""),
             "verdict": meta.get("verdict", ""),
@@ -310,6 +319,7 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
     pdir = safe_join(PROJECTS_DIR, base_key or f"p_{ts}-{name}", label="项目 key")
     os.makedirs(pdir, exist_ok=True)
     proj = PoetryProject(pdir, name)
+    proj.running = True   # v3.1.0：流水线全程对 UI 可见为「创作中」
     llm.book(os.path.basename(pdir), "planning")
 
     max_rounds = int(cfg.get("maxRounds", 3))
@@ -445,6 +455,7 @@ def resume_project(key: str) -> PoetryProject | None:
     form = normalize_form(cfg.get("form", "modern"))
     name = plan.get("poemName") or key
     proj = PoetryProject(pdir, name)
+    proj.running = True   # v3.1.0
     plan.setdefault("meta", {})
     if plan.get("status") == "completed":
         proj.log("✅ 该作品已定稿，无需恢复")
@@ -542,3 +553,6 @@ def recheck(key: str) -> dict:
 def rhyme_info(ch: str) -> dict:
     """查字的平水韵信息。"""
     return poetry_checker.rhyme_lookup(ch)
+
+
+# v3.1.0：同步流水线结束时复位 running（create/resume 都经此出口）

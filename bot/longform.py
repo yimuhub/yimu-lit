@@ -572,6 +572,13 @@ def _outline_rows(proj) -> dict[int, dict]:
         n = _int(m.group(1), 0)
         if n > 0:
             rows.setdefault(n, {})["title"] = _clean_title(m.group(2))
+    # v3.1.0：LLM 表格首列常写「01」「1」（非「第N章」），同样解析，救回章名
+    for m in re.finditer(r"^\|\s*(\d{1,4})\s*\|\s*([^|\n]+)\|", text, re.M):
+        n = _int(m.group(1), 0)
+        if n > 0 and not rows.get(n, {}).get("title"):
+            t = _clean_title(m.group(2))
+            if t:
+                rows.setdefault(n, {})["title"] = t
     for m in re.finditer(r"^#{2,4}\s*第(\d+)章[^\n]*\n(.*?)(?=\n#{2,4}\s*第|\n##\s|\Z)", text, re.M | re.S):
         n = _int(m.group(1), 0)
         if n > 0:
