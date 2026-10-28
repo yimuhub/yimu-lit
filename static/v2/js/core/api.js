@@ -298,6 +298,9 @@ export const api = {
   scriptAudit: (key) => request('/api/script/audit', jsonBody({ key }), { timeout: 120000 }),
   scriptAuditGet: (key) => request('/api/script/audit', { query: { key } }),
   scriptStoryboard: (key) => request('/api/script/storyboard', { query: { key } }),
+  thesisStatus: (key) => request('/api/thesis/status', { query: { key } }),
+  thesisPart: (key, part) => request('/api/thesis/part', { query: { key, part } }),
+  thesisRefsCheck: (key) => request('/api/thesis/refs-check', jsonBody({ key })),
   scriptStoryboardRun: (key, sceneNo) => request('/api/script/storyboard', jsonBody({ key, sceneNo }), { timeout: 20000 }),
   novelToDrama: (payload) => request('/api/novel-to-drama', jsonBody(payload), { timeout: 30000 }),
   scriptRewriteScenes: (key, sceneNos, instruction = '') =>

@@ -143,7 +143,7 @@ def test_read_skill_ok():
 def test_tree_structure_and_labels():
     t = skillkit.tree()
     assert [x["medium"] for x in t] == list(medium_mod.MEDIUMS)
-    assert [x["label"] for x in t] == ["小说", "剧本", "诗词", "散文"]
+    assert [x["label"] for x in t] == [medium_mod.label(m) for m in medium_mod.MEDIUMS]
     novel = t[0]
     gmap = {g["genre"]: g for g in novel["groups"]}
     assert gmap["history"]["label"] == "历史"

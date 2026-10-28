@@ -36,11 +36,12 @@ export const MEDIUM_FALLBACK = [
   { key: 'novel', label: '小说', icon: 'book', desc: '长篇连载、中篇与短篇集。' },
   { key: 'script', label: '剧本', icon: 'film', desc: '长片、剧集、短片、舞台与戏曲。' },
   { key: 'poetry', label: '诗词', icon: 'feather', desc: '格律诗、词牌、古风与现代诗。' },
-  { key: 'prose', label: '散文', icon: 'pen', desc: '抒情、叙事、哲理与游记。' }
+  { key: 'prose', label: '散文', icon: 'pen', desc: '抒情、叙事、哲理与游记。' },
+  { key: 'thesis', label: '论文', icon: 'graduation', desc: '学术论文：提纲、引用文献、降 AIGC。' }
 ];
 
 /* 后端 /api/mediums 的 icon 是 emoji（旧版界面直接渲染），v2 一律按体裁 key 取 SVG 名。 */
-const MEDIUM_ICON = { novel: 'book', script: 'film', poetry: 'feather', prose: 'pen' };
+const MEDIUM_ICON = { novel: 'book', script: 'film', poetry: 'feather', prose: 'pen', thesis: 'file-text' };
 
 export function mediumIcon(medium) {
   const key = typeof medium === 'string' ? medium : (medium && medium.key) || '';

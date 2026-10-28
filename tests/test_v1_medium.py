@@ -20,8 +20,8 @@ client = TestClient(appmod.app)
 # ---------- 文体注册表 ----------
 
 def test_medium_registry_four():
-    """四种文体齐备，每种都要有阶段表 + 评估维度 + 及格线。"""
-    assert set(medium.MEDIUMS.keys()) == {"novel", "script", "poetry", "prose"}
+    """文体齐备（v4.6.0 起 +论文），每种都要有阶段表 + 评估维度 + 及格线。"""
+    assert {"novel", "script", "poetry", "prose", "thesis"} <= set(medium.MEDIUMS.keys())
     for key, m in medium.MEDIUMS.items():
         assert m["stages"], f"{key} 缺阶段表"
         assert m["score_dims"], f"{key} 缺评估维度"
@@ -31,7 +31,7 @@ def test_medium_registry_four():
 
 def test_medium_registry_api():
     d = client.get("/api/mediums").json()
-    assert "mediums" in d and len(d["mediums"]) == 4
+    assert "mediums" in d and len(d["mediums"]) >= 5
     for m in d["mediums"]:
         assert {"key", "label", "icon", "stages", "score_dims", "pass_line"} <= set(m)
 

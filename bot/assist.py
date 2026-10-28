@@ -21,7 +21,7 @@ from bot.safeio import atomic_write_text
 
 from . import llm, poetry_writer, prose_writer, script_writer
 
-MEDIA = ("script", "poetry", "prose", "novel")   # v3.2.0：小说工作台也有对话改稿
+MEDIA = ("script", "poetry", "prose", "novel", "thesis")   # v4.6.0：+论文
 
 # 版本快照：剧本沿用 04-正文/.versions/第NNN场-时间.md，其余文体放作品根 .versions/
 VERSIONS_DIR = ".versions"
@@ -71,7 +71,7 @@ _ACK_RE = re.compile(r"^(好的|好|以下是|下面是|这是|明白|收到)[^\
 _NAME_RE = re.compile(r"姓名[^\n：:]{0,20}[：:]\s*([^\s，,、。；;：:（(【\[]+)")
 
 # 文体名（给模型看的自称）
-_MEDIUM_NAME = {"script": "剧本", "poetry": "诗词", "prose": "散文", "novel": "小说"}
+_MEDIUM_NAME = {"script": "剧本", "poetry": "诗词", "prose": "散文", "novel": "小说", "thesis": "论文"}
 
 # 诗词/散文可改文档：id → (标题, 文件名)
 _POETRY_DOCS = (("final", "定稿", poetry_writer.F_FINAL), ("draft", "草稿", poetry_writer.F_DRAFT))
@@ -162,6 +162,9 @@ def _proj(key: str, medium: str):
         return poetry_writer.get_project(key)
     if medium == "prose":
         return prose_writer.get_project(key)
+    if medium == "thesis":
+        from bot import thesis_writer
+        return thesis_writer.get_project(key)
     if medium == "novel":
         # v3.2.0：小说走通用 Project（复用 writer 的目录规则）
         try:
@@ -212,7 +215,29 @@ def docs_for(key: str, medium: str) -> list[dict]:
         return _flat_docs(_PROSE_DOCS)
     if medium == "novel":
         return _novel_docs(proj)
+    if medium == "thesis":
+        return _thesis_docs(proj)
     return []
+
+
+def _thesis_docs(proj) -> list[dict]:
+    """论文可改文档：提纲/各章正文/参考文献/降味报告。"""
+    from bot import thesis_writer
+    plan = proj.plan() or {}
+    out = [{"id": "outline", "kind": "doc", "no": None, "title": "提纲",
+            "rel": thesis_writer.F_OUTLINE, "words": 0}]
+    for ch in (plan.get("outline") or {}).get("chapters") or []:
+        no = int(ch.get("no") or 0)
+        out.append({"id": f"ch{no}", "kind": "doc", "no": no,
+                    "title": f"第 {no} 章 · {ch.get('title')}",
+                    "rel": os.path.join(thesis_writer.F_BODY_DIR,
+                                        f"{no:02d}-{thesis_writer._safe(ch.get('title'))}.md"),
+                    "words": 0})
+    out.append({"id": "refs", "kind": "doc", "no": None, "title": "参考文献",
+                "rel": thesis_writer.F_REFS, "words": 0})
+    out.append({"id": "report", "kind": "doc", "no": None, "title": "降味报告",
+                "rel": thesis_writer.F_REPORT, "words": 0})
+    return out
 
 
 def _novel_docs(proj) -> list[dict]:
@@ -270,8 +295,8 @@ def parse_target(text: str, medium: str = "script") -> dict:
         if m:
             block = _cn_to_int(m.group(1))
         return {"doc": doc, "block": block}
-    if medium == "novel":
-        # v3.2.0：小说「第N章第M段 / 第N章 / 第M段」
+    if medium in ("novel", "thesis"):
+        # 小说/论文：「第N章第M段 / 第N章 / 第M段」
         m = _RE_CHAPTER_BLOCK.search(t)
         if m:
             return {"doc": _cn_to_int(m.group(1)), "block": _cn_to_int(m.group(2))}
@@ -333,7 +358,7 @@ def _first_sentence(block: str, limit: int = 30) -> str:
 
 
 def _work_name(proj, plan: dict, medium: str) -> str:
-    for field in ("scriptName", "poemName", "proseName", "novelName"):
+    for field in ("scriptName", "poemName", "proseName", "novelName", "thesisName"):
         if plan.get(field):
             return str(plan[field])
     return proj.name

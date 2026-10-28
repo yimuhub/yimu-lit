@@ -9,6 +9,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
+from bot import thesis_writer
 from bot import chatsum
 from bot import export as export_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
@@ -573,7 +574,7 @@ def _chat_group(s, proj, msg, plan, st, name):
     # 构建作品上下文摘要
     # v3.2.0：剧本/诗词/散文的 @Agent 也用各自文体的上下文（此前全是小说口径空壳）
     _kb = os.path.basename(proj.path)
-    _med = {"s_": "script", "p_": "poetry", "e_": "prose"}.get(_kb[:2])
+    _med = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis"}.get(_kb[:2])
     if _med:
         try:
             from bot import assist as _assist
@@ -780,13 +781,14 @@ def _chat_attached(s, proj, msg):
 
     # start_writing_all / start_writing / resume_writing → 启动或继续写作
     if _intent in ("start_writing_all", "start_writing", "resume_writing"):
-        if str(key)[:2] in ("s_", "p_", "e_"):
+        if str(key)[:2] in ("s_", "p_", "e_", "t_"):
             # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
             if writer.pipeline_running(key):
                 return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
             import threading as _th
-            from bot import script_writer, poetry_writer, prose_writer
-            _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer}[str(key)[:2]]
+            from bot import script_writer, poetry_writer, prose_writer, thesis_writer
+            _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
+                    "t_": thesis_writer}[str(key)[:2]]
             _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
             return f"▶ 恢复《{name}》的创作，工作台可见进度…"
         if running:
@@ -1121,10 +1123,22 @@ def _create_prose_project(payload: dict) -> dict:
                           prose_writer._safe, "未命名散文", cfg, ref_ids)
 
 
+def _create_thesis_project(payload: dict) -> dict:
+    """v4.6.0：论文（degree/field/title/idea/target_words/cite_style/humanize）。"""
+    cfg = dict(payload.get("cfg_overrides") or {})
+    for k in ("title", "idea", "degree", "field", "target_words", "cite_style", "humanize"):
+        if payload.get(k) is not None:
+            cfg[k] = payload[k]
+    _provider_into(cfg, payload)
+    return _spawn_project("thesis", "t_", thesis_writer.create_project,
+                          thesis_writer._safe, "未命名论文", cfg, [])
+
+
 _MEDIUM_CREATORS = {
     "script": _create_script_project,
     "poetry": _create_poetry_project,
     "prose": _create_prose_project,
+    "thesis": _create_thesis_project,
 }
 
 
@@ -2311,12 +2325,13 @@ def api_continue(payload: dict):
     except (ValueError, TypeError):
         extra = 0
     # ---- 非小说文体：走各自引擎的断点恢复（服务重启/线程中断后的唯一续跑通道）----
-    _medium_mod = {"s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer"}.get(str(key)[:2])
+    _medium_mod = {"s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer",
+                   "t_": "thesis_writer"}.get(str(key)[:2])
     if _medium_mod:
         import threading as _th
-        from bot import script_writer, poetry_writer, prose_writer
+        from bot import script_writer, poetry_writer, prose_writer, thesis_writer
         mod = {"script_writer": script_writer, "poetry_writer": poetry_writer,
-               "prose_writer": prose_writer}[_medium_mod]
+               "prose_writer": prose_writer, "thesis_writer": thesis_writer}[_medium_mod]
         fn = getattr(mod, "resume_project", None)
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
@@ -3846,6 +3861,54 @@ async def api_script_forms():
     return {"forms": [{"key": k, "label": v["label"], "target": v["target_pages"],
                        "unit": v["unit"]} for k, v in script_writer.FORMS.items()],
             "entryPaths": [{"key": k, "label": v} for k, v in script_writer.ENTRY_PATHS.items()]}
+
+
+# ---------- v4.6.0：论文流水线 ----------
+
+@app.get("/api/thesis/status")
+async def api_thesis_status(key: str):
+    proj = thesis_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return proj.status()
+
+
+@app.get("/api/thesis/part")
+async def api_thesis_part(key: str, part: str = "final"):
+    """论文文档：outline/refs/report/final 或 正文章（如 part=ch1）。"""
+    proj = thesis_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    mapping = {"outline": thesis_writer.F_OUTLINE, "refs": thesis_writer.F_REFS,
+               "report": thesis_writer.F_REPORT, "final": thesis_writer.F_FINAL}
+    if part in mapping:
+        fp = os.path.join(proj.path, mapping[part])
+        text = open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
+    elif part.startswith("ch") and part[2:].isdigit():
+        plan = proj.plan() or {}
+        no = int(part[2:])
+        ch = next((c for c in (plan.get("outline") or {}).get("chapters") or [] if int(c.get("no") or 0) == no), None)
+        if not ch:
+            return JSONResponse({"error": "章节不存在"}, status_code=404)
+        fp = os.path.join(proj.path, thesis_writer.F_BODY_DIR,
+                          f"{no:02d}-{thesis_writer._safe(ch.get('title'))}.md")
+        text = open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
+    else:
+        return JSONResponse({"error": "未知 part"}, status_code=400)
+    return {"key": key, "part": part, "text": text}
+
+
+@app.post("/api/thesis/refs-check")
+def api_thesis_refs_check(payload: dict):
+    """引用核查（确定性）：引注 ↔ 文献表。"""
+    key = str(payload.get("key") or "")
+    proj = thesis_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    plan = proj.plan() or {}
+    issues = thesis_writer.check_citations(plan, proj.path)
+    return {"ok": True, "key": key, "issues": issues,
+            "refs": plan.get("refs") or []}
 
 
 # ---------- v1.0.0：诗词流水线 ----------

@@ -26,6 +26,13 @@ const BENCH = {
     status: (key) => api.scriptStatus(key),
     doc: (key, tab) => api.scriptDoc(tab, key)
   },
+  thesis: {
+    title: '论文工作台',
+    tabs: [['outline', '提纲'], ['refs', '参考文献'], ['report', '降味报告'], ['final', '定稿']],
+    defaultTab: 'final',
+    status: (key) => api.thesisStatus(key),
+    doc: (key, part) => api.thesisPart(key, part)
+  },
   poetry: {
     title: '诗词工作台',
     tabs: [['note', '题解'], ['imagery', '意象'], ['draft', '草稿'], ['check', '格律校验'], ['final', '定稿']],

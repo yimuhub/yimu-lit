@@ -98,6 +98,25 @@ MEDIUMS: dict[str, dict] = {
         "checker": "bot.slop_checker",
         "live": None,
     },
+    # v4.6.0：论文文体（提纲 → 分章撰写 → 引用管理 → 降 AIGC 润色 → 定稿）
+    "thesis": {
+        "label": "论文",
+        "icon": "🎓",
+        "desc": "学术论文：提纲 / 分章撰写 / 引用文献管理 / 降 AIGC 润色",
+        "dir_prefix": "t_",
+        "stages": [
+            ("T1", "提纲", "选题 / 摘要 / 章节结构 / 引用池"),
+            ("T2", "撰写", "分章撰写：引言/综述/方法/分析/结论"),
+            ("T3", "引用", "引用核查：正文引注 ↔ 文献表一一对应"),
+            ("T4", "降味", "降 AIGC 润色：句式节奏/连接词多样化"),
+            ("T5", "定稿", "参考文献定稿 + 查重报告"),
+        ],
+        "score_dims": [("学术", 30), ("结构", 25), ("引用", 25), ("表达", 20)],
+        "pass_line": 80,
+        "agents": ["thesis_writer"],
+        "checker": None,
+        "live": None,
+    },
 }
 
 # 别名：用户口语 → 文体 key
@@ -300,6 +319,35 @@ _NOVEL_SECTIONS = {
     ],
 }
 
+# v4.6.0：论文向导（学历/学科/字数/引用格式；引擎 bot/thesis_writer.py）
+_THESIS_WIZARD = {
+    "style_title": "引用与降味",
+    "brief": [
+        _f("degree", "层次", "select", options=_opts([
+            ("undergrad", "本科毕业论文"), ("master", "硕士论文"), ("journal", "期刊论文"), ("report", "课程报告")]),
+           default="undergrad", required=True),
+        _f("field", "学科方向", "text", max_length=30, required=True,
+           hint="例如：计算机 / 汉语言文学 / 市场营销"),
+    ],
+    "basic": [
+        _f("title", "论文题目", "text", max_length=60,
+           hint="留空则由引擎基于学科方向出选题候选。"),
+        _f("idea", "研究要点", "textarea", rows=4, max_length=2000,
+           hint="研究问题 / 方法 / 预期结论；写得越具体，提纲越可用。"),
+        _f("words_scale", "目标字数", "scale",
+           options=[{"value": "8k", "label": "8千字", "fill": 8000},
+                    {"value": "15k", "label": "1.5万字", "fill": 15000},
+                    {"value": "30k", "label": "3万字", "fill": 30000}],
+           custom_key="target_words", min=3000, max=100000, unit="字", default="8k", required=True),
+    ],
+    "style": [
+        _f("cite_style", "引用格式", "select", options=_opts([
+            ("gb", "GB/T 7714（国标）"), ("apa", "APA"), ("mla", "MLA")]), default="gb"),
+        _f("humanize", "降 AIGC 润色", "toggle", default=True,
+           hint="定稿前逐章拟人化改写，降低 AI 检测率并输出降味报告。"),
+    ],
+}
+
 # 剧本：引擎真实消费 title/idea/form/entryPath/scenes/pages/episodes/notes（见 bot/script_writer.py）。
 _SCRIPT_GENRES = ["悬疑/犯罪", "古装/历史", "都市/现实", "科幻", "战争/军事",
                   "喜剧", "爱情", "家庭/伦理", "武侠/仙侠", "恐怖/灵异"]
@@ -457,7 +505,7 @@ _WIZARD: dict[str, dict[str, list[dict]]] = {
 
 def _copy_sections(medium: str) -> dict:
     """深拷贝三段字段，避免调用方改写模块常量。"""
-    src = _WIZARD.get(medium) or {"brief": [], "basic": [], "style": []}
+    src = _WIZARD.get(medium) or (_THESIS_WIZARD if medium == "thesis" else {"brief": [], "basic": [], "style": []})
     out = {group: [dict(f, **({"options": list(f.get("options") or [])} if f.get("options") else {}))
                    for f in src.get(group, [])]
            for group in ("brief", "basic", "style")}

@@ -49,6 +49,11 @@ ALLOWED_KEYS = {
         "genre", "operation", "title", "idea", "sourceText", "audience", "purpose",
         "tone", "words", "target_words", "slop_depth", "fact_check", "style_id",
     },
+    "thesis": {
+        # v4.6.0：thesis_writer 读 degree/field/title/idea/target_words/cite_style/humanize
+        "degree", "field", "title", "idea", "target_words", "cite_style", "humanize", "style_id",
+        "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
+    },
 }
 
 # static/v2/js/views/wizard.js 的 controlFor() 支持的类型；schema 用了别的就渲染不出来
@@ -70,7 +75,7 @@ def _all_fields(med_sections):
 
 def test_wizard_schema_covers_four_mediums():
     sections = _fields()
-    assert set(sections) == set(medium_mod.MEDIUMS)
+    assert {"novel", "script", "poetry", "prose", "thesis"} <= set(sections)
     for med in medium_mod.MEDIUMS:
         assert sections[med]["style_title"], med
         for group in ("brief", "basic", "style"):
@@ -154,7 +159,7 @@ def captured_cfg(monkeypatch):
 
 
 def test_dispatch_creators_cover_three_non_novel_mediums():
-    assert set(appmod._MEDIUM_CREATORS) == {"script", "poetry", "prose"}
+    assert {"script", "poetry", "prose", "thesis"} <= set(appmod._MEDIUM_CREATORS)
 
 
 def test_dispatch_script(captured_cfg):

@@ -225,9 +225,9 @@ export function statusMeta(state, label) {
   return map[state] || { tone: 'muted', label: label || '未开始' };
 }
 
-export const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文' };
+export const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文', thesis: '论文' };
 /* 各文体的进度单位不同：小说计章、剧本计场、诗词计改稿轮、散文计阶段。 */
-export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段' };
+export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段', thesis: '章' };
 
 export function mediumChip(medium) {
   /* v4.2.0：四文体全部显示彩色标签（此前小说不显示） */
