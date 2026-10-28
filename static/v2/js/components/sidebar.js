@@ -1,6 +1,6 @@
 /* 左侧作品栏：品牌、新建、搜索、按时间分组、状态与进度、底部入口。 */
 
-import { h, icon, fmtWords, groupByRecency, initials, statusMeta, debounce } from '../core/dom.js';
+import { h, icon, fmtWords, groupByRecency, initials, mediumGlyph, statusMeta, debounce } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { navigate, openProject } from '../core/router.js';
 import { toast } from '../core/ui.js';
@@ -30,7 +30,9 @@ function renderRow(item, ctx, { isActive }) {
     'data-tip': `${item.name} · ${meta.label}`,
     'aria-current': isActive ? 'page' : 'false'
   });
-  btn.append(h('span', { class: 'rail-avatar', 'aria-hidden': 'true', text: initials(item.name) }));
+  /* v4.2.0：按文体显示单字头像（小/剧/散/诗/词…），一眼识别体裁 */
+  btn.append(h('span', { class: 'rail-avatar', 'aria-hidden': 'true',
+    text: mediumGlyph(item) || initials(item.name) }));
   const main = h('span', { class: 'side-row-main' });
   const top = h(
     'span',

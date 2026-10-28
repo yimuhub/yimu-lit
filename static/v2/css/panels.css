@@ -3120,3 +3120,44 @@
   outline: none;
 }
 .invite-panel-search:focus { border-color: var(--accent); }
+
+/* ---- v4.2.0：作品卡评分/标签/文体彩色 ---- */
+.lib-quality {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: 10.5px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+}
+.lib-quality .lib-star-score { display: inline-flex; color: var(--warn-label, var(--accent)); }
+.lib-quality .lib-quality-num { color: var(--ink-secondary); font-weight: 600; }
+.lib-quality .lib-quality-pass { color: var(--success); font-weight: 600; }
+
+.lib-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.lib-genre, .lib-tag {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--fill-3, var(--line-1));
+  color: var(--ink-caption);
+  font-size: 10px;
+  line-height: 1.8;
+  white-space: nowrap;
+}
+
+/* 文体彩色标签：小说/剧本/诗词/散文 一眼可辨 */
+.lib-medium[data-medium="novel"] { color: var(--accent); background: var(--accent-soft); }
+.lib-medium[data-medium="script"] { color: var(--warn-label, #c98a2b); background: rgba(201, 138, 43, 0.14); }
+.lib-medium[data-medium="poetry"] { color: var(--success, #4c9a6f); background: rgba(76, 154, 111, 0.14); }
+.lib-medium[data-medium="prose"] { color: #9a7bd8; background: rgba(154, 123, 216, 0.14); }
+.lib-medium {
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1.8;
+  white-space: nowrap;
+  font-weight: 600;
+}

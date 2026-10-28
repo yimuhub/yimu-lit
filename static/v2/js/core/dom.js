@@ -230,15 +230,30 @@ export const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗�
 export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段' };
 
 export function mediumChip(medium) {
+  /* v4.2.0：四文体全部显示彩色标签（此前小说不显示） */
   const label = MEDIUM_LABELS[medium];
-  if (!label || medium === 'novel') return null;
-  return h('span', { class: `lib-medium`, text: label, title: `${label}作品` });
+  if (!label) return null;
+  return h('span', { class: 'lib-medium', dataset: { medium }, text: label, title: `${label}作品` });
 }
 
 export function initials(name) {
   const s = String(name || '').trim();
   if (!s) return '书';
   return s.slice(0, 1);
+}
+
+/* v4.2.0：左栏/封面按文体显示单字头像（小/剧/散/诗/词/论/赋/歌） */
+export function mediumGlyph(item) {
+  if (!item || typeof item !== 'object') return null;
+  const medium = item.medium || '';
+  const form = String(item.form || '');
+  if (medium === 'poetry') {
+    if (form.includes('词')) return '词';
+    if (form.includes('曲')) return '曲';
+    return '诗';
+  }
+  const glyph = { novel: '小', script: '剧', prose: '散', thesis: '论', fu: '赋', song: '歌' }[medium];
+  return glyph || null;
 }
 
 export function bytes(n) {

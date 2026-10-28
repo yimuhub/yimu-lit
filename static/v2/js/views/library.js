@@ -12,8 +12,7 @@ import {
   MEDIUM_LABELS,
   MEDIUM_UNITS,
   debounce,
-  downloadUrl
-} from '../core/dom.js';
+  downloadUrl, mediumGlyph } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
 import { toast, popoverMenu, openModal } from '../core/ui.js';
@@ -775,13 +774,28 @@ export function renderLibrary(container, ctx) {
   }
 
   function qualityChip(item) {
+    /* v4.2.0：星级评分（★ + 分数 + 达标徽章），无分不显示 */
     if (item.quality == null) return null;
     const passing = item.passing === true;
     return h('span', {
-      class: 'badge',
+      class: 'lib-quality',
       dataset: { tone: passing ? 'success' : 'muted' },
-      text: `${item.quality} 分${passing ? ' · 达标' : ''}`
-    });
+      title: passing ? '质量达标' : '尚未达标'
+    },
+      h('span', { class: 'lib-star-score', html: icon('star', 12) }),
+      h('span', { class: 'lib-quality-num', text: String(item.quality) }),
+      passing ? h('span', { class: 'lib-quality-pass', text: '达标' }) : null
+    );
+  }
+
+  /* v4.2.0：题材标签 chip + 用户自定义 tags */
+  function genreTags(item) {
+    const row = h('span', { class: 'lib-tags' });
+    if (item.genre) row.append(h('span', { class: 'chip chip-muted lib-genre', text: item.genre }));
+    for (const t of (item.tags || []).slice(0, 3)) {
+      row.append(h('span', { class: 'chip chip-muted lib-tag', text: String(t) }));
+    }
+    return row;
   }
 
   function progressOf(item) {
@@ -816,7 +830,7 @@ export function renderLibrary(container, ctx) {
         h(
           'div',
           { class: 'lib-cover' },
-          h('span', { text: initials(item.name) }),
+          h('span', { text: (mediumGlyph(item) || initials(item.name)) }),
           item.favorite
             ? h('span', { class: 'lib-star', html: icon('star', 13), title: '已收藏' })
             : null
@@ -835,7 +849,7 @@ export function renderLibrary(container, ctx) {
           h(
             'div',
             { class: 'lib-meta' },
-            h('span', { text: item.genre || '未分类' }),
+            genreTags(item),
             h('span', { class: 'sep' }),
             h('span', { class: `dot dot-${meta.tone}` }),
             h('span', { text: meta.label }),
@@ -887,7 +901,7 @@ export function renderLibrary(container, ctx) {
     const row = h('div', { class: 'lib-row', dataset: { key: item.key } });
     row.append(
       selectBox(item),
-      h('span', { class: 'lib-cover', text: initials(item.name) }),
+      h('span', { class: 'lib-cover', text: (mediumGlyph(item) || initials(item.name)) }),
       h(
         'div',
         { class: 'lib-main' },
@@ -901,7 +915,7 @@ export function renderLibrary(container, ctx) {
         h(
           'div',
           { class: 'lib-meta' },
-          h('span', { text: item.genre || '未分类' }),
+          genreTags(item),
           h('span', { class: `dot dot-${meta.tone}` }),
           h('span', { text: meta.label }),
           h('span', { text: `${item.done}/${item.total} ${unit} · ${fmtWords(item.total_words)}` }),
