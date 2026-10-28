@@ -95,7 +95,7 @@ export function renderLibrary(container, ctx) {
     ),
     h(
       'div',
-      { class: 'lib-toolbar' },
+      { class: 'lib-toolbar page-card' },
       h(
         'button',
         {
@@ -112,10 +112,10 @@ export function renderLibrary(container, ctx) {
   const viewsRow = h('div', { class: 'lib-views' });
   pad.append(viewsRow);
 
-  const statsRow = h('div', { class: 'lib-stats' });
+  const statsRow = h('div', { class: 'lib-stats page-card' });
   pad.append(statsRow);
 
-  const filterRow = h('div', { class: 'lib-toolbar' });
+  const filterRow = h('div', { class: 'lib-toolbar page-card' });
   pad.append(filterRow);
 
   const batchBar = h('div', { class: 'lib-batch', hidden: true });

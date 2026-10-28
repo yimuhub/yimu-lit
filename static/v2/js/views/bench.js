@@ -83,7 +83,10 @@ export function renderBench(container, ctx) {
     'aria-label': '章节正文'
   });
   const foot = h('div', { class: 'bench-foot' });
-  editorCol.append(editor, foot);
+  /* v4.0.0：正文纸张卡片（阅读列宽度受限、圆角卡片、轻投影） */
+  const paper = h('div', { class: 'bench-paper' });
+  paper.append(editor, foot);
+  editorCol.append(paper);
 
   const side = h('div', { class: 'bench-side' });
   body.append(editorCol, side);

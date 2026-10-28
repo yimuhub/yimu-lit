@@ -77,7 +77,7 @@ export function renderSkillLib(container, ctx) {
 
   /* --------------------------------------------------------------- head */
 
-  const statsRow = h('div', { class: 'skill-stats' });
+  const statsRow = h('div', { class: 'skill-stats page-card' });
   pad.append(
     h(
       'div',
