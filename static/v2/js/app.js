@@ -755,14 +755,14 @@ async function ensureWork(key) {
   loadedKey = key;
   patch('work', null);
   patch('workError', null);
-  /* 剧本/诗词/散文的进度与正文由各自工作台按文体接口拉取；
-     这里的规划、状态库、参考资料都是小说引擎的东西，套上去只会报"项目不存在"。 */
-  if (isMediumBench(store.get().workMedium)) return;
+  /* v4.3.0：非小说也 refreshWork（/api/status 已全文体）+ startLive（创作过程实时可视）。
+     规划/状态/参考仍按 features 门控，只有小说真正拉取。 */
+  const mediumBench = isMediumBench(store.get().workMedium);
   await Promise.allSettled([
     ctx.refreshWork(),
-    ctx.refreshPlan(),
-    ctx.refreshState(),
-    ctx.refreshRefs(),
+    !mediumBench && ctx.refreshPlan(),
+    !mediumBench && ctx.refreshState(),
+    !mediumBench && ctx.refreshRefs(),
     ctx.refreshSkills()
   ]);
   const state = store.get();

@@ -15,6 +15,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -344,6 +345,39 @@ def _attach_digest(proj, lf, plan: dict) -> dict:
     return {"chapters_written": written, "chapters_planned": len(chapters)}
 
 
+def _script_state_payload(proj, key: str, q: str = "") -> dict:
+    """v4.3.0：剧本的状态数据（与小说 /api/state 同构），供右栏状态 pane 复用。"""
+    from bot import script_state, script_writer
+    st = script_state.build_state(proj.path)
+    audit = script_state.load_audit(proj.path)
+    sp = script_writer.get_project(key)
+    plan = (sp.plan() if sp else None) or {}
+    scenes = plan.get("scenes") or []
+    done = sum(1 for sc in scenes if sc.get("status") == "completed")
+    words = sum(sc.get("wordCount") or 0 for sc in scenes)
+    cur = next((sc.get("no") for sc in scenes if sc.get("status") != "completed"), None) or (scenes[-1].get("no") if scenes else 1)
+    chars = [{"name": k, "status": f"{len(v.get('scenes') or [])} 场"} for k, v in (st.get("characters") or {}).items()]
+    locs = [{"name": k, "status": f"{len(v.get('scenes') or [])} 场"} for k, v in (st.get("locations") or {}).items()]
+    timeline = [{"chapter": sc.get("no"), "time": sc.get("time") or "",
+                 "event": (sc.get("heading") or f"{sc.get('kind') or ''} {sc.get('place') or ''}").strip(),
+                 "location": sc.get("place") or "",
+                 "characters": [x.strip() for x in re.split(r"[、，,/\s]+", str(sc.get("cast") or "")) if x.strip()]}
+                for sc in scenes]
+    handled = set(audit.get("handled") or []) if isinstance(audit, dict) else set()
+    issues = [i for i in ((audit or {}).get("issues") or []) if i not in handled]
+    return {"ok": True, "key": key,
+            "state": {"metrics": {"words": words, "last_chapter": cur},
+                      "last_audit": ({"at": audit.get("at"), "scope": "script",
+                                      "issues": issues[:8]} if audit.get("at") else None)},
+            "current_chapter": cur,
+            "chapters": {"done": done, "total": len(scenes)},
+            "characters": chars, "locations": locs, "items": [], "factions": [],
+            "threads": [], "foreshadowing": [],
+            "timeline": timeline[-2000:],
+            "issues": issues, "foreshadow_due": {},
+            "excerpt": ""}
+
+
 def register_v2_routes(app, get_project, chat_func=None):
     from bot import chatsum
     """在 app 上注册 v2 接口。由 app.py 在 `_get_project` 定义后调用。"""
@@ -506,6 +540,9 @@ def register_v2_routes(app, get_project, chat_func=None):
         proj, err = _project(get_project, key)
         if err:
             return err
+        # v4.3.0：剧本的状态 pane —— 数据源换 18-剧本状态库 / 22-剧本体检 / 剧本计划
+        if str(key).startswith("s_"):
+            return _script_state_payload(proj, key, q)
         stmod, err = _mod("state")
         if err:
             return err
@@ -1222,12 +1259,29 @@ def register_v2_routes(app, get_project, chat_func=None):
             worker = threading.Thread(target=_work, name="v2-chat-worker", daemon=True)
             worker.start()
 
+            # v4.3.0：等待期间顺带推送引擎过程行（proj.events 增量）——
+            # 创作的每一步（规划/场次/逐场/评分）都实时滚进对话气泡
+            _log_proj = get_project(key) if key else None
+            _log_idx = 0
             while not ready.is_set():
                 try:
                     await asyncio.wait_for(ready.wait(), timeout=_HEARTBEAT_SECS)
                 except TimeoutError:
-                    yield _sse("status", {"stage": "thinking",
-                                          "text": _waiting_text(time.time() - t0)})
+                    pushed_line = ""
+                    if _log_proj is not None:
+                        try:
+                            evs = getattr(_log_proj, "events", [])
+                            if len(evs) > _log_idx:
+                                _log_idx = len(evs)
+                                pushed_line = evs[-1]
+                        except Exception:
+                            pass
+                    if pushed_line:
+                        yield _sse("status", {"stage": "writing",
+                                              "text": pushed_line.split("] ", 1)[-1]})
+                    else:
+                        yield _sse("status", {"stage": "thinking",
+                                              "text": _waiting_text(time.time() - t0)})
 
             ok, value = box[0] if box else (False, RuntimeError("会话处理未返回结果"))
             if not ok:

@@ -600,13 +600,22 @@ function mediumWorkPane(work, ctx) {
   const pct = Number(work.progress) || 0;
   const meta = statusMeta(work.state, work.status_label);
   const summary = h('div', { class: 'rp-summary' });
+  const topRow = h('div', { class: 'rp-summary-top' });
+  topRow.append(
+    h('div', { class: 'rp-summary-title', text: work.name }),
+    /* v4.3.0：改名入口（四文体通用，复用小说的 startTitleEdit） */
+    h('button', {
+      class: 'icon-btn icon-btn-sm',
+      type: 'button',
+      'aria-label': '修改标题',
+      title: '修改标题',
+      html: icon('pen', 13),
+      on: { click: () => startTitleEdit(topRow, work, ctx) }
+    }),
+    h('span', { class: 'status-chip', dataset: { tone: meta.tone }, text: meta.label })
+  );
+  summary.append(topRow);
   summary.append(
-    h(
-      'div',
-      { class: 'rp-summary-top' },
-      h('div', { class: 'rp-summary-title', text: work.name }),
-      h('span', { class: 'status-chip', dataset: { tone: meta.tone }, text: meta.label })
-    ),
     h(
       'div',
       { class: 'rp-summary-meta' },
@@ -701,6 +710,17 @@ function mediumWorkPane(work, ctx) {
     if (tsec) pane.append(tsec);
   } catch { /* 标题区仅在数据可用时出现 */ }
 
+  /* v4.3.0：实时日志带——Agent 每一步（S0 引擎/场次/逐场写作/去味）都看得到 */
+  if (Array.isArray(state.live) && state.live.length) {
+    const liveSec = h('div', { class: 'rp-section' });
+    liveSec.append(sectionHead('实时日志', state.liveConnected === false ? '重连中' : '跟随'));
+    const log = h('div', { class: 'live-log' });
+    for (const line of state.live.slice(-8).reverse()) {
+      log.append(h('div', { class: 'live-log-line', text: line && line.message ? line.message : String(line) }));
+    }
+    liveSec.append(log);
+    pane.append(liveSec);
+  }
   pane.append(
     h('div', { class: 'hint-text rp-note', text: '正文与写作动作在中间的工作台里，按文体分页签展开。' })
   );
@@ -2244,9 +2264,11 @@ export function renderRightPanel(container, ctx) {
   resetPanelFor(state.currentKey);
   const mediumBench = isMediumBench(state.workMedium);
   const available = TABS.filter((item) => {
-    /* 规划/状态/参考/协作都是小说引擎的数据面，非小说作品没有这些接口，页签直接不出现。 */
-    if (mediumBench && item.key !== 'work' && item.key !== 'skills') return false;
-    if (item.key === 'plan') return state.features.plan !== false;
+    /* v4.3.0：非小说也放开 参考/协作；剧本有 18-剧本状态库，状态 tab 对剧本开放。
+       规划仍限小说（剧本结构在剧本工作台「场次/结构」页签）。 */
+    if (mediumBench && !['work', 'skills', 'refs', 'collab'].includes(item.key)
+        && !(item.key === 'state' && state.workMedium === 'script')) return false;
+    if (item.key === 'plan') return state.features.plan !== false && !mediumBench;
     if (item.key === 'state') return state.features.state !== false;
     if (item.key === 'refs') return state.features.references !== false;
     if (item.key === 'skills') return state.features.skills !== false;
