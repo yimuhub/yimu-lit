@@ -1925,6 +1925,15 @@ def _lifecycle(meta):
             "trashed": bool(trashed_at) or legacy_trash}
 
 
+def _stage_label_of(med, code):
+    """阶段码 → 中文名（S5=写作 等）；缺失返回空。"""
+    try:
+        from . import medium as _medium_mod
+        return _medium_mod.stage_names(med).get(code or "", "")
+    except Exception:
+        return ""
+
+
 def _other_medium_item(key, pdir, med, plan):
     """非小说作品：进度/字数取该文体引擎的 status()，小说专有字段留空而非造假值。
     项目对象用这里已解析好的 pdir 构造，避免各引擎自己的 PROJECTS_DIR 与本模块漂移。"""
@@ -1957,7 +1966,8 @@ def _other_medium_item(key, pdir, med, plan):
             "quality": None, "passing": None, "pass_line": _pass_line(),
             "released": None, "final_quality": None, "awaiting_title": False,
             "gate_rounds": None, "paused": bool(meta.get("paused")), "queued": 0,
-            "halted": False, "stage": st.get("stage") or "", "verdict": st.get("verdict") or "",
+            "halted": False, "stage": st.get("stage") or "",
+            "stage_label": _stage_label_of(med, st.get("stage")), "verdict": st.get("verdict") or "",
             "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
             "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
             **_lifecycle(meta)}

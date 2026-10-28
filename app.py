@@ -403,11 +403,19 @@ def _apply_title(key, title):
     new_key = os.path.basename(target)
     proj.path = target
     proj.name = title
-    # 02-写作计划.json：novelName + projectPath
-    plan = proj.plan() or {}
-    plan["novelName"] = title
-    plan["projectPath"] = target
-    proj.save_plan(plan)
+    # 计划文件改名：v3.3.0 修复——此前硬编码写 02-写作计划.json 的 novelName，
+    # 剧本/诗词/散文改名完全无效。改走 writer._plan_of 按文体写各自的 *Name 字段。
+    _med, _plan_fp, _plan_data = writer._plan_of(target)
+    if _med and _plan_fp and isinstance(_plan_data, dict):
+        _name_key = {"script": "scriptName", "poetry": "poemName", "prose": "proseName"}.get(_med, "novelName")
+        _plan_data[_name_key] = title
+        _plan_data["projectPath"] = target
+        atomic_write_json(_plan_fp, _plan_data)
+    else:
+        plan = proj.plan() or {}
+        plan["novelName"] = title
+        plan["projectPath"] = target
+        proj.save_plan(plan)
     # 02c-总规划.json：仅当已有 novelName/name 字段时同步
     cplan = os.path.join(target, "02c-总规划.json")
     if os.path.exists(cplan):
@@ -451,15 +459,26 @@ def _generate_title_candidates(key, n=5):
     proj = _get_project(key)
     if not proj:
         return []
-    plan = proj.plan() or {}
+    # v3.3.0：拟题泛化到四文体——按 _plan_of 读各自计划，素材按文体取
+    _med, _plan_fp, _plan = writer._plan_of(proj.path)
+    if _med and _plan:
+        plan = _plan
+    else:
+        plan = proj.plan() or {}
+        _med = "novel"
     cfg = dict(plan.get("config") or {})
+    cfg["medium"] = _med
     meta = plan.get("meta") or {}
     for k in ("genre", "tone", "theme", "idea", "conflict", "protagonist"):
         if not cfg.get(k) and meta.get(k):
             cfg[k] = meta[k]
     if not cfg.get("idea"):
-        # 大纲尾部若干章摘要作创意种子（大纲文件名兼容 01-/02- 两代）
-        for fn in ("02-大纲.md", "01-大纲.md"):
+        # 创意种子：小说取大纲尾部；剧本取创作圣经；诗词取题记/意象表；散文取 brief
+        _seeds = {"novel": ("02-大纲.md", "01-大纲.md"),
+                  "script": ("00-创作圣经.md",),
+                  "poetry": ("00-题记.md", "01-意象表.md"),
+                  "prose": ("00-brief.md", "01-素材.md")}.get(_med, ("02-大纲.md", "01-大纲.md"))
+        for fn in _seeds:
             p = os.path.join(proj.path, fn)
             if os.path.exists(p):
                 try:
@@ -3232,6 +3251,30 @@ async def api_script_bible(key: str):
     if not script_writer.get_project(key):
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "bible")}
+
+
+@app.post("/api/script/audit")
+def api_script_audit(payload: dict):
+    """v3.3.0：剧本一致性体检（人物在场/跳场/重复/时代串代）→ 22-剧本体检.json。"""
+    key = str(payload.get("key") or "")
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    from bot import script_state
+    report = script_state.audit_script(proj.path)
+    script_state.save_audit(proj.path, report)
+    return {"ok": True, "key": key, **report}
+
+
+@app.get("/api/script/audit")
+def api_script_audit_get(key: str):
+    """读取上次剧本体检结果（22-剧本体检.json）。"""
+    proj = script_writer.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    from bot import script_state
+    report = script_state.load_audit(proj.path)
+    return {"ok": True, "key": key, **report}
 
 
 @app.get("/api/script/chars")

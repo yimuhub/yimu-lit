@@ -141,7 +141,9 @@ def gen_style(cfg):
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
 def gen_titles(cfg, n=3):
-    sys_p = (f"执行 「一幕·神笔」创作系统的标题生成：参考 title-guide.md，基于故事元素生成 {n} 个候选标题，"
+    medium = str(cfg.get("medium") or "novel")
+    _kind = {"novel": "小说书名", "script": "剧名", "poetry": "诗题/词题", "prose": "散文标题"}.get(medium, "小说书名")
+    sys_p = (f"执行 「一幕·神笔」创作系统的标题生成：参考 title-guide.md，基于故事元素生成 {n} 个候选{_kind}，"
              "每个使用不同的创作技巧，附一句话说明。输出 JSON：{\"titles\":[{\"title\":..,\"technique\":..,\"why\":..}]}")
     user_p = (f"故事元素：{json.dumps({k: cfg.get(k) for k in ('genre','idea','conflict','protagonist','theme','tone')}, ensure_ascii=False)}\n"
               f"【标题技巧摘录】\n{skill.guide('title-guide')[:2500]}")

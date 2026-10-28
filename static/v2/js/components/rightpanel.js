@@ -602,6 +602,8 @@ function mediumWorkPane(work, ctx) {
   /* 散文的写法、诗词的格律判定各自引擎才有，缺了就不占一格。 */
   if (work.operation) cells.push(['写法', work.operation, '']);
   if (work.verdict) cells.push(['格律', verdictLabel(work.verdict), '']);
+  /* v3.3.0：当前阶段（S5=写作 / C=起草 / F=定稿…），每步到哪了一眼可见 */
+  if (work.stage) cells.push(['阶段', work.stage_label || work.stage, '']);
   for (const [k, v, extra] of cells) {
     kv.append(
       h(
@@ -663,10 +665,79 @@ function mediumWorkPane(work, ctx) {
     })
   );
   pane.append(actions);
+
+  /* v3.3.0：剧本一致性体检（人物在场/跳场/时代串代），与小说的状态 pane 同一套体验。 */
+  if ((work.medium || '') === 'script') pane.append(scriptAuditSection(work, ctx));
+
+  /* v3.3.0：标题候选泛化到全文体（拟题）。 */
+  try {
+    const tsec = titleCandsSection(ctx);
+    if (tsec) pane.append(tsec);
+  } catch { /* 标题区仅在数据可用时出现 */ }
+
   pane.append(
     h('div', { class: 'hint-text rp-note', text: '正文与写作动作在中间的工作台里，按文体分页签展开。' })
   );
   return pane;
+}
+
+/* v3.3.0：剧本一致性体检区（读 /api/script/audit，一键体检 → 问题列表 → 按设定重写入口）。 */
+function scriptAuditSection(work, ctx) {
+  const sec = h('div', { class: 'rp-section' });
+  const state = { loading: false, report: null, error: '' };
+  const bodyEl = h('div', {});
+
+  function paint() {
+    bodyEl.textContent = '';
+    if (state.error) {
+      bodyEl.append(h('div', { class: 'hint-text', text: state.error }));
+    } else if (!state.report) {
+      bodyEl.append(h('div', { class: 'hint-text', text: '检查人物在场、跳场/重复与时代串代；只读体检，不改动正文。' }));
+    } else {
+      const issues = state.report.issues || [];
+      bodyEl.append(h('div', { class: 'hint-text',
+        text: `上次体检：${(state.report.at || '').replace('T', ' ').slice(5, 16)} · 检查 ${(state.report.stats || {}).checked || 0} 场` }));
+      if (!issues.length) {
+        bodyEl.append(h('div', { class: 'hint-text', text: '未发现一致性问题。' }));
+      } else {
+        const list = h('div', { class: 'rp-issue-list' });
+        for (const it of issues.slice(0, 8)) list.append(h('div', { class: 'rp-issue', text: it }));
+        if (issues.length > 8) list.append(h('div', { class: 'hint-text', text: `…还有 ${issues.length - 8} 条` }));
+        bodyEl.append(list);
+        bodyEl.append(h('div', { class: 'hint-text', text: '违规场次可在工作台「场次」页签里按设定重写。' }));
+      }
+    }
+  }
+
+  const runBtn = h('button', {
+    class: 'btn btn-sm', type: 'button',
+    html: `${icon('shield', 12)}<span>${state.loading ? '体检中…' : '一致性体检'}</span>`,
+    on: {
+      click: async () => {
+        if (state.loading) return;
+        state.loading = true;
+        runBtn.innerHTML = `${icon('shield', 12)}<span>体检中…</span>`;
+        try {
+          const res = await api.scriptAudit(work.key);
+          state.report = res;
+          state.error = '';
+        } catch (err) {
+          state.error = errorText(err, '体检失败');
+        }
+        state.loading = false;
+        paint();
+      }
+    }
+  });
+  sec.append(h('div', { class: 'rp-section-head' }, h('h3', { text: '一致性体检' }),
+    h('div', { class: 'rp-section-actions' }, runBtn)));
+  sec.append(bodyEl);
+  paint();
+  // 上次结果预热
+  api.scriptAuditGet(work.key).then((r) => {
+    if (r && r.at && !state.report) { state.report = r; paint(); }
+  }).catch(() => {});
+  return sec;
 }
 
 function workPane(ctx) {

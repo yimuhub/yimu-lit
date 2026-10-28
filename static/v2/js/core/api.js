@@ -295,6 +295,8 @@ export const api = {
   scriptRevise: (key) => request('/api/script/revise', jsonBody({ key })),
   /* 世界观一致性体检 + 按设定重写违规场次（先落快照）。 */
   scriptCheck: (key) => request('/api/script/check', jsonBody({ key }), { timeout: 180000 }),
+  scriptAudit: (key) => request('/api/script/audit', jsonBody({ key }), { timeout: 120000 }),
+  scriptAuditGet: (key) => request('/api/script/audit', { query: { key } }),
   scriptRewriteScenes: (key, sceneNos, instruction = '') =>
     request('/api/script/rewrite-scenes', jsonBody({ key, sceneNos, instruction, force: true }), { timeout: 600000 }),
   /* 通用副驾（剧本/诗词/散文）：讨论或定向改写；改写只回 diff，应用走 assistApply。 */
