@@ -124,25 +124,39 @@ def _parse_outline_titles(outline_md, total):
     out = [t for n, t in sorted(titles)[:total]]
     return out or [f"第{n}章" for n in range(1, total + 1)]
 
+def _strip_md_style(text: str) -> str:
+    """v4.4.0：正文排版净化——去加粗/斜体/行首 #/列表符/反引号/分隔线，
+    只留正常中文标点（防模型不守排版纪律）。章节题行与结构小节标记由调用方处理。"""
+    t = re.sub(r"\*{1,3}([^*\n]{1,80}?)\*{1,3}", r"\1", text)          # **加粗** / *斜体*
+    t = re.sub(r"(?m)^(\s*)[-*•]\s+", r"\1", t)                        # 行首列表符
+    t = re.sub(r"_{1,3}([^_\n]{1,80}?)_{1,3}", r"\1", t)                # __下划线强调__
+    t = re.sub(r"`+", "", t)                                             # 反引号
+    t = re.sub(r"(?m)^\s*([-*_]\s*){3,}$", "", t)                      # --- 分隔线
+    # 行首 # 的结构标题（章题/引子/正文小节）保留——成书阅读需要层级；
+    # 正文中间的 # 由提示词禁止 + 本章概要/备注剥离后基本不出现。
+    return t
+
+
 def _clean_chapter_text(text):
     """成书时剥离规划元信息（本章概要/章节备注），保留 章题+章首引子+正文。
-    v3.1.0：补「仅有概要、无引子」分支——旧实现此时会把概要原样带进成书。"""
+    v3.1.0：补「仅有概要、无引子」分支——旧实现此时会把概要原样带进成书。
+    v4.4.0：输出前统一过 _strip_md_style 排版净化。"""
     m_sum = re.search(r"\n## 本章概要", text)
     m_intro = re.search(r"\n## 章首引子", text)
     m_notes = re.search(r"\n## 章节备注", text)
     end = m_notes.start() if m_notes else len(text)
     if m_intro and m_sum and m_sum.start() < m_intro.start():
-        return (text[:m_sum.start()] + text[m_intro.start():end]).strip()
+        return _strip_md_style((text[:m_sum.start()] + text[m_intro.start():end])).strip()
     if m_intro:
-        return (text[:m_intro.start() + 1] + text[m_intro.start():end]).strip()
+        return _strip_md_style(text[:m_intro.start() + 1] + text[m_intro.start():end]).strip()
     if m_sum:
         # 只有概要没有引子：剥掉概要段（从标题行到下一个 ## 或文末）
         nxt = re.search(r"\n## ", text[m_sum.end():])
         cut = m_sum.end() + (nxt.start() if nxt else len(text) - m_sum.end())
-        return (text[:m_sum.start()] + text[cut:]).strip()
+        return _strip_md_style(text[:m_sum.start()] + text[cut:]).strip()
     if m_notes:
-        return text[:m_notes.start()].strip()
-    return text.strip()
+        return _strip_md_style(text[:m_notes.start()]).strip()
+    return _strip_md_style(text).strip()
 
 def _cfg_defaults():
     try:
