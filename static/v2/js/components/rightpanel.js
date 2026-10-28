@@ -596,6 +596,7 @@ function titleCandsSection(ctx) {
 /* 剧本/诗词/散文：这里的数字单位属于各自引擎，小说的章节列表、导出与暂停/继续都不适用。 */
 function mediumWorkPane(work, ctx) {
   const pane = h('div', { class: 'rp-pane' });
+  const st = store.get();   // v4.6.1：实时日志带需要读全局 live；此前引用未定义的 state 变量导致整个右栏崩溃
   const unit = MEDIUM_UNITS[work.medium || 'novel'] || '';
   const pct = Number(work.progress) || 0;
   const meta = statusMeta(work.state, work.status_label);
@@ -711,11 +712,11 @@ function mediumWorkPane(work, ctx) {
   } catch { /* 标题区仅在数据可用时出现 */ }
 
   /* v4.3.0：实时日志带——Agent 每一步（S0 引擎/场次/逐场写作/去味）都看得到 */
-  if (Array.isArray(state.live) && state.live.length) {
+  if (Array.isArray(st.live) && st.live.length) {
     const liveSec = h('div', { class: 'rp-section' });
-    liveSec.append(sectionHead('实时日志', state.liveConnected === false ? '重连中' : '跟随'));
+    liveSec.append(sectionHead('实时日志', st.liveConnected === false ? '重连中' : '跟随'));
     const log = h('div', { class: 'live-log' });
-    for (const line of state.live.slice(-8).reverse()) {
+    for (const line of st.live.slice(-8).reverse()) {
       log.append(h('div', { class: 'live-log-line', text: line && line.message ? line.message : String(line) }));
     }
     liveSec.append(log);
