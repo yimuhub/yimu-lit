@@ -3,6 +3,8 @@
 设计原则：每一项失败都降级为 "skipped" 提示，绝不 crash（旧项目缺文件照样跑）。"""
 import json, os, re
 
+from .safeio import atomic_write_json
+
 SEV_RANK = {"info": 0, "warning": 1, "critical": 2}
 
 def _read(pdir, name):
@@ -127,3 +129,67 @@ def run_project(pdir, min_words=3000, dormant=3, absent=5):
 
     return {"findings": findings, "stats": {"chapters_done": total_done,
                                              "clues_registered": len(clues)}}
+
+
+# ---------------------------------------------------------------- v2.8.0 体检修复
+
+def fix(pdir, issue_id):
+    """体检问题的确定性修复入口（零 LLM 成本）。
+
+    能真修的（规划结构类→重建分层规划；状态库类→重建状态库）真修并返回动作清单；
+    需要改稿/人工判断的问题诚实说明，同时把该问题在 22-规划体检.json 里标记为已处理，
+    下次 /api/state 不再重复提示。绝不假装修复成功。"""
+    issue = str(issue_id or "").strip()
+    actions: list[str] = []
+    fixed = False
+
+    class _P:  # longform 只需要 .path
+        path = pdir
+
+    # 1) 规划结构类：章卡缺失 / 卷弧章号缺口 / 伏笔逾期登记 → 重建分层规划（纯文件操作）
+    if re.search(r"章卡|缺少|缺口|未登记|规划", issue) and not re.search(r"钩子|重写|改稿", issue):
+        try:
+            from . import longform as lf
+            plan = lf.ensure_plan(_P())
+            n_cards = 0
+            for v in (plan.get("volumes") or []):
+                for a in (v.get("arcs") or []):
+                    n_cards += len(a.get("chapters") or [])
+            actions.append(f"已重建分层规划（{n_cards} 张章卡）")
+            fixed = True
+        except Exception as e:
+            actions.append(f"重建分层规划失败（不影响原稿）：{e}")
+
+    # 2) 状态库类：实体/时间线/状态过期 → 从已成稿章节重建状态库
+    if re.search(r"状态|时间线|实体|地点|人物.*未|线索", issue):
+        try:
+            from . import state as stmod
+            stmod.rebuild_from_project(pdir, _plan(pdir))
+            actions.append("已从成稿章节重建状态库（18-状态库.json）")
+            fixed = True
+        except Exception as e:
+            actions.append(f"重建状态库失败：{e}")
+
+    if not actions:
+        actions.append("该问题需要改稿或人工判断，系统不做静默改动；已标记为已处理。")
+
+    # 标记已处理：下次 /api/state 不再出现在 last_audit 提示里
+    try:
+        fp = os.path.join(pdir, "22-规划体检.json")
+        audit = {}
+        if os.path.exists(fp):
+            try:
+                audit = json.load(open(fp, encoding="utf-8")) or {}
+            except Exception:
+                audit = {}
+        handled = set(audit.get("handled") or [])
+        if issue:
+            handled.add(issue)
+        audit["handled"] = sorted(handled)
+        audit["handled_at"] = {**(audit.get("handled_at") or {}),
+                               issue: __import__("datetime").datetime.now().isoformat()}
+        atomic_write_json(fp, audit)
+        actions.append("已从体检提示中移除（22-规划体检.json.handled）")
+    except Exception:
+        pass
+    return {"ok": True, "fixed": fixed, "actions": actions}

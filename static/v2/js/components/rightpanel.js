@@ -321,8 +321,10 @@ function showConsistencyIssue(ctx, issue) {
       on: { click: async () => {
         try {
           toast('正在修复…', { tone: 'info' });
-          await ctx.api.fixConsistency(issue.id || issue.type);
-          toast('修复完成', { tone: 'success' });
+          /* v2.8.0：ctx 上没有 api（原写法直接抛 TypeError）；api 已在模块顶部导入 */
+          const res = await api.fixConsistency(issue.id || issue.type || issue.desc || '', store.get().currentKey || '');
+          const acts = ((res && res.result && res.result.actions) || []).join('；');
+          toast(acts ? `修复完成：${acts}` : '修复完成', { tone: 'success', duration: 5000 });
           ctx.refreshState();
           document.querySelector('.rp-modal-overlay')?.remove();
         } catch (err) { toast(errorText(err, '修复失败'), { tone: 'danger' }); }
@@ -1462,23 +1464,39 @@ function statePane(ctx) {
     if (filtered.length) pane.append(entityGroupClickable(title, ic, filtered.slice(0, 10), right, ctx, title));
   }
 
+  /* v2.8.0：时间线全节点渲染（章号徽标 + 故事内时间 + 事件全文 + 地点/人物标签）。
+     后端字段是 {chapter,time,event,location,characters}（bot/state.py _norm_timeline_item），
+     旧代码读 item.at/item.text 全是 undefined，所以界面上只剩几个空圆点。 */
   if (Array.isArray(payload.timeline) && payload.timeline.length) {
     const sec = h('div', { class: 'rp-section' });
     sec.append(sectionHead('时间线', `${payload.timeline.length} 个节点`));
-    const tl = h('div', { class: 'timeline' });
+    const tl = h('div', { class: 'timeline timeline-full' });
     for (const item of payload.timeline) {
+      const tags = [];
+      if (item.location) tags.push(h('span', { class: 'tl-tag', text: item.location }));
+      for (const c of (Array.isArray(item.characters) ? item.characters : []).slice(0, 4)) {
+        tags.push(h('span', { class: 'tl-tag tl-tag-person', text: String(c) }));
+      }
       tl.append(
-        h(
-          'div',
-          { class: 'timeline-item', dataset: { current: item.current ? 'true' : 'false' },
-            style: 'cursor:pointer',
-            on: { click: () => showEntityDetail(ctx, item, 'event') } },
-          h('span', { class: 'tl-at', text: item.at || '' }),
-          h('span', { class: 'tl-main', text: item.text || '' })
+        h('div', { class: 'timeline-item', dataset: { current: item.current ? 'true' : 'false' } },
+          h('span', { class: 'tl-ch', text: `第${item.chapter || '?'}章` }),
+          h('div', { class: 'tl-body' },
+            h('div', { class: 'tl-main', text: item.event || item.text || '（无事件描述）' }),
+            h('div', { class: 'tl-meta' },
+              item.time ? h('span', { class: 'tl-tag tl-tag-time', text: item.time }) : null,
+              ...tags
+            )
+          )
         )
       );
     }
     sec.append(tl);
+    pane.append(sec);
+  } else if (payload.state && (payload.state.metrics || payload.state.summary)) {
+    /* 有状态库但还没有时间线节点：给出明确空态而不是无声消失 */
+    const sec = h('div', { class: 'rp-section' });
+    sec.append(sectionHead('时间线', '0 个节点'));
+    sec.append(h('div', { class: 'hint-text', text: '还没有时间线节点。每写完一章，这里会按章节记录发生的事件、地点与出场人物。' }));
     pane.append(sec);
   }
   return pane;

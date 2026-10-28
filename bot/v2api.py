@@ -517,9 +517,11 @@ def register_v2_routes(app, get_project, chat_func=None):
                     with open(afp, encoding="utf-8") as _f:
                         _audit = json.load(_f) or {}
                     if isinstance(_audit, dict) and _audit.get("at"):
+                        _handled = set(_audit.get("handled") or [])
+                        _issues = [i for i in (_audit.get("issues") or []) if i not in _handled]
                         st = dict(st)
                         st["last_audit"] = {"at": _audit.get("at"), "scope": _audit.get("scope"),
-                                            "issues": list(_audit.get("issues") or [])[:8]}
+                                            "issues": _issues[:8]}
             except Exception:
                 pass
             plan = proj.plan() or {}
@@ -544,7 +546,9 @@ def register_v2_routes(app, get_project, chat_func=None):
                     "factions": [{"name": k, **v} for k, v in (st.get("factions") or {}).items()],
                     "threads": _norm_list(st.get("threads")),
                     "foreshadowing": [{"id": k, **v} for k, v in (st.get("foreshadowing") or {}).items()],
-                    "timeline": _norm_list(st.get("timeline"))[-30:],
+                    # v2.8.0：时间线全量返回（上限 2000 条），前端按章节分组渲染，
+                    # 不再截断到 30 条导致「时间线只剩几个点」
+                    "timeline": _norm_list(st.get("timeline"))[-2000:],
                     "issues": issues, "foreshadow_due": due,
                     "excerpt": stmod.excerpt(st, q, 6000)}
         except Exception as e:
@@ -1041,8 +1045,10 @@ def register_v2_routes(app, get_project, chat_func=None):
             if cerr:
                 return cerr
             issue_id = str(payload.get("id") or payload.get("type") or "")
-            res = cont.fix(proj.path, issue_id) if hasattr(cont, "fix") else {"ok": True, "msg": "已标记为已处理"}
-            return {"ok": True, "result": res}
+            if not issue_id:
+                return _bad("缺少问题标识（id 或 type）")
+            res = cont.fix(proj.path, issue_id)
+            return {"ok": True, "key": key, "result": res}
         except Exception as e:
             return _bad(f"修复失败：{e}", 500)
 
@@ -1178,7 +1184,15 @@ def register_v2_routes(app, get_project, chat_func=None):
 
             def _work():
                 try:
-                    box.append((True, chat_func(sid, message, key)))
+                    result = chat_func(sid, message, key)
+                    # v2.8.0：AI 回复落盘移到 worker 线程——原来放在生成器里，
+                    # 客户端中途断开（等待期常达几分钟）会取消生成器，落盘被跳过，
+                    # 造成聊天记录「只有问没有答」。
+                    if _chat_proj:
+                        _save_chat_msg(_chat_proj, "assistant",
+                                       result if isinstance(result, str) else str(result or ""),
+                                       {"elapsed": round(time.time() - t0, 2)})
+                    box.append((True, result))
                 except BaseException as e:  # 原样带回事件循环，转成 error 帧
                     box.append((False, e))
                 finally:
@@ -1205,9 +1219,7 @@ def register_v2_routes(app, get_project, chat_func=None):
                                     "elapsed": round(time.time() - t0, 2)})
                 return
             text = value if isinstance(value, str) else str(value or "")
-            # v2.6.0：持久化 AI 回复到聊天历史
-            if _chat_proj:
-                _save_chat_msg(_chat_proj, "assistant", text, {"elapsed": round(time.time() - t0, 2)})
+            # v2.6.0：持久化 AI 回复（v2.8.0 起移到 worker 线程，见 _work 注释）
             # 旧状态机返回整段文本；按小段推送，让前端有真实的逐字阅读感。
             for i in range(0, len(text), 28):
                 yield _sse("delta", {"text": text[i:i + 28]})
@@ -1304,20 +1316,22 @@ def register_v2_routes(app, get_project, chat_func=None):
     # ------------------------------------------------------------ 聊天历史
     @app.get("/api/chat/history")
     def api_chat_history(key: str):
-        """读取作品的全部聊天历史（JSONL 格式，按时间正序）。"""
-        proj = _project(get_project, key)
-        if proj is None:
-            return {"ok": True, "items": []}
-        items = _load_chat_log(proj, limit=1000)
+        """读取作品的全部聊天历史（JSONL 格式，按时间正序）。
+        v2.8.0 修复：_project 返回 (proj, err) 元组，此前直接当 proj 用导致
+        AttributeError → /api/chat/history 恒 500，聊天记录永远读不出来。"""
+        proj, err = _project(get_project, key)
+        if err:
+            return err
+        items = _load_chat_log(proj, limit=5000)
         return {"ok": True, "items": items}
 
     @app.post("/api/chat/clear")
     def api_chat_clear(payload: dict):
         """清空作品的聊天历史。"""
         key = str(payload.get("key") or "")
-        proj = _project(get_project, key)
-        if proj is None:
-            return _bad("项目不存在", 404)
+        proj, err = _project(get_project, key)
+        if err:
+            return err
         try:
             p = _chat_log_path(proj)
             if os.path.exists(p):

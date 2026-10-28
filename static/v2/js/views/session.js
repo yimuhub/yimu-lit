@@ -125,21 +125,23 @@ export function renderSession(container, ctx = {}) {
   const dock = h('div', { class: 'composer-dock' }, bindRow, composer.el);
   el.append(planSlot, bannerSlot, chat.el, dock);
 
-  // v2.6.0：切换作品时自动加载聊天历史
-  let histLoaded = false;
+  // v2.6.0：切换作品时自动加载聊天历史；v2.8.0：每次挂载都重新拉取（chat_log.jsonl
+  // 是权威留档，中途断开的回复 v2.8.0 起也会落盘），只在非流式状态下替换，
+  // 保证「所有聊天记录全部保留、可回读」。
+  let histLoading = false;
   async function loadChatHistory() {
-    if (histLoaded) return;
-    histLoaded = true;
+    if (histLoading) return;
+    histLoading = true;
     const key = store.get().currentKey;
-    if (!key) return;
+    if (!key) { histLoading = false; return; }
     const medium = store.get().workMedium || store.get().ui?.medium || 'novel';
-    if (medium !== 'novel') return;  // 剧本/诗词/散文走 assist history
+    if (medium !== 'novel') { histLoading = false; return; }  // 剧本/诗词/散文走 assist history
     try {
       const res = await api.chatHistory(key);
-      if (res && res.ok && Array.isArray(res.items) && res.items.length) {
+      if (res && res.ok && Array.isArray(res.items)) {
         patchChat((cs) => {
-          // 只有当前没有消息时才填充历史（避免覆盖正在进行的对话）
-          if (cs.messages && cs.messages.length > 0) return cs;
+          // 正在流式输出的对话不覆盖；其余情况以落盘记录为准全量替换
+          if (cs.streaming) return cs;
           const msgs = res.items.map((item, i) => ({
             id: `hist_${i}_${item.ts || 0}`,
             role: item.role || 'assistant',
@@ -152,6 +154,8 @@ export function renderSession(container, ctx = {}) {
       }
     } catch (e) {
       // 静默失败：历史加载失败不影响正常聊天
+    } finally {
+      histLoading = false;
     }
   }
   loadChatHistory();

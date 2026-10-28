@@ -2941,3 +2941,59 @@
     height: 400px;
   }
 }
+
+/* v2.8.0：时间线全节点（章号徽标 + 事件 + 时间/地点/人物标签） */
+.timeline-full .timeline-item {
+  align-items: flex-start;
+  gap: 9px;
+  padding-bottom: 14px;
+}
+
+.timeline-full .tl-ch {
+  flex: none;
+  margin-top: 1px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.timeline-full .tl-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timeline-full .tl-main {
+  color: var(--ink-primary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.timeline-full .tl-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tl-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--fill-3, var(--line-1));
+  color: var(--ink-caption);
+  font-size: 10px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.tl-tag-time { color: var(--ink-secondary); font-variant-numeric: tabular-nums; }
+.tl-tag-person { color: var(--ink-secondary); }

@@ -1,4 +1,7 @@
-/* 设置：外观、生成质量、模型与密钥。只发送后端支持的字段，其余只读展示。 */
+/* 设置：分组标签页布局（v2.8.0 重构）。
+   左侧竖向导航 + 右侧内容区，分组：外观 / 创作质量 / 模型与供应商 /
+   创作岗位 / 对话与上下文 / 技能与数据 / 高级。
+   只发送后端支持的字段，其余只读展示。 */
 
 import { h, icon } from '../core/dom.js';
 import { store, patchUi } from '../core/state.js';
@@ -19,6 +22,20 @@ const THEME_OPTIONS = [
   { value: 'dark', icon: 'moon' },
   { value: 'system', icon: 'monitor' }
 ];
+
+/* 分组定义：key 同时是深链（ui.settingsTab）与导航高亮的依据。 */
+const GROUPS = [
+  { key: 'appearance', label: '外观', icon: 'palette', desc: '主题与显示' },
+  { key: 'quality', label: '创作质量', icon: 'shield', desc: '门禁 · 预算 · 记录' },
+  { key: 'providers', label: '模型与供应商', icon: 'plug', desc: '接口地址与密钥' },
+  { key: 'agents', label: '创作岗位', icon: 'layers', desc: '岗位 × 模型 × 技能' },
+  { key: 'chat', label: '对话与上下文', icon: 'message', desc: '会话留档与压缩' },
+  { key: 'skills', label: '技能与数据', icon: 'sparkles', desc: '进化与本地数据' },
+  { key: 'advanced', label: '高级', icon: 'sliders', desc: '经典版等' }
+];
+
+/* 旧深链值 → 新分组 key（其他页面跳转 settingsTab 的兼容映射）。 */
+const LEGACY_TAB = { appearance: 'appearance', quality: 'quality', providers: 'providers' };
 
 /* 技能标题清单见 core/skillCatalog.js：设置页与右栏协作面板共用同一份缓存。 */
 
@@ -64,50 +81,100 @@ export function renderSettings(container, ctx) {
     )
   );
 
+  /* --------------------------------------------------- 分组标签页骨架 */
+
+  const layout = h('div', { class: 'set-layout' });
+  const nav = h('nav', { class: 'set-nav', 'aria-label': '设置分组' });
+  const content = h('div', { class: 'set-content' });
+  layout.append(nav, content);
+  pad.append(layout);
+
+  const panes = {};   // key -> pane 元素
+  const navBtns = {}; // key -> 导航按钮
+
+  for (const g of GROUPS) {
+    const pane = h('section', { class: 'set-group', dataset: { group: g.key } });
+    pane.append(
+      h(
+        'div',
+        { class: 'set-group-head' },
+        h('span', { class: 'set-group-icon', html: icon(g.icon, 15) }),
+        h('div', {},
+          h('h2', { text: g.label }),
+          h('p', { class: 'hint-text', text: g.desc })
+        )
+      )
+    );
+    panes[g.key] = pane;
+    content.append(pane);
+    const btn = h('button', {
+      class: 'set-nav-item',
+      type: 'button',
+      'aria-current': 'false',
+      dataset: { group: g.key },
+      on: { click: () => showGroup(g.key) }
+    },
+      h('span', { class: 'set-nav-icon', html: icon(g.icon, 14) }),
+      h('span', { class: 'set-nav-copy' },
+        h('span', { class: 'set-nav-label', text: g.label }),
+        h('span', { class: 'set-nav-desc', text: g.desc })
+      )
+    );
+    navBtns[g.key] = btn;
+    nav.append(btn);
+  }
+
+  function showGroup(key) {
+    if (!panes[key]) key = 'appearance';
+    for (const [k, pane] of Object.entries(panes)) {
+      pane.hidden = k !== key;
+    }
+    for (const [k, btn] of Object.entries(navBtns)) {
+      btn.setAttribute('aria-current', k === key ? 'true' : 'false');
+    }
+    patchUi({ settingsTab: key });
+  }
+
   /* ----------------------------------------------------------- 外观 */
 
-  const themeSec = h('div', { class: 'set-section' });
-  themeSec.append(
-    h('div', { class: 'set-section-head' }, h('h3', { text: '外观' })),
-    h(
-      'div',
-      { class: 'theme-options' },
-      THEME_OPTIONS.map((opt) => {
-        const current = store.get().theme;
-        const btn = h(
-          'button',
-          {
-            class: 'theme-opt',
-            type: 'button',
-            'aria-pressed': current === opt.value ? 'true' : 'false',
-            dataset: { value: opt.value }
-          },
-          h('span', { html: icon(opt.icon, 15) }),
-          h('span', { text: themeLabel(opt.value) })
-        );
-        btn.addEventListener('click', () => {
-          setTheme(opt.value);
-          paintTheme();
-        });
-        return btn;
-      })
+  const themeBody = h('div', { class: 'theme-options' });
+  panes.appearance.append(
+    h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '界面主题' }),
+        h('div', { class: 'set-row-desc', text: '跟随系统会自动在浅色 / 深色之间切换。' })
+      ),
+      h('div', { class: 'set-control' }, themeBody)
     )
   );
-  pad.append(themeSec);
 
   function paintTheme() {
+    themeBody.textContent = '';
     const current = store.get().theme;
-    for (const btn of themeSec.querySelectorAll('.theme-opt')) {
-      btn.setAttribute('aria-pressed', btn.dataset.value === current ? 'true' : 'false');
+    for (const opt of THEME_OPTIONS) {
+      const btn = h(
+        'button',
+        {
+          class: 'theme-opt',
+          type: 'button',
+          'aria-pressed': current === opt.value ? 'true' : 'false',
+          dataset: { value: opt.value }
+        },
+        h('span', { html: icon(opt.icon, 15) }),
+        h('span', { text: themeLabel(opt.value) })
+      );
+      btn.addEventListener('click', () => {
+        setTheme(opt.value);
+        paintTheme();
+      });
+      themeBody.append(btn);
     }
   }
 
-  /* ------------------------------------------------------- 生成质量 */
+  /* ------------------------------------------------------- 创作质量 */
 
-  const qualitySec = h('div', { class: 'set-section' });
   const qualityBody = h('div', {});
-  qualitySec.append(h('div', { class: 'set-section-head' }, h('h3', { text: '生成质量' })), qualityBody);
-  pad.append(qualitySec);
+  panes.quality.append(qualityBody);
 
   function paintQuality() {
     qualityBody.textContent = '';
@@ -175,7 +242,7 @@ export function renderSettings(container, ctx) {
           'div',
           { class: 'set-row-copy' },
           h('div', { class: 'set-row-title', text: '上下文预算' }),
-          h('div', { class: 'set-row-desc', text: '每次调用允许携带的最大 token 数；百万字长篇建议 90k 以上。' })
+          h('div', { class: 'set-row-desc', text: '每次写作调用允许携带的最大 token 数；百万字长篇建议 90k 以上。' })
         ),
         h('div', { class: 'set-control' }, budget)
       )
@@ -189,22 +256,18 @@ export function renderSettings(container, ctx) {
       switchRow('LLM 调用日志', '记录每次模型的请求与响应，便于排查问题', s.llm_trace, (v) => {
         model.settings.llm_trace = v;
         model.dirty = true;
-      })
-    );
-
-    const info = h('div', { class: 'set-row' });
-    info.append(
+      }),
       h(
         'div',
-        { class: 'set-row-copy' },
-        h('div', { class: 'set-row-title', text: '并发与节奏' }),
-        h('div', {
-          class: 'set-row-desc',
-          text: `调用间隔 ${s.call_gap ?? '—'} 秒 · 全局并发上限见下方「模型与岗位」（可编辑）`
-        })
+        { class: 'set-row' },
+        h(
+          'div',
+          { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '调用间隔' }),
+          h('div', { class: 'set-row-desc', text: `两次模型调用之间的最小间隔：当前 ${s.call_gap ?? '—'} 秒（防 429 限流；在 config.json 的 defaults.call_gap 调整）。` })
+        )
       )
     );
-    qualityBody.append(info);
 
     const saveBtn = h('button', {
       class: 'btn btn-primary btn-sm',
@@ -277,26 +340,20 @@ export function renderSettings(container, ctx) {
     paintQuality();
   }
 
-  /* ------------------------------------------------------- 模型与密钥 */
+  /* ---------------------------------------------------- 模型与供应商 */
 
-  const provSec = h('div', { class: 'set-section' });
-  const provHead = h(
-    'div',
-    { class: 'set-section-head' },
-    h('h3', { text: '模型与密钥' }),
-    h(
-      'button',
-      {
+  const provBody = h('div', { class: 'provider-list' });
+  panes.providers.append(
+    h('div', { class: 'set-actions set-actions-top' },
+      h('button', {
         class: 'btn btn-sm',
         type: 'button',
         html: `${icon('plus', 13)}<span>添加供应商</span>`,
         on: { click: () => providerDialog(null) }
-      }
-    )
+      })
+    ),
+    provBody
   );
-  const provBody = h('div', { class: 'provider-list' });
-  provSec.append(provHead, provBody);
-  pad.append(provSec);
 
   function paintProviders() {
     provBody.textContent = '';
@@ -531,26 +588,26 @@ export function renderSettings(container, ctx) {
     return wrap;
   }
 
-  /* ------------------------------------------------------- 模型与岗位 */
+  /* --------------------------------------------------------- 创作岗位 */
 
-  const collabSec = h('div', { class: 'set-section' });
-  const collabHead = h(
-    'div',
-    { class: 'set-section-head' },
-    h('h3', { text: '模型与岗位' }),
-    h(
-      'button',
-      {
+  const collabBody = h('div', {});
+  panes.agents.append(
+    h('div', { class: 'set-actions set-actions-top' },
+      h('button', {
         class: 'btn btn-sm',
         type: 'button',
         html: `${icon('refresh', 13)}<span>重载</span>`,
         on: { click: () => loadAgents() }
-      }
-    )
+      }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        html: `${icon('plus', 13)}<span>添加自定义岗位</span>`,
+        on: { click: () => addAgentDialog() }
+      })
+    ),
+    collabBody
   );
-  const collabBody = h('div', {});
-  collabSec.append(collabHead, collabBody);
-  pad.append(collabSec);
 
   function collabCall(name, ...args) {
     const fn = api && api[name];
@@ -615,7 +672,7 @@ export function renderSettings(container, ctx) {
   function openAgentModelMenu(anchor, a) {
     const options = (model.collab && Array.isArray(model.collab.options) && model.collab.options) || [];
     if (!options.length) {
-      toast('还没有可选供应商：先在上方配置模型与密钥', { tone: 'warn', duration: 2600 });
+      toast('还没有可选供应商：先在「模型与供应商」里配置', { tone: 'warn', duration: 2600 });
       return;
     }
     const items = [{ label: '回落 stage/默认（解除绑定）', icon: 'refresh', onSelect: () => setAgentModel(a, '', '') }];
@@ -729,11 +786,7 @@ export function renderSettings(container, ctx) {
               modal.close();
               await loadAgents();
             } catch (err) {
-              if (err && (err.isMissing || err.status === 404)) {
-                toast('后端技能绑定接口尚未上线（/api/agents-skills），请稍后重试', { tone: 'warn', duration: 4200 });
-              } else {
-                toast(errorText(err, '保存技能失败'), { tone: 'danger' });
-              }
+              toast(errorText(err, '保存技能失败'), { tone: 'danger' });
             }
             btn.disabled = false;
           }
@@ -741,6 +794,82 @@ export function renderSettings(container, ctx) {
       })
     );
     const modal = openModal({ title: `绑定技能：${a.label}`, body, footer, size: 'md' });
+  }
+
+  /* v2.8.0：添加自定义创作岗位（调 /api/agents/add，此前只有后端没有入口）。 */
+  function addAgentDialog() {
+    const label = h('input', { class: 'input', placeholder: '例如 考据师', 'aria-label': '岗位名称' });
+    const name = h('input', { class: 'input mono', placeholder: '英文标识，例如 fact_checker（留空自动生成）', 'aria-label': '岗位标识' });
+    const desc = h('textarea', {
+      class: 'textarea', rows: 3,
+      placeholder: '这个岗位负责什么？例如：核对历史细节、官职、器物名称，写考据备注…',
+      'aria-label': '职责描述'
+    });
+    const stage = h('select', { class: 'input', 'aria-label': '工作阶段' },
+      h('option', { value: 'planning', text: '规划阶段（大纲/设定）' }),
+      h('option', { value: 'writing', text: '写作阶段（正文）', selected: true }),
+      h('option', { value: 'review', text: '审校阶段（评分/修订）' })
+    );
+    const selected = new Set();
+    let catalog = [];
+    const picker = h('div', { class: 'chip-row skill-pick' });
+    function paintPicker() {
+      picker.textContent = '';
+      if (!catalog.length) { picker.append(h('span', { class: 'hint-text', text: '技能清单加载中…' })); return; }
+      for (const s of catalog) {
+        const on = selected.has(s.name);
+        const b = h('button', { class: 'wiz-chip', type: 'button', 'aria-pressed': on ? 'true' : 'false', title: `${s.medium} · ${s.genre}` },
+          h('span', { text: s.title }));
+        b.addEventListener('click', () => {
+          if (selected.has(s.name)) selected.delete(s.name); else selected.add(s.name);
+          paintPicker();
+        });
+        picker.append(b);
+      }
+    }
+    loadSkillCatalog().then((list) => { catalog = list; paintPicker(); });
+
+    const body = h('div', { class: 'wiz-grid' },
+      fieldRow('岗位名称', label),
+      fieldRow('岗位标识', name, '', '英文/下划线；留空则由描述自动生成。'),
+      fieldRow('职责描述', desc, 'span-2', '会显示在岗位列表，并作为该岗位的系统提示一部分。'),
+      fieldRow('工作阶段', stage),
+      fieldRow('默认技能', picker, 'span-2', '可选；保存后可随时在岗位行上修改。')
+    );
+    const footer = h('div', { class: 'set-actions' },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+      h('button', {
+        class: 'btn btn-primary', type: 'button', text: '创建岗位',
+        on: {
+          click: async (event) => {
+            const btn = event.currentTarget;
+            if (!label.value.trim() && !desc.value.trim()) {
+              toast('请至少填写岗位名称或职责描述', { tone: 'danger' });
+              return;
+            }
+            btn.disabled = true;
+            btn.textContent = '创建中…';
+            try {
+              await api.addAgent({
+                name: name.value.trim(),
+                label: label.value.trim(),
+                desc: desc.value.trim(),
+                stage: stage.value,
+                skills: Array.from(selected)
+              });
+              toast(`已创建岗位「${label.value.trim() || desc.value.trim().slice(0, 8)}」`, { tone: 'success' });
+              modal.close();
+              await loadAgents();
+            } catch (err) {
+              toast(errorText(err, '创建失败'), { tone: 'danger' });
+              btn.disabled = false;
+              btn.textContent = '创建岗位';
+            }
+          }
+        }
+      })
+    );
+    const modal = openModal({ title: '添加自定义创作岗位', body, footer, size: 'md' });
   }
 
   function agentMatrixRow(a) {
@@ -767,7 +896,7 @@ export function renderSettings(container, ctx) {
         h('button', {
           class: 'btn btn-sm',
           type: 'button',
-          text: '改',
+          text: '改模型',
           title: '为该岗位单独指定供应商/模型',
           on: { click: (event) => openAgentModelMenu(event.currentTarget, a) }
         }),
@@ -791,14 +920,14 @@ export function renderSettings(container, ctx) {
       collabBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-45' })));
       return;
     }
-    const view = model.collab;
+    const viewData = model.collab;
     const maxInput = h('input', {
       class: 'input',
       type: 'number',
       min: '1',
       max: '64',
       step: '1',
-      value: String(view.max_global_agents ?? 4),
+      value: String(viewData.max_global_agents ?? 4),
       'aria-label': '全局并发上限'
     });
     collabBody.append(
@@ -822,10 +951,11 @@ export function renderSettings(container, ctx) {
             on: { click: (event) => saveMaxGlobal(event.currentTarget, maxInput) }
           })
         )
-      )
+      ),
+      h('div', { class: 'set-subhead' }, h('h3', { text: '创作岗位' }), h('span', { class: 'hint-text', text: '每个岗位可单独指定模型与技能；绑定在此处全局生效。' }))
     );
 
-    const agents = Array.isArray(view.agents) ? view.agents : [];
+    const agents = Array.isArray(viewData.agents) ? viewData.agents : [];
     if (!agents.length) {
       collabBody.append(h('div', { class: 'hint-text', text: '后端没有返回岗位数据（/api/agents 可能仍是旧版本）。' }));
       return;
@@ -833,12 +963,40 @@ export function renderSettings(container, ctx) {
     for (const a of agents) collabBody.append(agentMatrixRow(a));
   }
 
-  /* --------------------------------------------------------- 关于 */
+  /* ---------------------------------------------------- 对话与上下文 */
 
-  const aboutSec = h(
-    'div',
-    { class: 'set-section' },
-    h('div', { class: 'set-section-head' }, h('h3', { text: '技能与数据' })),
+  /* v2.9.0 将在此分组提供：对话留档策略、上下文窗口档位（200K/400K/500K/1M）
+     与自动压缩开关。当前给出明确的说明空态，不留死胡同。 */
+  panes.chat.append(
+    h(
+      'div',
+      { class: 'set-row' },
+      h(
+        'div',
+        { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '会话留档' }),
+        h('div', { class: 'set-row-desc', text: '小说会话的全部对话（含写作过程中断的回复）都会完整保存在作品目录的 chat_log.jsonl 里，进入作品即可回读。' })
+      ),
+      h('div', { class: 'set-control' },
+        h('span', { class: 'badge badge-accent', text: '已启用' }))
+    ),
+    h(
+      'div',
+      { class: 'set-row' },
+      h(
+        'div',
+        { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '上下文自动压缩' }),
+        h('div', { class: 'set-row-desc', text: '对话展示超过上下文窗口后自动把早期对话压缩成「创作进度摘要」，帮助对话 Agent 记住全书进度；后台创作不受影响。档位（200K/400K/500K/1M）将在 v2.9.0 提供设置。' })
+      ),
+      h('div', { class: 'set-control' },
+        h('span', { class: 'badge', dataset: { tone: 'muted' }, text: 'v2.9.0' }))
+    )
+  );
+
+  /* ------------------------------------------------------ 技能与数据 */
+
+  panes.skills.append(
     h(
       'div',
       { class: 'set-row' },
@@ -860,6 +1018,21 @@ export function renderSettings(container, ctx) {
       h(
         'div',
         { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '技能库' }),
+        h('div', { class: 'set-row-desc', text: '浏览与检索全部写作技能（四文体 × 题材）。岗位绑定的技能都来自这里。' })
+      ),
+      h(
+        'div',
+        { class: 'set-control' },
+        h('button', { class: 'btn btn-sm', type: 'button', text: '打开', on: { click: () => ctx.navigate('/skills') } })
+      )
+    ),
+    h(
+      'div',
+      { class: 'set-row' },
+      h(
+        'div',
+        { class: 'set-row-copy' },
         h('div', { class: 'set-row-title', text: '数据都在本地' }),
         h('div', {
           class: 'set-row-desc',
@@ -868,14 +1041,11 @@ export function renderSettings(container, ctx) {
       )
     )
   );
-  pad.append(aboutSec);
 
   /* ----------------------------------------------------------- 高级 */
 
-  const advSec = h('div', { class: 'set-section' });
   const advBody = h('div', {});
-  advSec.append(h('div', { class: 'set-section-head' }, h('h3', { text: '高级' })), advBody);
-  pad.append(advSec);
+  panes.advanced.append(advBody);
 
   function paintAdvanced() {
     advBody.textContent = '';
@@ -923,21 +1093,16 @@ export function renderSettings(container, ctx) {
   loadProviders();
   loadAgents();
 
+  /* 初始分组：优先恢复上次浏览的分组，其次兼容旧深链值。 */
+  const wantTab = store.get().ui.settingsTab;
+  showGroup(LEGACY_TAB[wantTab] || (GROUPS.some((g) => g.key === wantTab) ? wantTab : 'appearance'));
+
   let lastTheme = store.get().theme;
   const unsubTheme = store.subscribe((state) => {
     if (state.theme !== lastTheme) {
       lastTheme = state.theme;
       paintTheme();
     }
-  });
-
-  requestAnimationFrame(() => {
-    const tab = store.get().ui.settingsTab;
-    if (!tab) return;
-    const target =
-      tab === 'providers' ? provSec : tab === 'quality' ? qualitySec : tab === 'appearance' ? themeSec : null;
-    if (target) target.scrollIntoView({ block: 'start' });
-    patchUi({ settingsTab: '' });
   });
 
   return {

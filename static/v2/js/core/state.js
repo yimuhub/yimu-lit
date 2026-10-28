@@ -117,6 +117,9 @@ export const initialState = {
 
 export const store = createStore(initialState);
 
+/* 调试出口（只读使用）：控制台可 window.__store.get() 检查状态。 */
+if (typeof window !== 'undefined') window.__store = store;
+
 export function patch(key, value) {
   store.set((state) => {
     const base = state[key];
