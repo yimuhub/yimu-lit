@@ -4048,6 +4048,44 @@ def api_ai_generate(payload: dict):
     return {"ok": True, "title": (out or {}).get("title", ""), "idea": (out or {}).get("idea", "")}
 
 
+@app.post("/api/plan/regen")
+def api_plan_regen(payload: dict):
+    """v4.12.13：非小说重规划——清规划阶段→重跑（Agent 技能通过 book-skills 注入）。"""
+    import threading as _th
+    key = str(payload.get("key") or "")
+    prefix_map = {"c_": "children_writer", "n_": "news_writer", "k_": "copy_writer",
+                  "s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer",
+                  "t_": "thesis_writer"}
+    mod_name = prefix_map.get(str(key)[:2])
+    if not mod_name:
+        return JSONResponse({"error": "不支持的文体"}, status_code=400)
+    import importlib
+    mod = importlib.import_module(f"bot.{mod_name}")
+    proj = mod.get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    # 清规划阶段（保留正文/定稿）
+    plan = proj.plan() or {}
+    cs = plan.get("chapterStatus") or {}
+    planning_codes = {"C1", "N1", "K1", "K2", "T1"}
+    for code in planning_codes:
+        cs.pop(code, None)
+    plan["chapterStatus"] = cs
+    plan["status"] = "in_progress"
+    proj.save_plan(plan)
+    proj.log("🔄 重规划：清规划阶段，重新生成…")
+    def _bg():
+        writer.mark_pipeline(key, True)
+        try:
+            mod.resume_project(key)
+        except Exception as e:
+            print(f"[bg] 重规划失败: {e}", flush=True)
+        finally:
+            writer.mark_pipeline(key, False)
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "msg": "重规划已后台启动"}
+
+
 @app.get("/api/mini/status")
 async def api_mini_status(key: str):
     """v4.12.1：children/news/copy 通用状态端点。"""
