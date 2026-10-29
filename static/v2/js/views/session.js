@@ -553,7 +553,6 @@ export function renderSession(container, ctx = {}) {
         b.words = Number(data.words) || 0;
         b.done = true;
         paintChapter(no);
-        // v2.9.0：完成后切换为章节卡片（默认折叠，含 完成时间/字数/token/质量分 + 分支/复制）
         updateMessage(b.id, (m) => ({
           ...m,
           streaming: false,
@@ -569,6 +568,8 @@ export function renderSession(container, ctx = {}) {
           }
         }));
         scrollIfNear();
+        /* v4.12.12：写完一章后立即刷新上方进度条与章节数（此前不刷新→进度0%） */
+        if (ctx && ctx.refreshWork) ctx.refreshWork();
         return;
       }
       if (event === 'compressed' && data) {
@@ -589,6 +590,8 @@ export function renderSession(container, ctx = {}) {
         if (data && data.ok === false && !streamError) {
           streamError = data.error || '本轮没有生成内容';
         }
+        /* v4.12.12：整轮完成后刷新工作状态（进度/字数/阶段） */
+        if (ctx && ctx.refreshWork) ctx.refreshWork();
       }
     };
 
