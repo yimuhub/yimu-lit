@@ -94,9 +94,18 @@ def _record_usage(book_key: str, stage: str, usage: dict):
     except Exception:
         pass
 
+_CFG_CACHE = {"mtime": 0, "data": {}}
+
+
 def _global_defaults() -> dict:
+    """v4.12.16：按 mtime 缓存 config.json——此前每次 LLM 调用重复 open+json.load 3-5 次。"""
+    fp = os.path.join(providers.ROOT, "config.json")
     try:
-        return json.load(open(os.path.join(providers.ROOT, "config.json"), encoding="utf-8")).get("defaults", {}) or {}
+        mtime = os.path.getmtime(fp)
+        if _CFG_CACHE["mtime"] != mtime:
+            _CFG_CACHE["data"] = json.load(open(fp, encoding="utf-8")).get("defaults", {}) or {}
+            _CFG_CACHE["mtime"] = mtime
+        return _CFG_CACHE["data"]
     except Exception:
         return {}
 
@@ -351,7 +360,7 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
                 model=model, cached=False, ok=False, error=str(last_err)[:300],
                 latency_ms=int((time.time() - _t0) * 1000))
-    raise last_err
+    raise last_err or LLMError("LLM 调用失败（retries=0）")
 
 def chat_json(messages, temperature=None, cfg=None, stage=None, agent=None, use_cache=None):
     """调用并解析 JSON（容忍模型夹带 markdown 代码块）。cfg 决定供应商/模型；stage 按环节选模型；agent（v0.5）子 Agent 岗位。

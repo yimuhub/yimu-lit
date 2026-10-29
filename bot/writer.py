@@ -15,6 +15,22 @@ def _skeleton_refresh(key):
     except Exception:
         pass
 
+_RUNNING_BOOKS: set = set()
+_RUNNING_LOCK = threading.Lock()
+
+
+def _book_running(key):
+    return key in _RUNNING_BOOKS
+
+
+def _set_book_running(key, on=True):
+    with _RUNNING_LOCK:
+        if on:
+            _RUNNING_BOOKS.add(key)
+        else:
+            _RUNNING_BOOKS.discard(key)
+
+
 class Project:
     def __init__(self, path, name):
         self.path = path
@@ -29,14 +45,16 @@ class Project:
             self.events.append(line)
             if len(self.events) > 200:
                 self.events.pop(0)
-            # v0.7 R4：持久化逐条过程日志（供 /api/book-live live 卡 + 断点排障；封顶 ~300 行）
+            # v0.7 R4：持久化逐条过程日志；v4.12.16 改为追加后每 50 条才截断一次（避免每条日志全量读回）
             try:
                 lf = os.path.join(self.path, "运行日志.txt")
                 with open(lf, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
-                lines = open(lf, encoding="utf-8").read().splitlines()
-                if len(lines) > 300:
-                    open(lf, "w", encoding="utf-8").write("\n".join(lines[-300:]) + "\n")
+                self._log_count = getattr(self, "_log_count", 0) + 1
+                if self._log_count % 50 == 0:
+                    lines = open(lf, encoding="utf-8").read().splitlines()
+                    if len(lines) > 300:
+                        open(lf, "w", encoding="utf-8").write("\n".join(lines[-300:]) + "\n")
             except Exception:
                 pass
 
@@ -434,10 +452,12 @@ def _ensure_writable_plan(proj) -> Optional[dict]:
 
 
 def start_writing(proj: Project):
-    if proj.running:
-        return
-    threading.Thread(target=_write_loop, args=(proj,), daemon=True).start()
+    _bk = os.path.basename(proj.path)
+    if proj.running or _book_running(_bk):
+        return   # v4.12.16：双重防重入（实例 + 共享注册表）
+    _set_book_running(_bk, True)
     proj.running = True
+    threading.Thread(target=_write_loop, args=(proj,), daemon=True).start()
 
 # ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
 def _project_dir(key):
@@ -768,7 +788,7 @@ def _build_ctx_legacy(proj, ch):
         ctx["blueprint"] = ""
     # v0.9.0：写作骨架注入 —— 续写/改写前先读总体状态（写到哪/多少/重点/为何/续写提示），快速对齐
     try:
-        _sk = _rf("17-写作骨架.md", 3200)
+        _sk = _rf("17-写作骨架.md")
         if _sk.strip():
             ctx["blueprint"] = (ctx.get("blueprint") or "") + "\n\n## 写作骨架（总体状态，动手前先读）\n" + _sk.strip()
     except Exception:
@@ -1903,6 +1923,7 @@ def _write_loop(proj: Project):
     finally:
         _sem.release()
         proj.running = False
+        _set_book_running(os.path.basename(proj.path), False)
 
 # v0.3 P3：并发写（同一时刻最多 N 本在写，N=defaults.concurrency 默认 2，超出排队）
 _WRITE_SEM, _WRITE_SEM_N = None, 0

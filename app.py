@@ -2738,6 +2738,10 @@ def api_export(key: str, fmt: str = "docx"):
     if fmt in ("md", "markdown"):
         data, media, ext = export_mod.markdown(proj).encode("utf-8"), "text/markdown; charset=utf-8", "md"
     elif fmt == "docx":
+        if not blocks and chapters:
+            # v4.12.16：剧本 docx 导出——此前 blocks 只在小说分支填充，剧本导出 Word 得到空文档
+            for ch in chapters:
+                blocks.extend([("h2", ch.get("title", "")), ("p", ch.get("text", ""))])
         data = export_mod.docx_bytes(title, author, blocks)
         media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ext = "docx"
@@ -4279,7 +4283,12 @@ def v2_index():
     if not os.path.exists(path):
         return JSONResponse({"error": "v2 界面尚未构建，请先使用 /classic"},
                             status_code=404)
-    return _serve_ui(os.path.join("v2", "index.html"))
+    # v4.12.16：注入当前 VERSION 到 ?v= 参数（此前硬编码 290，版本错位）
+    html = open(path, encoding="utf-8").read()
+    ver = version.current()
+    html = re.sub(r'\?v=\d+', f'?v={ver}', html)
+    return Response(html, media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
 
 
 _V2_DIR = os.path.join(ROOT, "static", "v2")
