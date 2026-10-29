@@ -1401,21 +1401,23 @@ def register_v2_routes(app, get_project, chat_func=None):
             worker = threading.Thread(target=_work, name="v2-chat-worker", daemon=True)
             worker.start()
 
-            # v4.3.0：等待期间顺带推送引擎过程行（proj.events 增量）——
-            # 创作的每一步（规划/场次/逐场/评分）都实时滚进对话气泡
+            # v4.3.0+v4.12.2：等待期间推送引擎过程行。
+            # v4.12.2 改读运行日志文件而非内存 events——非小说引擎（children 等）用
+            # 自己的 Project 类（无 events 属性共享），writer.Project.events 永远空 → 心跳无进度。
             _log_proj = get_project(key) if key else None
             _log_idx = 0
+            _log_file = os.path.join(_log_proj.path, "运行日志.txt") if _log_proj else ""
             while not ready.is_set():
                 try:
                     await asyncio.wait_for(ready.wait(), timeout=_HEARTBEAT_SECS)
                 except (TimeoutError, asyncio.TimeoutError):  # v4.7.1 Python<3.11 时 asyncio.TimeoutError 不是内置 TimeoutError 子类
                     pushed_line = ""
-                    if _log_proj is not None:
+                    if _log_file and os.path.exists(_log_file):
                         try:
-                            evs = getattr(_log_proj, "events", [])
-                            if len(evs) > _log_idx:
-                                _log_idx = len(evs)
-                                pushed_line = evs[-1]
+                            lines = open(_log_file, encoding="utf-8").read().splitlines()
+                            if len(lines) > _log_idx:
+                                _log_idx = len(lines)
+                                pushed_line = lines[-1]
                         except Exception:
                             pass
                     if pushed_line:

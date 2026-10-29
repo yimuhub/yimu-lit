@@ -250,20 +250,27 @@ const ctx = {
   },
 
   async refreshLibrary() {
-    patch('library', { loading: true });
     try {
       const res = await api.library();
       const items = mergePending((res && res.items) || []);
-      patch('library', {
-        items,
-        stats: (res && res.stats) || {},
-        facets: (res && res.facets) || {},
-        counts: (res && res.counts) || {},
-        loading: false,
-        loaded: true,
-        error: null
-      });
-      if (res && res.items) patch('projects', items);
+      /* v4.12.2：指纹对比——只有数据变化才 patch（避免轮询反复重建 68+ 张卡 DOM） */
+      const fp = items.map(i => i.key + ':' + (i.updated_at || '')).join('|');
+      const prev = store.get().library;
+      const prevFp = (prev.items || []).map(i => i.key + ':' + (i.updated_at || '')).join('|');
+      if (fp !== prevFp || !prev.loaded) {
+        patch('library', {
+          items,
+          stats: (res && res.stats) || {},
+          facets: (res && res.facets) || {},
+          counts: (res && res.counts) || {},
+          loading: false,
+          loaded: true,
+          error: null
+        });
+        if (res && res.items) patch('projects', items);
+      } else {
+        patch('library', { loading: false, loaded: true, error: null });
+      }
       if (items.some((i) => i.pending)) schedulePendingPoll();
     } catch (err) {
       patch('library', { loading: false, error: errorText(err, '作品库加载失败') });
@@ -748,7 +755,7 @@ function startLive(key) {
         /* 静默失败，下次 tick 再试 */
       }
     }
-  }, 10000);
+  }, 30000);   // v4.12.2：10s→30s
 }
 
 async function ensureWork(key) {

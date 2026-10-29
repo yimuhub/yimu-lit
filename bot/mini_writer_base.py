@@ -19,6 +19,7 @@ class MiniWriterProject:
     FORM_KEY = "form"
     BODY_DIR = "02-正文"
     FINAL_FILE = "04-定稿.md"
+    PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "projects")
 
     def __init__(self, path: str, name: str):
         self.path = path
