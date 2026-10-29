@@ -152,6 +152,49 @@ def _strip_md_style(text: str) -> str:
     return t
 
 
+_ACK_PREFIX_RE = re.compile(
+    r"^(?:好的|没问题|收到|明白了|以下是|下面是|这是|当然|OK|Okay)[，,：:\s]*(?:以下是|下面是|这是)?[^。\n]{0,30}[：:]?\s*\n?")
+_THINK_RE = re.compile(r"<(?:think|thinking|reasoning)>[\s\S]*?</(?:think|thinking|reasoning)>\s*", re.I)
+_THINK_OPEN_RE = re.compile(r"<(?:think|thinking|reasoning)>[\s\S]*$", re.I)
+_FENCE_RE = re.compile(r"```[a-zA-Z0-9]*\n([\s\S]*?)\n```")
+_CH_TITLE_LINE_RE = re.compile(r"(?m)^#{1,3}\s*第\s*\d+\s*章.*\n?")
+
+
+def _strip_chatter(body: str) -> str:
+    """v4.8.0：剥 LLM 输出杂音——思考标签、客套开场白、代码围栏、正文中间的重复章题行。
+    写盘前、chapter_meta、章摘要、_clean_chapter_text 四处统一调用。"""
+    t = body or ""
+    t = _THINK_RE.sub("", t)
+    t = _THINK_OPEN_RE.sub("", t)          # 未闭合的思考标签：剥到结尾
+    t = _FENCE_RE.sub(r"\1", t)            # 成对代码围栏 → 保留内容
+    for _ in range(3):                     # 客套开场白可能连着多行
+        t2 = _ACK_PREFIX_RE.sub("", t)
+        if t2 == t:
+            break
+        t = t2
+    # 剥正文中间（非首行）重复的章题行——首行可能是合法章题，由调用方决定去留
+    lines = t.split("\n")
+    if len(lines) > 1:
+        kept = [lines[0]]
+        for ln in lines[1:]:
+            if _CH_TITLE_LINE_RE.match(ln + "\n"):
+                continue
+            kept.append(ln)
+        t = "\n".join(kept)
+    return t.strip()
+
+
+def _trigrams(text: str) -> set:
+    s = re.sub(r"\s", "", text)
+    return {s[i:i + 3] for i in range(0, max(0, len(s) - 2))} if len(s) >= 3 else {s}
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
 def _clean_chapter_text(text):
     """成书时剥离规划元信息（本章概要/章节备注），保留 章题+章首引子+正文。
     v3.1.0：补「仅有概要、无引子」分支——旧实现此时会把概要原样带进成书。
@@ -983,7 +1026,7 @@ def _index_chapter_continuity(proj, ch, cfg):
         return
     try:
         from . import longform as _lfmod
-        res = _lfmod.summarize_and_extract(proj, no, text, cfg)
+        res = _lfmod.summarize_and_extract(proj, no, _strip_chatter(text), cfg)
         proj.log(f"🧠 第{no}章连续性入库：摘要 {len(res.get('summary') or '')} 字，"
                  f"伏笔操作 {len(res.get('foreshadow_ops') or [])} 条，"
                  f"问题 {len(res.get('issues') or [])} 条")
@@ -1290,6 +1333,7 @@ def _write_loop_parallel(proj, n_workers=5):
         # v2.9.0 修复：worker 是新线程，threading.local 不继承——不打标记的话
         # 并行模式的写作 token 全部漏记（usage.json 少计 + 每章 token 无法归集）
         llm.book(os.path.basename(proj.path), "writing")
+        deferred = []   # v4.8.0：前一章未完成的章先搁置，队列空了再回来领（半序依赖）
         while True:
             if is_paused(proj):
                 break
@@ -1300,7 +1344,26 @@ def _write_loop_parallel(proj, n_workers=5):
             try:
                 no = q.get_nowait()
             except queue.Empty:
+                if deferred:
+                    for d in sorted(deferred):
+                        q.put(d)
+                    deferred.clear()
+                    continue
                 break
+            if no and no > 1:
+                prev_done = False
+                try:
+                    _p = proj.plan() or {}
+                    for _c in _p.get("chapters") or []:
+                        if _c.get("chapterNumber") == no - 1:
+                            _fp = _chapter_file_path(proj, _c)
+                            prev_done = bool(_fp and os.path.exists(_fp))
+                            break
+                except Exception:
+                    prev_done = True
+                if not prev_done:
+                    deferred.append(no)   # 上一章还没写出来：先搁置，防止「前情为空」撞车
+                    continue
             p = proj.plan()
             ch = next((c for c in p["chapters"] if c.get("chapterNumber") == no), None)
             if not ch:
@@ -1498,13 +1561,42 @@ def _write_chapter(proj, ch, min_words, max_retries):
     if qn:
         ctx["queue_note"] = qn
         proj.log(f"📌 第{no}章注入读者即时指令：「{qn[:30]}」")
-    body = workflow.write_chapter(ctx)
+    body = _strip_chatter(workflow.write_chapter(ctx))
+    # v4.8.0：模型若自带「# 第NN章 …」题头行则剥掉——规范题头由本函数统一写入，避免双题头
+    body = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body.lstrip(), count=1) \
+        if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body.lstrip()) else body
     fp = _chapter_file_path(proj, ch)
     if os.path.exists(fp):
         try:
             versions.snapshot(proj.path, no, open(fp, encoding="utf-8").read(), label="重新生成前")
         except OSError:
             pass
+    # v4.8.0：重复检测门禁——与最近 3 章正文做 3-gram Jaccard，>0.5 判定撞车，
+    # 带「禁抄开头」指令自动重写一次；仍重复则告警（不无限重试）。
+    def _recent_opens():
+        opens = []
+        for c2 in sorted((proj.plan() or {}).get("chapters") or [],
+                         key=lambda x: x.get("chapterNumber") or 0):
+            if c2.get("chapterNumber") == no or c2.get("status") != "completed":
+                continue
+            fp2 = _chapter_file_path(proj, c2)
+            if fp2 and os.path.exists(fp2):
+                opens.append(_clean_chapter_text(open(fp2, encoding="utf-8").read())[:300])
+            if len(opens) >= 3:
+                break
+        return opens
+    recent_opens = _recent_opens()
+    if recent_opens and _jaccard(_trigrams(body), _trigrams("".join(recent_opens))) > 0.5:
+        proj.log(f"🚨 第{no}章与近期章节内容高度相似，自动重写（禁抄开头）…")
+        ctx2 = dict(ctx)
+        ctx2["ban_openings"] = recent_opens
+        body2 = _strip_chatter(workflow.write_chapter(ctx2))
+        body2 = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body2.lstrip(), count=1) \
+            if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body2.lstrip()) else body2
+        if _jaccard(_trigrams(body2), _trigrams("".join(recent_opens))) <= 0.5:
+            body = body2
+        else:
+            proj.log(f"⚠️ 第{no}章重写后仍与近期章节相似，已保留第二次结果并标记人工复核")
     words, ok, i = 0, False, 0
     for i in range(max_retries + 1):
         atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
@@ -1515,7 +1607,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
         body = workflow.expand_chapter(body, ctx)
     # 章节元数据 → 大纲摘要 + 设定词典 + 章节摘要/线索账本（复用同一 meta，不加 LLM 调用）
     try:
-        meta = workflow.chapter_meta(open(fp, encoding="utf-8").read()[:9000], ctx)
+        meta = workflow.chapter_meta(_strip_chatter(open(fp, encoding="utf-8").read())[:9000], ctx)
         summary = meta.get('summary', '')
         with open(os.path.join(proj.path, "01-大纲.md"), "a", encoding="utf-8") as f:
             f.write(f"\n### 第{no:02d}章 摘要\n{summary}\n")

@@ -261,6 +261,22 @@ def write_chapter(ctx):
     # v0.6 B：总架构蓝图（并行写作时写任何一章前必读，放最前对齐全局）
     bp = (ctx.get("blueprint") or "").strip()
     bblock = (bp + "\n") if bp else ""
+    # v4.8.0：防撞车——注入最近几章的开头片段，禁止复述同样的开局
+    ban = ctx.get("ban_openings") or []
+    banblock = ""
+    if ban:
+        banblock = ("\n【禁抄清单（最近章节的开头，严禁以相似文字开头或复述以下任何段落）】\n"
+                    + "\n---\n".join(b[:120] for b in ban) + "\n")
+    hooks = ctx.get("recent_hooks") or []
+    hookblock = ""
+    if hooks:
+        track = "；".join(
+            f"第{h.get('n')}章 {h.get('hook_type') or '钩子?'}·{h.get('emotion') or '?'}"
+            + (f"·紧张{h.get('tension')}" if h.get("tension") else "")
+            for h in hooks if h.get("n"))
+        if track:
+            hookblock = (f"\n【手法账本（最近几章实际用过的断章钩子与情绪）】{track}。\n"
+                         "本章必须换一种钩子类型与情绪配比，不得与上面任何一章相同。\n")
     if ctx.get("continuation"):
         user_p = (
             f"{bblock}"
@@ -269,6 +285,7 @@ def write_chapter(ctx):
             f"【人物档案】\n{ctx['characters_text']}\n"
             f"【全书大纲要点】\n{ctx.get('outline_text','')[:3000]}\n"
             f"【上一章结尾】\n{ctx.get('prev_tail') or '（无）'}\n"
+            f"{banblock}{hookblock}"
             f"{cont}\n"
             f"{p5}\n"
             f"{qblock}\n"
@@ -285,6 +302,7 @@ def write_chapter(ctx):
         f"【人物档案】\n{ctx['characters_text']}\n"
         f"【大纲】\n{ctx['outline_text']}\n"
         f"【上一章结尾】\n{ctx.get('prev_tail') or '（第1章，无）'}\n"
+        f"{banblock}{hookblock}"
         f"{cont}\n"
         f"{p5}\n"
         f"{qblock}\n"

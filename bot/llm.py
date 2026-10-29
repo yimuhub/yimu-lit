@@ -213,9 +213,12 @@ def _read_global_cache_default():
 _GLOBAL_CACHE_DEFAULT = _read_global_cache_default()
 
 def _cache_key(model, temperature, json_mode, msgs, provider_id="", base_url="", max_tokens=None):
+    """v4.8.0 重大修复：此前 blob 截前 6000 字符再哈希——章节号在 prompt 末尾根本没进键，
+    并行写作下前 6000 字符（蓝图/文风/人物）几乎相同 → 不同章节命中同一条缓存，
+    返回逐字相同的正文（「标题不同、内容重复」的根因）。现在对完整 blob 取哈希。"""
     try:
         blob = json.dumps([provider_id, base_url, model, temperature, json_mode, max_tokens, msgs],
-                          ensure_ascii=False, sort_keys=True)[:6000]
+                          ensure_ascii=False, sort_keys=True)
     except Exception:
         return None
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()
