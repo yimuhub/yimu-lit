@@ -74,17 +74,76 @@ def _venv_python():
     return os.path.join(VENV, "Scripts", "python.exe") if os.name == "nt" else os.path.join(VENV, "bin", "python")
 
 def _deps_in(py):
-    """用指定解释器探测依赖，避免外层解释器误判后重建 .venv。"""
-    return subprocess.run([py, "-c", "import fastapi, httpx"], capture_output=True).returncode == 0
+    """用指定解释器探测依赖，避免外层解释器误判后重建 .venv。
+
+    探测失败一律视为"不可用"（返回 False），不向外抛异常：
+    .venv/bin/python 可能不存在、不可执行（拷环境丢权限）或根本不是解释器，
+    直接抛错会让 run.py 在自愈之前先崩在 traceback 上。
+    """
+    try:
+        return subprocess.run([py, "-c", "import fastapi, httpx"],
+                              capture_output=True).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+def _venv_base_missing(path):
+    """.venv 记录的基础解释器在本机不存在 -> 该 .venv 是从别的机器/别的目录拷来的坏环境。"""
+    cfg = os.path.join(path, "pyvenv.cfg")
+    try:
+        with open(cfg, encoding="utf-8") as f:
+            for line in f:
+                key, _, val = line.partition("=")
+                if key.strip() in ("home", "executable"):
+                    v = val.strip().rstrip(os.sep)
+                    if v and not os.path.exists(v):
+                        return v
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _retire_stale_venv():
+    """把坏 .venv 改名保留（不删除，可回滚），因为 venv.create() 对已存在目录会静默 no-op。"""
+    if not os.path.isdir(VENV):
+        return True
+    import time as _t
+    dead = VENV.rstrip(os.sep) + ".stale_" + _t.strftime("%Y%m%d_%H%M%S")
+    try:
+        shutil.move(VENV, dead)
+    except (OSError, shutil.Error) as e:
+        _log(f"⚠️ 无法把旧的 .venv 移开：{e}")
+        return False
+    _log(f"已把失效的旧环境保留为 {os.path.basename(dead)}（可自行删除），现在重建。")
+    return True
+
 
 def _ensure_venv():
-    """缺 .venv 就建 + 装依赖；装好返回 True。"""
+    """缺 .venv 就建 + 装依赖；探测到坏 .venv 会自动改名重建。"""
     py = _venv_python()
-    if os.path.exists(os.path.join(VENV, "pyvenv.cfg")) and os.path.exists(py) and _deps_in(py):
+    has_cfg = os.path.exists(os.path.join(VENV, "pyvenv.cfg"))
+    if has_cfg and os.path.exists(py) and _deps_in(py):
         return True
-    _log("首次运行：创建虚拟环境 .venv 并安装依赖（fastapi/uvicorn/httpx）…")
+    if has_cfg:
+        dead_base = _venv_base_missing(VENV)
+        if dead_base:
+            _log(f".venv 记录的基础解释器在本机不存在：{dead_base}")
+        else:
+            _log(".venv 存在但依赖不可用（缺 fastapi/httpx 或解释器异常）。")
+        if not _retire_stale_venv() or os.path.isdir(VENV):
+            _log("❌ 无法自动重建 .venv。请手动删除 .venv 目录后重新运行：python run.py")
+            sys.exit(1)
+    _log("创建虚拟环境 .venv 并安装依赖（fastapi/uvicorn/httpx）…")
     venv.create(VENV, with_pip=True)
-    subprocess.run([py, "-m", "pip", "install", "-r", REQ], check=True)
+    try:
+        subprocess.run([py, "-m", "pip", "install", "-r", REQ], check=True)
+    except subprocess.CalledProcessError as e:
+        _log(f"❌ 依赖安装失败（退出码 {e.returncode}）。可手动执行："
+             f"{py} -m pip install -r {REQ}")
+        sys.exit(1)
+    if not _deps_in(py):
+        _log("❌ 依赖已安装但导入仍失败，.venv 可能仍不可用。请检查上面的 pip 输出，"
+             "或换用系统解释器：python run.py --no-venv")
+        sys.exit(1)
     _log("依赖安装完成。")
     return True
 

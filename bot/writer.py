@@ -1,4 +1,5 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
+from typing import Optional
 import json, os, re, datetime, threading, queue
 from . import workflow, skill, continuity, llm, providers, versions
 from .safeio import atomic_write_json, atomic_write_text, safe_join
@@ -40,8 +41,22 @@ class Project:
                 pass
 
     def plan(self):
+        """读 02-写作计划.json；文件缺失或内容损坏都返回 None（调用方需按 None 兜底）。
+
+        v4.7.1 修复：原先是 `json.load(open(p))`，既无异常保护也不关句柄。任何一本书的
+        计划文件被手工改坏 / 写入中断（JSONDecodeError），就会让 /api/library、
+        /api/studio-overview 等聚合端点整片 500 —— 用户看到的是「所有作品凭空消失」，
+        而且不知道原因。现在单本损坏只降级该本（state=missing），不再拖垮作品库。
+        """
         p = os.path.join(self.path, "02-写作计划.json")
-        return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+        if not os.path.exists(p):
+            return None
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
 
     def save_plan(self, plan):
         plan["updatedAt"] = datetime.datetime.now().isoformat()
@@ -282,7 +297,7 @@ def create_project(cfg, titles, pdir=None, name=None):
         "status": "planning", "writingMode": "serial", "config": cfg,
         "titles": titles,
         "chapters": [{"chapterNumber": i + 1, "title": t,
-                      "filePath": f"第{i+1:02d}章-{re.sub(r'[\\/:*?\"<>]', '', t)}.md",
+                      "filePath": "第%02d章-" % (i + 1) + re.sub(r'[\\/:*?\"<>]', '', t) + ".md",
                       "status": "pending", "wordCount": None,
                       "wordCountPass": None, "retryCount": 0}
                      for i, t in enumerate(chapter_titles)]}
@@ -346,7 +361,7 @@ def _pause_for_budget(proj, msg: str) -> None:
     proj.log("💰 " + msg)
 
 
-def _ensure_writable_plan(proj) -> dict | None:
+def _ensure_writable_plan(proj) -> Optional[dict]:
     """写作前守卫：计划缺失或 0 章（规划线程被服务重启/异常杀掉）时先重建规划再写。
     没有它，「继续」会把 0 章的空书直接审校、成书、标记完结（v2.7 E2E 实测踩坑）。"""
     plan = proj.plan()
@@ -1459,6 +1474,26 @@ def _write_chapter(proj, ch, min_words, max_retries):
         if plan0:
             proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
+    # v4.7.0（借鉴 reveric 手法账本）：把最近几章的断章钩子/情绪/紧张度注入写作上下文，
+    # 防止连续多章用同款钩子、同款情绪（模式收敛）。
+    try:
+        fp = os.path.join(proj.path, "21-章摘要.jsonl")
+        hooks = []
+        if os.path.exists(fp):
+            with open(fp, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        d = json.loads(line)
+                        q = d.get("quality_signals") or {}
+                        hooks.append({"n": d.get("n"),
+                                      "hook_type": q.get("hook_type") or "",
+                                      "emotion": q.get("emotion") or "",
+                                      "tension": q.get("tension")})
+                    except Exception:
+                        continue
+        ctx["recent_hooks"] = hooks[-5:]
+    except Exception:
+        pass
     qn = _pop_queue_note(proj, no)
     if qn:
         ctx["queue_note"] = qn

@@ -27,7 +27,8 @@ import os
 import re
 import secrets
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；与 timezone.utc 等价）
 
 from . import eval as eval_mod
 from . import feedback

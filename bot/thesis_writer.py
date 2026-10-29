@@ -9,6 +9,7 @@
 
 设计原则与 prose_writer 一致：线性阶段、产物全落盘、resume_project 断点恢复。
 """
+from typing import Optional
 import datetime
 import json
 import os
@@ -80,7 +81,7 @@ def _read(path: str) -> str:
     return open(path, encoding="utf-8").read() if os.path.exists(path) else ""
 
 
-def get_project(key: str) -> ThesisProject | None:
+def get_project(key: str) -> Optional["ThesisProject"]:
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
@@ -223,7 +224,7 @@ def create_project(cfg: dict, base_key: str = "") -> ThesisProject:
     return proj
 
 
-def resume_project(key: str) -> ThesisProject | None:
+def resume_project(key: str) -> Optional["ThesisProject"]:
     """断点恢复（缺哪段补哪段，幂等）。"""
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
@@ -251,7 +252,7 @@ def resume_project(key: str) -> ThesisProject | None:
     return proj
 
 
-def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = None):
+def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = None):
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
     meta = plan["meta"]

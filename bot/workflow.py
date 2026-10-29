@@ -174,6 +174,15 @@ def _writing_system(ctx):
     if ctx.get("references_block") or cfg.get("_reference_block"):
         parts.append("【参考资料纪律】只吸收事实、结构与风格，禁止连续复制原文 12 字以上；"
                      "引用须标注来源；与用户设定冲突时以用户设定为准。")
+    hooks = ctx.get("recent_hooks") or []
+    if hooks:
+        track = "；".join(
+            f"第{h.get('n')}章 {h.get('hook_type') or '钩子?'}·{h.get('emotion') or '?'}"
+            + (f"·紧张{h.get('tension')}" if h.get("tension") else "")
+            for h in hooks if h.get("n"))
+        if track:
+            parts.append("【手法账本（最近几章实际用过的断章钩子与情绪）】" + track +
+                         "。\n本章必须换一种钩子类型与情绪配比，不得与上面任何一章相同；紧张度曲线要有起伏。")
     writer_skills = agent_skills_block("writer", cfg, "P2")
     if writer_skills:
         parts.append(writer_skills)
@@ -295,7 +304,9 @@ def expand_chapter(body, ctx):
 
 def chapter_meta(body, ctx):
     sys_p = ("从章节正文提取：summary(300-500字本章摘要，供下章承接)、new_terms(本章首次出现的设定名词列表，"
-             "每项 {name, known, truth}，无则空数组)、hook(结尾钩子一句话)。只输出 JSON。")
+             "每项 {name, known, truth}，无则空数组)、hook(结尾钩子一句话)、"
+             "tension(本章紧张度 1-10 整数)、emotion(本章主导情绪 2-4 字标签如 紧张/释然/悲怆)、"
+             "hook_type(断章钩子类型，五选一：危机/谜题/情感/反转/抉择)。只输出 JSON。")
     return llm.chat_json([{"role": "system", "content": sys_p},
                           {"role": "user", "content": f"章节：第{ctx['chapter_no']}章 {ctx['chapter_title']}\n{body}"}],
                          cfg=ctx.get("cfg"), stage="writing")

@@ -10,6 +10,8 @@ extra_body、免费额度提示）。未知/通用供应商 → 用户可自由�
 """
 
 # 已知供应商规则（保守值；用户可经 generic override 覆盖）
+from typing import Optional
+
 _PROFILES = {
     "agnes":    {"context": 131072, "max_tokens": 8192, "rpm": 60, "tpm": 100000, "backoff_base": 2, "call_gap": 2.0, "extra_body": {}, "note": "Agnes 免费额度有限：429 时按 2s 退避，注意 call_gap", "generic": False},
     "deepseek": {"context": 1000000, "max_tokens": 8192, "rpm": 250, "tpm": 500000, "backoff_base": 3, "call_gap": 0.0, "extra_body": {"thinking": False}, "note": "DeepSeek：1M 上下文；thinking 默认关省成本", "generic": False},
@@ -40,7 +42,7 @@ def detect_vendor(base_url: str = "") -> str:
     return "generic"
 
 
-def effective_rules(prov: dict, user_over: dict | None = None) -> dict:
+def effective_rules(prov: dict, user_over: Optional[dict] = None) -> dict:
     """供应商 dict（base_url/...）→ 有效规则。user_over 可覆盖任意字段（通用供应商的自由配置入口）。"""
     vendor = detect_vendor(prov.get("base_url", "") if prov else "")
     rules = dict(_PROFILES.get(vendor, _PROFILES["generic"]))

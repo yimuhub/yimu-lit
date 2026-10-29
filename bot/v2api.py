@@ -345,6 +345,37 @@ def _attach_digest(proj, lf, plan: dict) -> dict:
     return {"chapters_written": written, "chapters_planned": len(chapters)}
 
 
+def _chapter_ledger(pdir: str, k: int = 5) -> dict:
+    """v4.7.0（借鉴 reveric 长篇状态管理）：最近 k 章的断章钩子/情绪/紧张度轨迹，
+    用于防「连续多章同款钩子/同款情绪」的模式收敛。读 21-章摘要.jsonl。"""
+    fp = os.path.join(pdir, "21-章摘要.jsonl")
+    rows = []
+    try:
+        with open(fp, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                q = d.get("quality_signals") or {}
+                rows.append({"n": d.get("n"),
+                             "hook": (q.get("hook") or "")[:60],
+                             "tension": q.get("tension"),
+                             "emotion": q.get("emotion") or "",
+                             "hook_type": q.get("hook_type") or ""})
+    except Exception:
+        return {}
+    rows = [r for r in rows if r["n"] is not None][-k:]
+    tensions = [r["tension"] for r in rows if isinstance(r["tension"], int)]
+    last_peak, gap = None, None
+    for i, t in enumerate(tensions):
+        if isinstance(t, int) and t >= 8:
+            last_peak = i
+    if last_peak is not None:
+        gap = len(tensions) - 1 - last_peak
+    return {"recent": rows, "tension_track": tensions, "since_peak": gap}
+
+
 def _medium_state_payload(proj, key: str, q: str = "") -> dict:
     """v4.6.2：非小说的状态 pane 数据（剧本用剧本状态库；诗词/散文/论文给阶段/产物映射）。"""
     if str(key).startswith("s_"):
@@ -696,6 +727,8 @@ def register_v2_routes(app, get_project, chat_func=None):
                     # v2.8.0：时间线全量返回（上限 2000 条），前端按章节分组渲染，
                     # 不再截断到 30 条导致「时间线只剩几个点」
                     "timeline": _norm_list(st.get("timeline"))[-2000:],
+                    # v4.7.0 借鉴 reveric：手法账本（最近 5 章钩子/情绪/紧张度）防模式收敛
+                    "ledger": _chapter_ledger(proj.path, 5),
                     "issues": issues, "foreshadow_due": due,
                     "excerpt": stmod.excerpt(st, q, 6000)}
         except Exception as e:
@@ -1375,7 +1408,7 @@ def register_v2_routes(app, get_project, chat_func=None):
             while not ready.is_set():
                 try:
                     await asyncio.wait_for(ready.wait(), timeout=_HEARTBEAT_SECS)
-                except TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):  # v4.7.1 Python<3.11 时 asyncio.TimeoutError 不是内置 TimeoutError 子类
                     pushed_line = ""
                     if _log_proj is not None:
                         try:

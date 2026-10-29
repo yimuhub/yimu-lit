@@ -482,8 +482,8 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDlg();});
 
 /* ---- 通用向导骨架 ---- */
 function wizHead(icon,label,backFn){
-  return `<span class="backlink" onclick="${backFn}">← 返回选择</span>
-  <h3>${icon} 新建${label}</h3>`;
+  return `<span class="backlink" onclick="${escAttr(backFn)}">← 返回选择</span>
+  <h3>${esc(icon)} 新建${esc(label)}</h3>`;
 }
 function wizFoot(goFn,goLabel){
   return `<div class="dbtns"><button class="pbtn" onclick="closeDlg()">取消</button>
@@ -770,7 +770,7 @@ async function pollLive(key,tok){
       const log=(lv.live_log||[]),last=log.length?log[log.length-1]:"";
       card.innerHTML=`<span class="ph">${esc(PHASE[lv.phase]||lv.phase||"待机")}</span>
         <div class="pbar"><i style="width:${pct}%"></i></div>
-        <div class="live-meta" style="color:var(--muted)">${done}/${total} 章 · ${(lv.state||"")}${last?" · "+esc(last.slice(0,90)):""}</div>`;
+        <div class="live-meta" style="color:var(--muted)">${done}/${total} 章 · ${esc(lv.state||"")}${last?" · "+esc(last.slice(0,90)):""}</div>`;
       // —— DSH 式逐条直播：/api/status events 增量 → evbub 气泡 ——
       try{
         const st=await api("/api/status?key="+encodeURIComponent(key));
@@ -965,7 +965,7 @@ async function benchTab(medium,key,tok){
       // 场次支持「写一场」
       const btns=document.createElement("div");btns.className="rowbtns";
       const sel=document.createElement("select");sel.className="fsel";sel.style.width="120px";
-      sel.innerHTML=j.scenes.map(s=>`<option value="${s.no||s.sceneNo}">第${s.no||s.sceneNo}场</option>`).join("");
+      sel.innerHTML=j.scenes.map(s=>`<option value="${escAttr(s.no||s.sceneNo)}">第${esc(s.no||s.sceneNo)}场</option>`).join("");
       const wb=document.createElement("button");wb.className="pbtn primary";wb.textContent="✍️ 写这一场";
       wb.onclick=async()=>{wb.disabled=true;wb.textContent="写作中…";
         try{await api("/api/script/write",{method:"POST",body:JSON.stringify({key,sceneNo:parseInt(sel.value,10)})});toast("本场完成","ok");benchTab(medium,key,tok);}
@@ -1278,7 +1278,7 @@ let CTX_ITEMS=[];
 function showMenu(items,x,y){
   const m=$("ctxmenu");CTX_ITEMS=items;
   m.innerHTML=items.map((it,i)=>it.sep?'<div class="csep"></div>':
-    `<button class="citem${it.danger?" danger":""}" data-i="${i}">${it.label}</button>`).join("");
+    `<button class="citem${it.danger?" danger":""}" data-i="${i}">${esc(it.label)}</button>`).join("");
   m.classList.add("show");
   const r=m.getBoundingClientRect();
   m.style.left=Math.min(x,innerWidth-r.width-8)+"px";
@@ -1635,7 +1635,7 @@ function providerForm(pid){
   dlg.innerHTML=`<h3>${title}</h3><div class="dsub">OpenAI 兼容接口。预设会自动填 base_url 和模型清单；自定义就全部手填。</div>
   ${pid?"":`<label class="flabel">预设（可选，一键填）</label><select class="fsel" id="pf_preset"><option value="">（自定义）</option>${PROV_PRESETS.map(p=>`<option value="${p[0]}">${p[1]}</option>`).join("")}</select>
   <div class="agdesc" id="pf_hint" style="display:none;line-height:1.8;border-left:3px solid var(--accent);padding:6px 10px;margin:8px 0"></div>`}
-  <label class="flabel" title="OpenAI 兼容的根地址，通常以 /v1 结尾；不要填到 /chat/completions">ID（英文标识，唯一）</label><input class="fin" id="pf_id" title="仅用于内部识别，建议用小写英文，如 myprovider" value="${pid||""}" ${pid?"readonly style=opacity:.6":""} placeholder="如 myprovider">
+  <label class="flabel" title="OpenAI 兼容的根地址，通常以 /v1 结尾；不要填到 /chat/completions">ID（英文标识，唯一）</label><input class="fin" id="pf_id" title="仅用于内部识别，建议用小写英文，如 myprovider" value="${escAttr(pid||"")}" ${pid?"readonly style=opacity:.6":""} placeholder="如 myprovider">
   <label class="flabel">名称</label><input class="fin" id="pf_name" placeholder="如 我的供应商">
   <label class="flabel" title="OpenAI 兼容接口地址，通常以 /v1 结尾；Ollama 本地为 http://127.0.0.1:11434/v1">Base URL</label><input class="fin" id="pf_url" title="通常以 /v1 结尾；Ollama 本地为 http://127.0.0.1:11434/v1" placeholder="https://api.xxx.com/v1">
   <label class="flabel" title="密钥只保存在本机 gitignored 的 providers.json 或 secrets/ 中；Ollama 等本地服务可留空">API Key（留空=不修改）</label><input class="fin" id="pf_key" type="password" title="只保存在本机，不会写进作品或日志；本地 Ollama 可留空" placeholder="sk-...">

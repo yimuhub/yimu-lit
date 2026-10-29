@@ -1667,6 +1667,28 @@ function statePane(ctx) {
     if (filtered.length) pane.append(entityGroupClickable(title, ic, filtered.slice(0, 10), right, ctx, title));
   }
 
+  /* v4.7.0（借鉴 reveric 手法账本）：最近 5 章的钩子/情绪/紧张度轨迹，防模式收敛 */
+  if (Array.isArray(payload.ledger) && payload.ledger.recent && payload.ledger.recent.length) {
+    const sec = h('div', { class: 'rp-section' });
+    sec.append(sectionHead('手法账本', `最近 ${payload.ledger.recent.length} 章`));
+    const tl = h('div', { class: 'timeline timeline-full' });
+    for (const r of payload.ledger.recent) {
+      tl.append(h('div', { class: 'timeline-item' },
+        h('span', { class: 'tl-ch', text: `第${r.n || '?'}章` }),
+        h('div', { class: 'tl-body' },
+          h('div', { class: 'tl-main', text: r.hook_type ? `钩子：${r.hook_type}` : (r.hook || '（未提取）') }),
+          h('div', { class: 'tl-meta' },
+            r.emotion ? h('span', { class: 'tl-tag', text: r.emotion }) : null,
+            r.tension != null ? h('span', { class: 'tl-tag', text: `紧张 ${r.tension}/10` }) : null))));
+    }
+    if (payload.ledger.since_peak != null) {
+      sec.append(h('div', { class: 'hint-text', style: { marginTop: '6px' },
+        text: `距上次高峰（紧张度≥8）已 ${payload.ledger.since_peak} 章` }));
+    }
+    sec.append(tl);
+    pane.append(sec);
+  }
+
   /* v2.8.0：时间线全节点渲染（章号徽标 + 故事内时间 + 事件全文 + 地点/人物标签）。
      后端字段是 {chapter,time,event,location,characters}（bot/state.py _norm_timeline_item），
      旧代码读 item.at/item.text 全是 undefined，所以界面上只剩几个空圆点。 */

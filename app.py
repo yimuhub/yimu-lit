@@ -76,6 +76,31 @@ async def _auth_guard(request: Request, call_next):
 SESSIONS = {}
 PROJECT_INDEX = {}  # key -> writer.Project（后台写作项目）
 
+# v4.7.1 修复：会话表此前只增不减 —— 前端每次刷新/换标签都可能带来新的 session_id，
+# 实测灌 500 个一次性会话全部常驻（无上限、无 TTL），而每个对象挂着 cfg/titles/digest
+# 等大块数据，服务长期运行会稳定吃内存。下面给会话记录「最后活动时间」，超过上限时
+# 回收最久未活动、且当前没有后台任务在跑的会话。被回收的会话由前端按 state=idle
+# 重新绑定，与「服务重启后 SESSIONS 清空」的既有行为一致，不会丢已落盘的作品。
+_SESSION_CAP = 256
+
+def _sess_touch(s):
+    try:
+        s["_ts"] = time.time()
+    except Exception:
+        pass
+    return s
+
+def _sess_prune():
+    try:
+        if len(SESSIONS) <= _SESSION_CAP:
+            return
+        evictable = sorted((v.get("_ts") or 0, k) for k, v in SESSIONS.items()
+                           if not v.get("busy") and v.get("state") not in ("planning", "writing"))
+        for _, k in evictable[:len(SESSIONS) - _SESSION_CAP]:
+            SESSIONS.pop(k, None)
+    except Exception:
+        pass
+
 def _get_project(key):
     if not isinstance(key, str) or not key:
         return None   # 缺 key / 非 str → 交调用方 404，不再 500（os.path.join(dir, None) 会 TypeError）
@@ -114,7 +139,8 @@ def _trace(tag, **kw):
 def chat(session_id, message, key=None, digest=None):
     s = SESSIONS.get(session_id) or {"id": session_id, "state": "idle", "cfg": None,
                                      "project": None, "titles": None, "busy": False}
-    SESSIONS[session_id] = s
+    SESSIONS[session_id] = _sess_touch(s)
+    _sess_prune()
     if digest:
         s["digest"] = digest   # v2.9.0：对话上下文压缩摘要，@Agent 群聊注入用
     msg = message.strip()
@@ -841,6 +867,7 @@ def api_chat(payload: dict):
     if prov:
         SESSIONS.setdefault(sid, {"id": sid, "state": "idle", "cfg": None,
                                    "project": None, "titles": None, "busy": False})["prov"] = prov
+        _sess_touch(SESSIONS[sid]); _sess_prune()
     # 重试指令
     if message.strip() in ("重试", "retry") and SESSIONS.get(sid, {}).get("state") == "options":
         s = SESSIONS[sid]
@@ -1218,7 +1245,9 @@ def api_create(payload: dict):
     # 规划/书名候选全部后台线程跑；前端轮询 /api/status、/api/titles。
     import threading as _th
     from datetime import datetime as _dt
-    base = f"{_dt.now().strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[/:*?"<>|\s]+', '', title or (payload.get('idea') or '未命名'))[:24]}" or f"bk_{_dt.now().strftime('%Y%m%d-%H%M%S')}"
+    _ts = _dt.now().strftime('%Y%m%d-%H%M%S')
+    _safe_name = re.sub(r'[/:*?"<>|\s]+', '', title or (payload.get('idea') or '未命名'))[:24]
+    base = f"{_ts}-{_safe_name}" or f"bk_{_ts}"
     # 去掉路径分隔符/空白，书名不参与目录命名以外的用途
     try:
         pdir = safe_join(writer.PROJECTS_DIR, base, label="作品 key")
@@ -1893,6 +1922,13 @@ def _scheduler_tick():
             plan = proj.plan()
         except Exception:
             continue
+        if not plan:
+            # v4.7.1 修复：定时记录指向的书若「计划文件缺失或已损坏」（plan() 返回 None），
+            # 原先直接 plan.get("status") 抛 AttributeError，被 _scheduler_loop 的
+            # `except Exception: pass` 静默吞掉 —— 一条坏记录会拖死整轮调度，
+            # 其它健康的定时书从此永不触发，且日志里看不到任何异常。
+            s["last_note"] = "作品计划缺失或已损坏，跳过本次"; changed = True
+            continue
         if plan.get("status") == "completed":
             s["enabled"] = False; s["last_note"] = "已成书，自动停用"; changed = True; continue
         if getattr(proj, "running", False):
@@ -1908,8 +1944,10 @@ def _scheduler_loop():
     while True:
         try:
             _scheduler_tick()
-        except Exception:
-            pass
+        except Exception as e:
+            # v4.7.1：原先是 `except Exception: pass`，调度器一旦异常停摆，日志里
+            # 看不到任何痕迹，用户只表现为「定时写作怎么不跑了」。现在留一行可排查的告警。
+            _trace("scheduler-error", err=repr(e)[:200])
         time.sleep(60)
 
 # ---------- v0.3 P4：模型规则引擎 /api/model_rules ----------
@@ -2033,6 +2071,7 @@ def api_pick_title(payload: dict):
     return {"ok": True, "key": newbase, "title": title}
 
 _RELEASE_RUNNING = {}
+_RELEASE_LOCK = threading.Lock()  # v4.7.1：放行门禁去重锁（见 api_release 的 TOCTOU 修复）
 
 @app.post("/api/release")
 def api_release(payload: dict):
@@ -2040,14 +2079,39 @@ def api_release(payload: dict):
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    if (_RELEASE_RUNNING.get(key) or {}).get("running"):
-        return {"ok": True, "running": True, "msg": "放行门禁进行中…"}
+    # v4.7.1 修复 TOCTOU：原先「检查是否已在跑」和「置位 running」之间隔着 jobs.run()
+    # （它立刻起后台线程），实测 8 个并发点击会全部通过检查、真的执行 8 次放行门禁
+    # ——重复烧 token，且多个线程并发改写同一批章节文件。
+    # 现在检查与置位在同一个锁临界区内完成，且置位先于任务启动。
+    with _RELEASE_LOCK:
+        if (_RELEASE_RUNNING.get(key) or {}).get("running"):
+            return {"ok": True, "running": True, "msg": "放行门禁进行中…"}
+        _RELEASE_RUNNING[key] = {"running": True, "started_at": int(time.time()), "job_id": None}
+
     def _run_gate():
-        res = writer.run_release_gate(key)
-        _RELEASE_RUNNING[key] = {"running": False, "result": res}
+        prev_started = (_RELEASE_RUNNING.get(key) or {}).get("started_at")
+        try:
+            res = writer.run_release_gate(key)
+        except Exception as e:
+            # v4.7.1：门禁本身抛异常时也必须解除标记，否则该书永久卡在「进行中」，
+            # 之后每次点击都会被上面的检查短路，用户只能重启服务。
+            with _RELEASE_LOCK:
+                _RELEASE_RUNNING[key] = {"running": False, "started_at": prev_started,
+                                         "result": {"error": str(e)[:300]}}
+            raise
+        with _RELEASE_LOCK:
+            _RELEASE_RUNNING[key] = {"running": False, "started_at": prev_started, "result": res}
         return res
-    job = jobs.run("release_gate", _run_gate, key=key, title="放行门禁")
-    _RELEASE_RUNNING[key] = {"running": True, "started_at": int(time.time()), "job_id": job["id"]}
+
+    try:
+        job = jobs.run("release_gate", _run_gate, key=key, title="放行门禁")
+    except Exception as e:
+        with _RELEASE_LOCK:
+            _RELEASE_RUNNING.pop(key, None)
+        return JSONResponse({"error": f"放行任务启动失败：{e}"}, status_code=500)
+    with _RELEASE_LOCK:
+        if _RELEASE_RUNNING.get(key):
+            _RELEASE_RUNNING[key]["job_id"] = job["id"]
     return {"ok": True, "running": True, "msg": "🔓 放行门禁中（自动带要求重写到 ≥90，约几分钟）…"}
 
 @app.get("/api/release-log")
@@ -3523,7 +3587,7 @@ async def _assist_stream_response(payload: dict):
         while not ready.is_set():
             try:
                 await asyncio.wait_for(ready.wait(), timeout=2.0)
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):  # v4.7.1 Python<3.11 捕不到会让改稿流报错
                 yield _sse("status", {"stage": "thinking", "text": "仍在推敲改法…"})
 
         ok, value = box[0] if box else (False, RuntimeError("改稿未返回结果"))

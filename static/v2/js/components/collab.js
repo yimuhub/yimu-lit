@@ -2,7 +2,7 @@
    由 rightpanel「协作」tab 挂载；返回 { el, destroy }，切书重建时先 destroy 再 create。
    实时数据一律读 store.get().live（app.js 的 SSE 订阅），本面板不再自开 EventSource。 */
 
-import { h, icon, fmtNum, fmtWords, relTime, statusMeta } from '../core/dom.js';
+import { h, icon, esc, fmtNum, fmtWords, relTime, statusMeta } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { api, errorText } from '../core/api.js';
 import { toast, popoverMenu, openModal } from '../core/ui.js';
@@ -230,7 +230,7 @@ export function createCollabPanel(ctx) {
     if (existing) { existing.remove(); return; }
     const win = h('div', { class: 'agent-chat-window', dataset: { agent: agentName } });
     const header = h('div', { class: 'agent-chat-header' },
-      h('span', { class: 'agent-chat-title', html: `${icon('message-square', 14)} ${agentName}` }),
+      h('span', { class: 'agent-chat-title', html: `${icon('message-square', 14)} ${esc(agentName)}` }),
       h('button', { class: 'agent-chat-close', type: 'button', html: icon('x', 14),
         on: { click: () => win.remove() } })
     );
