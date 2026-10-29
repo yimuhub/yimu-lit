@@ -553,6 +553,7 @@ def _medium_stages(med: str) -> list[tuple[str, str]]:
 
 def register_v2_routes(app, get_project, chat_func=None):
     from bot import chatsum
+    from bot.writer import _clean_chapter_text
     """在 app 上注册 v2 接口。由 app.py 在 `_get_project` 定义后调用。"""
 
     # ------------------------------------------------------------ 能力探测
@@ -1530,7 +1531,9 @@ def register_v2_routes(app, get_project, chat_func=None):
                         words = _as_int(c.get("wordCount")) or 0
                         yield _sse("chapter_start", {"no": no,
                                                      "title": str(c.get("title") or f"第{no}章")})
-                        body = _read_chapter_file(proj, c.get("filePath"))
+                        raw = _read_chapter_file(proj, c.get("filePath"))
+                        # v4.12.11：对话追章只发清洗后的正文（引子+正文），剥本章概要/章节备注
+                        body = _clean_chapter_text(raw)
                         for i in range(0, len(body), _CHAPTER_CHUNK):
                             yield _sse("chapter_delta", {"no": no, "text": body[i:i + _CHAPTER_CHUNK]})
                             await asyncio.sleep(_CHAPTER_DELTA_GAP)
