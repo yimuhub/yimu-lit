@@ -3970,7 +3970,15 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan, proj=N
         plan_doc["status"] = "failed"
         sp.save_plan(plan_doc)
         return
-    plan_doc["totalScenes"] = len(scenes)
+    # v4.12.14 重大修复：scenes 回填到计划——此前从没写入 plan_doc["scenes"]，
+    # 导致剧本工作台 0/0、状态永远 "writing"、分镜静默失败（一切假状态的总根因）
+    plan_doc["scenes"] = scenes
+    plan_doc["status"] = "completed"
+    # 写出 03-场次清单.md（reparse 兜底 + 工作台场次页签数据源）
+    md = [f"# {name} 场次清单\n", "| 场次 | 类型 | 集数 | 状态 |", "| :--- | :--- | :--- | :--- |"]
+    for sc in scenes:
+        md.append(f"| 第{sc['no']}场 | {sc['kind']} | {sc['place']} | 已完成 |")
+    script_writer._write(os.path.join(pdir, script_writer.F_SCENES), "\n".join(md) + "\n")
     sp.save_plan(plan_doc)
     sp.log(f"✅ 改编完成：{len(scenes)} 集；启动分镜头拆解…")
     writer.mark_pipeline(new_key_base, True)
