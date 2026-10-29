@@ -87,6 +87,7 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan["newsName"] = cfg.get("title") or f"{cfg.get('org') or ''}{ntype}新闻稿"
     plan["typeLabel"] = ntype
     plan["config"] = {k: v for k, v in cfg.items() if k != "api_key"}
+    plan["medium"] = ""   # v4.12.6：技能/右栏按文体匹配
     plan["status"] = "in_progress"
     proj.save_plan(plan)
 

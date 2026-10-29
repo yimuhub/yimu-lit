@@ -95,6 +95,7 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan["bookName"] = cfg.get("title") or cfg.get("idea") or "未命名故事"
     plan["typeLabel"] = f"{ctype} · {age} 岁"
     plan["config"] = {k: v for k, v in cfg.items() if k != "api_key"}
+    plan["medium"] = ""   # v4.12.6：技能/右栏按文体匹配
     plan["status"] = "in_progress"
     proj.save_plan(plan)
 

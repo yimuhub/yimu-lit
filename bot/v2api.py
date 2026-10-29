@@ -1100,7 +1100,13 @@ def register_v2_routes(app, get_project, chat_func=None):
             plan = proj.plan() or {}
             brief = plan.get("brief") or {}
             meta = plan.get("meta") or {}
-            med = str(plan.get("medium") or meta.get("medium") or style.get("medium") or "novel")
+            med = str(plan.get("medium") or meta.get("medium") or style.get("medium") or "")
+            if not med:
+                # v4.12.6：key 前缀兜底——children/news/copy 引擎不写 plan["medium"]，
+                # 此前永远回落 novel → 技能面板全部显示小说技能
+                med = {"c_": "children", "n_": "news", "k_": "copy",
+                       "s_": "script", "p_": "poetry", "e_": "prose",
+                       "t_": "thesis"}.get(str(key)[:2], "novel")
             if not medium_mod.is_medium(med):
                 med = "novel"
             st = _resolve_stage(stage, med)
