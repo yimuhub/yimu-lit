@@ -882,7 +882,51 @@ function workPane(ctx) {
         click: async () => {
           try {
             const res = await api.novelToDrama({ key: work.key, form: 'short_drama' });
-            toast(res.msg || '改编已后台启动', { tone: 'success', duration: 4000 });
+            const newKey = res.key_hint || '';
+            const dramaName = res.name_hint || '改编短剧';
+            /* 启动后台任务后弹出引导卡片：告知成品已生成，可直达剧本工作台 */
+            const statusBtn = h('button', {
+              class: 'btn btn-primary btn-sm',
+              type: 'button',
+              text: '查看剧本（进行中…）',
+              disabled: true,
+              on: { click: () => navigate(`/work/${encodeURIComponent(newKey)}`) }
+            });
+            const body = h('div', { class: 'rp-drama-modal-body' },
+              h('div', { class: 'rp-drama-modal-line' },
+                h('span', { class: 'rp-drama-modal-ico' }, '🎬'),
+                h('span', {}, `《${work.name || work.key}》 正在改编为《${dramaName}》`),
+              ),
+              h('p', { class: 'rp-drama-modal-note' },
+                '剧本与分镜在后台生成中，完成后在作品库可见。点击「查看剧本」直达剧本工作台（场次 / 分镜页签）。'),
+            );
+            const closeBtn = h('button', {
+              class: 'btn btn-sm',
+              type: 'button',
+              text: '关闭'
+            });
+            const dramaModal = openModal({
+              title: '小说 → AI 短剧',
+              subtitle: '改编任务已启动',
+              body,
+              size: 'sm',
+              footer: h('div', {}, statusBtn, closeBtn)
+            });
+            closeBtn.addEventListener('click', () => dramaModal.close());
+            /* 轮询：检查项目是否已落盘。落盘后即可跳转；running=false 视为完成，更新文案 */
+            const pollInterval = setInterval(async () => {
+              try {
+                const st = await api.scriptStatus(newKey);
+                /* 404/异常 → 项目尚未落盘，继续等 */
+                statusBtn.disabled = false;
+                statusBtn.textContent = st.running ? '查看剧本（创作中…）' : '查看剧本（已完成 ✓）';
+                clearInterval(pollInterval);
+              } catch {
+                /* 尚未落盘，下一轮再试 */
+              }
+            }, 6000);
+            setTimeout(() => clearInterval(pollInterval), 300000); // 5 min 停止轮询
+            toast(res.msg || '改编已后台启动', { tone: 'success', duration: 3000 });
           } catch (err) {
             toast(errorText(err, '改编失败'), { tone: 'danger' });
           }
@@ -1099,12 +1143,13 @@ function planPane(ctx) {
     h('span', { class: 'plan-scale', text: plan.scale_label || (plan.target_words ? fmtWords(plan.target_words) : '未设规模') }),
     h('span', { class: 'chip chip-muted', text: plan.mode || '滚动规划' }),
     h('span', { class: 'rp-spring' }),
-    h('button', {
+    /* v4.6.2：重规划仅小说（longform 引擎能力），其它文体只读展示 */
+    (state.workMedium === 'novel' || !state.workMedium) ? h('button', {
       class: 'btn btn-sm',
       type: 'button',
       html: `${icon('refresh', 13)}<span>重规划</span>`,
       on: { click: () => openReplanDialog(ctx) }
-    })
+    }) : null
   );
   pane.append(head);
 
@@ -2281,11 +2326,9 @@ export function renderRightPanel(container, ctx) {
   resetPanelFor(state.currentKey);
   const mediumBench = isMediumBench(state.workMedium);
   const available = TABS.filter((item) => {
-    /* v4.3.0：非小说也放开 参考/协作；剧本有 18-剧本状态库，状态 tab 对剧本开放。
-       规划仍限小说（剧本结构在剧本工作台「场次/结构」页签）。 */
-    if (mediumBench && !['work', 'skills', 'refs', 'collab'].includes(item.key)
-        && !(item.key === 'state' && state.workMedium === 'script')) return false;
-    if (item.key === 'plan') return state.features.plan !== false && !mediumBench;
+    /* v4.6.2：规划/状态/参考/协作全部文体都有（数据源按文体分流到各自引擎） */
+    if (mediumBench && !['work', 'skills', 'refs', 'collab', 'plan', 'state'].includes(item.key)) return false;
+    if (item.key === 'plan') return state.features.plan !== false;
     if (item.key === 'state') return state.features.state !== false;
     if (item.key === 'refs') return state.features.references !== false;
     if (item.key === 'skills') return state.features.skills !== false;

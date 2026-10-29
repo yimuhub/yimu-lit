@@ -53,3 +53,6 @@ llm_calls.jsonl.*
 # —— 运行时一次性令牌 / 探针（本地） ——
 .shenbi_token
 bot/.nlu_probe
+
+# pytest 临时测试目录（各次运行的 fixtures）
+pytest-of-*/

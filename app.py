@@ -3794,16 +3794,19 @@ def api_novel_to_drama(payload: dict):
 
     def _run():
         try:
-            _novel_to_drama_impl(src_key, form, chs, new_key_base, plan)
+            _novel_to_drama_impl(src_key, form, chs, new_key_base, plan, proj)
         except Exception as e:
             print(f"[bg] 小说转短剧失败: {e}", flush=True)
     _th.Thread(target=_run, daemon=True).start()
-    return {"ok": True, "async": True, "msg": f"改编已后台启动（{len(chs)} 章 → {len(chs)} 集）",
-            "key_hint": new_key_base}
+    return {"ok": True, "async": True,
+            "msg": f"改编已后台启动（{len(chs)} 章 → {len(chs)} 集），完成后在作品库查看",
+            "key_hint": new_key_base,
+            "name_hint": f"{plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}"}
 
 
-def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan):
-    """小说→短剧改编实现（后台线程）：逐章 → 分集剧本正文 → 场次清单 → 自动分镜。"""
+def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan, proj=None):
+    """v4.7.0：小说→短剧改编实现（后台线程）：逐章 → 分集剧本正文 → 场次清单 → 自动分镜。
+    proj 参数由调用方传入（v4.5.0 版本缺少此参数导致 _chapter_path 抛出 NameError 静默失败）。"""
     import threading as _th
     from datetime import datetime as _dt
     from bot import llm as _llm
@@ -3823,6 +3826,15 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan):
         "scenes": [], "adaptedFrom": {"key": src_key, "chapters": [c.get("chapterNumber") for c in chapters]},
         "config": {"form": form, "title": name, "idea": f"由小说《{src_plan.get('novelName') or src_key}》改编"},
     }
+    # v4.7.0：proj 由调用方传入；兜底用 _get_project 重建，避免 NameError
+    if proj is None:
+        proj = _get_project(src_key)
+    if proj is None:
+        sp.log("💥 无法读取原小说项目，改编失败")
+        return
+    # v4.7.0：先落一份「进行中」的剧本计划，让项目立即进作品库（可查/可进工作台）；
+    # 即使 LLM 未配置或全部失败，用户也能在作品库看到这部短剧条目（而非凭空消失）。
+    sp.save_plan(plan_doc)
     for c in chapters:
         no = c.get("chapterNumber")
         src_text = writer._clean_chapter_text(open(_chapter_path(proj, c), encoding="utf-8").read()) if _chapter_path(proj, c) and os.path.exists(_chapter_path(proj, c)) else ""
@@ -3844,6 +3856,9 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan):
                        "fileName": fn, "wordCount": len(body)})
     if not scenes:
         sp.log("💥 改编失败：没有生成任何剧本内容")
+        # v4.7.0：失败也保留计划文件并标记状态，让作品库可见（可删可重试），不是凭空消失
+        plan_doc["status"] = "failed"
+        sp.save_plan(plan_doc)
         return
     plan_doc["totalScenes"] = len(scenes)
     sp.save_plan(plan_doc)
