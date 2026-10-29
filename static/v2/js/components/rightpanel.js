@@ -1152,13 +1152,13 @@ function planPane(ctx) {
     h('span', { class: 'plan-scale', text: plan.scale_label || (plan.target_words ? fmtWords(plan.target_words) : '未设规模') }),
     h('span', { class: 'chip chip-muted', text: plan.mode || '滚动规划' }),
     h('span', { class: 'rp-spring' }),
-    /* v4.6.2：重规划仅小说（longform 引擎能力），其它文体只读展示 */
-    (state.workMedium === 'novel' || !state.workMedium) ? h('button', {
+    /* v4.12.13：全部文体都有重规划（非小说走各自引擎的规划重跑） */
+    h('button', {
       class: 'btn btn-sm',
       type: 'button',
       html: `${icon('refresh', 13)}<span>重规划</span>`,
       on: { click: () => openReplanDialog(ctx) }
-    }) : null
+    })
   );
   pane.append(head);
 
@@ -1297,33 +1297,85 @@ function proposalCard(ctx, prop, wide) {
 }
 
 function openReplanDialog(ctx) {
-  const scope = h(
-    'select',
-    { class: 'select' },
-    h('option', { value: 'window', text: '接下来 10 章' }),
-    h('option', { value: 'volume', text: '当前卷' }),
-    h('option', { value: 'arc', text: '当前弧' }),
-    h('option', { value: 'book', text: '全书' })
-  );
-  /* v2.5.0: 默认双岗位同时规划，确保多视角提案对所有作品可用 */
-  const mode = h(
-    'select',
-    { class: 'select' },
-    h('option', { value: 'dual', text: '双岗位同时规划（多视角对比）', selected: true }),
-    h('option', { value: 'single', text: '单个岗位' })
-  );
+  const state = store.get();
+  const medium = state.workMedium || 'novel';
+  const isNovel = medium === 'novel' || !medium;
+  const key = state.currentKey;
+
+  /* v4.12.13：全部文体都有重规划——非小说显示 Agent 多选 + 重跑规划 */
+  const agentSection = h('div', { class: 'field' },
+    h('span', { class: 'field-label', text: '选择规划 Agent（可多选）' }));
+  const agentChips = h('div', { class: 'chip-row', style: { flexWrap: 'wrap', gap: '4px' } });
+  const selectedAgents = new Set();
+  api.agents().then((res) => {
+    const agents = (res && res.agents) || [];
+    for (const a of agents) {
+      const chip = h('button', {
+        class: 'wiz-chip', type: 'button', 'aria-pressed': 'false',
+        on: { click: () => {
+          if (selectedAgents.has(a.agent)) { selectedAgents.delete(a.agent); chip.setAttribute('aria-pressed','false'); }
+          else { selectedAgents.add(a.agent); chip.setAttribute('aria-pressed','true'); }
+        }}
+      }, h('span', { text: a.label || a.agent }));
+      agentChips.append(chip);
+    }
+  }).catch(() => {});
+  agentSection.append(agentChips);
+
   const instruction = h('textarea', {
-    class: 'textarea',
-    rows: 4,
-    placeholder: '例如：第 46 章留存回落，压缩两章调查，把对峙提前到第 48 章。'
+    class: 'textarea', rows: 4,
+    placeholder: '例如：调整节奏/换一个视角/加强冲突/换一种文体风格…'
   });
-  const body = h(
-    'div',
-    { class: 'feedback-form' },
-    h('div', { class: 'field' }, h('span', { class: 'field-label', text: '出提案的岗位' }), mode),
-    h('div', { class: 'field' }, h('span', { class: 'field-label', text: '调整范围' }), scope),
-    h('div', { class: 'field' }, h('span', { class: 'field-label', text: '调整要求' }), instruction)
-  );
+
+  let body, footer;
+  if (isNovel) {
+    const scope = h('select', { class: 'select' },
+      h('option', { value: 'window', text: '接下来 10 章' }),
+      h('option', { value: 'volume', text: '当前卷' }),
+      h('option', { value: 'arc', text: '当前弧' }),
+      h('option', { value: 'book', text: '全书' }));
+    const mode = h('select', { class: 'select' },
+      h('option', { value: 'dual', text: '双岗位同时规划（多视角对比）', selected: true }),
+      h('option', { value: 'single', text: '单个岗位' }));
+    body = h('div', { class: 'feedback-form' },
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '出提案的岗位' }), mode),
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '调整范围' }), scope),
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '调整要求' }), instruction));
+    footer = h('div', { class: 'rp-form-foot' },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+      h('button', { class: 'btn btn-primary', type: 'button', text: '生成提案', on: {
+        click: async (event) => {
+          if (!instruction.value.trim()) { toast('请写清楚要调整什么', { tone: 'danger' }); return; }
+          event.currentTarget.disabled = true;
+          try {
+            const multi = mode.value === 'dual';
+            await api.planMulti({ key, scope: scope.value, roles: multi ? ['planner','editor'] : undefined,
+                                  instruction: instruction.value });
+            toast('已提交，提案稍后可在下方查看', { tone: 'success' });
+            modal.close();
+          } catch (err) { toast(errorText(err, '提交失败'), { tone: 'danger' }); event.currentTarget.disabled = false; }
+        }
+      } }));
+  } else {
+    body = h('div', { class: 'feedback-form' },
+      agentSection,
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '调整要求' }), instruction));
+    footer = h('div', { class: 'rp-form-foot' },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+      h('button', { class: 'btn btn-primary', type: 'button', text: '重新规划', on: {
+        click: async (event) => {
+          event.currentTarget.disabled = true;
+          try {
+            await api.regenPlan({ key, agents: Array.from(selectedAgents), instruction: instruction.value });
+            toast('已启动重新规划，完成后工作台可见新规划', { tone: 'success', duration: 4000 });
+            modal.close();
+            if (ctx.refreshPlan) ctx.refreshPlan();
+          } catch (err) { toast(errorText(err, '重规划失败'), { tone: 'danger' }); event.currentTarget.disabled = false; }
+        }
+      } }));
+  }
+  const modal = openModal({ title: isNovel ? '重规划' : `重规划（${medium}）`, body, footer, size: 'md' });
+}
   const footer = h(
     'div',
     { class: 'rp-form-foot' },

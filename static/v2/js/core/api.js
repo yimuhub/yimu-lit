@@ -304,6 +304,7 @@ export const api = {
   miniStatus: (key) => request('/api/mini/status', { query: { key } }),
   miniPart: (key, part) => request('/api/mini/part', { query: { key, part } }),
   aiGenerate: (payload) => request('/api/ai-generate', jsonBody(payload)),
+  regenPlan: (payload) => request('/api/plan/regen', jsonBody(payload), { timeout: 30000 }),
   scriptStoryboardRun: (key, sceneNo) => request('/api/script/storyboard', jsonBody({ key, sceneNo }), { timeout: 20000 }),
   novelToDrama: (payload) => request('/api/novel-to-drama', jsonBody(payload), { timeout: 30000 }),
   scriptRewriteScenes: (key, sceneNos, instruction = '') =>
