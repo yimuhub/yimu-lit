@@ -43,7 +43,7 @@ def _bad(msg: str, code: int = 400):
 
 # 各文体的「写正文」阶段码（bot/medium.py 的 stages）。技能文件的 stages 用的是这些码，
 # 前端传来的泛化值（WRITE / 空）需要先落地成具体码，否则 pick 只会返回通用技能。
-_WRITE_STAGE = {"novel": "P2", "script": "S5", "poetry": "C", "prose": "D"}
+_WRITE_STAGE = {"novel": "P2", "script": "S5", "poetry": "C", "prose": "D", "thesis": "T2", "children": "C2", "news": "N2", "copy": "K3"}
 
 
 def _resolve_stage(stage: str, med: str) -> str:
