@@ -554,7 +554,7 @@ export function openWizard(ctx, preset = {}) {
       });
       row.append(chip);
     }
-    row.append(h('span', { class: 'hint-text', text: '点值可改，本次创建生效' }));
+    row.append(h('span', { class: 'hint-text', text: '点值可改，本次创建生效；规模与章数由第二步决定' }));
     return row;
   }
 
