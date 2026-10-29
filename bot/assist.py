@@ -21,7 +21,7 @@ from bot.safeio import atomic_write_text
 
 from . import llm, poetry_writer, prose_writer, script_writer
 
-MEDIA = ("script", "poetry", "prose", "novel", "thesis")   # v4.6.0：+论文
+MEDIA = ("script", "poetry", "prose", "novel", "thesis", "children", "news", "copy")   # v4.12.1：8 文体
 
 # 版本快照：剧本沿用 04-正文/.versions/第NNN场-时间.md，其余文体放作品根 .versions/
 VERSIONS_DIR = ".versions"
@@ -165,6 +165,15 @@ def _proj(key: str, medium: str):
     if medium == "thesis":
         from bot import thesis_writer
         return thesis_writer.get_project(key)
+    if medium == "children":
+        from bot import children_writer
+        return children_writer.get_project(key)
+    if medium == "news":
+        from bot import news_writer
+        return news_writer.get_project(key)
+    if medium == "copy":
+        from bot import copy_writer
+        return copy_writer.get_project(key)
     if medium == "novel":
         # v3.2.0：小说走通用 Project（复用 writer 的目录规则）
         try:
@@ -217,7 +226,32 @@ def docs_for(key: str, medium: str) -> list[dict]:
         return _novel_docs(proj)
     if medium == "thesis":
         return _thesis_docs(proj)
+    if medium in ("children", "news", "copy"):
+        return _mini_docs(proj, medium)
     return []
+
+
+def _mini_docs(proj) -> list[dict]:
+    """v4.12.1：children/news/copy 的可改文档——00-xxx/正文/定稿。"""
+    cls = type(proj)
+    out = []
+    # outline
+    outline_rel = cls.F_OUTLINE if hasattr(cls, 'F_OUTLINE') else ""
+    if outline_rel and os.path.exists(os.path.join(proj.path, outline_rel)):
+        out.append({"id": "outline", "kind": "doc", "no": None,
+                    "title": "设定/素材", "rel": outline_rel, "words": 0})
+    # body files
+    body_dir = os.path.join(proj.path, cls.BODY_DIR)
+    if os.path.isdir(body_dir):
+        for fn in sorted(os.listdir(body_dir)):
+            if fn.endswith(".md"):
+                out.append({"id": fn, "kind": "doc", "no": None,
+                            "title": fn.replace(".md", ""), "rel": os.path.join(cls.BODY_DIR, fn), "words": 0})
+    # final
+    if hasattr(cls, 'FINAL_FILE'):
+        out.append({"id": "final", "kind": "doc", "no": None,
+                    "title": "定稿", "rel": cls.FINAL_FILE, "words": 0})
+    return out
 
 
 def _thesis_docs(proj) -> list[dict]:

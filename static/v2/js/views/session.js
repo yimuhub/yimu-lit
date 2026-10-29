@@ -136,7 +136,7 @@ export function renderSession(container, ctx = {}) {
     const key = store.get().currentKey;
     if (!key) { histLoading = false; return; }
     const medium = store.get().workMedium || store.get().ui?.medium || 'novel';
-    if (medium !== 'novel') { histLoading = false; return; }  // 剧本/诗词/散文走 assist history
+    // v4.12.1：8 文体都拉聊天历史（chat_log.jsonl 全文体留档）
     try {
       const res = await api.chatHistory(key);
       if (res && res.ok && Array.isArray(res.items)) {

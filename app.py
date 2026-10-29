@@ -1155,8 +1155,11 @@ def _create_prose_project(payload: dict) -> dict:
 
 
 def _spawn_simple_writer(medium: str, mod, payload: dict) -> dict:
-    """v4.10-4.12：children/news/copy 共用的直启入口——把向导 payload 原样折进 cfg，
-    由各引擎的 create_project(cfg) 自行消费字段（引擎内自建目录，base_key 由引擎返回前落盘）。"""
+    """v4.10-4.12：children/news/copy 共用入口。
+    v4.12.1 重大修复：此前在请求线程里同步跑 create_project（多次 LLM 调用）→ 请求超时。
+    现在先落骨架目录 + 注册 PROJECT_INDEX + 立即返回 key，流水线放后台线程（与小说/剧本一致）。"""
+    import threading as _th
+    from datetime import datetime as _dt
     cfg = dict(payload.get("cfg_overrides") or {})
     for k, v in payload.items():
         if k not in ("medium", "cfg_overrides", "reference_ids", "provider_id", "model"):
@@ -1165,7 +1168,26 @@ def _spawn_simple_writer(medium: str, mod, payload: dict) -> dict:
         cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
     if payload.get("model"):
         cfg.setdefault("defaults", {})["model"] = payload["model"]
-    return mod.create_project(cfg)
+
+    prefix = {"children": "c_", "news": "n_", "copy": "k_"}[medium]
+    display = (cfg.get("title") or cfg.get("idea") or "未命名").strip()[:40] or "未命名"
+    _name = re.sub(r'[\/:*?"<>|\s]+', "", display)[:24] or "未命名"
+    base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
+    pdir = safe_join(mod.PROJECTS_DIR, base, label="作品 key")
+    os.makedirs(pdir, exist_ok=True)
+
+    def _bg():
+        writer.mark_pipeline(base, True)
+        try:
+            mod.create_project({**cfg, "_base_key": base})
+        except Exception as e:
+            print(f"[bg] {medium} 创建失败: {e}", flush=True)
+        finally:
+            writer.mark_pipeline(base, False)
+
+    _th.Thread(target=_bg, daemon=True).start()
+    return {"key": base, "pid": base, "project": base, "medium": medium,
+            "name": display, "status": "planning", "async": True}
 
 
 def _create_thesis_project(payload: dict) -> dict:
@@ -3541,7 +3563,7 @@ async def api_script_rewrite_scenes(payload: dict):
 
 def _assist_medium(payload: dict) -> str:
     med = str(payload.get("medium") or "script").strip()
-    return med if med in ("script", "poetry", "prose", "novel") else "script"
+    return med if med in ("script", "poetry", "prose", "novel", "thesis", "children", "news", "copy") else "script"
 
 
 def _assist_project(medium: str, key: str):
@@ -3550,7 +3572,9 @@ def _assist_project(medium: str, key: str):
     if medium == "prose":
         return prose_writer.get_project(key)
     if medium == "novel":
-        return _get_project(key)   # v3.2.0：小说工作台也有对话改稿
+        return _get_project(key)
+    if medium in ("children", "news", "copy"):
+        return _get_project(key)   # v4.12.1：8 文体对话改稿
     return script_writer.get_project(key)
 
 
@@ -3997,6 +4021,75 @@ async def api_thesis_part(key: str, part: str = "final"):
     else:
         return JSONResponse({"error": "未知 part"}, status_code=400)
     return {"key": key, "part": part, "text": text}
+
+
+@app.post("/api/ai-generate")
+def api_ai_generate(payload: dict):
+    """v4.12.1：向导「AI 自动生成」按钮——根据文体和已有信息，生成标题或创作方向。"""
+    medium = str(payload.get("medium") or "novel")
+    field = str(payload.get("field") or "title")   # title 或 idea
+    hint = str(payload.get("hint") or "")           # 用户已输入的线索
+    prompts = {
+        "novel": "为一部网络小说起一个吸引人的书名和一句话故事概念",
+        "script": "为一部剧本起一个剧名和一句话故事概念",
+        "poetry": "为一首诗词起一个诗题和创作方向",
+        "prose": "为一篇散文起一个标题和写作方向",
+        "thesis": "为一篇学术论文起一个研究题目和研究方向",
+        "children": "为一篇儿童故事起一个标题和故事概念",
+        "news": "为一篇新闻稿起一个标题和核心事件概述",
+        "copy": "为一个产品/品牌起一个文案主题和创意方向",
+    }
+    base = prompts.get(medium, prompts["novel"])
+    hint_p = f"\n用户已输入的线索（在此基础上发散，不要照抄）：{hint}" if hint.strip() else ""
+    out = llm.chat_json([{"role": "user", "content":
+        f"{base}。随机生成一个有创意的结果（每次不同）。{hint_p}\n"
+        '输出 JSON：{"title":"标题/题目","idea":"一句话概念或方向(50-100字)"}。只输出 JSON。'}],
+        stage="planning")
+    return {"ok": True, "title": (out or {}).get("title", ""), "idea": (out or {}).get("idea", "")}
+
+
+@app.get("/api/mini/status")
+async def api_mini_status(key: str):
+    """v4.12.1：children/news/copy 通用状态端点。"""
+    for mod in (children_writer, news_writer, copy_writer):
+        proj = mod.get_project(key)
+        if proj:
+            return proj.status()
+    return JSONResponse({"error": "项目不存在"}, status_code=404)
+
+
+@app.get("/api/mini/part")
+async def api_mini_part(key: str, part: str = "final"):
+    """v4.12.1：children/news/copy 通用文档端点。"""
+    for mod in (children_writer, news_writer, copy_writer):
+        proj = mod.get_project(key)
+        if proj:
+            # part 可以是 "outline"/"final" 或文件名
+            cls = type(proj)
+            mapping = {}
+            if hasattr(cls, 'F_OUTLINE'):
+                mapping["outline"] = cls.F_OUTLINE
+            if hasattr(cls, 'FINAL_FILE'):
+                mapping["final"] = cls.FINAL_FILE
+            if hasattr(cls, 'F_REPORT'):
+                mapping["report"] = cls.F_REPORT
+            if hasattr(cls, 'F_INTERACTIVE'):
+                mapping["interactive"] = cls.F_INTERACTIVE
+            if hasattr(cls, 'F_TITLE_TAGS'):
+                mapping["titles"] = cls.F_TITLE_TAGS
+            if hasattr(cls, 'F_CHECK'):
+                mapping["check"] = cls.F_CHECK
+            fp = None
+            if part in mapping:
+                fp = os.path.join(proj.path, mapping[part])
+            elif part.endswith(".md"):
+                fp = os.path.join(proj.path, cls.BODY_DIR if hasattr(cls, 'BODY_DIR') else "", part)
+                if not os.path.exists(fp):
+                    fp = os.path.join(proj.path, part)
+            if fp and os.path.exists(fp):
+                return {"key": key, "part": part, "text": open(fp, encoding="utf-8").read()}
+            return {"key": key, "part": part, "text": ""}
+    return JSONResponse({"error": "项目不存在"}, status_code=404)
 
 
 @app.post("/api/thesis/refs-check")

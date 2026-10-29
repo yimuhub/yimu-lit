@@ -43,7 +43,11 @@ PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 def create_project(cfg: dict):
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = _safe(cfg.get("title") or cfg.get("idea") or "未命名故事")
-    pdir = safe_join(PROJECTS_DIR, f"c_{ts}-{name}", label="作品 key")
+    # v4.12.1：支持 _spawn_simple_writer 预创建的目录（异步模式）
+    if cfg.get("_base_key"):
+        pdir = safe_join(PROJECTS_DIR, cfg["_base_key"], label="作品 key")
+    else:
+        pdir = safe_join(PROJECTS_DIR, f"c_{ts}-{name}", label="作品 key")
     os.makedirs(pdir, exist_ok=True)
     proj = ChildrenProject(pdir, name)
     proj.running = True

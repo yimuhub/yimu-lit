@@ -1233,3 +1233,8 @@
   color: var(--accent);
   background: var(--accent-soft);
 }
+
+/* v4.12.1：向导 AI 生成按钮 */
+.wiz-ai-row { display: flex; gap: 8px; margin-top: 8px; }
+.wiz-ai-btn { border: 1px dashed var(--accent); color: var(--accent); background: transparent; }
+.wiz-ai-btn:hover { background: var(--accent-soft); }

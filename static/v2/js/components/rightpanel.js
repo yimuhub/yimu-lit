@@ -653,6 +653,15 @@ function mediumWorkPane(work, ctx) {
   pane.append(kv);
   /* 创作过程中就地蒸馏：不用跳去技能库，蒸完当场可用。 */
   const actions = h('div', { class: 'rp-actions rp-actions-pad' });
+  /* v4.12.1：非小说加「打开工作台」按钮 */
+  actions.append(
+    h('button', {
+      class: 'btn btn-primary btn-sm',
+      type: 'button',
+      html: `${icon('edit', 13)}<span>${MEDIUM_LABELS[work.medium || 'novel'] || ''}工作台</span>`,
+      on: { click: () => navigate(`/work/${encodeURIComponent(work.key)}/bench/1`) }
+    })
+  );
   /* 断点恢复：服务重启/线程中断后（planning/writing 但没有活动线程），一键续跑。
      v3.1.0：running 时切换为「创作中」状态展示，动作必须有明确变化。 */
   if (work.running) {

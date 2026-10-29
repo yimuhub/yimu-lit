@@ -80,7 +80,7 @@ export function renderWelcome(container, ctx) {
     )
   );
   const quick = h('div', { class: 'quick-grid' });
-  for (const medium of mediumList().slice(0, 5)) {   // v4.6.0：+论文
+  for (const medium of mediumList()) {   // v4.12.1：全部体裁
     const btn = h(
       'button',
       { class: 'quick-card', type: 'button', dataset: { medium: medium.key } },

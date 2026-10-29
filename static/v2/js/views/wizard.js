@@ -558,6 +558,38 @@ export function openWizard(ctx, preset = {}) {
     return row;
   }
 
+  /* v4.12.1：AI 自动生成按钮——点击后根据文体和已有信息生成标题/方向 */
+  function addAiGenerateBtn(pane, targetField) {
+    const btn = h('button', {
+      class: 'btn btn-sm wiz-ai-btn',
+      type: 'button',
+      html: `${icon('wand', 13)}<span>AI 自动生成</span>`,
+      on: {
+        click: async (event) => {
+          btn.disabled = true;
+          const span = btn.querySelector('span');
+          if (span) span.textContent = '生成中…';
+          try {
+            const hint = values()[targetField] || values().idea || '';
+            const res = await api.aiGenerate({ medium: model.medium, field: targetField, hint });
+            if (targetField === 'title' && res.title) {
+              model.values.title = res.title;
+            } else if (res.idea) {
+              model.values.idea = res.idea;
+            }
+            render();
+            toast('已生成，可继续编辑', { tone: 'success', duration: 1800 });
+          } catch (err) {
+            toast(errorText(err, '生成失败'), { tone: 'danger' });
+          }
+          btn.disabled = false;
+          if (span) span.textContent = 'AI 自动生成';
+        }
+      }
+    });
+    pane.append(btn);
+  }
+
   function renderGroup(name, { span = false } = {}) {
     const pane = h('div', { class: span ? 'wiz-grid' : 'wiz-stack' });
     for (const f of fieldsOf(model.medium, name)) {

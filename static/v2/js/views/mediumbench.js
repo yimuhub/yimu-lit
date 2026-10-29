@@ -33,6 +33,28 @@ const BENCH = {
     status: (key) => api.thesisStatus(key),
     doc: (key, part) => api.thesisPart(key, part)
   },
+  children: {
+    title: '儿童文学工作台',
+    tabs: [['outline', '分级设定'], ['story', '故事'], ['interactive', '互动与插图'], ['final', '定稿']],
+    defaultTab: 'final',
+    status: (key) => api.miniStatus(key),
+    doc: (key, tab) => api.miniPart(key, tab)
+  },
+  news: {
+    title: '新闻稿工作台',
+    tabs: [['outline', '素材'], ['final', '正文'], ['check', '事实核查'], ['final', '定稿']],
+    defaultTab: 'final',
+    status: (key) => api.miniStatus(key),
+    doc: (key, tab) => api.miniPart(key, tab)
+  },
+  copy: {
+    title: '文案工作台',
+    tabs: [['outline', '需求'], ['hooks', '钩子'], ['final', '文案'], ['titles', '标题标签'], ['final', '定稿']],
+    defaultTab: 'final',
+    status: (key) => api.miniStatus(key),
+    doc: (key, tab) => api.miniPart(key, tab)
+  },
+
   poetry: {
     title: '诗词工作台',
     tabs: [['note', '题解'], ['imagery', '意象'], ['draft', '草稿'], ['check', '格律校验'], ['final', '定稿']],
