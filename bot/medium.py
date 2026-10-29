@@ -117,6 +117,63 @@ MEDIUMS: dict[str, dict] = {
         "checker": None,
         "live": None,
     },
+    # v4.10.0：儿童文学（分级语言 / 互动设计 / 插图提示词）
+    "children": {
+        "label": "儿童文学",
+        "icon": "🧸",
+        "desc": "寓言 / 绘本故事 / 儿童科幻 / 科学故事，按年龄段分级创作",
+        "dir_prefix": "c_",
+        "stages": [
+            ("C1", "选题分级", "年龄段 / 主题 / 价值观红线"),
+            ("C2", "故事", "按故事单元创作，语言分级"),
+            ("C3", "互动", "亲子问题 / 知识点 / 安全提示"),
+            ("C4", "插图", "插图提示词（每单元 2-4 张）"),
+            ("C5", "定稿", "定稿 + 朗读适配"),
+        ],
+        "score_dims": [("童趣", 30), ("分级", 25), ("正面引导", 25), ("结构", 20)],
+        "pass_line": 80,
+        "agents": ["children_writer"],
+        "checker": None,
+        "live": None,
+    },
+    # v4.11.0：新闻稿（倒金字塔 / 事实核查 / 多版本）
+    "news": {
+        "label": "新闻稿",
+        "icon": "📰",
+        "desc": "产品发布 / 官方公告 / 活动通稿 / 企业动态，倒金字塔结构",
+        "dir_prefix": "n_",
+        "stages": [
+            ("N1", "素材", "素材与信源整理，5W1H 校验"),
+            ("N2", "撰写", "倒金字塔：标题/导语/主体/引语/背景"),
+            ("N3", "核查", "时间/数字/人名/引语归属一致性"),
+            ("N4", "多版本", "通稿版 / 社媒短版 / 标题候选"),
+            ("N5", "定稿", "定稿 + 发布清单"),
+        ],
+        "score_dims": [("准确", 30), ("结构", 25), ("新闻语体", 25), ("传播力", 20)],
+        "pass_line": 80,
+        "agents": ["news_writer"],
+        "checker": None,
+        "live": None,
+    },
+    # v4.12.0：文案创作（口播 / 种草 / 宣传 / 营销）
+    "copy": {
+        "label": "文案",
+        "icon": "📣",
+        "desc": "口播稿 / 种草笔记 / 宣传文案 / 营销文案，钩子库 + 平台适配",
+        "dir_prefix": "k_",
+        "stages": [
+            ("K1", "需求", "平台 / 受众 / 卖点 / 钩子方向"),
+            ("K2", "钩子", "前 3 秒钩子 10 候选"),
+            ("K3", "正文", "口播稿（停顿/重音标注）或图文文案"),
+            ("K4", "标题", "标题与标签候选"),
+            ("K5", "适配", "多平台版本适配 + 定稿"),
+        ],
+        "score_dims": [("钩子", 30), ("转化力", 25), ("平台适配", 25), ("表达", 20)],
+        "pass_line": 80,
+        "agents": ["copy_writer"],
+        "checker": None,
+        "live": None,
+    },
 }
 
 # 别名：用户口语 → 文体 key
@@ -348,6 +405,88 @@ _THESIS_WIZARD = {
     ],
 }
 
+# v4.10-4.12：儿童文学 / 新闻稿 / 文案向导
+_CHILDREN_WIZARD = {
+    "style_title": "分级与安全",
+    "brief": [
+        _f("ctype", "类型", "select", options=_opts([
+            ("fable", "寓言故事"), ("picture", "绘本故事"), ("scifi", "儿童科幻"),
+            ("science", "科学故事"), ("bedtime", "睡前故事")]), default="fable", required=True),
+        _f("age", "年龄段", "select", options=_opts([
+            ("3-6", "3-6 岁（学龄前）"), ("7-9", "7-9 岁（小学低年级）"),
+            ("10-12", "10-12 岁（小学高年级）")]), default="7-9", required=True),
+    ],
+    "basic": [
+        _f("title", "故事标题", "text", max_length=40, hint="留空则由引擎出候选。"),
+        _f("idea", "故事要点", "textarea", rows=4, max_length=2000,
+           hint="主角 / 想要什么 / 学到什么；价值观红线（不能出现的内容）也写在这里。"),
+        _f("words_scale", "单篇字数", "scale",
+           options=[{"value": "800", "label": "800字", "fill": 800},
+                    {"value": "1500", "label": "1500字", "fill": 1500},
+                    {"value": "3000", "label": "3000字", "fill": 3000}],
+           custom_key="target_words", min=300, max=20000, unit="字", default="1500", required=True),
+    ],
+    "style": [
+        _f("values_note", "价值观红线", "textarea", rows=2, max_length=500,
+           hint="必守：如「不说教」「无暴力冲突」「主角不撒谎」等。"),
+        _f("with_interactive", "亲子互动设计", "toggle", default=True,
+           hint="每个故事单元附亲子讨论问题与知识点。"),
+        _f("with_illustration", "插图提示词", "toggle", default=True,
+           hint="每个故事单元输出 2-4 张插画描述（可转绘图提示词）。"),
+    ],
+}
+_NEWS_WIZARD = {
+    "style_title": "发布口径",
+    "brief": [
+        _f("ntype", "类型", "select", options=_opts([
+            ("product", "产品/新品发布"), ("official", "官方公告"), ("event", "活动通稿"),
+            ("corporate", "企业动态"), ("honor", "获奖/荣誉")]), default="product", required=True),
+        _f("org", "发布主体", "text", max_length=40, required=True,
+           hint="公司 / 机构 / 品牌名"),
+    ],
+    "basic": [
+        _f("title", "新闻标题", "text", max_length=60, hint="留空则由引擎出候选。"),
+        _f("idea", "核心事实", "textarea", rows=5, max_length=3000, required=True,
+           hint="时间/地点/人物/事件/数据/引语——事实越完整，稿子越可用。"),
+    ],
+    "style": [
+        _f("cite_style", "口径风格", "select", options=_opts([
+            ("formal", "官方正式"), ("tech", "科技媒体"), ("warm", "温度感/人文"),
+            ("finance", "财经严谨")]), default="formal"),
+        _f("with_versions", "多版本输出", "toggle", default=True,
+           hint="通稿版 + 社媒短版 + 标题候选。"),
+    ],
+}
+_COPY_WIZARD = {
+    "style_title": "平台与钩子",
+    "brief": [
+        _f("ktype", "文案类型", "select", options=_opts([
+            ("voice", "口播稿"), ("planting", "种草笔记"), ("promo", "宣传文案"),
+            ("marketing", "营销长文")]), default="voice", required=True),
+        _f("platform", "投放平台", "select", options=_opts([
+            ("douyin", "抖音"), ("xhs", "小红书"), ("gzh", "公众号"),
+            ("bili", "B站"), ("shipinhao", "视频号")]), default="douyin", required=True),
+    ],
+    "basic": [
+        _f("title", "主题/产品", "text", max_length=60, required=True),
+        _f("idea", "卖点与受众", "textarea", rows=4, max_length=2000, required=True,
+           hint="卖什么 / 卖给谁 / 核心卖点 / 竞品差异。"),
+        _f("duration", "口播时长", "scale",
+           options=[{"value": "30", "label": "30秒", "fill": 30},
+                    {"value": "60", "label": "60秒", "fill": 60},
+                    {"value": "180", "label": "3分钟", "fill": 180}],
+           custom_key="duration_secs", min=15, max=600, unit="秒", default="60",
+           when={"field": "ktype", "in": ["voice"]}),
+    ],
+    "style": [
+        _f("tone", "语气", "select", options=_opts([
+            ("energetic", "活力种草"), ("professional", "专业可信"),
+            ("humorous", "幽默玩梗"), ("warm", "温暖治愈")]), default="energetic"),
+        _f("with_hooks", "钩子候选", "toggle", default=True,
+           hint="前 3 秒钩子 10 候选（悬念/反差/痛点/数字/热点借势）。"),
+    ],
+}
+
 # 剧本：引擎真实消费 title/idea/form/entryPath/scenes/pages/episodes/notes（见 bot/script_writer.py）。
 _SCRIPT_GENRES = ["悬疑/犯罪", "古装/历史", "都市/现实", "科幻", "战争/军事",
                   "喜剧", "爱情", "家庭/伦理", "武侠/仙侠", "恐怖/灵异"]
@@ -505,7 +644,9 @@ _WIZARD: dict[str, dict[str, list[dict]]] = {
 
 def _copy_sections(medium: str) -> dict:
     """深拷贝三段字段，避免调用方改写模块常量。"""
-    src = _WIZARD.get(medium) or (_THESIS_WIZARD if medium == "thesis" else {"brief": [], "basic": [], "style": []})
+    _extra = {"thesis": _THESIS_WIZARD, "children": _CHILDREN_WIZARD,
+              "news": _NEWS_WIZARD, "copy": _COPY_WIZARD}
+    src = _WIZARD.get(medium) or _extra.get(medium) or {"brief": [], "basic": [], "style": []}
     out = {group: [dict(f, **({"options": list(f.get("options") or [])} if f.get("options") else {}))
                    for f in src.get(group, [])]
            for group in ("brief", "basic", "style")}

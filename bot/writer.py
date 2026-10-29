@@ -2033,9 +2033,11 @@ def _meta(proj):
 # 四套引擎各写各的计划文件；文件名是项目文体唯一的判据。
 _PLAN_BY_MEDIUM = (("novel", "02-写作计划.json"), ("script", "剧本计划.json"),
                    ("poetry", "诗词计划.json"), ("prose", "散文计划.json"),
-                   ("thesis", "论文计划.json"))   # v4.6.0：论文
-_NAME_KEY = {"novel": "novelName", "script": "scriptName", "poetry": "poemName", "prose": "proseName", "thesis": "thesisName"}
-_FORM_LABEL_KEY = {"novel": "", "script": "formLabel", "poetry": "formLabel", "prose": "genreLabel", "thesis": "degreeLabel"}
+                   ("thesis", "论文计划.json"),   # v4.6.0：论文
+                   ("children", "儿童文学计划.json"), ("news", "新闻稿计划.json"),
+                   ("copy", "文案计划.json"))   # v4.10-4.12
+_NAME_KEY = {"novel": "novelName", "script": "scriptName", "poetry": "poemName", "prose": "proseName", "thesis": "thesisName", "children": "bookName", "news": "newsName", "copy": "copyName"}
+_FORM_LABEL_KEY = {"novel": "", "script": "formLabel", "poetry": "formLabel", "prose": "genreLabel", "thesis": "degreeLabel", "children": "typeLabel", "news": "typeLabel", "copy": "platformLabel"}
 _OTHER_LABEL = {"completed": "已完成", "planning": "规划中", "writing": "写作中",
                 "in_progress": "创作中", "failed": "失败", "unknown": "草稿"}
 

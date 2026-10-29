@@ -54,6 +54,21 @@ ALLOWED_KEYS = {
         "degree", "field", "title", "idea", "target_words", "cite_style", "humanize", "style_id",
         "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
     },
+    "children": {
+        # v4.10.0：children_writer 读 ctype/age/title/idea/target_words/values_note/with_interactive/with_illustration
+        "ctype", "age", "title", "idea", "target_words", "values_note",
+        "with_interactive", "with_illustration", "style_id",
+        "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
+    },
+    "news": {
+        # v4.11.0：news_writer 读 ntype/org/title/idea/cite_style/with_versions
+        "ntype", "org", "title", "idea", "cite_style", "with_versions", "style_id",
+    },
+    "copy": {
+        # v4.12.0：copy_writer 读 ktype/platform/title/idea/duration_secs/tone/with_hooks
+        "ktype", "platform", "title", "idea", "duration_secs", "tone", "with_hooks", "style_id",
+        "duration",   # scale 的 token 槽位（数字落点是 duration_secs）
+    },
 }
 
 # static/v2/js/views/wizard.js 的 controlFor() 支持的类型；schema 用了别的就渲染不出来

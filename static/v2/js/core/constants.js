@@ -37,11 +37,14 @@ export const MEDIUM_FALLBACK = [
   { key: 'script', label: '剧本', icon: 'film', desc: '长片、剧集、短片、舞台与戏曲。' },
   { key: 'poetry', label: '诗词', icon: 'feather', desc: '格律诗、词牌、古风与现代诗。' },
   { key: 'prose', label: '散文', icon: 'pen', desc: '抒情、叙事、哲理与游记。' },
-  { key: 'thesis', label: '论文', icon: 'graduation', desc: '学术论文：提纲、引用文献、降 AIGC。' }
+  { key: 'thesis', label: '论文', icon: 'file-text', desc: '学术论文：提纲、引用文献、降 AIGC。' },
+  { key: 'children', label: '儿童文学', icon: 'book', desc: '寓言、绘本故事、儿童科幻与科学故事。' },
+  { key: 'news', label: '新闻稿', icon: 'globe', desc: '产品发布、官方公告、活动通稿。' },
+  { key: 'copy', label: '文案', icon: 'zap', desc: '口播稿、种草笔记、宣传与营销文案。' }
 ];
 
 /* 后端 /api/mediums 的 icon 是 emoji（旧版界面直接渲染），v2 一律按体裁 key 取 SVG 名。 */
-const MEDIUM_ICON = { novel: 'book', script: 'film', poetry: 'feather', prose: 'pen', thesis: 'file-text' };
+const MEDIUM_ICON = { novel: 'book', script: 'film', poetry: 'feather', prose: 'pen', thesis: 'file-text', children: 'book', news: 'globe', copy: 'zap' };
 
 export function mediumIcon(medium) {
   const key = typeof medium === 'string' ? medium : (medium && medium.key) || '';
