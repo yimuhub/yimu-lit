@@ -22,7 +22,7 @@ import { openDistillModal } from '../components/distill.js';
 const BENCH = {
   script: {
     title: '剧本工作台',
-    tabs: [['scenes', '场次'], ['bible', '创作圣经'], ['chars', '人物'], ['struct', '结构'], ['revisions', '修订'], ['quality', '质量']],
+    tabs: [['scenes', '场次'], ['bible', '创作圣经'], ['chars', '人物'], ['struct', '结构'], ['revisions', '修订'], ['quality', '质量'], ['storyboard', '分镜']],
     status: (key) => api.scriptStatus(key),
     doc: (key, tab) => api.scriptDoc(tab, key)
   },

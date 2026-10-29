@@ -586,12 +586,12 @@ export function openWizard(ctx, preset = {}) {
         'div',
         { class: 'wiz-pane-title' },
         h('h3', { text: '这次想写什么？' }),
-        h('p', { text: '体裁决定要填哪些维度：小说问题材与规模，剧本问形式与入口，诗词问体式与韵书，散文问文体与操作。' })
+        h('p', { text: '体裁决定要填哪些维度：小说问题材与规模，剧本问形式与入口，诗词问体式与韵书，散文问文体与操作，论文问层次与引用格式。' })
       )
     );
 
     const cards = h('div', { class: 'genre-cards' });
-    for (const medium of mediumList().slice(0, 4)) {
+    for (const medium of mediumList()) {   // v4.6.2：论文等全部体裁都出现在向导第一步
       const active = model.medium === medium.key;
       const card = h(
         'button',
