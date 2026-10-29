@@ -64,7 +64,7 @@ const BENCH = {
   },
   prose: {
     title: '散文工作台',
-    tabs: [['brief', 'Brief'], ['material', '素材'], ['draft', '初稿'], ['slop', '去味报告'], ['final', '定稿']],
+    tabs: [['brief', '创作简报'], ['material', '素材'], ['draft', '初稿'], ['slop', '去味报告'], ['final', '定稿']],
     defaultTab: 'final',
     status: (key) => api.proseStatus(key),
     doc: (key, part) => api.prosePart(key, part)
