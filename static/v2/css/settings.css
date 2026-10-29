@@ -1238,3 +1238,8 @@
 .wiz-ai-row { display: flex; gap: 8px; margin-top: 8px; }
 .wiz-ai-btn { border: 1px dashed var(--accent); color: var(--accent); background: transparent; }
 .wiz-ai-btn:hover { background: var(--accent-soft); }
+
+/* v4.12.9：向导 AI 内联按钮 */
+.wiz-field-ai-row { display: flex; gap: 6px; align-items: flex-start; }
+.wiz-field-ai-row > .input, .wiz-field-ai-row > .textarea { flex: 1; min-width: 0; }
+.wiz-field-ai-row > .btn { flex: none; margin-top: 2px; white-space: nowrap; }

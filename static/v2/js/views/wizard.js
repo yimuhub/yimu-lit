@@ -573,9 +573,9 @@ export function openWizard(ctx, preset = {}) {
             const hint = values()[targetField] || values().idea || '';
             const res = await api.aiGenerate({ medium: model.medium, field: targetField, hint });
             if (targetField === 'title' && res.title) {
-              model.values.title = res.title;
+              model.values[model.medium].title = res.title;
             } else if (res.idea) {
-              model.values.idea = res.idea;
+              model.values[model.medium].idea = res.idea;
             }
             render();
             toast('已生成，可继续编辑', { tone: 'success', duration: 1800 });
@@ -598,7 +598,50 @@ export function openWizard(ctx, preset = {}) {
         pane.append(h('p', { class: 'wiz-note', text: f.text || '' }));
         continue;
       }
-      const wrap = field(f.label, controlFor(f), {
+      const ctrl = controlFor(f);
+      /* v4.12.9：title/idea 字段旁加「AI 随机生成」按钮 */
+      if (name === 'basic' && (f.key === 'title' || f.key === 'idea')) {
+        const aiBtn = h('button', {
+          class: 'btn btn-sm wiz-ai-inline', type: 'button',
+          html: `${icon('wand', 12)}<span>AI 生成</span>`,
+          title: 'AI 根据文体自动生成内容（每次不同）',
+          on: {
+            click: async (event) => {
+              event.preventDefault();
+              const btn = event.currentTarget;
+              btn.disabled = true;
+              const sp = btn.querySelector('span');
+              if (sp) sp.textContent = '生成中…';
+              try {
+                const hint = values().idea || values().title || '';
+                const res = await api.aiGenerate({ medium: model.medium, field: f.key, hint });
+                if (f.key === 'title' && res.title) {
+                  model.values[model.medium].title = res.title;
+                } else if (res.idea) {
+                  model.values[model.medium].idea = res.idea;
+                }
+                render();
+                toast('已生成，可继续编辑', { tone: 'success', duration: 1500 });
+              } catch (err) {
+                toast(errorText(err, '生成失败'), { tone: 'danger' });
+              }
+              btn.disabled = false;
+              if (sp) sp.textContent = 'AI 生成';
+            }
+          }
+        });
+        const row = h('div', { class: 'wiz-field-ai-row' }, ctrl, aiBtn);
+        const wrap2 = field(f.label, row, {
+          hint: f.hint || '',
+          optionalText: f.required ? '' : '可选'
+        });
+        if (span && (f.type === 'textarea' || f.type === 'scale' || f.type === 'chips' || f.type === 'preview')) {
+          wrap2.classList.add('span-2');
+        }
+        pane.append(wrap2);
+        continue;
+      }
+      const wrap = field(f.label, ctrl, {
         hint: f.hint || '',
         optionalText: f.required ? '' : '可选'
       });
