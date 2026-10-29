@@ -649,7 +649,7 @@ function renderView(route) {
   else if (route.name === 'evolution') handle = renderEvolution(els.view, ctx);
   else if (route.name === 'skills') handle = renderSkillLib(els.view, ctx);
   /* v4.12.1：全部文体默认走对话界面；工作台通过 #/work/<key>/bench/<n> 路由或右栏按钮进入 */
-  else if (isMediumBench(medium) && state.route.name === 'bench') handle = renderMediumBench(els.view, ctx);
+  else if (isMediumBench(medium) && route.name === 'bench') handle = renderMediumBench(els.view, ctx);
   else if (route.name === 'bench') handle = renderBench(els.view, ctx);
   else if (route.name === 'work') handle = renderSession(els.view, ctx);
   else handle = renderWelcome(els.view, ctx);
