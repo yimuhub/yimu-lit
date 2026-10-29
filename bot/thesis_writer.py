@@ -97,8 +97,18 @@ DEGREES = {"undergrad": "本科毕业论文", "master": "硕士论文", "journal
 
 
 def _gen(stage: str, task: str, cfg: dict, stage_code: str = "planning", max_tokens: int = 6000) -> str:
-    out = llm.chat([{"role": "user", "content": task}], cfg=cfg, stage=stage_code, max_tokens=max_tokens)
-    return (out or "").strip() if isinstance(out, str) else str(out or "")
+    """v4.12.16：加超时保护——LLM 挂死时不再无限等待。"""
+    import threading as _th
+    result = [""]
+    def _call():
+        try:
+            result[0] = llm.chat([{"role": "user", "content": task}], cfg=cfg, stage=stage_code, max_tokens=max_tokens) or ""
+        except Exception:
+            pass
+    t = _th.Thread(target=_call, daemon=True)
+    t.start()
+    t.join(timeout=180)   # 3 分钟超时
+    return result[0].strip() if isinstance(result[0], str) else ""
 
 
 # ---------------------------------------------------------------- 提纲 T1
@@ -219,6 +229,12 @@ def create_project(cfg: dict, base_key: str = "") -> ThesisProject:
     llm_book(os.path.basename(pdir), "planning")
     try:
         _pipeline(proj, pdir, cfg)
+    except Exception as e:
+        proj.log(f"💥 流水线异常：{e}")
+        plan = proj.plan() or {}
+        plan["status"] = "failed"
+        plan.setdefault("meta", {})["error"] = str(e)[:200]
+        proj.save_plan(plan)
     finally:
         proj.running = False
     return proj
