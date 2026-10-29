@@ -461,12 +461,20 @@ def _script_state_payload(proj, key: str, q: str = "") -> dict:
             "excerpt": ""}
 
 
+def _medium_stage_pairs(med: str) -> list[tuple[str, str]]:
+    """阶段表 → [(code, name), ...]（2 元组，不含 desc）。"""
+    from bot.medium import stages as _stages
+    return [(c, n) for c, n, _ in _stages(med)]
+
+
 def _medium_plan_view(proj, key: str, med: str) -> dict:
-    """v4.6.2：非小说计划 → 规划树。"""
-    from bot import script_writer, poetry_writer, prose_writer, thesis_writer
+    """v4.12.5：非小说计划 → 规划树。每文体有自己的阶段名与完成状态。"""
+    from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
+                     children_writer, news_writer, copy_writer)
     def _chapter(no, title, status, words, extra=""):
-        return {"n": no, "title": title or f"第{no}章", "status": status,
+        return {"n": no, "title": title or f"第{no}步", "status": status,
                 "word_count": words, "goal": extra}
+
     chapters, label, mode = [], "", ""
     if med == "script":
         sp = script_writer.get_project(key)
@@ -476,7 +484,7 @@ def _medium_plan_view(proj, key: str, med: str) -> dict:
         for sc in plan.get("scenes") or []:
             chapters.append(_chapter(sc.get("no"), (sc.get("heading") or f"第 {sc.get('no')} 场"),
                                      sc.get("status") or "pending", sc.get("wordCount") or 0,
-                                     f"{sc.get('kind') or ''} {sc.get('place') or ''} {sc.get('time') or ''}".strip()))
+                                     f"{sc.get('kind') or ''} {sc.get('place') or ''}".strip()))
     elif med == "thesis":
         tp = thesis_writer.get_project(key)
         plan = (tp.plan() if tp else None) or {}
@@ -487,24 +495,55 @@ def _medium_plan_view(proj, key: str, med: str) -> dict:
             no = int(ch.get("no") or 0)
             chapters.append(_chapter(no, ch.get("title"), status_map.get(str(no), "pending"),
                                      ch.get("target_words") or 0, "、".join(ch.get("sections") or [])))
+    elif med in ("children", "news", "copy"):
+        mods = {"children": children_writer, "news": news_writer, "copy": copy_writer}
+        pp = mods[med].get_project(key)
+        plan = (pp.plan() if pp else None) or {}
+        label = plan.get(_NAME_KEYS.get(med, "name")) or key
+        mode = plan.get(_FORM_KEYS.get(med, "form")) or _medium_label(med)
+        status_map = plan.get("chapterStatus") or {}
+        stage_names = _medium_stage_pairs(med)
+        for i, (code, cname) in enumerate(stage_names):
+            st = status_map.get(code, "pending")
+            if plan.get("status") == "completed":
+                st = "completed"
+            chapters.append(_chapter(i + 1, f"{cname}（{code}）", st, 0, ""))
     else:
+        # poetry / prose：按 stageIdx 映射
         cls = poetry_writer if med == "poetry" else prose_writer
         pp = cls.get_project(key)
         plan = (pp.plan() if pp else None) or {}
         label = (plan.get("poemName") or plan.get("proseName")) or key
         meta = plan.get("meta") or {}
-        stages_list = _medium_stages(med)
+        stages_list = _medium_stage_pairs(med)
         for i, (code, cname) in enumerate(stages_list):
             chapters.append(_chapter(i + 1, f"{cname}（{code}）",
                                      "completed" if (meta.get("stageIdx", 0) or 0) > i or plan.get("status") == "completed"
                                      else ("in_progress" if (meta.get("stageIdx", 0) or 0) == i else "pending"),
                                      0, plan.get("statusLabel") or ""))
         mode = plan.get("genreLabel") or plan.get("operationLabel") or label
+
+    # 阶段名替换：plan-vol-head 显示文体专有标题
+    vol_title = {"news": "新闻稿流程", "children": "故事流程", "copy": "文案流程",
+                 "script": "剧本流程", "thesis": "论文流程",
+                 "poetry": "诗词流程", "prose": "散文流程"}.get(med, "规划")
     arc = {"no": 1, "title": label or "规划", "purpose": "",
-           "chapters": [c["n"] for c in chapters],   # planTree 的 chip 序列
+           "chapters": [c["n"] for c in chapters],
            "chapter_cards": chapters}
-    return {"version": 1, "mode": mode, "scale_label": f"{len(chapters)} 项",
-            "premise": "", "volumes": [{"no": 1, "title": label or "规划", "arcs": [arc]}]}
+    return {"version": 1, "mode": mode, "scale_label": f"{len(chapters)} 步",
+            "premise": "", "volumes": [{"no": 1, "title": vol_title, "arcs": [arc]}]}
+
+
+_NAME_KEYS = {"children": "bookName", "news": "newsName", "copy": "copyName",
+              "script": "scriptName", "thesis": "thesisName",
+              "poetry": "poemName", "prose": "proseName"}
+_FORM_KEYS = {"children": "typeLabel", "news": "typeLabel", "copy": "platformLabel",
+              "script": "formLabel", "thesis": "degreeLabel"}
+
+
+def _medium_label(med):
+    from bot.medium import label as _label
+    return _label(med)
 
 
 def _medium_stages(med: str) -> list[tuple[str, str]]:
@@ -548,7 +587,8 @@ def register_v2_routes(app, get_project, chat_func=None):
             return err
         # v4.6.2：剧本/诗词/散文/论文的「规划」页签——把各自计划映射成与小说同构的
         # volumes/arcs/chapters 树，planPane 直接复用
-        _med = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis"}.get(str(key)[:2])
+        _med = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis",
+                "c_": "children", "n_": "news", "k_": "copy"}.get(str(key)[:2])
         if _med:
             return {"ok": True, "key": key, "plan": _medium_plan_view(proj, key, _med),
                     "digest": None, "proposals": []}
