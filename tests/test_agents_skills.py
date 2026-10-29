@@ -37,7 +37,7 @@ def test_skills_for_unbound_returns_empty(tmp_config):
 def test_set_skills_validates_agent(tmp_config):
     with pytest.raises(ValueError):
         agents.set_skills("ghost", ["某技能"])
-    for a in agents.AGENTS:  # 7 岗位全部合法
+    for a in agents.AGENTS:  # 全部岗位合法
         agents.set_skills(a, [f"{a}-skill"])
     assert agents.skills_for("planner") == ["planner-skill"]
 
@@ -80,7 +80,7 @@ def test_bindings_view_fields(tmp_config, monkeypatch):
     bv = agents.bindings_view()
     assert set(bv) == {"agents", "max_global_agents"}
     assert isinstance(bv["max_global_agents"], int)
-    assert len(bv["agents"]) == len(agents.AGENTS) == 7
+    assert len(bv["agents"]) == len(agents.AGENTS)   # v4.12.4：21 岗位（7 通用 + 14 文体专属）
     need = {"agent", "label", "stage", "desc", "provider_id", "model", "effective", "skills"}
     for item in bv["agents"]:
         assert need <= set(item)

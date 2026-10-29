@@ -252,6 +252,12 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
   el.append(fileInput);
 
   function currentMedium() {
+    /* v4.12.4：打开作品时体裁 chip 自动跟随当前作品（此前永远显示 ui.medium 或"小说"） */
+    const workMedium = store.get().workMedium;
+    if (workMedium) {
+      const match = mediumOptions().find((m) => m.key === workMedium);
+      if (match) return match;
+    }
     return mediumOptions().find((m) => m.key === store.get().ui.medium) || mediumOptions()[0];
   }
 

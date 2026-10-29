@@ -23,6 +23,21 @@ AGENTS = {
     "title":    {"label": "拟题师", "stage": None,       "desc": "书名/标题生成"},
     "deslopper": {"label": "去味师", "stage": "review",   "desc": "AI 腔定点改写（slop 报告 → 最小改法逐条修）"},
     "editor":    {"label": "总编",   "stage": "review",   "desc": "全书终审/跨章一致性/红线扫描"},
+    # v4.12.4：非小说文体专属岗位（每个文体至少 1 个写作 + 1 个审校）
+    "script_writer":    {"label": "编剧",     "stage": "writing", "desc": "写场次/对白/动作行；竖屏短剧与分镜"},
+    "script_checker":   {"label": "审剧人",   "stage": "review",  "desc": "剧本时代/人物在场/场号连续性体检"},
+    "poetry_writer":    {"label": "诗词作者", "stage": "writing", "desc": "近体诗/词/曲/现代诗创作与格律"},
+    "poetry_reviewer":  {"label": "诗词审校", "stage": "review",  "desc": "格律核查/意象密度/炼字建议"},
+    "prose_writer":     {"label": "散文作者", "stage": "writing", "desc": "随笔/抒情/议论/叙事散文创作"},
+    "prose_reviewer":   {"label": "散文审校", "stage": "review",  "desc": "去AI腔/结构推进/语感打磨"},
+    "thesis_writer":    {"label": "学术写手", "stage": "writing", "desc": "论文分章撰写/引注管理"},
+    "thesis_reviewer":  {"label": "学术审校", "stage": "review",  "desc": "引用核查/降AIGC/学术规范"},
+    "children_writer":  {"label": "童话作家", "stage": "writing", "desc": "分级语言/互动设计/插图提示词"},
+    "children_reviewer": {"label": "童书审校", "stage": "review", "desc": "年龄适配/安全红线/正面引导"},
+    "news_writer":      {"label": "新闻编辑", "stage": "writing", "desc": "倒金字塔/通稿/社媒短版"},
+    "news_reviewer":    {"label": "新闻审核", "stage": "review",  "desc": "5W1H核查/引语归属/客观性"},
+    "copy_writer":      {"label": "文案策划", "stage": "writing", "desc": "口播稿/种草笔记/营销框架"},
+    "copy_reviewer":    {"label": "文案审核", "stage": "review",  "desc": "钩子效果/转化力/平台适配"},
 }
 
 def _config_path():
@@ -71,6 +86,21 @@ DEFAULT_AGENT_SKILLS = {
     "title":     ["novel-hangup-curve"],
     "deslopper": ["core-anti-slop"],
     "editor":    ["core-ten-genre", "core-longform-continuity"],
+    # v4.12.4：非小说岗位默认技能
+    "script_writer":    ["script-scene-craft", "script-dialogue", "core-anti-slop"],
+    "script_checker":   ["core-longform-continuity"],
+    "poetry_writer":    ["poetry-jinti", "poetry-imagery-density", "core-anti-slop"],
+    "poetry_reviewer":  ["poetry-meter-selfcheck"],
+    "prose_writer":     ["prose-drafting-detail", "prose-structure-progression", "core-anti-slop"],
+    "prose_reviewer":   ["prose-revision-final"],
+    "thesis_writer":    ["thesis-methodology"],
+    "thesis_reviewer":  ["thesis-citation-standards"],
+    "children_writer":  ["children-methodology"],
+    "children_reviewer": ["children-methodology"],
+    "news_writer":      ["news-methodology"],
+    "news_reviewer":    ["news-methodology"],
+    "copy_writer":      ["copy-methodology"],
+    "copy_reviewer":    ["copy-methodology"],
 }
 
 def get_skill_bindings():
