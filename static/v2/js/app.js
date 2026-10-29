@@ -8,7 +8,7 @@ import {
 } from './core/state.js';
 import { initTheme, setTheme, toggleTheme } from './core/theme.js';
 import { loadPrefs, persistLayout } from './core/prefs.js';
-import { startRouter, navigate, routePath } from './core/router.js';
+import { startRouter, navigate, routePath, parseHash } from './core/router.js';
 import { api, errorText } from './core/api.js';
 import { installHotkeys } from './core/hotkeys.js';
 import { createLiveWatcher, pollBookLive } from './core/sse.js';
@@ -643,6 +643,25 @@ function renderView(route) {
   els.view.textContent = '';
 
   const medium = route.key ? store.get().workMedium : '';
+  /* v4.12.15：首次加载 library 未到 → mediumOf(key) 返回 '' → 不渲染错误视图，
+     改为渲染加载态，library 到位后 store 触发重渲染 */
+  if (!medium && (route.name === 'work' || route.name === 'bench')) {
+    if (currentView && currentView.destroy) currentView.destroy();
+    const loadingEl = h('div', { class: 'view-scroll', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' } },
+      h('div', { style: { textAlign: 'center' } },
+        h('div', { class: 'spinner', style: { width: '24px', height: '24px', margin: '0 auto 12px', border: '3px solid var(--line-2)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' } }),
+        h('p', { class: 'hint-text', text: '正在加载作品…' })));
+    els.view.textContent = '';
+    els.view.append(loadingEl);
+    const unsub = store.subscribe((s2) => {
+      if (s2.library.loaded && s2.library.items.length) {
+        unsub();
+        renderView(route);
+      }
+    });
+    currentView = { el: loadingEl, destroy() { unsub(); } };
+    return;
+  }
   let handle = null;
   if (route.name === 'library') handle = renderLibrary(els.view, ctx);
   else if (route.name === 'settings') handle = renderSettings(els.view, ctx);
@@ -922,6 +941,17 @@ async function loadBootstrap() {
     const list = Array.isArray(mediums.value) ? mediums.value : mediums.value.mediums || [];
     if (list.length) patch('mediums', list);
   }
+  // v4.12.15：library 到位后重新渲染当前路由——首次加载时 mediumOf(key) 因
+  // library 为空返回 ''，导致剧本/诗词等走不到 mediumbench（白屏）。
+  // 必须延迟到下一个 tick 才能等 applyLayout 完成后再触发。
+  setTimeout(() => {
+    const cr = parseHash();
+    if (cr.name === 'work' || cr.name === 'bench') {
+      // 强制重渲染（清除 currentView 缓存）
+      currentView = null;
+      onRoute(cr);
+    }
+  }, 50);
   if (styles.status === 'fulfilled' && styles.value) {
     /* /api/styles 回的是 {items:[...]}，不是 {styles:[...]} */
     const list = Array.isArray(styles.value)

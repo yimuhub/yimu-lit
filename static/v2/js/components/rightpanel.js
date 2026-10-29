@@ -1376,66 +1376,6 @@ function openReplanDialog(ctx) {
   }
   const modal = openModal({ title: isNovel ? '重规划' : `重规划（${medium}）`, body, footer, size: 'md' });
 }
-  const footer = h(
-    'div',
-    { class: 'rp-form-foot' },
-    h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
-    h('button', {
-      class: 'btn btn-primary',
-      type: 'button',
-      html: '<span class="wiz-loading"><span class="spinner"></span>生成提案</span>',
-      on: {
-        click: async (event) => {
-          const btn = event.currentTarget;
-          if (!instruction.value.trim()) {
-            toast('请写清楚要调整什么', { tone: 'danger' });
-            instruction.focus();
-            return;
-          }
-          btn.disabled = true;
-          const multi = mode.value === 'dual' || mode.value === 'multi';
-          try {
-            if (multi) {
-              const res = await api.planMulti({
-                key: store.get().currentKey,
-                scope: scope.value,
-                instruction: instruction.value.trim()
-              });
-              const cards = (res && res.cards) || [];
-              const failed = cards.filter((c) => c.ok === false);
-              const done = cards.length - failed.length;
-              const msg = failed.length
-                ? `已出 ${done} 份提案（${failed.map((f) => f.label || f.agent).join('、')}失败）`
-                : `已出 ${cards.length} 份提案：对比后选一份应用`;
-              toast(msg, { tone: failed.length ? 'warn' : 'success', duration: 3600 });
-            } else {
-              await api.replan({
-                key: store.get().currentKey,
-                scope: scope.value,
-                instruction: instruction.value.trim(),
-                reason: '用户手动重规划'
-              });
-              toast('提案已生成，确认后才会写入规划', { tone: 'success' });
-            }
-            modal.close();
-            ctx.refreshPlan();
-          } catch (err) {
-            toast(errorText(err, '生成提案失败'), { tone: 'danger' });
-            btn.disabled = false;
-            btn.innerHTML = '生成提案';
-          }
-        }
-      }
-    })
-  );
-  const modal = openModal({
-    title: '重规划',
-    subtitle: '会先生成一份提案与差异，确认后才应用。双岗位时两位各出一份，你选一份。',
-    body,
-    footer,
-    size: 'sm'
-  });
-}
 
 async function applyProposal(ctx, prop) {
   const ok = await confirmDialog({
