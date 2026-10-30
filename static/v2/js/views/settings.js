@@ -1250,6 +1250,7 @@ export function renderSettings(container, ctx) {
   loadSettings();
   loadProviders();
   loadAgents();
+  loadPennames();   /* v4.15.5 修复：笔名面板此前从未在初始化时加载，分组面板永远空白 */
 
   /* 初始分组：优先恢复上次浏览的分组，其次兼容旧深链值。 */
   const wantTab = store.get().ui.settingsTab;

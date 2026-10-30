@@ -340,6 +340,50 @@ export function openWizard(ctx, preset = {}) {
     if (fieldDef.effect && EFFECTS[fieldDef.effect]) EFFECTS[fieldDef.effect](next);
   }
 
+  /* v4.15.5：向导内自定义笔名——输入后保存到全局笔名列表（设置→作者笔名 可管理），并选中 */
+  function openCustomPennameDialog(onSaved, onCancel) {
+    const nameInput = h('input', { class: 'input', placeholder: '输入新笔名（必填）', maxlength: '40' });
+    const descInput = h('input', { class: 'input', placeholder: '描述（选填，如「悬疑专用」）', maxlength: '100' });
+    const body = h('div', { class: 'wiz-grid' },
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '笔名' }), nameInput),
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '描述' }), descInput),
+      h('p', { class: 'hint-text', text: '保存后进入全局笔名列表，可跨作品复用；后续可在 设置→作者笔名 管理。' })
+    );
+    const footer = h('div', { class: 'set-actions' },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => { modal.close(); if (onCancel) onCancel(); } } }),
+      h('button', {
+        class: 'btn btn-primary', type: 'button', text: '保存并使用',
+        on: {
+          click: async () => {
+            const name = nameInput.value.trim();
+            if (!name) { toast('笔名不能为空', { tone: 'danger' }); return; }
+            try {
+              /* 重新拉取最新列表再追加，避免覆盖他处改动 */
+              let list = [];
+              let def = '';
+              try {
+                const cur = await api.pennames();
+                list = (cur && cur.list) || [];
+                def = (cur && cur.default) || '';
+              } catch (_) {}
+              if (!list.some((c) => c.name === name)) {
+                list = [...list, { name, desc: descInput.value.trim() }];
+              }
+              await api.pennamesSave({ list, default: def || name });
+              modal.close();
+              toast(`笔名「${name}」已保存并使用`, { tone: 'success', duration: 1800 });
+              if (onSaved) onSaved(name);
+            } catch (err) {
+              toast(errorText(err, '保存失败'), { tone: 'danger' });
+            }
+          }
+        }
+      })
+    );
+    const modal = openModal({ title: '自定义作者笔名', body, footer, size: 'sm' });
+    setTimeout(() => nameInput.focus(), 50);
+  }
+
   function controlFor(fieldDef) {
     const v = values();
     switch (fieldDef.type) {
@@ -349,14 +393,34 @@ export function openWizard(ctx, preset = {}) {
         return previewControl();
       case 'select': {
         const sel = h('select', { class: 'select', 'aria-label': fieldDef.label });
+        const isPen = fieldDef.key === 'penname';
         if (!fieldDef.required) {
-          const emptyLabel = fieldDef.key === 'penname' ? '（用全局默认）' : `不限${fieldDef.label}`;
+          const emptyLabel = isPen
+            ? (optionsOf(fieldDef).length ? '（用全局默认）' : '（尚未配置笔名，选「自定义」添加）')
+            : `不限${fieldDef.label}`;
           sel.append(h('option', { value: '', text: emptyLabel }));
         }
         for (const o of optionsOf(fieldDef)) {
           sel.append(h('option', { value: String(o.value), text: o.label, selected: sameToken(v[fieldDef.key], o.value) }));
         }
+        /* v4.15.5：笔名支持就地自定义——下拉末项「＋ 自定义笔名…」弹输入框，存全局列表并选中 */
+        if (isPen) {
+          sel.append(h('option', { value: '__custom__', text: '＋ 自定义笔名…' }));
+        }
         sel.addEventListener('change', () => {
+          if (isPen && sel.value === '__custom__') {
+            openCustomPennameDialog((name) => {
+              /* v4.15.5：把新笔名动态插进当前字段选项（onboarding 缓存不刷新也能立即显示） */
+              const f = fieldsOf(model.medium, 'basic').find((x) => x.key === 'penname');
+              if (f) {
+                f.options = optionsOf(f).filter((o) => String(o.value) !== name);
+                f.options.push({ value: name, label: name });
+              }
+              v.penname = name;
+              render();
+            }, () => render());
+            return;
+          }
           const hit = optionsOf(fieldDef).find((o) => sameToken(o.value, sel.value));
           set(fieldDef, sel.value);
           /* 题材带 craft key（skillkit 归一结果），后端按 key 注入，不再靠中文字面匹配。 */

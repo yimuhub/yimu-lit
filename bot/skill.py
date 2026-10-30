@@ -1,4 +1,4 @@
-"""小说技能运行时加载器（v1.0.0 · 一幕·YIMU 一幕·YIMU 神笔文学创作台）
+"""小说技能运行时加载器（v1.0.0 · 一幕·YIMU 神笔文学创作台）
 
 v1.0 起小说技能位于 skillkit/novel/；本模块保留原有 API（skill_md / guide / template /
 genre / golden_rules / golden3 / anti_slop / check_words）供既有代码无感调用。

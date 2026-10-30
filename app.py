@@ -1,4 +1,4 @@
-"""一幕·YIMU 一幕·YIMU 神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
+"""一幕·YIMU 神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
 import json, os, re, shutil, threading, uuid, time, secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
@@ -47,7 +47,7 @@ async def _lifespan(_app):
     threading.Thread(target=_recover, daemon=True).start()
     yield
 
-app = FastAPI(title="一幕·YIMU 一幕·YIMU 神笔文学创作台", lifespan=_lifespan)
+app = FastAPI(title="一幕·YIMU 神笔文学创作台", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=security.trusted_hosts())
 
 @app.middleware("http")
@@ -3411,7 +3411,7 @@ def api_quality(key: str):
 async def api_version():
     return {"version": version.current()}
 
-# ---------- v1.0.0：文体路由 + 技能库（一幕·YIMU 一幕·YIMU 神笔文学创作台） ----------
+# ---------- v1.0.0：文体路由 + 技能库（一幕·YIMU 神笔文学创作台） ----------
 
 @app.get("/api/mediums")
 async def api_mediums():
