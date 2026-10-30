@@ -207,6 +207,10 @@ def _llm_timeout(cfg, stage, prov):
 
 # ---------- v0.7 R3：LLM 内容缓存（大厂标准：确定性 prompt 复用，省 token + 提速；cfg llm_cache 可关） ----------
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+_HTTP_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-http")
 _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 256
@@ -329,9 +333,19 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     for i in range(retries):
         try:
             with _guard.acquire(prov):
-                with httpx.Client(timeout=timeout) as client:
-                    r = client.post(base + "/chat/completions",
-                                    json=body, headers=headers)
+                # v4.15.7：wall-clock 总时长守卫——httpx read-timeout 是「两次读之间」的超时，
+                # 代理挂起时若持续滴字节永不触发（实测并行书/百万字规划 25 分钟无动静）。
+                # 请求放独立 daemon 线程，主线程 fut.result(timeout) 强制中断。
+                def _post_once():
+                    with httpx.Client(timeout=timeout) as client:
+                        return client.post(base + "/chat/completions",
+                                           json=body, headers=headers)
+                fut = _HTTP_POOL.submit(_post_once)
+                try:
+                    r = fut.result(timeout=timeout + 60)
+                except FuturesTimeoutError:
+                    fut.cancel()
+                    raise LLMError(f"LLM 调用总时长超过 {timeout + 60}s（wall-clock 守卫强制中断，防代理挂起）")
             if r.status_code == 429:
                 time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值（在 guard 外 sleep，不占名额）
                 last_err = LLMError(f"429 限流: {r.text[:200]}")

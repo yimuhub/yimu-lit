@@ -378,10 +378,11 @@ export function renderSession(container, ctx = {}) {
     const state = store.get();
     const attachments = currentAttachments(payload.attachments);
     const text = String(payload.text || '').trim() || (attachments.length ? '请参考我附上的资料继续。' : '');
-    // 追章模式（v2.2.2）：仅小说且当前打开了作品时携带 key——后端检测到这本书
-    // 正在后台写作，就会在回复后继续把新完成的章节实时推进对话。
+    // v4.15.6 重大修复：此前仅小说携带 key——其他 8 个文体的对话请求不带 key，
+    // 后端当成无绑定新会话 → 散文页问「汇报进度」回复的却是小说开书引导。
+    // v4.12.1 起全部文体统一走 session 对话视图（后端 _chat_attached 全文体支持），一律携带 key。
     const medium = payload.medium || state.workMedium || state.ui.medium || 'novel';
-    const withWork = Boolean(state.currentKey) && medium === 'novel';
+    const withWork = Boolean(state.currentKey);
     return {
       message: text,
       ...(withWork ? { key: state.currentKey, project_key: state.currentKey } : {}),

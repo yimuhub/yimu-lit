@@ -174,6 +174,10 @@ def _proj(key: str, medium: str):
     if medium == "copy":
         from bot import copy_writer
         return copy_writer.get_project(key)
+    if medium == "other":
+        # v4.15.7：其他内容文体此前漏注册 → 对话改稿「找不到项目」
+        from bot import other_writer
+        return other_writer.get_project(key)
     if medium == "novel":
         # v3.2.0：小说走通用 Project（复用 writer 的目录规则）
         try:
@@ -226,8 +230,10 @@ def docs_for(key: str, medium: str) -> list[dict]:
         return _novel_docs(proj)
     if medium == "thesis":
         return _thesis_docs(proj)
-    if medium in ("children", "news", "copy"):
-        return _mini_docs(proj, medium)
+    # v4.15.7：收编 other（文档=00-大纲/02-正文/04-定稿，走 mini 口径）；
+    # 修复 _mini_docs 调用多传 medium 参数（签名只有 proj）——children/news/copy 的对话改稿此前一直 TypeError
+    if medium in ("children", "news", "copy", "other"):
+        return _mini_docs(proj)
     return []
 
 

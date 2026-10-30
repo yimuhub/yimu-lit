@@ -851,7 +851,9 @@ def _chat_attached(s, proj, msg):
             _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
                     "t_": thesis_writer, "c_": children_writer,
                     "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
-            _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
+            # v4.15.7：start_writing_all（用户明确说全部写完）→ 全写，不落 config 默认逐章
+            _bs = "all" if _intent == "start_writing_all" else None
+            _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
             return f"▶ 恢复《{name}》的创作，工作台可见进度…"
         if running:
             st2 = proj.status()
@@ -865,6 +867,18 @@ def _chat_attached(s, proj, msg):
 
     # set_style / add_constraint / creative_hint → 并入创作
     # 读者即时指令：存入队列，由写作线程在后续章节消费
+    # v4.15.7：非小说文体没有 02-写作计划.json，queue_msg 必然失败——改走 assist 改稿/讨论通道
+    if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+        from bot import assist as _assist_mod
+        _med = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis",
+                "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(str(key)[:2], "script")
+        try:
+            _res = _assist_mod.assist(key, _med, msg)
+        except Exception as e:
+            return f"⚠️ 改稿请求失败：{e}"
+        if _res and _res.get("ok"):
+            return _res.get("text") or "已处理。"
+        return _res.get("text") or f"⚠️ 这条要求没能处理（《{name}》{_med}）。"
     if not writer.queue_msg(key, msg):
         return f"⚠️ 这条要求没能并入《{name}》的创作（写作计划缺失？），可在『作品』里检查该书。"
     nxt = _next_pending_chapter(plan)
@@ -1116,9 +1130,12 @@ def _create_script_project(payload: dict) -> dict:
     向导里的题材、格式要求与蒸馏文风都折进 notes（script_writer.gen_premise 会读它）。"""
     cfg = dict(payload.get("cfg_overrides") or {})
     for k in ("title", "idea", "form", "entryPath", "scenes", "pages", "episodes",
-              "setting_era", "setting_world"):
+              "setting_era", "setting_world",
+              "batch_size", "penname"):   # v4.15.7：批量写作与笔名此前在剧本创建路径被丢弃
         if payload.get(k) is not None:
             cfg[k] = payload[k]
+    if payload.get("agents"):
+        cfg["agents"] = payload["agents"] if isinstance(payload["agents"], list) else [payload["agents"]]
     cfg.setdefault("form", "film")
     # 「跟随素材」不写具体时代，交给引擎从题材/标题/素材里推断，避免默认值压过用户意图。
     if str(cfg.get("setting_era") or "") in ("", "auto"):
@@ -1284,10 +1301,20 @@ def api_create(payload: dict):
         cfg["sells"] = payload["sells"]
     if payload.get("perspective"):
         cfg["perspective"] = payload["perspective"]
+    # v4.15.7：向导新字段白名单补齐——batch_size/penname/agents 此前在小说创建路径全部被丢弃
+    if payload.get("batch_size"):
+        cfg["batch_size"] = str(payload["batch_size"])
+    if payload.get("penname"):
+        cfg["penname"] = str(payload["penname"]).strip()[:40]
+    if payload.get("agents"):
+        cfg["agents"] = payload["agents"] if isinstance(payload["agents"], list) else [payload["agents"]]
     idea = (payload.get("idea") or "").strip()
+    # v4.15.7 重大修复：原逻辑 title 覆盖 theme——书名「拟人E2E-百万字」这类标签
+    # 会把用户的一句话简介挤掉，大纲阶段 LLM 拿着书名自由发挥（实测整个世界观跑偏成
+    # 「拟人化E2E AI 系统」赛博文）。正确语义：theme=创意（idea），title 只做书名。
     if idea:
         cfg["theme"] = idea
-    if title:
+    elif title:
         cfg["theme"] = title
     if payload.get("provider_id"):
         cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
@@ -2891,7 +2918,7 @@ def api_export(key: str, fmt: str = "docx"):
             # v4.12.16：剧本 docx 导出——此前 blocks 只在小说分支填充，剧本导出 Word 得到空文档
             for ch in chapters:
                 blocks.extend([("h2", ch.get("title", "")), ("p", ch.get("text", ""))])
-        data = export_mod.docx_bytes(title, author, blocks)
+        data = export_mod.docx_bytes(title, (f"作者：{author}" if author else ""), blocks, author=author)
         media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ext = "docx"
     elif fmt == "epub":

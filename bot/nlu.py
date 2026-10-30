@@ -363,6 +363,18 @@ def _llm_parse(text):
         except (ValueError, TypeError):
             params["chapter_number"] = None
 
+    # v4.15.7：batch_writing 参数名归一——LLM 自由发挥返回 chapter_count/count/chapters 等，
+    # 后端只认 batch_size → 全部回落 1 章（实测「再写3章」解析成 chapter_number:3）
+    if intent == "batch_writing" and "batch_size" not in params:
+        for alt in ("chapter_count", "count", "chapters", "chapter_number", "batch", "n"):
+            if alt in params and params[alt]:
+                try:
+                    params["batch_size"] = max(1, int(params[alt]))
+                except (TypeError, ValueError):
+                    params["batch_size"] = str(params[alt])
+                break
+        params.pop("chapter_number", None)   # 该键另有语义（重写第N章），防误用
+
     return intent, params, confidence
 
 
@@ -394,6 +406,19 @@ def parse_intent(text, project_status=None):
     llm_result = _llm_parse(text)
     if llm_result and llm_result[2] >= 0.6:
         intent, params, conf = llm_result
+        # v4.15.7：LLM 解析 batch_writing 时常不给数量参数（实测「再写3章」→{}），
+        # 规则兜底——从原文提取数字/中文数字
+        if intent == "batch_writing" and not params.get("batch_size"):
+            _m = re.search(r"(\d+|[零一二三四五六七八九十百千两]+)", text or "")
+            if _m:
+                try:
+                    _v = _cn_to_int(_m.group(1))
+                    if _v and 0 < _v < 10000:
+                        params["batch_size"] = _v
+                except Exception:
+                    pass
+            elif re.search(r"全部|所有|整本|整个|完", text or ""):
+                params["batch_size"] = "all"   # 「写完全部」被 LLM 解析成无数量 batch_writing → 全写
         return {"intent": intent, "confidence": conf, "params": params, "source": "llm", "raw": text}
 
     # 降级规则

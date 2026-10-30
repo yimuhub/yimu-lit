@@ -96,7 +96,7 @@ def _docx_para(doc, text: str):
     return p
 
 
-def docx_bytes(title: str, subtitle: str, blocks: list[tuple[int, str]]) -> bytes:
+def docx_bytes(title: str, subtitle: str, blocks: list[tuple[int, str]], author: str = "") -> bytes:
     """blocks: [(级别, 文本)]，级别 1=章标题，2=小节，0=正文/引用。"""
     try:
         from docx import Document
@@ -107,6 +107,11 @@ def docx_bytes(title: str, subtitle: str, blocks: list[tuple[int, str]]) -> byte
         raise RuntimeError("导出 DOCX 需要 python-docx：pip install python-docx") from e
 
     doc = Document()
+    if author:   # v4.15.7：作者写进文档属性（此前 core.xml 恒为 python-docx）
+        try:
+            doc.core_properties.author = author
+        except Exception:
+            pass
     for name in ("Normal", "Heading 1", "Heading 2"):
         st = doc.styles[name]
         st.font.name = "宋体"
