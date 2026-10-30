@@ -24,6 +24,7 @@ INTENTS = {
     "start_writing_all": "一次性写完全部章节（不等逐章确认）",
     "rewrite_chapter":   "重写 / 修改指定章节",
     "resume_writing":    "继续 / 续写 / 接着写下一章",
+    "batch_writing":     "批量写 N 章 / 写完全部 / 再写 N 章",
     "pause_writing":     "暂停写作",
     "query_status":      "查询进度 / 看看写到哪了",
     "set_title":         "修改标题或书名",
@@ -44,6 +45,7 @@ _NLU_SYSTEM_PROMPT = """你是一个自然语言意图理解引擎。用户在�
 - start_writing_all: 用户想一次性写完全部章节/整本书（如"全部章节创作""把整本书写完""一键全部写"）
 - start_writing: 用户想启动创作（但未明确说全部，如"开始写""开始创作""帮我写"）
 - resume_writing: 继续或续写下一章（如"继续""接着写""下一章""往下写"）
+- batch_writing: 批量写N章（如"再写10章""往下写20章""再写50章"）或全部写完（"写完全部""全部写完""把所有章节写完""一键全部写"）
 - rewrite_chapter: 重写或修改指定章节（如"第3章重写""第三章改一下""重写第12章"）
 - pause_writing: 暂停写作（如"暂停""先停一下""别写了"）
 - query_status: 查询进度（如"写到哪了""进度怎么样""现在几章了"）
@@ -91,6 +93,16 @@ _PAT_START = re.compile(
     r"生成.*?(正文|内容)|写.*?正文|动手.*?写|"
     r"(剧本|诗词|散文|小说|诗歌).{0,6}(创作|来一部|来一个)|"
     r"写.{0,4}(正文|内容)",
+    re.I,
+)
+
+# batch_writing: 批量写N章 / 全部写完
+_PAT_BATCH = re.compile(
+    r"(再写|继续写|往下写|接着写|接下来写|然后写).*?(\d+|[零一二三四五六七八九十百千两]+).*?(章|回|场)",
+    re.I,
+)
+_PAT_BATCH_ALL = re.compile(
+    r"(写完全部|全部写完|把所有.*?写完|全部章节写完|写完所有|全部写完|一次性写完)",
     re.I,
 )
 
@@ -215,6 +227,20 @@ def _rule_parse(text):
         if nums:
             ch_no = _cn_to_int(nums[0])
         return "rewrite_chapter", {"chapter_number": ch_no}, 0.85
+
+    # batch_writing: 再写N章 / 写完全部（优先于 start_writing_all 的泛化匹配）
+    m = _PAT_BATCH.search(t)
+    if m:
+        nums = re.findall(r"(\d+|[零一二三四五六七八九十百千两]+)", t)
+        batch = None
+        for n in nums:
+            val = _cn_to_int(n)
+            if val and val > 0 and val < 10000:
+                batch = val
+                break
+        return "batch_writing", {"batch_size": batch or "1"}, 0.82
+    if _PAT_BATCH_ALL.search(t):
+        return "batch_writing", {"batch_size": "all"}, 0.82
 
     if _PAT_ALL.search(t):
         return "start_writing_all", {}, 0.85

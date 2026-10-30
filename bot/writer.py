@@ -451,13 +451,13 @@ def _ensure_writable_plan(proj) -> Optional[dict]:
     return plan
 
 
-def start_writing(proj: Project):
+def start_writing(proj: Project, batch_size=None):
     _bk = os.path.basename(proj.path)
     if proj.running or _book_running(_bk):
         return   # v4.12.16：双重防重入（实例 + 共享注册表）
     _set_book_running(_bk, True)
     proj.running = True
-    threading.Thread(target=_write_loop, args=(proj,), daemon=True).start()
+    threading.Thread(target=_write_loop, args=(proj, batch_size), daemon=True).start()
 
 # ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
 def _project_dir(key):
@@ -478,8 +478,8 @@ def pause_book(key):
     p.log("⏸ 已请求暂停（在下一检查点停，停在当前进度，可点「▶继续」恢复）")
     return True
 
-def resume_book(key):
-    """清暂停位 + 续写剩余章节。"""
+def resume_book(key, batch_size=None):
+    """清暂停位 + 续写剩余章节。batch_size 从 plan.config 取（未传参时）。"""
     p = Project(_project_dir(key), key)
     plan = p.plan()
     if not plan:
@@ -487,8 +487,12 @@ def resume_book(key):
     plan.setdefault("meta", {})["paused"] = False
     plan["status"] = "in_progress"
     p.save_plan(plan)
+    # v4.15.0：batch_size 从 cfg 取
+    if batch_size is None:
+        cfg = plan.get("config") or {}
+        batch_size = cfg.get("batch_size", "1")
     p.log("▶ 继续写作（从上次进度接着写剩余章节）")
-    start_writing(p)
+    start_writing(p, batch_size=batch_size)
     return True
 
 # ---------- v3.1.0：陈旧状态恢复（服务重启/线程死亡后的 validating 卡死） ----------
@@ -1882,7 +1886,7 @@ def validate_project(proj, mode="report", max_rounds=2):
         proj.save_plan(p2)
     return res
 
-def _write_loop(proj: Project):
+def _write_loop(proj: Project, batch_size=None):
     _sem = _write_semaphore()          # v0.3 P3：并发（默认 2 本同时写，超出排队）
     _sem.acquire()
     llm.book(os.path.basename(proj.path), "writing")   # v0.3.x：写稿 token 归集到该书
@@ -1893,8 +1897,26 @@ def _write_loop(proj: Project):
         plan["status"] = "in_progress"
         proj.save_plan(plan)
         _ensure_layered_plan(proj)
+
+        # v4.15.0：batch_size 控制每批写多少章
+        wrote = 0
+        batch_limit = None
+        if batch_size is not None:
+            if str(batch_size).lower() in ("all", "0"):
+                batch_limit = None  # 全部写完
+            else:
+                try:
+                    batch_limit = int(batch_size)
+                except (ValueError, TypeError):
+                    batch_limit = None
+
         for ch in plan["chapters"]:
             if is_paused(proj):
+                break
+            if batch_limit is not None and wrote >= batch_limit:
+                proj.log(f"⏸ 本批已写 {wrote} 章（batch={batch_limit}），停在当前进度。说「再写N章」或「写完全部」继续。")
+                plan = proj.plan(); plan["status"] = "paused"; proj.save_plan(plan)
+                _skeleton_refresh(os.path.basename(proj.path))
                 break
             _msg = budget_blocked(proj)
             if _msg:
@@ -1903,6 +1925,7 @@ def _write_loop(proj: Project):
             if ch["status"] != "completed":
                 _maybe_replan(proj, ch["chapterNumber"])
                 _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3)
+                wrote += 1
                 _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：每写完一章即刷新写作骨架
                 if is_paused(proj):
                     break

@@ -719,7 +719,7 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
     return proj
 
 
-def resume_project(key: str) -> ScriptProject | None:
+def resume_project(key: str, batch_size=None) -> ScriptProject | None:
     """断点恢复：服务重启/写作线程中断后，从盘上产物继续（缺哪段规划补哪段）。
     场次清单已就绪 → 直接续写剩余场次；规划未完 → 重跑缺失阶段再开写。"""
     import threading as _th
@@ -746,10 +746,13 @@ def resume_project(key: str) -> ScriptProject | None:
     if (plan.get("meta") or {}).get("paused"):
         proj.log("⏸ 该剧本处于暂停状态（时代设定冲突），处理后再继续")
         return proj
+    # v4.15.0：batch_size 从 cfg 取（未传参时）
+    if batch_size is None:
+        batch_size = cfg.get("batch_size", "1")
     proj.log(f"▶ 断点恢复：继续写作《{proj.name}》剩余场次…")
     def _auto():
         try:
-            write_scenes(proj)
+            write_scenes(proj, batch_size=batch_size)
         except Exception as e:
             print(f"[bg] 剧本断点恢复写作失败: {e}", flush=True)
     _th.Thread(target=_auto, daemon=True).start()
@@ -814,7 +817,7 @@ def _act_hint(struct_md: str, no: int, total: int) -> str:
     return f"【本场所属幕/序列】{title}" + (f"\n{text[:500]}" if text else "")
 
 
-def write_scenes(proj: ScriptProject, only: list[int] | None = None) -> dict:
+def write_scenes(proj: ScriptProject, only: list[int] | None = None, batch_size=None) -> dict:
     """S5：按场次清单逐场写正文。"""
     plan = proj.plan() or {}
     scenes = plan.get("scenes") or []
@@ -842,14 +845,15 @@ def write_scenes(proj: ScriptProject, only: list[int] | None = None) -> dict:
     _wr.mark_pipeline(_key, True)   # v3.1.0：右栏「继续创作/创作中」状态需要（跨实例可见）
     proj.running = True
     try:
-        return _write_scenes_inner(proj, only)
+        return _write_scenes_inner(proj, only, batch_size=batch_size)
     finally:
         _wr.mark_pipeline(_key, False)
         proj.running = False
 
 
-def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None) -> dict:
-    """（write_scenes 的原实现体；v3.1.0 拆出以便维护 running 标志）"""
+def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, batch_size=None) -> dict:
+    """（write_scenes 的原实现体；v3.1.0 拆出以便维护 running 标志）
+    v4.15.0：batch_size 控制每批写多少场（"all"=全部写完；int=写N场后停在当前进度）。"""
     plan = proj.plan() or {}
     scenes = plan.get("scenes") or []
     if not scenes:
@@ -879,8 +883,23 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None) ->
                            "world": setting.get("world", "")}
     proj.save_plan(plan)
 
+    # v4.15.0：batch_size 解析（"all"=全部写完；int=写N场后停在当前进度）
+    _limit = None
+    if batch_size is not None:
+        if str(batch_size).lower() in ("all", "0"):
+            _limit = None
+        else:
+            try:
+                _limit = int(batch_size)
+            except (ValueError, TypeError):
+                _limit = None
+
     done = 0
     for sc in scenes:
+        if _limit is not None and done >= _limit:
+            proj.log(f"⏸ 本批已写 {done} 场（batch={_limit}），停在当前进度。说「再写N场」或「写完全部」继续。")
+            plan = proj.plan(); plan["status"] = "paused"; plan["meta"] = meta; proj.save_plan(plan)
+            return {"ok": True, "written": done, "total": len(scenes), "batch_stopped": True}
         no = sc.get("no")
         if only and no not in only:
             continue

@@ -808,6 +808,38 @@ def _chat_attached(s, proj, msg):
                 f"「给女主加一场反击」）；要开新书请用左侧『新建作品』。")
 
     # start_writing_all / start_writing / resume_writing → 启动或继续写作
+    # v4.15.0：batch_writing 意图识别「再写N章 / 写完全部」——统一并入写作分支
+    if _intent == "batch_writing":
+        _batch_param = _nlu["params"].get("batch_size") or "1"
+        # 非小说：走各自引擎的断点恢复（带 batch_size）
+        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+            if writer.pipeline_running(key):
+                return f"📖 《{name}》正在创作中：说「继续」可随时查看进度。"
+            import threading as _th
+            from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
+                             children_writer, news_writer, copy_writer, other_writer)
+            _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
+                    "t_": thesis_writer, "c_": children_writer,
+                    "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
+            _bs = str(_batch_param)
+            _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
+            try:
+                if hasattr(_mod, "resume_project"):
+                    _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
+                else:
+                    _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
+                return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
+            except Exception as e:
+                return f"⚠️ 无法批量写《{name}》：{e}"
+        # 小说
+        if not running and not writer.resume_book(key, batch_size=_batch_param):
+            return f"⚠️ 无法批量写《{name}》：写作计划缺失或已完本。"
+        if not writer.pipeline_running(key):
+            writer.resume_book(key, batch_size=_batch_param)
+        _bs = str(_batch_param)
+        _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
+        return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
+
     if _intent in ("start_writing_all", "start_writing", "resume_writing"):
         if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
             # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
