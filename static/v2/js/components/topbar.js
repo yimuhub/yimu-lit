@@ -53,7 +53,7 @@ export function renderTopbar(container, ctx) {
     if (route.name === 'bench') {
       crumbs.append(
         h('span', { class: 'slash', text: '/' }),
-        h('span', { class: 'crumb-current', text: `第 ${route.chapter || 1} 章` })
+        h('span', { class: 'crumb-current', text: chapterLabel(store.get().workMedium, route.chapter) })
       );
     }
   }
@@ -184,3 +184,13 @@ export function modelLabel(state) {
   return state.ui.model || defaultModel(state);
 }
 
+/* v4.14.0：顶栏章节标签按文体定制，不用「第 N 章」糊弄所有体裁 */
+function chapterLabel(medium, chapter) {
+  const n = chapter || 1;
+  const units = {
+    novel: '章', script: '场', poetry: '首', prose: '阶段',
+    thesis: '章', children: '篇', news: '篇', copy: '篇', other: '节'
+  };
+  const u = units[medium] || '章';
+  return `第 ${n} ${u}`;
+}

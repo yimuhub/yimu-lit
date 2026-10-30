@@ -50,18 +50,98 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
     const state = store.get();
     const work = state.work;
     const empty = h('div', { class: 'chat-empty' });
+    /* v4.14.0：空状态文案与建议按钮按文体定制，不再全部套用小说的「章/伏笔」口径。 */
+    const medium = store.get().workMedium || 'novel';
+    const MEDIUM_GUIDE = {
+      novel: {
+        title: work ? `继续写《${work.name}》` : '开始一段新的创作',
+        hint: work
+          ? `当前进度 ${work.done}/${work.total} 章。直接说下一步想做什么，或让我按规划继续。`
+          : '描述一个念头、一个人物或一场戏，我会先和你对齐方向。',
+        suggest: work
+          ? ['继续写下一章，先给我看场景节拍', '检查最近三章的伏笔与知情范围', '把下一章的开场写得更冷一些']
+          : ['我想写一个港城悬疑故事，主角是被停职的刑警', '帮我把这个念头拆成三幕结构', '我想要冷硬、短句、少形容词的文风']
+      },
+      script: {
+        title: work ? `继续写《${work.name}》` : '写一部剧本',
+        hint: work
+          ? `当前进度 ${work.done}/${work.total} 场。直接说下一步要写哪场，或让我按场次清单继续。`
+          : '给一个故事雏形，我会先搭人物与场次结构，再逐场写。',
+        suggest: work
+          ? ['继续写下一场，先给我看本场节拍', '检查场次的人物在场与道具连贯', '把下一场的对白写得更口语一些']
+          : ['我想写一个夜班保安发现凶案的故事，电影长片', '帮我把这个念头拆成 20 场的结构', '我想要冷峻、克制的长镜头风格']
+      },
+      poetry: {
+        title: work ? `继续改《${work.name}》` : '写一首诗',
+        hint: work
+          ? `当前改了 ${work.done}/${work.total} 轮。直接说下一首想写什么，或让我继续改。`
+          : '给一个意象或情绪，我会先定体式与韵脚，再成稿。',
+        suggest: work
+          ? ['再写一首七绝，主题不变', '复核上一首的格律与用韵', '把上一首的第二节改得更含蓄']
+          : ['写一首关于江边秋夜的七律', '帮我把这意象扩成组诗（三首）', '我想要克制、少形容词的风格']
+      },
+      prose: {
+        title: work ? `继续写《${work.name}》` : '写一篇散文',
+        hint: work
+          ? `当前已完成 ${work.done}/${work.total} 个阶段。直接说下一步要写什么，或让我继续。`
+          : '给一个想写的人/事/物，我会先定结构与细节密度，再动笔。',
+        suggest: work
+          ? ['继续写下一篇，先给我看结构骨架', '审一下最近一篇的 AI 腔与节奏', '把下一段的细节密度提高一些']
+          : ['写一篇关于巷口早餐摊的随笔', '帮我把这个念头拆成三段式结构', '我想要克制、口语、有体温的风格']
+      },
+      thesis: {
+        title: work ? `继续写《${work.name}》` : '写一篇论文',
+        hint: work
+          ? `当前进度 ${work.done}/${work.total} 章。直接说下一章要写什么，或让我按提纲继续。`
+          : '给一个研究题目，我会先建提纲与引用池，再逐章撰写。',
+        suggest: work
+          ? ['继续写下一章，先给我看论证链条', '检查最近几章的引用格式', '把下一章的降 AIGC 再润一遍']
+          : ['帮我写一篇关于短视频对大学生阅读习惯影响的论文', '帮我把这个选题拆成五章提纲', '我要学术严谨、引用规范']
+      },
+      children: {
+        title: work ? `继续写《${work.name}》` : '写一篇儿童故事',
+        hint: work
+          ? `当前进度 ${work.done}/${work.total} 篇。直接说下一步要写什么，或让我继续。`
+          : '给一个主角和想讲的道理，我会先定分级与价值观红线。',
+        suggest: work
+          ? ['继续写下一篇，先给我看故事节拍', '检查最近几篇的语言难度', '把下一段的互动问题改得更有趣']
+          : ['写一个 3-6 岁孩子怕黑的睡前故事', '帮我把这个念头拆成三幕结构', '我要简短、重复句式、有安全感']
+      },
+      news: {
+        title: work ? `继续写《${work.name}》` : '写一篇新闻稿',
+        hint: work
+          ? `当前已完成 ${work.done}/${work.total} 个阶段。直接说下一步要写什么，或让我继续。`
+          : '给一个事件或产品，我会先核事实、定倒金字塔结构。',
+        suggest: work
+          ? ['继续写下一篇，先给我看导语', '检查事实与数字一致性', '把社媒短版再精简一些']
+          : ['帮我写一篇新品发布的新闻稿', '帮我把这个事件拆成导语+主体+背景', '我要官方正式、客观严谨']
+      },
+      copy: {
+        title: work ? `继续写《${work.name}》` : '写一篇文案',
+        hint: work
+          ? `当前进度 ${work.done}/${work.total} 篇。直接说下一步要写什么，或让我继续。`
+          : '给一个产品或主题，我会先出钩子库，再按框架写正文。',
+        suggest: work
+          ? ['继续写下一篇，先给我看钩子候选', '检查上一篇的转化力', '把下一段改得更口语一些']
+          : ['帮我写一篇抖音口播稿，新品上市', '帮我把这个卖点拆成 10 个钩子', '我要活力种草、节奏感强']
+      },
+      other: {
+        title: work ? `继续写《${work.name}》` : '写一篇内容',
+        hint: work
+          ? `当前进度 ${work.done}/${work.total} 节。直接说下一步要写什么，或让我继续。`
+          : '给一个主题和模板，我会先定结构与分节大纲，再逐节写。',
+        suggest: work
+          ? ['继续写下一节，先给我看大纲', '检查上一节的模板规范', '把下一节的节奏改得更顺']
+          : ['帮我写一篇关于这部电影的影评', '帮我把这个话题拆成播客脚本大纲', '我要轻松口语、有观点']
+      }
+    };
+    const guide = MEDIUM_GUIDE[medium] || MEDIUM_GUIDE.novel;
     empty.append(
       h('div', { class: 'hero-mark', html: icon('quill', 20) }),
-      h('h2', { text: work ? `继续写《${work.name}》` : '开始一段新的创作' }),
-      h('p', {
-        text: work
-          ? `当前进度 ${work.done}/${work.total} 章。直接说下一步想做什么，或让我按规划继续。`
-          : '描述一个念头、一个人物或一场戏，我会先和你对齐方向。'
-      })
+      h('h2', { text: guide.title }),
+      h('p', { text: guide.hint })
     );
-    const suggestions = work
-      ? ['继续写下一章，先给我看场景节拍', '检查最近三章的伏笔与知情范围', '把第 47 章的开场写得更冷一些']
-      : ['我想写一个港城悬疑故事，主角是被停职的刑警', '帮我把这个念头拆成三幕结构', '我想要冷硬、短句、少形容词的文风'];
+    const suggestions = guide.suggest;
     const list = h('div', { class: 'suggest-list', style: { display: 'grid', gap: '6px', width: '100%', maxWidth: '520px', marginTop: '12px' } });
     for (const text of suggestions) {
       list.append(

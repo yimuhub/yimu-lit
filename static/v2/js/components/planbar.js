@@ -12,11 +12,17 @@ export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
   const planData = (plan && plan.plan) || {};
   const scale = planData.scale_label || (planData.target_words ? fmtWords(planData.target_words) : '');
   const mode = planData.mode || '滚动规划';
-  let chapterLabel = `第 ${Math.min(done + 1, total || done + 1)} 章`;
+  /* v4.14.0：章节标签按文体定制（小说用「章」、剧本用「场」、诗词用「首」…） */
+  const MEDIUM_UNITS = {
+    novel: '章', script: '场', poetry: '首', prose: '阶段',
+    thesis: '章', children: '篇', news: '篇', copy: '篇', other: '节'
+  };
+  const unit = MEDIUM_UNITS[work.medium] || '章';
+  let chapterLabel = `第 ${Math.min(done + 1, total || done + 1)} ${unit}`;
   const cards = planData.chapters || [];
   /* 章节状态两套词表都认：写作计划 in_progress / 章卡 writing。 */
   const current = cards.find((c) => c.status === 'in_progress' || c.status === 'writing');
-  if (current && current.title) chapterLabel = `第 ${current.n} 章 · ${String(current.title).replace(/^第\d+章\s*/, '')}`;
+  if (current && current.title) chapterLabel = `第 ${current.n} ${unit} · ${String(current.title).replace(/^第\d+章\s*/, '')}`;
 
   const bar = h('div', { class: 'plan-bar' });
   const inner = h('div', { class: 'plan-bar-inner' });

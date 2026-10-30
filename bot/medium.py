@@ -296,9 +296,11 @@ def pass_line(medium: str) -> int:
 
 # v4.13.0：agent_name → medium 反向映射（协作面板按体裁过滤岗位用）
 MEDIUM_AGENTS = {}
+MEDIUM_AGENTS_LABELS = {}   # {medium: [(agent_name, agent_label), ...]}
 for _med, _conf in MEDIUMS.items():
     for _agent in _conf.get("agents", []):
         MEDIUM_AGENTS[_agent] = _med
+        MEDIUM_AGENTS_LABELS.setdefault(_med, []).append(_agent)
 
 
 def dir_prefix(medium: str) -> str:
@@ -381,6 +383,9 @@ _NOVEL_SECTIONS = {
         _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_novel", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "书名", "text", max_length=40,
            hint="留空则由系统生成 8 个候选，创建后可随时换。"),
         _f("idea", "一句话 premise", "textarea", rows=4, max_length=2000, required=True,
@@ -412,6 +417,9 @@ _THESIS_WIZARD = {
            hint="例如：计算机 / 汉语言文学 / 市场营销"),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_thesis", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "论文题目", "text", max_length=60,
            hint="留空则由引擎基于学科方向出选题候选。"),
         _f("idea", "研究要点", "textarea", rows=4, max_length=2000,
@@ -442,6 +450,9 @@ _CHILDREN_WIZARD = {
             ("10-12", "10-12 岁（小学高年级）")]), default="7-9", required=True),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_children", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "故事标题", "text", max_length=40, hint="留空则由引擎出候选。"),
         _f("idea", "故事要点", "textarea", rows=4, max_length=2000,
            hint="主角 / 想要什么 / 学到什么；价值观红线（不能出现的内容）也写在这里。"),
@@ -470,6 +481,9 @@ _NEWS_WIZARD = {
            hint="公司 / 机构 / 品牌名"),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_news", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "新闻标题", "text", max_length=60, hint="留空则由引擎出候选。"),
         _f("idea", "核心事实", "textarea", rows=5, max_length=3000, required=True,
            hint="时间/地点/人物/事件/数据/引语——事实越完整，稿子越可用。"),
@@ -493,6 +507,9 @@ _COPY_WIZARD = {
             ("bili", "B站"), ("shipinhao", "视频号")]), default="douyin", required=True),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_copy", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "主题/产品", "text", max_length=60, required=True),
         _f("idea", "卖点与受众", "textarea", rows=4, max_length=2000, required=True,
            hint="卖什么 / 卖给谁 / 核心卖点 / 竞品差异。"),
@@ -524,6 +541,9 @@ _OTHER_WIZARD = {
            hint="例如：新手玩家 / 通勤人群 / 行业从业者"),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_other", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "标题", "text", max_length=60, hint="留空则由引擎出候选。"),
         _f("idea", "内容要点", "textarea", rows=4, max_length=3000, required=True,
            hint="要写什么 / 核心观点 / 关键信息。"),
@@ -576,6 +596,9 @@ _SCRIPT_SECTIONS = {
            hint="类型契约会影响引擎与观众预期两条线。"),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_script", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "剧名", "text", max_length=40, hint="留空则由系统按素材生成。"),
         _f("setting_era", "时代", "select", options=_ERA_OPTIONS, default="auto",
            hint="贯穿场次与正文的硬约束：地点、道具、称谓、交通都必须落在该时代；跟随素材时由题材与标题推断。"),
@@ -623,6 +646,9 @@ _POETRY_SECTIONS = {
            default=3, required=True, hint="每轮 = 起草 → 确定性格律校验 → 按结果改稿。"),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_poetry", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "题目", "text", max_length=40, hint="留空表示「无题」或由系统自拟。"),
         _f("idea", "题面 / 情境", "textarea", rows=4, max_length=2000, required=True,
            hint="给出题材、场景、要寄的情感，越具体越不容易写成空泛套话。"),
@@ -662,6 +688,9 @@ _PROSE_SECTIONS = {
            required=True, hint="审=只诊断不改；改=就地最小修改；重写=整篇重来。"),
     ],
     "basic": [
+        _f("agents", "专属 Agent", "chips", options_from="agents_prose", multi=True,
+           hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
+
         _f("title", "标题", "text", max_length=40),
         _f("idea", "主题与素材", "textarea", rows=4, max_length=4000,
            required=True, when={"field": "operation", "in": ["write", "recreate"]},
@@ -754,6 +783,10 @@ def wizard_payload(vocab: dict | None = None) -> dict:
                 if src and not fld.get("options"):
                     fld["options"] = (novel_genre_options(vocab) if src == "genres"
                                       else _opts(vocab.get(src) or []))
+        # v4.13.0：注入该文体的专属 Agent 词表
+        agents_key = f"agents_{key}"
+        if agents_key in vocab:
+            sections["basic"][0]["options"] = _opts(vocab[agents_key])
         out[key] = sections
     return out
 

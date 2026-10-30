@@ -1908,6 +1908,12 @@ def api_onboarding():
         "prose_genres": list(prose_writer.GENRES.items()),
         "prose_operations": list(prose_writer.OPERATIONS.items()),
     })
+    # v4.13.0：注入每个文体的专属 Agent 词表（标签从 agents.AGENTS 取）
+    from bot import agents as _ag
+    for med, agent_names in medium_mod.MEDIUM_AGENTS_LABELS.items():
+        _opts = [{"value": n, "label": _ag.AGENTS.get(n, {}).get("label", n)}
+                 for n in agent_names]
+        _ONB["by_medium"][med]["basic"][0]["options"] = _opts
     return _ONB
 
 def _plan_genre(proj):

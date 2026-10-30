@@ -27,6 +27,7 @@ ALLOWED_KEYS = {
         "platform", "genre", "genre_key", "tone", "perspective", "mode",
         "title", "idea", "scale", "total_chapters", "min_words_per_chapter",
         "sells", "style_preset", "style_id",
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "script": {
         # script_writer.create_project 读 form/entryPath/idea/notes/scenes/pages/episodes/title
@@ -36,43 +37,51 @@ ALLOWED_KEYS = {
         "form", "entryPath", "genre", "title", "idea",
         "episodes_scale", "scenes_scale", "pages_scale",
         "notes", "format_spec", "style_id", "setting_era", "setting_world",
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "poetry": {
         # poetry_writer 读 form/title/idea/maxRounds/cipai/metrical_check/with_notes/with_translation；
         # emotion 在 app._create_poetry_project 里折进 idea
         "form", "cipai", "maxRounds", "title", "idea", "emotion",
         "metrical_check", "with_notes", "with_translation", "style_id",
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "prose": {
         # prose_writer 读 genre/operation/sourceText/title/idea + audience/purpose/tone/
         # target_words/slop_depth/fact_check（brief、素材与去味阶段消费）
         "genre", "operation", "title", "idea", "sourceText", "audience", "purpose",
         "tone", "words", "target_words", "slop_depth", "fact_check", "style_id",
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "thesis": {
         # v4.6.0：thesis_writer 读 degree/field/title/idea/target_words/cite_style/humanize
         "degree", "field", "title", "idea", "target_words", "cite_style", "humanize", "style_id",
         "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "children": {
         # v4.10.0：children_writer 读 ctype/age/title/idea/target_words/values_note/with_interactive/with_illustration
         "ctype", "age", "title", "idea", "target_words", "values_note",
         "with_interactive", "with_illustration", "style_id",
         "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "news": {
         # v4.11.0：news_writer 读 ntype/org/title/idea/cite_style/with_versions
         "ntype", "org", "title", "idea", "cite_style", "with_versions", "style_id",
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "copy": {
         # v4.12.0：copy_writer 读 ktype/platform/title/idea/duration_secs/tone/with_hooks
         "ktype", "platform", "title", "idea", "duration_secs", "tone", "with_hooks", "style_id",
         "duration",   # scale 的 token 槽位（数字落点是 duration_secs）
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
     "other": {
         # v4.13.0：other_writer 读 template/audience/title/idea/target_words/tone
         "template", "audience", "title", "idea", "tone", "style_id",
         "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
+        "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
     },
 }
 

@@ -1252,7 +1252,13 @@ export function openWizard(ctx, preset = {}) {
   /* v3.1.0：创建后自动以用户消息形式把配置发给对话 Agent（消除"创建完毫无反应"断层） */
   function buildFirstMessage(payload, awaitingTitle) {
     const v = values();
-    if (model.medium === 'novel') {
+    const med = model.medium;
+    /* v4.14.0：每个文体的引导反映该文体的真实创作要素（题材/主题/受众/结构），
+       不再是小说式的千篇一律框架。Agent 选择也写入引导。 */
+    const agents = Array.isArray(payload.agents) && payload.agents.length
+      ? `；使用岗位：${payload.agents.join('、')}` : '';
+
+    if (med === 'novel') {
       const lines = [];
       if (awaitingTitle) {
         lines.push(`开新书：${payload.idea || '（详见参考设定）'}`);
@@ -1270,16 +1276,126 @@ export function openWizard(ctx, preset = {}) {
         bits.push('风格：' + Object.entries(payload.style).map(([k, val]) => `${k}=${val}`).join('、'));
       }
       if (bits.length) lines.push(bits.join('；') + '。');
+      if (agents) lines.push(agents + '。');
       return lines.join('\n');
     }
-    if (model.medium === 'script') {
-      return `开新剧本：${payload.title || payload.idea || ''}\n形式：${payload.form || 'film'}；入口：${payload.entryPath || 'idea'}；题材：${payload.genre || ''}。请开始规划。`;
+    if (med === 'script') {
+      const bits = [];
+      if (payload.form) bits.push(`形式：${payload.form}`);
+      if (payload.genre) bits.push(`题材：${payload.genre}`);
+      if (payload.entryPath) bits.push(`入口：${payload.entryPath}`);
+      if (payload.episodes) bits.push(`集数：${payload.episodes}`);
+      if (payload.scenes) bits.push(`场次：约 ${payload.scenes} 场`);
+      if (payload.setting_era) bits.push(`时代：${payload.setting_era}`);
+      if (payload.setting_world) bits.push(`世界观：${payload.setting_world}`);
+      const core = payload.idea || v.idea || '';
+      let msg = `开新剧本《${payload.title || v.title || ''}》。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (core) msg += `核心故事线：${core}。`;
+      if (agents) msg += agents + '。';
+      msg += '请先梳理人物与场次结构，再开始写场次。';
+      return msg;
     }
-    if (model.medium === 'poetry') {
-      return `创作诗词：${payload.title || payload.idea || ''}\n体式：${payload.form || 'modern'}；改稿轮数：${payload.maxRounds || 3}。请开始。`;
+    if (med === 'poetry') {
+      const bits = [];
+      if (payload.form) bits.push(`体式：${payload.form}`);
+      if (payload.maxRounds) bits.push(`改稿轮数：${payload.maxRounds}`);
+      if (payload.metrical_check) bits.push('格律校验：开启');
+      const theme = payload.idea || v.idea || payload.title || '';
+      let msg = `创作诗词：${theme}。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (payload.emotion) msg += `情感基调：${payload.emotion}。`;
+      if (agents) msg += agents + '。';
+      msg += '请先定意象与韵脚，再逐首成稿。';
+      return msg;
     }
-    if (model.medium === 'prose') {
-      return `创作散文：${payload.title || payload.idea || ''}\n文体：${payload.genre || 'suibi'}；操作：${payload.operation || 'write'}${payload.target_words ? `；目标 ${payload.target_words} 字` : ''}。请开始。`;
+    if (med === 'prose') {
+      const bits = [];
+      if (payload.genre) bits.push(`文体：${payload.genre}`);
+      if (payload.operation) bits.push(`操作：${payload.operation}`);
+      if (payload.audience) bits.push(`受众：${payload.audience}`);
+      if (payload.purpose) bits.push(`目的：${payload.purpose}`);
+      if (payload.tone) bits.push(`语气：${payload.tone}`);
+      if (payload.target_words) bits.push(`目标 ${payload.target_words} 字`);
+      const theme = payload.idea || payload.title || '';
+      let msg = `创作散文：${theme}。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (agents) msg += agents + '。';
+      msg += '请先定结构与细节密度，再动笔。';
+      return msg;
+    }
+    if (med === 'thesis') {
+      const bits = [];
+      if (payload.degree) bits.push(`层次：${payload.degree}`);
+      if (payload.field) bits.push(`学科：${payload.field}`);
+      if (payload.cite_style) bits.push(`引用格式：${payload.cite_style}`);
+      if (payload.target_words) bits.push(`目标 ${payload.target_words} 字`);
+      if (payload.humanize) bits.push('降 AIGC 润色：开启');
+      const topic = payload.title || payload.idea || '';
+      let msg = `撰写论文：${topic}。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (payload.idea) msg += `研究要点：${payload.idea}。`;
+      if (agents) msg += agents + '。';
+      msg += '请先建提纲与引用池，再逐章撰写。';
+      return msg;
+    }
+    if (med === 'children') {
+      const bits = [];
+      if (payload.ctype) bits.push(`类型：${payload.ctype}`);
+      if (payload.age) bits.push(`年龄段：${payload.age}`);
+      if (payload.target_words) bits.push(`单篇 ${payload.target_words} 字`);
+      if (payload.with_interactive) bits.push('亲子互动：开启');
+      if (payload.with_illustration) bits.push('插图提示词：开启');
+      const story = payload.idea || payload.title || '';
+      let msg = `创作儿童文学：${story}。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (payload.values_note) msg += `价值观红线：${payload.values_note}。`;
+      if (agents) msg += agents + '。';
+      msg += '请先定主角与价值观红线，再逐节写故事。';
+      return msg;
+    }
+    if (med === 'news') {
+      const bits = [];
+      if (payload.ntype) bits.push(`类型：${payload.ntype}`);
+      if (payload.org) bits.push(`发布主体：${payload.org}`);
+      if (payload.cite_style) bits.push(`口径：${payload.cite_style}`);
+      if (payload.with_versions) bits.push('多版本输出：开启');
+      const facts = payload.idea || payload.title || '';
+      let msg = `撰写新闻稿：${payload.title || ''}。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (facts) msg += `核心事实：${facts}。`;
+      if (agents) msg += agents + '。';
+      msg += '请按倒金字塔结构先写导语，再补主体与背景。';
+      return msg;
+    }
+    if (med === 'copy') {
+      const bits = [];
+      if (payload.ktype) bits.push(`类型：${payload.ktype}`);
+      if (payload.platform) bits.push(`平台：${payload.platform}`);
+      if (payload.duration_secs) bits.push(`时长 ${payload.duration_secs} 秒`);
+      if (payload.tone) bits.push(`语气：${payload.tone}`);
+      if (payload.with_hooks) bits.push('钩子候选：开启');
+      const topic = payload.title || payload.idea || '';
+      let msg = `创作文案：${topic}。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (payload.idea) msg += `卖点与受众：${payload.idea}。`;
+      if (agents) msg += agents + '。';
+      msg += '请先出钩子库，再按框架写正文。';
+      return msg;
+    }
+    if (med === 'other') {
+      const bits = [];
+      if (payload.template) bits.push(`模板：${payload.template}`);
+      if (payload.audience) bits.push(`受众：${payload.audience}`);
+      if (payload.tone) bits.push(`语气：${payload.tone}`);
+      if (payload.target_words) bits.push(`目标 ${payload.target_words} 字`);
+      const topic = payload.title || payload.idea || '';
+      let msg = `创作${payload.template || '其他内容'}：${topic}。`;
+      if (bits.length) msg += bits.join('；') + '。';
+      if (payload.idea) msg += `内容要点：${payload.idea}。`;
+      if (agents) msg += agents + '。';
+      msg += '请先定结构与分节大纲，再逐节撰写。';
+      return msg;
     }
     return `开始创作：${payload.title || payload.idea || ''}`;
   }
