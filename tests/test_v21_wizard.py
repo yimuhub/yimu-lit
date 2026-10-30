@@ -69,6 +69,11 @@ ALLOWED_KEYS = {
         "ktype", "platform", "title", "idea", "duration_secs", "tone", "with_hooks", "style_id",
         "duration",   # scale 的 token 槽位（数字落点是 duration_secs）
     },
+    "other": {
+        # v4.13.0：other_writer 读 template/audience/title/idea/target_words/tone
+        "template", "audience", "title", "idea", "tone", "style_id",
+        "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
+    },
 }
 
 # static/v2/js/views/wizard.js 的 controlFor() 支持的类型；schema 用了别的就渲染不出来

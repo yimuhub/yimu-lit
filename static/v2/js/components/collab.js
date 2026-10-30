@@ -489,7 +489,13 @@ export function createCollabPanel(ctx) {
   function paintAgents() {
     agentsBody.textContent = '';
     const sec = h('div', { class: 'rp-section' });
-    const list = s.view && Array.isArray(s.view.agents) ? s.view.agents : [];
+    let list = s.view && Array.isArray(s.view.agents) ? s.view.agents : [];
+    /* v4.13.0：按当前作品体裁过滤岗位 —— other 体裁只显示 other_* 岗位 */
+    const medium = (store.get().workMedium || '');
+    const baseList = list.filter((a) => (a.medium || '') === '' || (a.medium || '') === medium);
+    if (baseList.length) {
+      list = baseList;
+    }
     sec.append(sectionHead('创作岗位', list.length ? `${list.length} 个岗位` : ''));
     sec.append(h('div', { class: 'collab-add-agent-bar' },
       h('button', {

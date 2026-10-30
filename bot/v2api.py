@@ -381,7 +381,8 @@ def _medium_state_payload(proj, key: str, q: str = "") -> dict:
     if str(key).startswith("s_"):
         return _script_state_payload(proj, key, q)
     from bot import writer as _wr, medium as _medium_mod
-    med = {"p_": "poetry", "e_": "prose", "t_": "thesis"}.get(str(key)[:2], "prose")
+    med = {"p_": "poetry", "e_": "prose", "t_": "thesis",
+           "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(str(key)[:2], "prose")
     it = _wr.library_item(key) or {}
     timeline: list[dict] = []
     issues: list[str] = []
@@ -401,6 +402,22 @@ def _medium_state_payload(proj, key: str, q: str = "") -> dict:
         except Exception:
             issues = []
         chars = [{"name": "引用池", "status": f"{len(plan.get('refs') or [])} 条"}]
+    elif med in ("children", "news", "copy", "other"):
+        from bot import children_writer, news_writer, copy_writer, other_writer
+        mods = {"children": children_writer, "news": news_writer, "copy": copy_writer, "other": other_writer}
+        pp = mods[med].get_project(key)
+        plan = (pp.plan() if pp else None) or {}
+        cmap = plan.get("chapterStatus") or {}
+        stages_list = _medium_stages(med)
+        for i, (code, cname) in enumerate(stages_list):
+            st = cmap.get(code, "pending")
+            timeline.append({"chapter": i + 1, "time": "", "event": f"{cname}（{code}）",
+                             "location": {"completed": "完成", "in_progress": "进行中", "pending": "待处理"}.get(st, st),
+                             "characters": []})
+        if plan.get("status") == "completed":
+            issues = []
+        else:
+            issues = [f"当前阶段：{plan.get('meta', {}).get('stage', '未知')}"]
     else:
         from bot import poetry_writer as _pw, prose_writer as _ew
         cls = _pw if med == "poetry" else _ew
@@ -495,8 +512,9 @@ def _medium_plan_view(proj, key: str, med: str) -> dict:
             no = int(ch.get("no") or 0)
             chapters.append(_chapter(no, ch.get("title"), status_map.get(str(no), "pending"),
                                      ch.get("target_words") or 0, "、".join(ch.get("sections") or [])))
-    elif med in ("children", "news", "copy"):
-        mods = {"children": children_writer, "news": news_writer, "copy": copy_writer}
+    elif med in ("children", "news", "copy", "other"):
+        from bot import other_writer as _ow
+        mods = {"children": children_writer, "news": news_writer, "copy": copy_writer, "other": _ow}
         pp = mods[med].get_project(key)
         plan = (pp.plan() if pp else None) or {}
         label = plan.get(_NAME_KEYS.get(med, "name")) or key
@@ -526,7 +544,7 @@ def _medium_plan_view(proj, key: str, med: str) -> dict:
     # 阶段名替换：plan-vol-head 显示文体专有标题
     vol_title = {"news": "新闻稿流程", "children": "故事流程", "copy": "文案流程",
                  "script": "剧本流程", "thesis": "论文流程",
-                 "poetry": "诗词流程", "prose": "散文流程"}.get(med, "规划")
+                 "poetry": "诗词流程", "prose": "散文流程", "other": "创作流程"}.get(med, "规划")
     arc = {"no": 1, "title": label or "规划", "purpose": "",
            "chapters": [c["n"] for c in chapters],
            "chapter_cards": chapters}
@@ -536,9 +554,9 @@ def _medium_plan_view(proj, key: str, med: str) -> dict:
 
 _NAME_KEYS = {"children": "bookName", "news": "newsName", "copy": "copyName",
               "script": "scriptName", "thesis": "thesisName",
-              "poetry": "poemName", "prose": "proseName"}
+              "poetry": "poemName", "prose": "proseName", "other": "otherName"}
 _FORM_KEYS = {"children": "typeLabel", "news": "typeLabel", "copy": "platformLabel",
-              "script": "formLabel", "thesis": "degreeLabel"}
+              "script": "formLabel", "thesis": "degreeLabel", "other": "templateLabel"}
 
 
 def _medium_label(med):
@@ -589,7 +607,7 @@ def register_v2_routes(app, get_project, chat_func=None):
         # v4.6.2：剧本/诗词/散文/论文的「规划」页签——把各自计划映射成与小说同构的
         # volumes/arcs/chapters 树，planPane 直接复用
         _med = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis",
-                "c_": "children", "n_": "news", "k_": "copy"}.get(str(key)[:2])
+                "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(str(key)[:2])
         if _med:
             return {"ok": True, "key": key, "plan": _medium_plan_view(proj, key, _med),
                     "digest": None, "proposals": []}
@@ -722,7 +740,7 @@ def register_v2_routes(app, get_project, chat_func=None):
         if err:
             return err
         # v4.3.0：剧本的状态 pane —— 数据源换 18-剧本状态库 / 22-剧本体检 / 剧本计划
-        if str(key)[:2] in ("s_", "p_", "e_", "t_"):
+        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
             return _medium_state_payload(proj, key, q)
         stmod, err = _mod("state")
         if err:
@@ -1105,7 +1123,7 @@ def register_v2_routes(app, get_project, chat_func=None):
             if not med:
                 # v4.12.6：key 前缀兜底——children/news/copy 引擎不写 plan["medium"]，
                 # 此前永远回落 novel → 技能面板全部显示小说技能
-                med = {"c_": "children", "n_": "news", "k_": "copy",
+                med = {"c_": "children", "n_": "news", "k_": "copy", "o_": "other",
                        "s_": "script", "p_": "poetry", "e_": "prose",
                        "t_": "thesis"}.get(str(key)[:2], "novel")
             if not medium_mod.is_medium(med):

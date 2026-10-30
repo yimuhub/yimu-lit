@@ -225,9 +225,9 @@ export function statusMeta(state, label) {
   return map[state] || { tone: 'muted', label: label || '未开始' };
 }
 
-export const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文', thesis: '论文', children: '儿童文学', news: '新闻稿', copy: '文案' };
+export const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文', thesis: '论文', children: '儿童文学', news: '新闻稿', copy: '文案', other: '其他' };
 /* 各文体的进度单位不同：小说计章、剧本计场、诗词计改稿轮、散文计阶段。 */
-export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段', thesis: '章', children: '篇', news: '份', copy: '篇' };
+export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段', thesis: '章', children: '篇', news: '份', copy: '篇', other: '篇' };
 
 export function mediumChip(medium) {
   /* v4.2.0：四文体全部显示彩色标签（此前小说不显示） */
@@ -252,7 +252,7 @@ export function mediumGlyph(item) {
     if (form.includes('曲')) return '曲';
     return '诗';
   }
-  const glyph = { novel: '小', script: '剧', prose: '散', thesis: '论', children: '童', news: '新', copy: '案', fu: '赋', song: '歌' }[medium];
+  const glyph = { novel: '小', script: '剧', prose: '散', thesis: '论', children: '童', news: '新', copy: '案', other: '他', fu: '赋', song: '歌' }[medium];
   return glyph || null;
 }
 

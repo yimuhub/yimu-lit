@@ -84,6 +84,8 @@ def make_get_project(cls):
             return None
         if not os.path.isdir(pdir):
             return None
+        if not os.path.exists(os.path.join(pdir, cls.PLAN_FILE)):   # v4.13.0：只认本引擎的计划文件，防止别的文体的 key 误匹配
+            return None
         return cls(pdir, key)
     return get_project
 

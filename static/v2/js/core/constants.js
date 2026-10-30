@@ -40,11 +40,12 @@ export const MEDIUM_FALLBACK = [
   { key: 'thesis', label: '论文', icon: 'file-text', desc: '学术论文：提纲、引用文献、降 AIGC。' },
   { key: 'children', label: '儿童文学', icon: 'book', desc: '寓言、绘本故事、儿童科幻与科学故事。' },
   { key: 'news', label: '新闻稿', icon: 'globe', desc: '产品发布、官方公告、活动通稿。' },
-  { key: 'copy', label: '文案', icon: 'zap', desc: '口播稿、种草笔记、宣传与营销文案。' }
+  { key: 'copy', label: '文案', icon: 'zap', desc: '口播稿、种草笔记、宣传与营销文案。' },
+  { key: 'other', label: '其他', icon: 'pen', desc: '剧本杀、播客脚本、课程稿、演讲稿、拆书稿、影评。' }
 ];
 
 /* 后端 /api/mediums 的 icon 是 emoji（旧版界面直接渲染），v2 一律按体裁 key 取 SVG 名。 */
-const MEDIUM_ICON = { novel: 'book', script: 'film', poetry: 'feather', prose: 'pen', thesis: 'file-text', children: 'book', news: 'globe', copy: 'zap' };
+const MEDIUM_ICON = { novel: 'book', script: 'film', poetry: 'feather', prose: 'pen', thesis: 'file-text', children: 'book', news: 'globe', copy: 'zap', other: 'pen' };
 
 export function mediumIcon(medium) {
   const key = typeof medium === 'string' ? medium : (medium && medium.key) || '';

@@ -10,7 +10,7 @@ from bot import llm, workflow, writer, providers, version, distill, learn, agent
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
 from bot import thesis_writer
-from bot import children_writer, news_writer, copy_writer
+from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
 from bot import export as export_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
@@ -602,7 +602,7 @@ def _chat_group(s, proj, msg, plan, st, name):
     # v3.2.0：剧本/诗词/散文的 @Agent 也用各自文体的上下文（此前全是小说口径空壳）
     _kb = os.path.basename(proj.path)
     _med = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis",
-            "c_": "children", "n_": "news", "k_": "copy"}.get(_kb[:2])
+            "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(_kb[:2])
     if _med:
         try:
             from bot import assist as _assist
@@ -809,16 +809,16 @@ def _chat_attached(s, proj, msg):
 
     # start_writing_all / start_writing / resume_writing → 启动或继续写作
     if _intent in ("start_writing_all", "start_writing", "resume_writing"):
-        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_"):
+        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
             # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
             if writer.pipeline_running(key):
                 return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
             import threading as _th
             from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
-                             children_writer, news_writer, copy_writer)
+                             children_writer, news_writer, copy_writer, other_writer)
             _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
                     "t_": thesis_writer, "c_": children_writer,
-                    "n_": news_writer, "k_": copy_writer}[str(key)[:2]]
+                    "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
             _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
             return f"▶ 恢复《{name}》的创作，工作台可见进度…"
         if running:
@@ -1169,7 +1169,7 @@ def _spawn_simple_writer(medium: str, mod, payload: dict) -> dict:
     if payload.get("model"):
         cfg.setdefault("defaults", {})["model"] = payload["model"]
 
-    prefix = {"children": "c_", "news": "n_", "copy": "k_"}[medium]
+    prefix = {"children": "c_", "news": "n_", "copy": "k_", "other": "o_"}[medium]
     display = (cfg.get("title") or cfg.get("idea") or "未命名").strip()[:40] or "未命名"
     _name = re.sub(r'[\/:*?"<>|\s]+', "", display)[:24] or "未命名"
     base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
@@ -1209,6 +1209,7 @@ _MEDIUM_CREATORS = {
     "children": lambda payload: _spawn_simple_writer("children", children_writer, payload),
     "news": lambda payload: _spawn_simple_writer("news", news_writer, payload),
     "copy": lambda payload: _spawn_simple_writer("copy", copy_writer, payload),
+    "other": lambda payload: _spawn_simple_writer("other", other_writer, payload),
 }
 
 
@@ -1715,6 +1716,18 @@ def api_book_live(key: str):
     if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     st = proj.status()
+    if st.get("state") in ("missing", "", "unknown"):
+        # v4.13.0：非小说文体没有 02-写作计划.json，Project.status 误报 → 回退 library_item
+        it = writer.library_item(key)
+        if it:
+            st["state"] = it.get("state") or "planning"
+            st["name"] = it.get("name") or st.get("name")
+            st["medium"] = it.get("medium")
+            st["status_label"] = it.get("status_label")
+            st["done"] = it.get("done", 0)
+            st["total"] = it.get("total", 0)
+            st["words"] = it.get("total_words", 0)
+            st["running"] = bool(it.get("running"))
     plan = proj.plan() or {}
     chs = plan.get("chapters") or []
     inprog = [c.get("chapterNumber") for c in chs if c.get("status") == "in_progress"]
@@ -2434,7 +2447,7 @@ def api_continue(payload: dict):
     # ---- 非小说文体：走各自引擎的断点恢复（服务重启/线程中断后的唯一续跑通道）----
     _medium_mod = {"s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer",
                    "t_": "thesis_writer", "c_": "children_writer",
-                   "n_": "news_writer", "k_": "copy_writer"}.get(str(key)[:2])
+                   "n_": "news_writer", "k_": "copy_writer", "o_": "other_writer"}.get(str(key)[:2])
     if _medium_mod:
         import threading as _th
         from bot import script_writer, poetry_writer, prose_writer, thesis_writer
@@ -3567,7 +3580,7 @@ async def api_script_rewrite_scenes(payload: dict):
 
 def _assist_medium(payload: dict) -> str:
     med = str(payload.get("medium") or "script").strip()
-    return med if med in ("script", "poetry", "prose", "novel", "thesis", "children", "news", "copy") else "script"
+    return med if med in ("script", "poetry", "prose", "novel", "thesis", "children", "news", "copy", "other") else "script"
 
 
 def _assist_project(medium: str, key: str):
@@ -3577,7 +3590,7 @@ def _assist_project(medium: str, key: str):
         return prose_writer.get_project(key)
     if medium == "novel":
         return _get_project(key)
-    if medium in ("children", "news", "copy"):
+    if medium in ("children", "news", "copy", "other"):
         return _get_project(key)   # v4.12.1：8 文体对话改稿
     return script_writer.get_project(key)
 
@@ -4101,7 +4114,7 @@ def api_plan_regen(payload: dict):
 @app.get("/api/mini/status")
 async def api_mini_status(key: str):
     """v4.12.1：children/news/copy 通用状态端点。"""
-    for mod in (children_writer, news_writer, copy_writer):
+    for mod in (children_writer, news_writer, copy_writer, other_writer):
         proj = mod.get_project(key)
         if proj:
             return proj.status()
@@ -4111,7 +4124,7 @@ async def api_mini_status(key: str):
 @app.get("/api/mini/part")
 async def api_mini_part(key: str, part: str = "final"):
     """v4.12.1：children/news/copy 通用文档端点。"""
-    for mod in (children_writer, news_writer, copy_writer):
+    for mod in (children_writer, news_writer, copy_writer, other_writer):
         proj = mod.get_project(key)
         if proj:
             # part 可以是 "outline"/"final" 或文件名

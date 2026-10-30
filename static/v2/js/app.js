@@ -289,7 +289,7 @@ const ctx = {
         ...(item || {}),
         ...(status || {}),
         total_words: (item && item.total_words) || (status && status.words) || 0,
-        status_label: (item && item.status_label) || '',
+        status_label: (status && status.status_label) || (item && item.status_label) || '',
         quality: item ? item.quality : null,
         favorite: item ? item.favorite : false,
         tags: (item && item.tags) || []

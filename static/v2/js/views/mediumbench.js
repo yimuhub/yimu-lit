@@ -33,6 +33,13 @@ const BENCH = {
     status: (key) => api.thesisStatus(key),
     doc: (key, part) => api.thesisPart(key, part)
   },
+  other: {
+    title: '创作工作台',
+    tabs: [['outline', '大纲'], ['final', '正文'], ['report', '打磨报告'], ['final', '定稿']],
+    defaultTab: 'final',
+    status: (key) => api.miniStatus(key),
+    doc: (key, tab) => api.miniPart(key, tab)
+  },
   children: {
     title: '儿童文学工作台',
     tabs: [['outline', '分级设定'], ['story', '故事'], ['interactive', '互动与插图'], ['final', '定稿']],

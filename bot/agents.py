@@ -38,6 +38,10 @@ AGENTS = {
     "news_reviewer":    {"label": "新闻审核", "stage": "review",  "desc": "5W1H核查/引语归属/客观性"},
     "copy_writer":      {"label": "文案策划", "stage": "writing", "desc": "口播稿/种草笔记/营销框架"},
     "copy_reviewer":    {"label": "文案审核", "stage": "review",  "desc": "钩子效果/转化力/平台适配"},
+    "other_planner":    {"label": "综合策划", "stage": "planning", "desc": "模板选择/结构设计/受众定位"},
+    "other_planner":    {"label": "综合策划", "stage": "planning", "desc": "模板选择/结构设计/受众定位"},
+    "other_writer":     {"label": "综合写手", "stage": "writing", "desc": "剧本杀/播客/课程稿/演讲稿/拆书稿/影评"},
+    "other_reviewer":   {"label": "综合审校", "stage": "review",  "desc": "模板规范核查/节奏与语感/定稿对账"},
 }
 
 def _config_path():
@@ -101,6 +105,9 @@ DEFAULT_AGENT_SKILLS = {
     "news_reviewer":    ["news-methodology"],
     "copy_writer":      ["copy-methodology"],
     "copy_reviewer":    ["copy-methodology"],
+    "other_planner":    ["other-methodology", "other-templates"],
+    "other_writer":     ["other-methodology", "other-templates"],
+    "other_reviewer":   ["other-methodology", "other-templates"],
 }
 
 def get_skill_bindings():
@@ -236,10 +243,17 @@ def bindings_view():
     sbinds = get_skill_bindings()
     out = []
     all_agents = _all_agents()
+    # v4.13.0：岗位 → 所属体裁映射，前端协作面板按当前作品体裁过滤岗位
+    try:
+        from . import medium as _medium_mod
+        medium_map = dict(_medium_mod.MEDIUM_AGENTS)   # {agent: medium}
+    except Exception:
+        medium_map = {}
     for agent, meta in all_agents.items():
         b = binds.get(agent, {}) or {}
         out.append({"agent": agent, "label": meta["label"], "stage": meta["stage"], "desc": meta["desc"],
                     "provider_id": b.get("provider_id"), "model": b.get("model"),
+                    "medium": medium_map.get(agent, ""),
                     "effective": ("已绑定 " + (b.get("model") or "?")) if (b.get("provider_id") or b.get("model")) else "回落 stage/默认",
                     "skills": _skills_of(sbinds, agent)})
     return {"agents": out, "max_global_agents": _max_global()}

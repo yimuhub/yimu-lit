@@ -174,6 +174,24 @@ MEDIUMS: dict[str, dict] = {
         "checker": None,
         "live": None,
     },
+    # v4.13.0：其他文字创作（模板化低门槛扩展）
+    "other": {
+        "label": "其他",
+        "icon": "✍️",
+        "desc": "剧本杀 / 播客脚本 / 课程稿 / 演讲稿 / 拆书稿 / 影评书评",
+        "dir_prefix": "o_",
+        "stages": [
+            ("O1", "大纲", "选题 / 结构 / 受众"),
+            ("O2", "撰写", "按模板分节撰写"),
+            ("O3", "打磨", "语感 / 节奏 / 去AI腔"),
+            ("O4", "定稿", "定稿"),
+        ],
+        "score_dims": [("内容", 30), ("结构", 25), ("表达", 25), ("受众", 20)],
+        "pass_line": 80,
+        "agents": ["other_planner", "other_writer", "other_reviewer"],
+        "checker": None,
+        "live": None,
+    },
 }
 
 # 别名：用户口语 → 文体 key
@@ -274,6 +292,13 @@ def score_dims(medium: str) -> list[tuple[str, int]]:
 
 def pass_line(medium: str) -> int:
     return int(MEDIUMS.get(medium, {}).get("pass_line", 90))
+
+
+# v4.13.0：agent_name → medium 反向映射（协作面板按体裁过滤岗位用）
+MEDIUM_AGENTS = {}
+for _med, _conf in MEDIUMS.items():
+    for _agent in _conf.get("agents", []):
+        MEDIUM_AGENTS[_agent] = _med
 
 
 def dir_prefix(medium: str) -> str:
@@ -487,6 +512,34 @@ _COPY_WIZARD = {
     ],
 }
 
+_OTHER_WIZARD = {
+    "style_title": "模板与风格",
+    "brief": [
+        _f("template", "内容模板", "select", options=_opts([
+            ("script_kill", "剧本杀剧本"), ("podcast", "播客脚本"),
+            ("course", "知识付费课程稿"), ("speech", "演讲稿"),
+            ("book_review", "拆书稿/讲书稿"), ("review", "影评/书评"),
+        ]), default="script_kill", required=True),
+        _f("audience", "目标受众", "text", max_length=40,
+           hint="例如：新手玩家 / 通勤人群 / 行业从业者"),
+    ],
+    "basic": [
+        _f("title", "标题", "text", max_length=60, hint="留空则由引擎出候选。"),
+        _f("idea", "内容要点", "textarea", rows=4, max_length=3000, required=True,
+           hint="要写什么 / 核心观点 / 关键信息。"),
+        _f("words_scale", "目标字数", "scale",
+           options=[{"value": "2000", "label": "2千字", "fill": 2000},
+                    {"value": "5000", "label": "5千字", "fill": 5000},
+                    {"value": "10000", "label": "1万字", "fill": 10000}],
+           custom_key="target_words", min=500, max=50000, unit="字", default="5000", required=True),
+    ],
+    "style": [
+        _f("tone", "语气", "select", options=_opts([
+            ("casual", "轻松口语"), ("formal", "正式严谨"),
+            ("humorous", "幽默风趣"), ("inspiring", "激励人心")]), default="casual"),
+    ],
+}
+
 # 剧本：引擎真实消费 title/idea/form/entryPath/scenes/pages/episodes/notes（见 bot/script_writer.py）。
 _SCRIPT_GENRES = ["悬疑/犯罪", "古装/历史", "都市/现实", "科幻", "战争/军事",
                   "喜剧", "爱情", "家庭/伦理", "武侠/仙侠", "恐怖/灵异"]
@@ -645,7 +698,7 @@ _WIZARD: dict[str, dict[str, list[dict]]] = {
 def _copy_sections(medium: str) -> dict:
     """深拷贝三段字段，避免调用方改写模块常量。"""
     _extra = {"thesis": _THESIS_WIZARD, "children": _CHILDREN_WIZARD,
-              "news": _NEWS_WIZARD, "copy": _COPY_WIZARD}
+              "news": _NEWS_WIZARD, "copy": _COPY_WIZARD, "other": _OTHER_WIZARD}
     src = _WIZARD.get(medium) or _extra.get(medium) or {"brief": [], "basic": [], "style": []}
     out = {group: [dict(f, **({"options": list(f.get("options") or [])} if f.get("options") else {}))
                    for f in src.get(group, [])]

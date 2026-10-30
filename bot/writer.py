@@ -2056,9 +2056,9 @@ _PLAN_BY_MEDIUM = (("novel", "02-写作计划.json"), ("script", "剧本计划.j
                    ("poetry", "诗词计划.json"), ("prose", "散文计划.json"),
                    ("thesis", "论文计划.json"),   # v4.6.0：论文
                    ("children", "儿童文学计划.json"), ("news", "新闻稿计划.json"),
-                   ("copy", "文案计划.json"))   # v4.10-4.12
-_NAME_KEY = {"novel": "novelName", "script": "scriptName", "poetry": "poemName", "prose": "proseName", "thesis": "thesisName", "children": "bookName", "news": "newsName", "copy": "copyName"}
-_FORM_LABEL_KEY = {"novel": "", "script": "formLabel", "poetry": "formLabel", "prose": "genreLabel", "thesis": "degreeLabel", "children": "typeLabel", "news": "typeLabel", "copy": "platformLabel"}
+                   ("copy", "文案计划.json"), ("other", "其他创作计划.json"))   # v4.10-4.13
+_NAME_KEY = {"novel": "novelName", "script": "scriptName", "poetry": "poemName", "prose": "proseName", "thesis": "thesisName", "children": "bookName", "news": "newsName", "copy": "copyName", "other": "otherName"}
+_FORM_LABEL_KEY = {"novel": "", "script": "formLabel", "poetry": "formLabel", "prose": "genreLabel", "thesis": "degreeLabel", "children": "typeLabel", "news": "typeLabel", "copy": "platformLabel", "other": "templateLabel"}
 _OTHER_LABEL = {"completed": "已完成", "planning": "规划中", "writing": "写作中",
                 "in_progress": "创作中", "failed": "失败", "unknown": "草稿"}
 
@@ -2105,9 +2105,10 @@ def _other_medium_item(key, pdir, med, plan):
     st = {}
     try:
         from bot import poetry_writer, prose_writer, script_writer
-        from bot import thesis_writer
+        from bot import thesis_writer, other_writer
         cls = {"script": script_writer.ScriptProject, "poetry": poetry_writer.PoetryProject,
-               "prose": prose_writer.ProseProject, "thesis": thesis_writer.ThesisProject}[med]
+               "prose": prose_writer.ProseProject, "thesis": thesis_writer.ThesisProject,
+               "other": other_writer.OtherProject}[med]
         st = cls(pdir, key).status() or {}
     except Exception:
         st = {}

@@ -1421,29 +1421,6 @@ async function rejectProposal(ctx, prop) {
 
 /* --------------------------------------------------------------- state */
 
-function entityGroup(title, iconName, items, renderRight) {
-  const wrap = h('div', { class: 'rp-section' });
-  wrap.append(sectionHead(title, String(items.length)));
-  const list = h('div', { class: 'entity-group' });
-  for (const item of items) {
-    list.append(
-      h(
-        'div',
-        { class: 'entity-row' },
-        h('span', { class: 'ent-icon', html: icon(iconName, 12) }),
-        h(
-          'span',
-          { class: 'ent-main' },
-          h('span', { class: 'ent-name', text: item.name || item.text || '' }),
-          h('span', { class: 'ent-sub', text: item.role || item.note || item.status || '' })
-        ),
-        renderRight ? renderRight(item) : null
-      )
-    );
-  }
-  wrap.append(list);
-  return wrap;
-}
 
 /* v2.5.0: 可点击的实体分组——每个实体行可点击展开详情弹窗 */
 function entityGroupClickable(title, iconName, items, renderRight, ctx, groupType) {

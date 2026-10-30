@@ -41,8 +41,8 @@ function docId(value) {
 
 function normalizeMedium(value) {
   const m = String(value == null ? '' : value).trim();
-  // v3.2.0：小说工作台也有对话改稿
-  return m === 'poetry' || m === 'prose' || m === 'novel' ? m : 'script';
+  // v3.2.0：小说工作台也有对话改稿；v4.13.0：轻文体直传，改稿留档进各自 .assist/
+  return ['poetry', 'prose', 'novel', 'children', 'news', 'copy', 'other'].includes(m) ? m : 'script';
 }
 
 /* 目标文案：剧本说「第 N 场」，诗词散文说文档名（定稿/草稿）。 */

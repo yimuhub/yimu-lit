@@ -21,7 +21,7 @@ from bot.safeio import atomic_write_text
 
 from . import llm, poetry_writer, prose_writer, script_writer
 
-MEDIA = ("script", "poetry", "prose", "novel", "thesis", "children", "news", "copy")   # v4.12.1：8 文体
+MEDIA = ("script", "poetry", "prose", "novel", "thesis", "children", "news", "copy", "other")   # v4.13.0：9 文体
 
 # 版本快照：剧本沿用 04-正文/.versions/第NNN场-时间.md，其余文体放作品根 .versions/
 VERSIONS_DIR = ".versions"
