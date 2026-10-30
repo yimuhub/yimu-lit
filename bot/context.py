@@ -490,6 +490,7 @@ def build_legacy(proj, ch, cfg=None) -> dict:
         "clue_ledger": _read(pdir, "10-线索账本.md"),
         "chapter_summaries": _read(pdir, "11-章节摘要.md"),
         "timeline": _read(pdir, "12-时间线与连续性.md"),
+        "covenant": _read(pdir, "13-一致性纲领.md"),   # v4.15.2：legacy 路径也注入一致性纲领
         "lore_relevant": "",
         "graph_ctx": {},
         "retrieval_ctx": [],

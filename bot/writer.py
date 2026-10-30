@@ -637,7 +637,8 @@ def queue_msg(key, text, immediate=False):
         if _has_pending and not p.running:
             plan["status"] = "in_progress"
             p.save_plan(plan)
-            start_writing(p)
+            # v4.15.2：尊重向导的批量写作设置（此前绕过 batch_size 直接全写）
+            start_writing(p, batch_size=((plan.get("config") or {}).get("batch_size")))
             p.log("▶ 检测到未完成章节，自动启动写作线程")
     except Exception:
         pass
@@ -2739,7 +2740,8 @@ def pick_title(key, title):
     if target != proj.path and not os.path.exists(target):
         os.rename(proj.path, target); proj.path = target
     plan["novelName"] = title; proj.save_plan({**plan, "meta": meta, "novelName": title})
-    start_writing(proj)
+    # v4.15.2：尊重批量写作设置
+    start_writing(proj, batch_size=((plan.get("config") or {}).get("batch_size")))
     return os.path.basename(proj.path)
 
 def _safe_dir_name(title):

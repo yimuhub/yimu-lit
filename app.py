@@ -1951,12 +1951,16 @@ def api_onboarding():
             for f in med_sections["basic"]:
                 if f.get("key") == "penname":
                     f["options"] = _pen_opts
-    # v4.13.0：注入每个文体的专属 Agent 词表（标签从 agents.AGENTS 取）
+    # v4.13.0：注入每个文体的专属 Agent 词表（标签从 agents.AGENTS 取）。
+    # v4.15.2 修复：原按 basic[0] 下标注入，笔名字段插入后踩空 → 改按 key 查找。
     from bot import agents as _ag
     for med, agent_names in medium_mod.MEDIUM_AGENTS_LABELS.items():
         _opts = [{"value": n, "label": _ag.AGENTS.get(n, {}).get("label", n)}
                  for n in agent_names]
-        _ONB["by_medium"][med]["basic"][0]["options"] = _opts
+        for _f in _ONB["by_medium"][med]["basic"]:
+            if _f.get("key") == "agents":
+                _f["options"] = _opts
+                break
     return _ONB
 
 def _plan_genre(proj):
