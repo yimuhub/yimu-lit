@@ -2868,7 +2868,12 @@ def api_export(key: str, fmt: str = "docx"):
                     for sc in export_mod.script_scenes(sproj)]
     if not chapters:
         return JSONResponse({"error": "还没有可导出的正文"}, status_code=400)
+    # v4.15.3：署名回退链 —— 作品 meta.author → 向导笔名（plan.config.penname）→ 全局默认笔名
     author = ((plan.get("meta") or {}).get("author") or "").strip()
+    if not author:
+        author = str(((plan.get("config") or {}).get("penname")) or "").strip()
+    if not author:
+        author = str((_load_pennames().get("default")) or "").strip()
 
     if fmt in ("md", "markdown"):
         data, media, ext = export_mod.markdown(proj).encode("utf-8"), "text/markdown; charset=utf-8", "md"

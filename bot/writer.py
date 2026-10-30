@@ -1771,8 +1771,12 @@ def _validate_and_finish(proj):
             parts.append(_clean_chapter_text(open(fp, encoding="utf-8").read()))
             total += ch.get("wordCount") or 0
     book_path = os.path.join(proj.path, f"成书-{plan['novelName']}.md")
+    # v4.15.3：成书署名——向导笔名（plan.config.penname）→ 作品 meta.author
+    _author = (str((plan.get("config") or {}).get("penname") or "").strip()
+               or str(((plan.get("meta") or {}).get("author")) or "").strip())
+    _byline = f"\n> 作者：{_author}" if _author else ""
     atomic_write_text(book_path,
-                      f"# {plan['novelName']}\n\n> 共 {len(plan['chapters'])} 章 · 约 {total} 字\n\n"
+                      f"# {plan['novelName']}\n\n> 共 {len(plan['chapters'])} 章 · 约 {total} 字{_byline}\n\n"
                       + "\n\n---\n\n".join(parts))
     plan["status"] = "completed"
     plan["totalWords"] = total
@@ -1996,27 +2000,16 @@ def save_schedules(d):
     atomic_write_json(SCHEDULES_FILE, d)
 
 def start_writing_batch(proj, limit):
-    """v0.3 P3：只写最多 limit 章（定时批次用），写完停在 in_progress，供下次续。默认并发受限。"""
-    if getattr(proj, "running", False):
+    """v0.3 P3：只写最多 limit 章（定时批次用），写完停在当前进度，供下次续。
+    v4.15.3：与 _write_loop 批量逻辑合并——委托 start_writing(batch_size=limit)，
+    复用规划重建 / 暂停 / 预算 / 防重入 / 收束等全部守卫，不再维护第二套循环。"""
+    if getattr(proj, "running", False) or _book_running(os.path.basename(proj.path)):
         return False
-    def _bl():
-        _sem = _write_semaphore(); _sem.acquire()
-        llm.book(os.path.basename(proj.path), "writing")   # v0.3.x：定时批次写稿 token 归集
-        try:
-            plan = proj.plan(); plan["status"] = "in_progress"; proj.save_plan(plan)
-            wrote = 0
-            for ch in plan["chapters"]:
-                if wrote >= limit:
-                    break
-                if ch["status"] != "completed":
-                    _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3); wrote += 1
-            proj.log(f"⏱ 定时批次：本次写 {wrote} 章（上限 {limit}），待续")
-        except Exception as e:
-            proj.log(f"💥 定时批次异常：{e}")
-        finally:
-            _sem.release(); proj.running = False
-    proj.running = True
-    threading.Thread(target=_bl, daemon=True).start()
+    try:
+        _limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        return False
+    start_writing(proj, batch_size=_limit)
     return True
 
 # ---------- 阶段0 中断续写检测 ----------

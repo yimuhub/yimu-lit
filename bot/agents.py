@@ -39,7 +39,6 @@ AGENTS = {
     "copy_writer":      {"label": "文案策划", "stage": "writing", "desc": "口播稿/种草笔记/营销框架"},
     "copy_reviewer":    {"label": "文案审核", "stage": "review",  "desc": "钩子效果/转化力/平台适配"},
     "other_planner":    {"label": "综合策划", "stage": "planning", "desc": "模板选择/结构设计/受众定位"},
-    "other_planner":    {"label": "综合策划", "stage": "planning", "desc": "模板选择/结构设计/受众定位"},
     "other_writer":     {"label": "综合写手", "stage": "writing", "desc": "剧本杀/播客/课程稿/演讲稿/拆书稿/影评"},
     "other_reviewer":   {"label": "综合审校", "stage": "review",  "desc": "模板规范核查/节奏与语感/定稿对账"},
 }
