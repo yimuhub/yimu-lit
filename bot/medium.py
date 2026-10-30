@@ -390,6 +390,8 @@ _NOVEL_SECTIONS = {
            hint="留空则由系统生成 8 个候选，创建后可随时换。"),
         _f("idea", "一句话简介", "textarea", rows=4, max_length=2000, required=True,
            hint="写清「谁 / 想要什么 / 被什么挡住」最容易得到可用的规划。"),
+        _f("sells", "核心卖点", "chips", options_from="sells", multi=True,
+           hint="决定正文爽点节拍（写进风格技能）；选 1-3 个最贴的。"),
         _f("scale", "规模", "scale", options=_NOVEL_SCALE, default="1m", required=True,
            custom_key="total_chapters", min=1, max=2000, unit="章",
            hint="章节数作为规划目标，写作过程中仍可扩展。"),
@@ -407,12 +409,9 @@ _NOVEL_SECTIONS = {
            hint="单章目标字数（写入 minWordsPerChapter）；网文通常 2000-4000。"),
     ],
     "style": [
-        _f("sells", "卖点", "chips", options_from="sells", multi=True,
-           hint="卖点写进风格技能，正文按这些爽点节拍安排冲突。"),
-        _f("style_preset", "风格预设", "chips", options_from="style_presets", default="",
-           hint="跟随题材表示按上面选定的题材自动取预设。"),
-        _f("style_preview", "本次生效", "preview",
-           hint="派生自题材与平台预设，只读；创建后仍可在作品规划里调整。"),
+        # v4.15.4：风格预设与第一步（题材/平台/基调）重复 → 降级为只读「文风预览」，不再手选
+        _f("style_preview", "文风预览", "preview",
+           hint="按第一步的题材与平台自动派生，只读；创建后仍可在作品规划里调整。"),
     ],
 }
 

@@ -4264,14 +4264,27 @@ def api_ai_generate(payload: dict):
         base += "。" + "，".join(extras)
 
     hint_p = f"\n用户已输入的线索（在此基础上发散，不要照抄）：{hint}" if hint.strip() else ""
-    # v4.15.1：随机种子（时间戳尾数 + 随机数），保证每次结果不同
-    import random, time
-    _seed = f"随机种子：{int(time.time())%100000}{random.randint(100,999)}"
+    # v4.15.4：结构化随机——每次从维度池抽 2-3 个硬约束，强制输出方向不同。
+    # 此前只拼一串数字种子，模型直接忽略 → 每次输出趋同。
+    import random
+    _DIMS = {
+        "主角身份": ["落魄的外卖员", "退休刑警", "天才少女", "中年下岗工人", "海归精英", "乡村教师",
+                  "夜班保安", "退役运动员", "小餐馆老板", "刚毕业的大学生", "单亲父亲", "直播主播"],
+        "时代背景": ["九十年代小城", "近未来都市", "民国老上海", "当代一线城市", "架空古代王朝",
+                  "末世废土", "深海科研站", "边陲小镇"],
+        "核心冲突": ["身份错位引发的连环误会", "亲情与利益的撕扯", "一段被掩埋的旧案",
+                  "阶层跃迁的代价", "信任崩塌与重建", "理想主义撞上现实规则"],
+        "情绪基调": ["冷峻克制", "温暖治愈", "荒诞幽默", "悲怆厚重", "轻快明亮", "悬疑紧张"],
+    }
+    _picked = random.sample(list(_DIMS.keys()), k=3)
+    _rand_block = "；".join(f"{k}必须围绕「{random.choice(_DIMS[k])}」展开" for k in _picked)
+    _seed = f"随机批次号：{random.randint(100000, 999999)}（同批次内容禁止重复）"
 
     out = llm.chat_json([{"role": "user", "content":
-        f"{base}。{hint_p}\n{_seed}（每次都要不同，不要重复）。\n"
+        f"{base}。{hint_p}\n"
+        f"硬性随机约束（必须严格围绕以下维度创作，每次都不同）：{_rand_block}。\n{_seed}\n"
         '输出 JSON：{"title":"标题/题目","idea":"一句话概念或方向(50-100字)"}。只输出 JSON。'}],
-        stage="planning")
+        stage="planning", temperature=1.0, use_cache=False)
     return {"ok": True, "title": (out or {}).get("title", ""), "idea": (out or {}).get("idea", "")}
 
 

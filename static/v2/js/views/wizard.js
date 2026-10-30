@@ -561,6 +561,28 @@ export function openWizard(ctx, preset = {}) {
     return row;
   }
 
+
+  /* v4.15.4：AI 生成依据 = 第一步（brief 组）已选参数 + 当前表单全部有效值。
+     此前只传 medium/field/hint，后端拿不到题材/基调/模式 → 输出千篇一律。 */
+  function aiGenParams(fieldKey) {
+    const v = values();
+    const params = { medium: model.medium, field: fieldKey, hint: v[fieldKey] || v.idea || v.title || '' };
+    for (const f of fieldsOf(model.medium, 'brief')) {
+      const val = v[f.key];
+      if (val === '' || val == null) continue;
+      if (Array.isArray(val) && !val.length) continue;
+      params[f.key] = val;
+    }
+    /* basic 组里的类型/平台/受众等关键参数也一并带上（children.ctype/news.ntype/copy.ktype/other.template/form 等） */
+    for (const f of fieldsOf(model.medium, 'basic')) {
+      if (f.key === fieldKey || f.key === 'title' || f.key === 'idea') continue;
+      const val = v[f.key];
+      if (val === '' || val == null) continue;
+      if (Array.isArray(val) && !val.length) continue;
+      params[f.key] = val;
+    }
+    return params;
+  }
   /* v4.12.1：AI 自动生成按钮——点击后根据文体和已有信息生成标题/方向 */
   function addAiGenerateBtn(pane, targetField) {
     const btn = h('button', {
@@ -573,8 +595,7 @@ export function openWizard(ctx, preset = {}) {
           const span = btn.querySelector('span');
           if (span) span.textContent = '生成中…';
           try {
-            const hint = values()[targetField] || values().idea || '';
-            const res = await api.aiGenerate({ medium: model.medium, field: targetField, hint });
+            const res = await api.aiGenerate(aiGenParams(targetField));
             if (targetField === 'title' && res.title) {
               model.values[model.medium].title = res.title;
             } else if (res.idea) {
@@ -616,8 +637,7 @@ export function openWizard(ctx, preset = {}) {
               const sp = btn.querySelector('span');
               if (sp) sp.textContent = '生成中…';
               try {
-                const hint = values().idea || values().title || '';
-                const res = await api.aiGenerate({ medium: model.medium, field: f.key, hint });
+                const res = await api.aiGenerate(aiGenParams(f.key));
                 if (f.key === 'title' && res.title) {
                   model.values[model.medium].title = res.title;
                 } else if (res.idea) {
