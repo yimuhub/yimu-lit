@@ -1,4 +1,4 @@
-"""小说技能运行时加载器（v1.0.0 · 神笔文学创作台）
+"""小说技能运行时加载器（v1.0.0 · 一幕·YIMU 一幕·YIMU 神笔文学创作台）
 
 v1.0 起小说技能位于 skillkit/novel/；本模块保留原有 API（skill_md / guide / template /
 genre / golden_rules / golden3 / anti_slop / check_words）供既有代码无感调用。
@@ -61,7 +61,7 @@ def flow(name):
 
 
 def template(name):
-    """ShenBi 结构模板：story-bible / clue-ledger / chapter-summary / timeline / revision-log。
+    """一幕·神笔 结构模板：story-bible / clue-ledger / chapter-summary / timeline / revision-log。
     缺失时返回空串（调用方做防御性处理，旧项目/未生成时不崩）。"""
     try:
         return read_file(f"references/templates/{name}.md")
@@ -70,7 +70,7 @@ def template(name):
 
 
 def golden_rules():
-    """三大黄金法则 / 七条创作底线（ShenBi 总纲）。按版本自适应取，取不到回落默认。"""
+    """三大黄金法则 / 七条创作底线（一幕·神笔 总纲）。按版本自适应取，取不到回落默认。"""
     txt = skill_md()
     for pat in (r"##\s*三大黄金法则\n(.*?)(?:\n##\s|\Z)",
                 r"##\s*七条创作底线\n(.*?)(?:\n##\s|\Z)",

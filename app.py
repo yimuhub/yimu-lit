@@ -1,4 +1,4 @@
-"""神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
+"""一幕·YIMU 一幕·YIMU 神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
 import json, os, re, shutil, threading, uuid, time, secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
@@ -47,7 +47,7 @@ async def _lifespan(_app):
     threading.Thread(target=_recover, daemon=True).start()
     yield
 
-app = FastAPI(title="神笔文学创作台", lifespan=_lifespan)
+app = FastAPI(title="一幕·YIMU 一幕·YIMU 神笔文学创作台", lifespan=_lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=security.trusted_hosts())
 
 @app.middleware("http")
@@ -1940,6 +1940,17 @@ def api_onboarding():
         "prose_genres": list(prose_writer.GENRES.items()),
         "prose_operations": list(prose_writer.OPERATIONS.items()),
     })
+    # v4.15.1：注入笔名选项（所有文体向导的 penname 字段用）
+    _pen = _load_pennames()
+    _pen_opts = [{"value": c.get("name", ""), "label": c.get("name", "")}
+                 for c in _pen.get("list", [])]
+    if _pen.get("default"):
+        _pen_opts.append({"value": "", "label": f"（默认：{_pen['default']}）"})
+    for med_sections in _ONB["by_medium"].values():
+        if med_sections.get("basic"):
+            for f in med_sections["basic"]:
+                if f.get("key") == "penname":
+                    f["options"] = _pen_opts
     # v4.13.0：注入每个文体的专属 Agent 词表（标签从 agents.AGENTS 取）
     from bot import agents as _ag
     for med, agent_names in medium_mod.MEDIUM_AGENTS_LABELS.items():
@@ -2140,6 +2151,75 @@ def api_settings_save(payload: dict):
         d["chat_auto_compress"] = bool(payload.get("chat_auto_compress"))
     atomic_write_json(cf, cfg)
     return api_settings()
+
+
+# v4.15.1：作者笔名管理（全局默认 + 多笔名 + 按文体默认笔名）
+_PENNAME_CFG_KEY = "pennames"
+
+
+def _load_pennames() -> dict:
+    cf = os.path.join(ROOT, "config.json")
+    try:
+        cfg = json.load(open(cf, encoding="utf-8")) if os.path.exists(cf) else {}
+    except Exception:
+        cfg = {}
+    d = cfg.setdefault(_PENNAME_CFG_KEY, {})
+    return {
+        "list": d.get("list") or [],
+        "default": d.get("default") or "",
+        "by_medium": d.get("by_medium") or {},
+    }
+
+
+def _save_pennames(pennames: dict) -> dict:
+    cf = os.path.join(ROOT, "config.json")
+    try:
+        cfg = json.load(open(cf, encoding="utf-8")) if os.path.exists(cf) else {}
+    except Exception:
+        cfg = {}
+    cfg.setdefault(_PENNAME_CFG_KEY, {}).update(pennames or {})
+    atomic_write_json(cf, cfg)
+    return _load_pennames()
+
+
+@app.post("/api/pennames/save")
+def api_pennames_save(payload: dict):
+    """保存笔名配置：{list:[{name,desc,medium_default?}], default: name}"""
+    list_raw = payload.get("list")
+    if not isinstance(list_raw, list):
+        return JSONResponse({"error": "list 必须是数组"}, status_code=400)
+    cleaned = []
+    for item in list_raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:40]
+        if not name:
+            continue
+        cleaned.append({"name": name, "desc": str(item.get("desc") or "").strip()[:200],
+                        "medium_default": str(item.get("medium_default") or "")})
+    default = str(payload.get("default") or "").strip()[:40]
+    # 默认笔名必须在列表内（或为空）
+    if default and not any(c["name"] == default for c in cleaned):
+        default = ""
+    saved = _save_pennames({"list": cleaned, "default": default})
+    return {"ok": True, **saved}
+
+
+@app.get("/api/pennames")
+def api_pennames():
+    """获取笔名配置：{list:[{name,desc,medium_default?}], default: name}"""
+    return _load_pennames()
+
+
+@app.post("/api/pennames/delete")
+def api_pennames_delete(payload: dict):
+    name = str(payload.get("name") or "").strip()
+    saved = _load_pennames()
+    saved["list"] = [c for c in saved["list"] if c.get("name") != name]
+    if saved.get("default") == name:
+        saved["default"] = saved["list"][0]["name"] if saved["list"] else ""
+    _save_pennames(saved)
+    return {"ok": True, **saved}
 
 @app.get("/api/titles")
 def api_titles(key: str):
@@ -3322,7 +3402,7 @@ def api_quality(key: str):
 async def api_version():
     return {"version": version.current()}
 
-# ---------- v1.0.0：文体路由 + 技能库（神笔文学创作台） ----------
+# ---------- v1.0.0：文体路由 + 技能库（一幕·YIMU 一幕·YIMU 神笔文学创作台） ----------
 
 @app.get("/api/mediums")
 async def api_mediums():
@@ -4088,24 +4168,99 @@ async def api_thesis_part(key: str, part: str = "final"):
 
 @app.post("/api/ai-generate")
 def api_ai_generate(payload: dict):
-    """v4.12.1：向导「AI 自动生成」按钮——根据文体和已有信息，生成标题或创作方向。"""
+    """v4.15.1：向导「AI 自动生成」——按体裁+模式+已选参数定制 prompt，随机种子保证每次不同。"""
     medium = str(payload.get("medium") or "novel")
     field = str(payload.get("field") or "title")   # title 或 idea
     hint = str(payload.get("hint") or "")           # 用户已输入的线索
-    prompts = {
-        "novel": "为一部网络小说起一个吸引人的书名和一句话故事概念",
-        "script": "为一部剧本起一个剧名和一句话故事概念",
-        "poetry": "为一首诗词起一个诗题和创作方向",
-        "prose": "为一篇散文起一个标题和写作方向",
-        "thesis": "为一篇学术论文起一个研究题目和研究方向",
-        "children": "为一篇儿童故事起一个标题和故事概念",
-        "news": "为一篇新闻稿起一个标题和核心事件概述",
-        "copy": "为一个产品/品牌起一个文案主题和创意方向",
+    # v4.15.1：从 payload 提取已选参数（题材/基调/视角/模式等），喂给 AI 定制生成
+    genre = str(payload.get("genre") or "")
+    tone = str(payload.get("tone") or "")
+    perspective = str(payload.get("perspective") or "")
+    mode = str(payload.get("mode") or "")
+    ctype = str(payload.get("ctype") or "")
+    ntype = str(payload.get("ntype") or "")
+    ktype = str(payload.get("ktype") or "")
+    template = str(payload.get("template") or "")
+    form = str(payload.get("form") or "")
+
+    # 每个文体专属的生成指令模板（比旧版更细，结合体裁+模式）
+    templates = {
+        "novel": {
+            "genre_map": {
+                "悬疑": "悬疑推理，节奏紧凑，层层剥茧",
+                "玄幻": "玄幻修真，宏大世界观，升级体系",
+                "言情": "都市言情，细腻情感，人物羁绊",
+                "科幻": "硬科幻设定，未来推演",
+                "历史": "历史架空，权谋博弈",
+                "都市": "都市生活，职场或情感",
+                "武侠": "武侠江湖，恩怨情仇",
+                "恐怖": "恐怖氛围，心理惊悚",
+            },
+            "gen": "为这部{genre_desc}小说起一个有辨识度的书名，并写一句话故事概念（谁/想要什么/被什么挡住）",
+        },
+        "script": {
+            "gen": "为这部{form_desc}剧本起一个剧名，并写一句话故事概念（核心冲突 + 视觉钩子）",
+            "form_map": {"film": "电影", "series": "剧集", "short_drama": "短剧", "animation": "动画"},
+        },
+        "poetry": {
+            "gen": "为这首诗词起一个诗题，并写创作方向（意象 + 情感基调 + 韵脚建议）",
+        },
+        "prose": {
+            "gen": "为这篇散文起一个标题，并写写作方向（核心意象 + 文体风格 + 篇幅建议）",
+        },
+        "thesis": {
+            "gen": "为这篇论文起一个研究题目，并写研究方向（研究问题 + 方法 + 预期贡献）",
+        },
+        "children": {
+            "gen": "为这篇{ctype}起一个标题，并写故事概念（主角 + 核心冲突 + 教育意义）",
+            "ctype_map": {"fable": "寓言故事", "picture": "绘本故事", "scifi": "儿童科幻", "science": "科学故事", "bedtime": "睡前故事"},
+        },
+        "news": {
+            "gen": "为这篇{ntype}起一个标题，并写核心事件概述（5W1H 精简版）",
+            "ntype_map": {"product": "产品发布", "official": "官方公告", "event": "活动通稿", "corporate": "企业动态"},
+        },
+        "copy": {
+            "gen": "为这个{ktype}起一个主题，并写创意方向（钩子 + 卖点 + 受众）",
+            "ktype_map": {"voice": "口播稿", "planting": "种草笔记", "promo": "宣传文案", "marketing": "营销长文"},
+        },
+        "other": {
+            "gen": "为这个{template}起一个标题，并写内容概要（核心主题 + 结构方向）",
+            "template_map": {"script_kill": "剧本杀", "podcast": "播客脚本", "course": "课程稿", "speech": "演讲稿", "book_review": "拆书稿", "review": "影评"},
+        },
     }
-    base = prompts.get(medium, prompts["novel"])
+
+    tpl = templates.get(medium, templates["novel"])
+    base = tpl["gen"]
+
+    # 替换模板中的占位符
+    if medium == "novel":
+        base = base.replace("{genre_desc}", tpl["genre_map"].get(genre, "网络"))
+    elif medium == "script":
+        base = base.replace("{form_desc}", tpl["form_map"].get(form, "影视剧本"))
+    elif medium == "children":
+        base = base.replace("{ctype}", tpl["ctype_map"].get(ctype, "儿童故事"))
+    elif medium == "news":
+        base = base.replace("{ntype}", tpl["ntype_map"].get(ntype, "新闻稿"))
+    elif medium == "copy":
+        base = base.replace("{ktype}", tpl["ktype_map"].get(ktype, "文案"))
+    elif medium == "other":
+        base = base.replace("{template}", tpl["template_map"].get(template, "其他内容"))
+
+    # 已选参数附加到 prompt（不传时 AI 会自由发挥）
+    extras = []
+    if tone: extras.append(f"基调：{tone}")
+    if perspective: extras.append(f"视角：{perspective}")
+    if mode: extras.append(f"创作模式：{mode}")
+    if extras:
+        base += "。" + "，".join(extras)
+
     hint_p = f"\n用户已输入的线索（在此基础上发散，不要照抄）：{hint}" if hint.strip() else ""
+    # v4.15.1：随机种子（时间戳尾数 + 随机数），保证每次结果不同
+    import random, time
+    _seed = f"随机种子：{int(time.time())%100000}{random.randint(100,999)}"
+
     out = llm.chat_json([{"role": "user", "content":
-        f"{base}。随机生成一个有创意的结果（每次不同）。{hint_p}\n"
+        f"{base}。{hint_p}\n{_seed}（每次都要不同，不要重复）。\n"
         '输出 JSON：{"title":"标题/题目","idea":"一句话概念或方向(50-100字)"}。只输出 JSON。'}],
         stage="planning")
     return {"ok": True, "title": (out or {}).get("title", ""), "idea": (out or {}).get("idea", "")}

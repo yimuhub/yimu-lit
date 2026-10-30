@@ -1,4 +1,4 @@
-"""文体注册表（v1.0.0 · 神笔文学创作台）
+"""文体注册表（v1.0.0 · 一幕·YIMU 一幕·YIMU 神笔文学创作台）
 
 一个「文体」= 一张阶段表 + 一组评估维度 + 一套目录规范 + 一组角色。
 这里定义全部四类文体的元数据，供 skillkit 注入、流水线调度、前端分流共用。
@@ -388,7 +388,7 @@ _NOVEL_SECTIONS = {
 
         _f("title", "书名", "text", max_length=40,
            hint="留空则由系统生成 8 个候选，创建后可随时换。"),
-        _f("idea", "一句话 premise", "textarea", rows=4, max_length=2000, required=True,
+        _f("idea", "一句话简介", "textarea", rows=4, max_length=2000, required=True,
            hint="写清「谁 / 想要什么 / 被什么挡住」最容易得到可用的规划。"),
         _f("scale", "规模", "scale", options=_NOVEL_SCALE, default="1m", required=True,
            custom_key="total_chapters", min=1, max=2000, unit="章",
@@ -752,6 +752,10 @@ def _copy_sections(medium: str) -> dict:
                    for f in src.get(group, [])]
            for group in ("brief", "basic", "style")}
     out["style_title"] = src.get("style_title", "")
+    # v4.15.1：所有文体加作者笔名选择（选全局默认 / 按文体默认 / 自定义）
+    out["basic"].insert(0, _f("penname", "作者笔名", "select", options_from="pennames",
+                               default="",
+                               hint="从设置中的笔名列表选择，或留空用全局默认。"))
     return out
 
 

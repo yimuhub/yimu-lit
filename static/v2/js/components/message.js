@@ -207,7 +207,7 @@ export function renderAssistantMessage(msg, handlers = {}) {
   const main = h('div', { class: 'msg-main' });
 
   const head = h('div', { class: 'msg-head' });
-  head.append(h('span', { class: 'msg-author', text: '神笔' }));
+  head.append(h('span', { class: 'msg-author', text: '一幕·YIMU 神笔' }));
   if (msg.created_at) head.append(h('span', { class: 'msg-time', text: relTime(msg.created_at) }));
   if (msg.tag) head.append(h('span', { class: 'msg-tag', text: msg.tag }));
   if (msg.streaming) {

@@ -141,7 +141,7 @@ export async function request(path, opts = {}) {
         { code: timedOut ? 'timeout' : 'aborted' }
       );
     }
-    throw new ApiError('无法连接本地服务：请确认神笔正在运行，并从 http://127.0.0.1 打开', {
+    throw new ApiError('无法连接本地服务：请确认一幕·YIMU 神笔正在运行，并从 http://127.0.0.1 打开', {
       code: 'network'
     });
   } finally {
@@ -348,6 +348,9 @@ export const api = {
 
   settings: () => request('/api/settings'),
   saveSettings: (payload) => request('/api/settings', jsonBody(payload)),
+  pennames: () => request('/api/pennames'),
+  pennamesSave: (payload) => request('/api/pennames/save', jsonBody(payload)),
+  pennamesDelete: (payload) => request('/api/pennames/delete', jsonBody(payload)),
   usage: (key = '') => request('/api/usage', { query: { key } }),
   llmCalls: (limit = 50) => request('/api/llm-calls', { query: { limit } }),
 

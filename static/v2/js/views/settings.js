@@ -31,6 +31,7 @@ const GROUPS = [
   { key: 'agents', label: '创作岗位', icon: 'layers', desc: '岗位 × 模型 × 技能' },
   { key: 'chat', label: '对话与上下文', icon: 'message', desc: '会话留档与压缩' },
   { key: 'skills', label: '技能与数据', icon: 'sparkles', desc: '进化与本地数据' },
+  { key: 'pennames', label: '作者笔名', icon: 'user', desc: '全局默认 · 多笔名 · 按文体默认' },
   { key: 'advanced', label: '高级', icon: 'sliders', desc: '经典版等' }
 ];
 
@@ -62,6 +63,7 @@ export function renderSettings(container, ctx) {
     providers: null,
     providerError: '',
     collab: null,
+    pennames: null,
     collabError: '',
     collabSaving: false,
     dirty: false,
@@ -378,7 +380,7 @@ export function renderSettings(container, ctx) {
           { class: 'empty-state set-empty' },
           h('div', { class: 'empty-icon', html: icon('plug', 18) }),
           h('h3', { text: '还没有模型供应商' }),
-          h('p', { text: '添加 OpenAI 兼容接口（DeepSeek / Kimi / 本地 Ollama 都可以），神笔才能开始写作。' }),
+          h('p', { text: '添加 OpenAI 兼容接口（DeepSeek / Kimi / 本地 Ollama 都可以），一幕·YIMU 神笔才能开始写作。' }),
           h('button', { class: 'btn btn-sm', type: 'button', text: '添加供应商', on: { click: () => providerDialog(null) } })
         )
       );
@@ -1083,6 +1085,122 @@ export function renderSettings(container, ctx) {
   );
 
   /* ----------------------------------------------------------- 高级 */
+
+  /* ----------------------------------------------------------- 作者笔名 */
+
+  const penBody = h('div', {});
+  panes.pennames.append(penBody);
+
+  function paintPennames() {
+    penBody.textContent = '';
+    if (!model.pennames) {
+      penBody.append(errorRow('笔名数据加载失败', loadPennames));
+      return;
+    }
+    const pn = model.pennames;
+    const list = pn.list || [];
+    const defaultName = pn.default || '';
+
+    // 默认笔名选择
+    const defaultRow = h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '全局默认笔名' }),
+        h('div', { class: 'set-row-desc', text: '新建作品时默认使用的作者名；可在每个向导里单独选择其他笔名。' })
+      ),
+      h('select', { class: 'set-select', on: {
+        change: async (e) => {
+          const val = e.target.value;
+          try {
+            await api.pennamesSave({ list, default: val });
+            await loadPennames();
+          } catch (err) { toast(errorText(err, '保存失败'), { tone: 'danger' }); }
+        }
+      } },
+        h('option', { value: '', text: '（未设置）' }),
+        ...list.map(c => h('option', {
+          value: c.name, selected: c.name === defaultName,
+          text: c.name + (c.desc ? `（${c.desc}）` : '')
+        }))
+      )
+    );
+    penBody.append(defaultRow);
+
+    // 笔名列表
+    penBody.append(h('div', { class: 'set-group-subhead', text: '笔名列表' }));
+    const listWrap = h('div', { class: 'set-list' });
+    if (!list.length) {
+      listWrap.append(h('div', { class: 'hint-text', text: '还没有笔名。点击下方按钮添加。' }));
+    }
+    for (const c of list) {
+      const row = h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: c.name + (c.name === defaultName ? '  ★默认' : '') }),
+          h('div', { class: 'set-row-desc', text: c.desc || '（无描述）' })
+        ),
+        h('div', { class: 'set-control' },
+          h('button', { class: 'btn btn-sm btn-danger', type: 'button', text: '删除', on: {
+            click: async () => {
+              try {
+                await api.pennamesDelete({ name: c.name });
+                await loadPennames();
+              } catch (err) { toast(errorText(err, '删除失败'), { tone: 'danger' }); }
+            }
+          } })
+        )
+      );
+      listWrap.append(row);
+    }
+    penBody.append(listWrap);
+
+    // 添加笔名
+    const addRow = h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '添加笔名' }),
+        h('div', { class: 'set-row-desc', text: '可为不同文体风格设置不同笔名，向导中会以备选出现。' })
+      ),
+      h('div', { class: 'set-control' },
+        h('button', { class: 'btn btn-sm btn-accent', type: 'button', text: '添加笔名', on: {
+          click: () => openAddPennameDialog()
+        } })
+      )
+    );
+    penBody.append(addRow);
+  }
+
+  function openAddPennameDialog() {
+    const nameInput = h('input', { class: 'set-input', placeholder: '笔名（必填）' });
+    const descInput = h('input', { class: 'set-input', placeholder: '描述（选填）' });
+    const body = h('div', { class: 'wiz-grid' },
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '笔名' }), nameInput),
+      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '描述' }), descInput)
+    );
+    const footer = h('div', { class: 'set-actions' },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+      h('button', { class: 'btn btn-primary', type: 'button', text: '添加', on: {
+        click: async () => {
+          const name = nameInput.value.trim();
+          if (!name) { toast('笔名不能为空', { tone: 'danger' }); return; }
+          const newList = [...(model.pennames.list || []), { name, desc: descInput.value.trim() }];
+          try {
+            await api.pennamesSave({ list: newList, default: model.pennames.default || '' });
+            await loadPennames();
+            modal.close();
+          } catch (err) { toast(errorText(err, '添加失败'), { tone: 'danger' }); }
+        }
+      } })
+    );
+    const modal = openModal({ title: '添加作者笔名', body, footer, size: 'sm' });
+  }
+
+  async function loadPennames() {
+    try {
+      model.pennames = await api.pennames();
+      paintPennames();
+    } catch (err) {
+      model.pennames = null;
+      paintPennames();
+    }
+  }
 
   const advBody = h('div', {});
   panes.advanced.append(advBody);

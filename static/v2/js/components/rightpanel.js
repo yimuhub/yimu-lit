@@ -1162,7 +1162,7 @@ function planPane(ctx) {
   );
   pane.append(head);
 
-  if (plan.premise) pane.append(h('div', { class: 'plan-digest', text: plan.premise }));
+  if (plan.简介) pane.append(h('div', { class: 'plan-digest', text: plan.简介 }));
   if (payload.digest && payload.digest.summary) {
     pane.append(h('div', { class: 'plan-digest', text: payload.digest.summary }));
   }

@@ -278,7 +278,7 @@ def _plan_references(proj=None, cfg=None, limit=8):
 
 def create_project(cfg, titles, pdir=None, name=None):
     """生成项目目录 + 00人物/01大纲/03文风 + 02-写作计划.json（按选定标题命名）
-    ShenBi：另生成 09故事圣经/10线索账本/11章节摘要/12时间线（可配 v3_pipeline 关）。
+    一幕·神笔：另生成 09故事圣经/10线索账本/11章节摘要/12时间线（可配 v3_pipeline 关）。
 
     pdir 由调用方传入时（例如 /api/create 的骨架目录），规划结果写回同一个目录，
     避免“接口返回 key A、后台却创建目录 B”的双项目问题。
@@ -338,6 +338,30 @@ def create_project(cfg, titles, pdir=None, name=None):
             _write_cfg_text(pdir, "12-时间线与连续性.md", "# 时间线与连续性\n\n" + workflow.gen_timeline(cfg, outline))
         except Exception as e:
             proj.log(f"⚠️ 时间线生成失败（跳过）：{e}")
+        # v4.15.1：一致性纲领（所有写作 Agent 必须遵守的硬规则）
+        covenant = ("# 一致性纲领（所有写作 Agent 必须遵守）\n\n"
+                    "## 一、人物一致性\n"
+                    "1. 每个角色的姓名、身份、性格、动机、关系必须在全书保持一致；不得随意更改。\n"
+                    "2. 角色的成长弧线必须连贯：不能前一章胆小、后一章突然勇敢且无铺垫。\n"
+                    "3. 角色死亡后不得复活（除非明确设定为复活机制）。\n"
+                    "4. 新角色必须在首次出场前于大纲或章节摘要中有铺垫。\n\n"
+                    "## 二、事件一致性\n"
+                    "1. 已发生的重大事件不可被忽略或改写（除非明确设定为幻觉/梦境/时间线重构）。\n"
+                    "2. 伏笔必须呼应：埋下的线索必须在后续章节中回收，或明确标注为开放式结局。\n"
+                    "3. 时间线必须连贯：不能出现「第10章是冬天、第15章还是冬天但中间无过渡」。\n"
+                    "4. 因果关系必须成立：每个关键转折必须有动机与代价。\n\n"
+                    "## 三、世界观一致性\n"
+                    "1. 已确立的世界观规则不可违反（如「这个世界没有魔法」就不能突然冒出法术）。\n"
+                    "2. 科技/魔法/社会制度等设定必须前后一致，新设定需要铺垫。\n\n"
+                    "## 四、风格一致性\n"
+                    "1. 叙述视角必须在全书保持一致（第一人称不能突然跳到第三人称）。\n"
+                    "2. 文风基调必须稳定：不能前一章冷硬、后一章抒情。\n"
+                    "3. 术语/称谓必须统一：同一角色不能有时叫「老张」有时叫「张先生」。\n\n"
+                    "## 五、跨 Agent 续写要求\n"
+                    "1. 任何写作 Agent 在开写前必须先读：02b-总架构.json + 13-一致性纲领.md + 12-时间线与连续性.md + 最近3章正文。\n"
+                    "2. 写完一章后必须更新 11-章节摘要.jsonl 和 12-时间线与连续性.md。\n"
+                    "3. 如果发现与已写内容冲突，必须停下来对齐，而不是硬写下去。")
+        _write_cfg_text(pdir, "13-一致性纲领.md", covenant)
         _write_cfg_text(pdir, "11-章节摘要.md",
                         "# 章节摘要\n\n> 每章写后更新：发生了什么 / 选择与代价 / 线索状态 / 时间线 / 未解决连贯性问题。\n")
     # P5：构建故事图谱（15-故事图谱.json），可配 p5_pipeline 关
@@ -1102,7 +1126,7 @@ def _gen_milestone_titles(proj, plan, cfg):
         outline = ""
     digests = _recent_chapter_digests(proj)
     sys_p = (
-        "你是「一幕·神笔」的书名策划。这本书已在连载，请基于【已实际成稿】的内容（不是仅凭初始设定），"
+        "你是「一幕·一幕·YIMU 神笔」的书名策划。这本书已在连载，请基于【已实际成稿】的内容（不是仅凭初始设定），"
         "再想 3 个更贴合已成稿卖点/爽点、更能抓住读者的书名。每个书名注明所用技巧与一句话理由。"
         '严格输出 JSON：{"titles":[{"title":..,"technique":..,"why":..}]}。只输出 JSON。')
     user_p = (
@@ -1865,7 +1889,7 @@ def _write_quality_report(proj, l1, review, total, mode, fixed, pass_line, reade
     elif _cfg_defaults().get("reader_panel"):
         body += "\n## P5 读者人格 beta 读\n- （本次未产生数据）\n"
     atomic_write_text(os.path.join(proj.path, "14-质量报告.md"),
-                      body + "\n_模板：quality-report（一幕·神笔 · ShenBi NovelCraft）。_")
+                      body + "\n_模板：quality-report（一幕·一幕·YIMU 神笔 · 一幕·神笔 NovelCraft）。_")
 
 def validate_project(proj, mode="report", max_rounds=2):
     """端点用：对已完成/任意项目按需跑分层审稿（report 或 autofix），返回 JSON 摘要。"""
@@ -2514,9 +2538,9 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
     _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
     plan = proj.plan()
-    _book_skills_into(cfg, plan)   # v3.0.0：本书绑定
     cfg = dict((plan.get("config") or {}))
     cfg.update(cfg_over or {})
+    _book_skills_into(cfg, plan)   # v3.0.0：本书绑定
     brief = rewrite_brief(proj, cfg)
     targets = chapters or _top_targets(brief, int(_cfg_defaults().get("max_rewrite_rounds", max_rounds)))
     chmap = {c["chapterNumber"]: c for c in plan.get("chapters", [])}
@@ -2641,7 +2665,7 @@ def run_release_gate(key, cfg_over=None):
     """放行门禁：循环「重评→未达标则带要求书定向重写→再评」，直到 ≥pass_line 或到轮数上限。写 02.meta + 14 放行判定。"""
     proj = Project(_project_dir(key), key)
     llm.book(key, "gate")               # v0.3.x：门禁重写 token 归集
-    plan = proj.plan()
+    plan = proj.plan() or {}
     cfg = dict(plan.get("config") or {}); cfg.update(cfg_over or {})
     d = _cfg_defaults(); pl = _pass_line()
     rounds = int(d.get("max_release_rounds", 3))

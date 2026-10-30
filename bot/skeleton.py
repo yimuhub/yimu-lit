@@ -125,7 +125,7 @@ def build(key, stamp=True):
 
     # ① 状态 & 进度
     L = ["# 🦴 写作骨架 · 《%s》" % name, ""]
-    L += ["> 自动聚合（一幕·神笔 · ShenBi NovelCraft）：写到哪 / 写了多少 / 本次重点 / 为什么这么写 / 续写提示。",
+    L += ["> 自动聚合（一幕·一幕·YIMU 神笔 · 一幕·神笔 NovelCraft）：写到哪 / 写了多少 / 本次重点 / 为什么这么写 / 续写提示。",
           "> Agent 续写或改写前，先读本文件快速对齐总体状态（比通读全书快、也更容易保持一致）。",
           f"_状态：{li.get('status_label','?')} · 更新：{now}_", ""]
     L += ["## ① 状态 & 进度",
@@ -214,7 +214,7 @@ def build(key, stamp=True):
         L.append(f"- **保持世界观/人物一致**：{_plain(world, 240)}")
     L.append("- **别破坏已兑现的伏笔 / 已定的人物弧线**；改写前先读 09 故事圣经 + 02b 总架构对齐。")
     L.append("")
-    L.append("_（本文件由一幕·神笔自动生成，改写完会自动刷新；人可读，也可直接粘贴给 LLM 作为总体状态上下文。）_")
+    L.append("_（本文件由一幕·一幕·YIMU 神笔自动生成，改写完会自动刷新；人可读，也可直接粘贴给 LLM 作为总体状态上下文。）_")
 
     out = os.path.join(pdir, SKELETON)
     atomic_write_text(out, "\n".join(L) + "\n")

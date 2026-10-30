@@ -679,8 +679,8 @@ function renderView(route) {
   const title =
     route.name === 'work' || route.name === 'bench'
       ? (state.work && state.work.name) || (item && item.name) || '作品'
-      : { welcome: '新会话', library: '作品库', skills: '技能库', evolution: '技能进化', settings: '设置' }[route.name] || '神笔';
-  document.title = `${title} · 神笔创作台`;
+      : { welcome: '新会话', library: '作品库', skills: '技能库', evolution: '技能进化', settings: '设置' }[route.name] || '一幕·YIMU 神笔';
+  document.title = `${title} · 一幕·YIMU 一幕·YIMU 神笔创作台`;
 }
 
 /* 冷启动深链只带 key，文体要问一次后端；这期间先占位，避免把剧本当小说渲染。 */

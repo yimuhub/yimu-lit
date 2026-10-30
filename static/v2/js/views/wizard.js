@@ -76,7 +76,7 @@ function localSchema(medium) {
     ],
     basic: [
       { key: 'title', label: '书名', type: 'text', max_length: 40 },
-      { key: 'idea', label: '一句话 premise', type: 'textarea', rows: 4, required: true },
+      { key: 'idea', label: '一句话简介', type: 'textarea', rows: 4, required: true },
       { key: 'scale', label: '规模', type: 'scale', default: '1m', custom_key: 'total_chapters',
         min: 1, max: 2000, unit: '章',
         options: SCALE_OPTIONS.map((s) => ({ value: s.value, label: s.label, desc: s.desc, fill: s.chapters })) }
@@ -303,7 +303,7 @@ export function openWizard(ctx, preset = {}) {
 
   const modal = openModal({
     title: '新建作品',
-    subtitle: '先对齐体裁与规模，再把参考与文风交给神笔。创建后可以随时调整规划。',
+    subtitle: '先对齐体裁与规模，再把参考与文风交给一幕·YIMU 神笔。创建后可以随时调整规划。',
     body,
     footer,
     size: 'lg',
@@ -349,7 +349,10 @@ export function openWizard(ctx, preset = {}) {
         return previewControl();
       case 'select': {
         const sel = h('select', { class: 'select', 'aria-label': fieldDef.label });
-        if (!fieldDef.required) sel.append(h('option', { value: '', text: `不限${fieldDef.label}` }));
+        if (!fieldDef.required) {
+          const emptyLabel = fieldDef.key === 'penname' ? '（用全局默认）' : `不限${fieldDef.label}`;
+          sel.append(h('option', { value: '', text: emptyLabel }));
+        }
         for (const o of optionsOf(fieldDef)) {
           sel.append(h('option', { value: String(o.value), text: o.label, selected: sameToken(v[fieldDef.key], o.value) }));
         }

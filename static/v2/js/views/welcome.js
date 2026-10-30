@@ -41,7 +41,7 @@ export function renderWelcome(container, ctx) {
     h('h1', { class: 'hero-title', text: '把念头，写成故事' }),
     h('p', {
       class: 'hero-sub',
-      text: '神笔会记住人物、伏笔与你的文风。先聊清楚方向，再一章一章往前写。'
+      text: '一幕·YIMU 神笔会记住人物、伏笔与你的文风。先聊清楚方向，再一章一章往前写。'
     })
   );
   inner.append(hero);

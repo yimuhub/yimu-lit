@@ -47,7 +47,7 @@ function stageStates(stage) {
 
 function buildProcess(state) {
   return {
-    title: '神笔 · 本轮处理',
+    title: '一幕·YIMU 神笔 · 本轮处理',
     stage: '准备中',
     model: modelName(state),
     steps: STEPS.map((step, index) => ({
@@ -322,7 +322,7 @@ export function renderSession(container, ctx = {}) {
         id: pending.id,
         proposal_id: pending.id,
         title: `规划提案：${title.slice(0, 42)}`,
-        reason: reason || '神笔建议调整后续几章的规划安排。',
+        reason: reason || '一幕·YIMU 神笔建议调整后续几章的规划安排。',
         scope
       }
     });

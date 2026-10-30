@@ -32,7 +32,7 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
   const textarea = h('textarea', {
     class: 'composer-input',
     rows: 1,
-    'aria-label': '给神笔发消息',
+    'aria-label': '给一幕·YIMU 神笔发消息',
     placeholder: placeholder || '描述你想写的故事，或直接说「继续第 47 章」…'
   });
   const inputWrap = h('div', { class: 'grow-wrap' }, textarea);

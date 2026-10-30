@@ -1,4 +1,4 @@
-"""创作工作流：「一幕·神笔」创作系统四阶段落地
+"""创作工作流：「一幕·一幕·YIMU 神笔」创作系统四阶段落地
 阶段0 偏好加载 / 阶段1 三层问答(快车道) / 阶段2 规划 / 阶段3 逐章创作 / 阶段4 校验
 """
 import json, os, re, datetime
@@ -29,7 +29,7 @@ def save_prefs(p):
 def extract_config(user_text, cfg=None):
     prefs = load_prefs()
     sys_p = (
-        "你是 「一幕·神笔」创作系统的创作策划。从用户的一句话主题里提取小说配置，严格输出 JSON，键：\n"
+        "你是 「一幕·一幕·YIMU 神笔」创作系统的创作策划。从用户的一句话主题里提取小说配置，严格输出 JSON，键：\n"
         "genre(题材)、idea(创意概要≤60字)、protagonist_type(男/女/双/群像)、protagonist(职业身份+核心性格≤30字)、"
         "conflict(核心冲突)、drive(主角驱动力)、worldview(世界观，主题没提就填\"\"）、"
         "perspective(叙事视角，没提填\"\"）、tone(基调，没提填\"\"）、theme(核心主题，没提填\"\"）、"
@@ -101,7 +101,7 @@ def agent_skills_block(agent, cfg, stage, max_bytes=6000):
 
 def gen_characters(cfg):
     sys_p = (
-        "你是小说人物设计师，执行 「一幕·神笔」创作系统的 00-人物档案 生成。"
+        "你是小说人物设计师，执行 「一幕·一幕·YIMU 神笔」创作系统的 00-人物档案 生成。"
         "使用技能的 character-template.md 模板结构，参考 character-building.md 方法论：\n"
         "人物档案必须详细到可以直接指导写作：每个角色的性格核心、致命缺陷、说话风格/口头禅、恐惧/弱项、背景故事都要具体。\n"
         "只输出 markdown 档案正文（主角1-2名、反派1名、配角2-4名）。"
@@ -114,7 +114,7 @@ def gen_characters(cfg):
 
 def gen_outline(cfg):
     sys_p = (
-        "你是小说架构师，执行 「一幕·神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
+        "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
         "参考 plot-structures.md 选一种经典结构。大纲必须人物驱动、冲突递进、每章有钩子。\n"
         "输出 markdown，必须包含：## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|悬念钩子|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
         "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
@@ -130,7 +130,7 @@ def gen_outline(cfg):
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
 def gen_style(cfg):
-    sys_p = ("你执行 「一幕·神笔」创作系统的 03-文风基准 生成，包含四部分：\n"
+    sys_p = ("你执行 「一幕·一幕·YIMU 神笔」创作系统的 03-文风基准 生成，包含四部分：\n"
              "## 文风指纹（对话占比目标35%-45%、句子节奏、段落呼吸、叙述距离、描写倾向，依据配置的基调/读者生成）\n"
              "## 基准段落（2段共600-1000字的正文范例，直接写出，体现目标文风）\n"
              "## 负面清单（引用 chapter-guide.md 的「AI 写作痕迹清除」条目）\n"
@@ -143,7 +143,7 @@ def gen_style(cfg):
 def gen_titles(cfg, n=3):
     medium = str(cfg.get("medium") or "novel")
     _kind = {"novel": "小说书名", "script": "剧名", "poetry": "诗题/词题", "prose": "散文标题"}.get(medium, "小说书名")
-    sys_p = (f"执行 「一幕·神笔」创作系统的标题生成：参考 title-guide.md，基于故事元素生成 {n} 个候选{_kind}，"
+    sys_p = (f"执行 「一幕·一幕·YIMU 神笔」创作系统的标题生成：参考 title-guide.md，基于故事元素生成 {n} 个候选{_kind}，"
              "每个使用不同的创作技巧，附一句话说明。输出 JSON：{\"titles\":[{\"title\":..,\"technique\":..,\"why\":..}]}")
     user_p = (f"故事元素：{json.dumps({k: cfg.get(k) for k in ('genre','idea','conflict','protagonist','theme','tone')}, ensure_ascii=False)}\n"
               f"【标题技巧摘录】\n{skill.guide('title-guide')[:2500]}")
@@ -153,11 +153,11 @@ def gen_titles(cfg, n=3):
 # ---------- 阶段3：逐章创作 ----------
 
 def _writing_system(ctx):
-    """写作系统提示：「一幕·神笔」原创创作系统（运行时读内置 skill/ 文件）"""
+    """写作系统提示：「一幕·一幕·YIMU 神笔」原创创作系统（运行时读内置 skill/ 文件）"""
     cfg = ctx.get("cfg") or {}
     no = ctx.get("chapter_no") or 0
     parts = [
-        "你是「一幕·神笔 · ShenBi NovelCraft」原创创作系统的资深中文网文作者，目标是写出能上排行榜前列的长篇。",
+        "你是「一幕·一幕·YIMU 神笔 · 一幕·神笔 NovelCraft」原创创作系统的资深中文网文作者，目标是写出能上排行榜前列的长篇。",
         "三大黄金法则 + 七条创作底线：\n" + skill.golden_rules(),
         f"【题材 craft（{cfg.get('genre','') or '通用'}）】\n" + skill.genre(_craft_genre(cfg))[:900],
         "【章纲写作规范】\n" + skill.guide("chapter-guide")[:2500],
@@ -349,7 +349,7 @@ def outline_chapter_row(outline_md, no):
 
 def gen_story_bible(cfg):
     """故事圣经：全书唯一事实来源（引擎/承诺/主题/世界规则/视角底线/主线结局/设定词典）。"""
-    sys_p = ("执行 「一幕·神笔」的『故事圣经』：建立全书唯一事实来源。用 story-bible 模板，"
+    sys_p = ("执行 「一幕·一幕·YIMU 神笔」的『故事圣经』：建立全书唯一事实来源。用 story-bible 模板，"
              "填写 故事引擎(一句话) / 故事承诺(题材·卖点·情绪·兑现方式) / 主题 / 世界规则与系统边界 / "
              "叙事视角与风格底线 / 总主线与结局方向 / 设定词典。内容须具体可执行，能直接指导后续写作与校验。"
              "只输出 markdown 正文。")
@@ -360,7 +360,7 @@ def gen_story_bible(cfg):
 
 def gen_clue_ledger(cfg, outline_md):
     """线索账本：从大纲提取重要悬念/伏笔，登记为可追踪表（含真实答案与兑现计划）。"""
-    sys_p = ("执行 ShenBi『线索账本』：从大纲中提取所有服务主线的悬念/伏笔，登记为线索表"
+    sys_p = ("执行 一幕·神笔『线索账本』：从大纲中提取所有服务主线的悬念/伏笔，登记为线索表"
              "（线索ID/首次出现/初始表象/真实含义/可推理证据/误导方式/计划兑现/状态）。"
              "只登记真正重要的线索（控制 3-8 条），每条都要有明确兑现计划与作者掌握的真实答案。"
              "只输出 markdown 表 + 简短纪律说明。")
@@ -371,7 +371,7 @@ def gen_clue_ledger(cfg, outline_md):
 
 def gen_timeline(cfg, outline_md):
     """时间线与连续性：全书事件时间线 + 连续性核对清单（每章写前必查）。"""
-    sys_p = ("执行 ShenBi『时间线与连续性』：建立全书事件时间线（章节/时间/地点/事件/持续/先后）与"
+    sys_p = ("执行 一幕·神笔『时间线与连续性』：建立全书事件时间线（章节/时间/地点/事件/持续/先后）与"
              "连续性核对清单（人物身份·知情范围·伤势·物品·世界规则·后果）。用于每章写前核对前后一致。"
              "只输出 markdown。")
     user_p = (f"小说配置：{json.dumps(cfg, ensure_ascii=False)}\n"
@@ -379,7 +379,7 @@ def gen_timeline(cfg, outline_md):
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
-# ---------- 阶段4.5：分层编辑审稿（「一幕·神笔」五角色 + 百分制） ----------
+# ---------- 阶段4.5：分层编辑审稿（「一幕·一幕·YIMU 神笔」五角色 + 百分制） ----------
 
 def layered_review(book_md, cfg, l1_findings=None):
     """[兼容别名] 现为五角色审校 + 百分制（见 five_role_review / score_dimensions）。"""
@@ -387,7 +387,7 @@ def layered_review(book_md, cfg, l1_findings=None):
 
 def fix_chapter(ch_body, action, ctx):
     """按 fix_action 对单章做局部重写（保留章题/引子/正文结构，只修被指出的问题，不注水不改情节走向）。"""
-    sys_p = "你执行「一幕·神笔」分层修复。只按下述指令局部修改本章，保留原情节走向、钩子与字数量级，" \
+    sys_p = "你执行「一幕·一幕·YIMU 神笔」分层修复。只按下述指令局部修改本章，保留原情节走向、钩子与字数量级，" \
             "不注水、不改核心设定。输出整章修正后的 markdown（含 ## 本章概要/## 章首引子/## 正文/## 章节备注 结构）。" \
             "排版纪律：正文只用正常中文标点，禁止 *、#（结构小节除外）、>、反引号 等符号与加粗/斜体/列表。"
     user_p = f"修复指令：{action}\n\n待修章节：\n{ch_body[:9000]}"
@@ -409,7 +409,7 @@ def deslop_chapter(ch_body, ctx, max_findings=15):
     flines = []
     for f in findings[:max_findings]:
         flines.append(f"- [第{f.get('line','?')}行] ({f.get('severity','?')}/{f.get('category','?')}) {f.get('snippet','')[:60]} → {f.get('hint','')[:80]}")
-    sys_p = ("你是「一幕·神笔」去味师（deslopper）。按下列定点诊断做最小改写：只修改被指出的位置，"
+    sys_p = ("你是「一幕·一幕·YIMU 神笔」去味师（deslopper）。按下列定点诊断做最小改写：只修改被指出的位置，"
              "保留情节走向、钩子、关键名词与字数量级；用具体细节替换空话，不新增套话；"
              "【重复高频 2-gram】必须去重。输出整章修正后的 markdown。")
     user_p = ("【定点诊断（按行定位，行号为准）】\n" + "\n".join(flines) +
@@ -445,7 +445,7 @@ def chapter_review(ch_body, cfg, context=""):
     评的是"这一章在本书里是否达标"，吃 context（文风/人物/前后章）做参照。"""
     try:
         genre_txt = skill.genre(_craft_genre(cfg))
-        sys_p = ("你是「一幕·神笔」五角色审校团。现在只审**下面这一章**（在整本书语境下），"
+        sys_p = ("你是「一幕·一幕·YIMU 神笔」五角色审校团。现在只审**下面这一章**（在整本书语境下），"
                  "按 6 维打分（0-10）：结构/因果可信/人物/连续性/语言/读者体验。"
                  f"【题材craft】{genre_txt[:600]}\n【反AI腔(供语言维)】{skill.anti_slop()[:600]}\n"
                  + (f"【参照上下文(文风/人物/前后章)】\n{context[:4000]}\n" if context else "")
@@ -494,7 +494,7 @@ def five_role_review(book_md, cfg, l1_findings=None):
     """五角色审校团（Architect/Scribe/Editor/Guardian/Curator）单次 LLM 覆盖，
     吃 L1 确定性结果作为证据；返回 6 维(0-10)评分 + findings + fix_actions。"""
     genre_txt = skill.genre(_craft_genre(cfg))
-    sys_p = ("你是「一幕·神笔」五角色审校团，对全书做分层编辑审稿并分工：\n"
+    sys_p = ("你是「一幕·一幕·YIMU 神笔」五角色审校团，对全书做分层编辑审稿并分工：\n"
              "Architect(结构/节拍/黄金三章)、Scribe(正文是否注水/推进)、"
              "Editor(语言·去AI腔，套用反AI腔清单)、Guardian(连续性，先采信 L1 再复核)、"
              "Curator(题材口吻一致)。每条结论必须引用原句作证据，无证据不判问题。\n"
@@ -566,7 +566,7 @@ def reader_panel(book_md, cfg):
 # ---------- v0.2：审查后定向重写（把审查结论 + 重写方向逐条带进重写） ----------
 def guided_rewrite(ch_body, requirements, constraints, cfg):
     """基于审查结论与重写方向重写整章：逐条落实要求，不注水、不改核心走向、保留钩子。"""
-    sys_p = ("你执行「一幕·神笔」的『审查后定向重写』。下面给出本章的审查结论与重写方向（逐条列明"
+    sys_p = ("你执行「一幕·一幕·YIMU 神笔」的『审查后定向重写』。下面给出本章的审查结论与重写方向（逐条列明"
              "要补齐什么、要提升什么、哪里有问题），请据此重写整章。纪律：必须逐条落实要求；严禁注水、"
              "严禁改变核心情节走向与人物性格；保留已有钩子与设定一致性。"
              "输出整章重写后的 markdown（保留 ## 本章概要 / ## 章首引子 / ## 正文 / ## 章节备注 结构）。"

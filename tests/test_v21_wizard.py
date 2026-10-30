@@ -29,6 +29,7 @@ ALLOWED_KEYS = {
         "sells", "style_preset", "style_id",
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "script": {
         # script_writer.create_project 读 form/entryPath/idea/notes/scenes/pages/episodes/title
@@ -40,6 +41,7 @@ ALLOWED_KEYS = {
         "notes", "format_spec", "style_id", "setting_era", "setting_world",
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "poetry": {
         # poetry_writer 读 form/title/idea/maxRounds/cipai/metrical_check/with_notes/with_translation；
@@ -47,6 +49,7 @@ ALLOWED_KEYS = {
         "form", "cipai", "maxRounds", "title", "idea", "emotion",
         "metrical_check", "with_notes", "with_translation", "style_id",
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "prose": {
         # prose_writer 读 genre/operation/sourceText/title/idea + audience/purpose/tone/
@@ -54,6 +57,7 @@ ALLOWED_KEYS = {
         "genre", "operation", "title", "idea", "sourceText", "audience", "purpose",
         "tone", "words", "target_words", "slop_depth", "fact_check", "style_id",
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "thesis": {
         # v4.6.0：thesis_writer 读 degree/field/title/idea/target_words/cite_style/humanize
@@ -61,6 +65,7 @@ ALLOWED_KEYS = {
         "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "children": {
         # v4.10.0：children_writer 读 ctype/age/title/idea/target_words/values_note/with_interactive/with_illustration
@@ -69,12 +74,14 @@ ALLOWED_KEYS = {
         "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "news": {
         # v4.11.0：news_writer 读 ntype/org/title/idea/cite_style/with_versions
         "ntype", "org", "title", "idea", "cite_style", "with_versions", "style_id",
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "copy": {
         # v4.12.0：copy_writer 读 ktype/platform/title/idea/duration_secs/tone/with_hooks
@@ -82,6 +89,7 @@ ALLOWED_KEYS = {
         "duration",   # scale 的 token 槽位（数字落点是 duration_secs）
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
     "other": {
         # v4.13.0：other_writer 读 template/audience/title/idea/target_words/tone
@@ -89,6 +97,7 @@ ALLOWED_KEYS = {
         "words_scale",   # scale 的 token 槽位（数字落点是 target_words）
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
+        "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
     },
 }
 

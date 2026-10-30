@@ -413,6 +413,7 @@ def build(proj, ch, cfg=None, references=None) -> dict:
         {"name": "long_summary", "text": _long_summary(pdir), "layer": 4, "priority": 40, "cap": 1400},
         {"name": "story_bible", "text": _read(pdir, "09-故事圣经.md", 12000), "layer": 4, "priority": 41, "cap": 1400},
         {"name": "timeline", "text": _read(pdir, "12-时间线与连续性.md", 12000), "layer": 4, "priority": 42, "cap": 900},
+        {"name": "covenant", "text": _read(pdir, "13-一致性纲领.md", 12000), "layer": 1, "priority": 15, "cap": 1500},
         {"name": "graph", "text": graph_text, "layer": 4, "priority": 43, "cap": 900},
     ]
     blocks = [b for b in blocks if isinstance(b.get("text"), str) and b["text"].strip()]
@@ -439,6 +440,7 @@ def build(proj, ch, cfg=None, references=None) -> dict:
         "clue_ledger": parts.get("clue_ledger", ""),
         "chapter_summaries": parts.get("recent", ""),
         "timeline": parts.get("timeline", ""),
+        "covenant": parts.get("covenant", ""),
         "lore_relevant": parts.get("lore") or lore_relevant,
         "graph_ctx": graph_ctx,
         "retrieval_ctx": retrieved,

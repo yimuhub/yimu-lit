@@ -190,12 +190,12 @@ export function renderSidebar(container, ctx) {
   const brandRow = h('div', { class: 'brand-row' });
   const brand = h(
     'a',
-    { class: 'brand', href: '#/welcome', 'aria-label': '神笔创作台首页' },
+    { class: 'brand', href: '#/welcome', 'aria-label': '一幕·YIMU 一幕·YIMU 神笔创作台首页' },
     h('span', { class: 'brand-mark', html: icon('quill', 15) }),
     h(
       'span',
       { class: 'brand-copy' },
-      h('span', { class: 'brand-name', text: '神笔' }),
+      h('span', { class: 'brand-name', text: '一幕·YIMU 神笔' }),
       h('span', { class: 'brand-sub', text: '创作台' })
     )
   );

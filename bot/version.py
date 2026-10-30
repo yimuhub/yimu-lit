@@ -1,4 +1,4 @@
-"""神笔文学创作台 版本号（单一来源：读 VERSION 文件；升级只需改 VERSION 一处，全站版本随之一致）。"""
+"""一幕·YIMU 一幕·YIMU 神笔文学创作台 版本号（单一来源：读 VERSION 文件；升级只需改 VERSION 一处，全站版本随之一致）。"""
 import os
 def _read():
     try:
