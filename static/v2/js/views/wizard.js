@@ -765,10 +765,12 @@ export function openWizard(ctx, preset = {}) {
       );
       card.addEventListener('click', () => {
         model.medium = medium.key;
-        valuesOf(medium.key);
-        if (medium.key !== 'novel') {
-          const v = valuesOf(medium.key);
-          if ('platform' in v) v.platform = '';
+        const v0 = valuesOf(medium.key);
+        if (medium.key !== 'novel' && 'platform' in v0) v0.platform = '';
+        /* v4.15.6：按文体默认笔名自动选中（设置→作者笔名 的 by_medium） */
+        if (!v0.penname) {
+          const byMed = ((onb().pennames || {}).by_medium) || {};
+          if (byMed[model.medium]) v0.penname = byMed[model.medium];
         }
         render();
       });

@@ -1152,6 +1152,32 @@ export function renderSettings(container, ctx) {
     }
     penBody.append(listWrap);
 
+    // v4.15.6：按文体默认笔名（每个文体一个下拉；未设置=用全局默认）
+    penBody.append(h('div', { class: 'set-group-subhead', text: '按文体默认笔名' }));
+    const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文', thesis: '论文',
+                            children: '儿童文学', news: '新闻稿', copy: '文案', other: '其他' };
+    const byMed = pn.by_medium || {};
+    const medWrap = h('div', { class: 'set-list' });
+    for (const [med, label] of Object.entries(MEDIUM_LABELS)) {
+      medWrap.append(h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: label })
+        ),
+        h('select', { class: 'set-select', on: {
+          change: async (e) => {
+            try {
+              await api.pennamesSave({ list, default: defaultName, by_medium: { ...byMed, [med]: e.target.value } });
+              await loadPennames();
+            } catch (err) { toast(errorText(err, '保存失败'), { tone: 'danger' }); }
+          }
+        } },
+          h('option', { value: '', text: '（用全局默认）' }),
+          ...list.map(c => h('option', { value: c.name, selected: byMed[med] === c.name, text: c.name }))
+        )
+      ));
+    }
+    penBody.append(medWrap);
+
     // 添加笔名
     const addRow = h('div', { class: 'set-row' },
       h('div', { class: 'set-row-copy' },

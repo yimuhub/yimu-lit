@@ -1942,10 +1942,9 @@ def api_onboarding():
     })
     # v4.15.1：注入笔名选项（所有文体向导的 penname 字段用）
     _pen = _load_pennames()
+    _ONB["pennames"] = _pen   # v4.15.6：向导按文体默认选中笔名用（by_medium）
     _pen_opts = [{"value": c.get("name", ""), "label": c.get("name", "")}
                  for c in _pen.get("list", [])]
-    if _pen.get("default"):
-        _pen_opts.append({"value": "", "label": f"（默认：{_pen['default']}）"})
     for med_sections in _ONB["by_medium"].values():
         if med_sections.get("basic"):
             for f in med_sections["basic"]:
@@ -2205,7 +2204,17 @@ def api_pennames_save(payload: dict):
     # 默认笔名必须在列表内（或为空）
     if default and not any(c["name"] == default for c in cleaned):
         default = ""
-    saved = _save_pennames({"list": cleaned, "default": default})
+    # v4.15.6：按文体默认笔名（{medium: name}，name 必须在列表内或为空）
+    by_medium_raw = payload.get("by_medium")
+    by_medium = {}
+    if isinstance(by_medium_raw, dict):
+        from bot import medium as _med_mod
+        for med, name in by_medium_raw.items():
+            med = str(med).strip()
+            name = str(name or "").strip()[:40]
+            if med in _med_mod.MEDIUMS and (not name or any(c["name"] == name for c in cleaned)):
+                by_medium[med] = name
+    saved = _save_pennames({"list": cleaned, "default": default, "by_medium": by_medium})
     return {"ok": True, **saved}
 
 

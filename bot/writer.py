@@ -217,9 +217,11 @@ def _clean_chapter_text(text):
     """成书时剥离规划元信息（本章概要/章节备注），保留 章题+章首引子+正文。
     v3.1.0：补「仅有概要、无引子」分支——旧实现此时会把概要原样带进成书。
     v4.4.0：输出前统一过 _strip_md_style 排版净化。"""
-    m_sum = re.search(r"\n## 本章概要", text)
-    m_intro = re.search(r"\n## 章首引子", text)
-    m_notes = re.search(r"\n## 章节备注", text)
+    # v4.15.6：改用 (?m)^ 行首锚定——原 \n 前缀匹配不到文件开头的概要段（无前置换行），
+    # 导致「## 本章概要」作为第一行时整段混进成书（批量E2E 实测复现）
+    m_sum = re.search(r"(?m)^\s*## 本章概要", text)
+    m_intro = re.search(r"(?m)^\s*## 章首引子", text)
+    m_notes = re.search(r"(?m)^\s*## 章节备注", text)
     end = m_notes.start() if m_notes else len(text)
     if m_intro and m_sum and m_sum.start() < m_intro.start():
         return _strip_md_style((text[:m_sum.start()] + text[m_intro.start():end])).strip()
@@ -1943,10 +1945,18 @@ def _write_loop(proj: Project, batch_size=None):
             if is_paused(proj):
                 break
             if batch_limit is not None and wrote >= batch_limit:
-                proj.log(f"⏸ 本批已写 {wrote} 章（batch={batch_limit}），停在当前进度。说「再写N章」或「写完全部」继续。")
-                plan = proj.plan(); plan["status"] = "paused"; proj.save_plan(plan)
-                _skeleton_refresh(os.path.basename(proj.path))
-                break
+                # v4.15.6：本批额度用尽——仅当后面还有未完成章时才停；
+                # 若刚好写完全书，落到循环自然结束走 _validate_and_finish 正常完结。
+                _no = ch.get("chapterNumber") or 0
+                _rest = [c for c in (plan.get("chapters") or [])
+                         if (c.get("chapterNumber") or 0) > _no and c.get("status") != "completed"]
+                if _rest:
+                    proj.log(f"⏸ 本批已写 {wrote} 章（batch={batch_limit}），停在当前进度。说「再写N章」或「写完全部」继续。")
+                    plan2 = proj.plan(); plan2["status"] = "paused"
+                    plan2.setdefault("meta", {})["paused"] = True   # 与循环后 is_paused 检查同一口径
+                    proj.save_plan(plan2)
+                    _skeleton_refresh(os.path.basename(proj.path))
+                    return
             _msg = budget_blocked(proj)
             if _msg:
                 _pause_for_budget(proj, _msg)
