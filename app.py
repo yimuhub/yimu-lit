@@ -2033,9 +2033,18 @@ def _gh_fetch(url: str, token: str | None = None, timeout: int = 15, retries: in
 def api_check_update():
     """v4.15.12：检查 GitHub 仓库最新 release——前端版本号点击时调用（此前端点缺失 → 404「网络错误」）。
     GitHub 仓库是唯一更新来源：有新版提示拉取；无新版/网络不通都如实返回。"""
-    import urllib.request
     local = version.current()
     repo = "yimuhub/yimu-lit"
+    token = None
+    try:
+        import subprocess as _sp
+        _out = _sp.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n",
+                       capture_output=True, text=True, timeout=8).stdout
+        for _line in _out.splitlines():
+            if _line.startswith("password="):
+                token = _line.split("=", 1)[1]
+    except Exception:
+        token = None
     try:
         data = _gh_fetch(f"https://api.github.com/repos/{repo}/releases/latest", token=token, timeout=12)
         remote = str(data.get("tag_name") or "").lstrip("v")
