@@ -871,7 +871,14 @@ def _chat_attached(s, proj, msg):
                     f"说「进度」随时可查。")
         if writer.resume_book(key):
             st2 = proj.status()
-            _extra = "" if _intent != "start_writing_all" else "（全章批量模式）"
+            if _intent != "start_writing_all":
+                _bs = str((proj.plan().get("config") or {}).get("batch_size") or "1")
+                if _bs.lower() not in ("all", "0"):
+                    _extra = f"（本批写 {_bs} 章后暂停；说「写完全部」或「一直写下去」可连续创作）"
+                else:
+                    _extra = "（连续模式）"
+            else:
+                _extra = "（全章批量模式）"
             return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
         return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
 

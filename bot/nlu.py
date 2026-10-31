@@ -417,8 +417,8 @@ def parse_intent(text, project_status=None):
                         params["batch_size"] = _v
                 except Exception:
                     pass
-            elif re.search(r"全部|所有|整本|整个|完", text or ""):
-                params["batch_size"] = "all"   # 「写完全部」被 LLM 解析成无数量 batch_writing → 全写
+            elif re.search(r"全部|所有|整本|整个|完|一直写|连续写|不停|别停|写到底|不要停", text or ""):
+                params["batch_size"] = "all"   # 「写完全部」「一直写下去」→ 连续写到底
         return {"intent": intent, "confidence": conf, "params": params, "source": "llm", "raw": text}
 
     # 降级规则
