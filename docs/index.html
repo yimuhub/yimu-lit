@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一幕·YIMU 神笔文学创作台 · AI Literary Creation Workbench</title>
+<meta name="description" content="九文体全流程 AI 文学创作台：小说、剧本、诗词、散文、论文、儿童文学、新闻稿、文案、其他内容。从一句话简介到成书导出，批量写作节奏自控，多岗位并行，一致性纲领保障百万字连贯。">
+<style>
+:root{
+  --ink:#111111; --ink2:#1a1a1a;
+  --paper:#F5F2EA; --vermilion:#C73A32; --gold:#A88A52;
+  --line:rgba(245,242,234,.14); --line2:rgba(245,242,234,.32);
+  --gray:rgba(245,242,234,.55); --gray2:rgba(245,242,234,.38);
+  --font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","HarmonyOS Sans SC","Noto Sans CJK SC",sans-serif;
+  --font-mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--ink);color:var(--paper);font-family:var(--font-sans);line-height:1.7;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+/* ---------- hero ---------- */
+.hero{padding:110px 0 70px;text-align:center;border-bottom:1px solid var(--line);position:relative;overflow:hidden}
+.hero::before{content:"筆";position:absolute;top:-60px;left:50%;transform:translateX(-50%);font-size:560px;color:rgba(245,242,234,.025);font-family:var(--font-sans);pointer-events:none;line-height:1}
+.hero .brand-zh{font-size:15px;letter-spacing:14px;color:var(--gold);text-indent:14px;margin-bottom:18px}
+.hero h1{font-size:56px;font-weight:700;letter-spacing:2px;margin-bottom:14px}
+.hero h1 em{font-style:normal;color:var(--vermilion)}
+.hero .slogan-en{font-family:var(--font-mono);font-size:14px;color:var(--gray);letter-spacing:4px;margin-bottom:34px}
+.hero .sub{font-size:17px;color:var(--gray);max-width:640px;margin:0 auto 40px}
+.hero .badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:44px}
+.badge{font-size:11px;padding:5px 12px;border:1px solid var(--line2);border-radius:3px;color:var(--gray);font-family:var(--font-mono)}
+.badge.gold{color:var(--gold);border-color:rgba(168,138,82,.5)}
+.badge.red{color:var(--vermilion);border-color:rgba(199,58,50,.5)}
+.cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-block;padding:13px 34px;border-radius:4px;font-size:15px;letter-spacing:2px;transition:.25s}
+.btn-primary{background:var(--vermilion);color:#fff;border:1px solid var(--vermilion)}
+.btn-primary:hover{background:#a92f28}
+.btn-ghost{border:1px solid var(--line2);color:var(--paper)}
+.btn-ghost:hover{border-color:var(--gold);color:var(--gold)}
+/* ---------- section ---------- */
+section{padding:86px 0;border-bottom:1px solid var(--line)}
+.sec-head{text-align:center;margin-bottom:56px}
+.sec-title{font-size:32px;font-weight:700;letter-spacing:3px;margin-bottom:12px}
+.sec-title .accent{color:var(--gold)}
+.sec-note{font-size:14px;color:var(--gray);letter-spacing:1px}
+/* ---------- genres ---------- */
+.genre-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.gcard{border:1px solid var(--line);border-radius:6px;padding:26px 22px;background:var(--ink2);transition:.25s}
+.gcard:hover{border-color:var(--gold);transform:translateY(-3px)}
+.gcard .glyph{font-size:30px;margin-bottom:12px;display:block}
+.gcard h3{font-size:17px;margin-bottom:8px;letter-spacing:1px}
+.gcard p{font-size:13px;color:var(--gray)}
+.gcard.feat{border-color:var(--vermilion);background:linear-gradient(160deg,rgba(199,58,50,.09),var(--ink2) 55%)}
+/* ---------- capability ---------- */
+.cap-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
+.ccard{border:1px solid var(--line);border-radius:6px;padding:28px;background:var(--ink2)}
+.ccard .num{font-family:var(--font-mono);font-size:12px;color:var(--gold);letter-spacing:2px;margin-bottom:10px}
+.ccard h3{font-size:18px;margin-bottom:10px;letter-spacing:1px}
+.ccard p{font-size:13.5px;color:var(--gray)}
+/* ---------- pipeline ---------- */
+.pipeline{display:grid;grid-template-columns:repeat(5,1fr);gap:0;text-align:center}
+.step{padding:0 14px;position:relative}
+.step .no{font-family:var(--font-mono);font-size:13px;color:var(--vermilion);margin-bottom:12px}
+.step .name{font-size:18px;font-weight:600;letter-spacing:2px;margin-bottom:10px}
+.step p{font-size:12.5px;color:var(--gray)}
+.step:not(:last-child)::after{content:"→";position:absolute;right:-8px;top:6px;color:var(--gold);font-size:16px;opacity:.6}
+/* ---------- deploy ---------- */
+.deploy-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.term{background:#0c0c0c;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.term .bar{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:6px;align-items:center}
+.term .bar i{width:10px;height:10px;border-radius:50%;display:block}
+.term .bar i:nth-child(1){background:#e8655c}.term .bar i:nth-child(2){background:#A88A52}.term .bar i:nth-child(3){background:#7d9a6a}
+.term .bar span{margin-left:8px;font-size:11px;color:var(--gray);font-family:var(--font-mono)}
+.term pre{padding:20px;font-family:var(--font-mono);font-size:13px;line-height:2;color:#c9c4b8;overflow-x:auto}
+.term pre .c{color:var(--gray2)}
+.term pre .g{color:var(--gold)}
+.dlist{list-style:none}
+.dlist li{padding:12px 0;border-bottom:1px solid var(--line);font-size:14px;color:var(--gray)}
+.dlist li b{color:var(--paper);font-weight:600}
+/* ---------- roles ---------- */
+.role-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.rcard{border:1px solid var(--line);border-radius:6px;padding:20px;background:var(--ink2)}
+.rcard h4{font-size:14px;letter-spacing:1px;margin-bottom:10px;color:var(--gold)}
+.rcard .agents{font-family:var(--font-mono);font-size:12px;color:var(--gray);line-height:1.9}
+/* ---------- license ---------- */
+.lic-box{border:1px solid rgba(168,138,82,.4);border-radius:8px;padding:36px;background:linear-gradient(160deg,rgba(168,138,82,.06),var(--ink2))}
+.lic-box h3{font-size:20px;margin-bottom:16px;letter-spacing:1px}
+.lic-box p{font-size:14px;color:var(--gray);margin-bottom:10px}
+.lic-box .free{color:#7d9a6a}.lic-box .need{color:var(--vermilion)}
+/* ---------- footer ---------- */
+footer{padding:50px 0;text-align:center;color:var(--gray2);font-size:13px}
+footer .f-brand{color:var(--gold);letter-spacing:6px;margin-bottom:10px;font-size:15px}
+footer a{color:var(--gray);border-bottom:1px dotted var(--gray2)}
+footer a:hover{color:var(--gold)}
+@media (max-width:860px){
+  .hero h1{font-size:36px}
+  .genre-grid,.cap-grid,.role-grid,.deploy-grid{grid-template-columns:1fr}
+  .pipeline{grid-template-columns:1fr}
+  .step{padding:16px 0;border-bottom:1px solid var(--line)}
+  .step:not(:last-child)::after{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="wrap">
+    <div class="brand-zh">一幕 · YIMU 出品</div>
+    <h1>神笔<em>文学创作台</em></h1>
+    <div class="slogan-en">One Thought. One Scene. Infinite Worlds.</div>
+    <p class="sub">面向小说作者、编剧与文学创作者的<b style="color:var(--paper)">九文体全流程 AI 创作台</b>——从一句话简介到成书导出，对话即开写，节奏由你掌控。</p>
+    <div class="badges">
+      <span class="badge gold">v4.15.12</span>
+      <span class="badge">BUSL-1.1</span>
+      <span class="badge">Python 3.9+</span>
+      <span class="badge">FastAPI</span>
+      <span class="badge gold">macOS · Linux · Windows · Docker</span>
+      <span class="badge red">9 文体 · 20 创作岗位</span>
+    </div>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/yimuhub/yimu-lit">GitHub 获取</a>
+      <a class="btn btn-ghost" href="#deploy">快速启动</a>
+      <a class="btn btn-ghost" href="#license">授权条款</a>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 文体矩阵 ================= -->
+<section id="genres">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-title">九文体<span class="accent">创作矩阵</span></div>
+      <div class="sec-note">每种文体独立引擎：专属向导 · 专属岗位与技能 · 专属工作台 · 从一句话到定稿全流程。</div>
+    </div>
+    <div class="genre-grid">
+      <div class="gcard feat"><span class="glyph">📕</span><h3>小说</h3><p>百万字分层规划（卷/弧/章卡）、伏笔账本、时间线、故事圣经、手法账本防钩子重复。</p></div>
+      <div class="gcard"><span class="glyph">🎬</span><h3>剧本</h3><p>场次清单、时代一致性红线、人物在场体检、自动分镜头拆解，支持 AI 短剧与漫剧。</p></div>
+      <div class="gcard"><span class="glyph">🖌️</span><h3>诗词 · 散文</h3><p>近体诗/词牌格律校验、意象密度与炼字；散文三层去 AI 腔，结构与细节密度并重。</p></div>
+      <div class="gcard"><span class="glyph">🎓</span><h3>论文</h3><p>提纲、逐章撰写、引用文献池、降 AIGC 润色，GB/T 7714 / APA / MLA 引用格式。</p></div>
+      <div class="gcard"><span class="glyph">🧒</span><h3>儿童文学 · 新闻稿</h3><p>年龄分级语言与价值观红线、亲子互动；倒金字塔、5W1H 事实核查、多版本输出。</p></div>
+      <div class="gcard"><span class="glyph">📣</span><h3>文案 · 其他内容</h3><p>前 3 秒钩子库、平台适配、AIDA/PAS；剧本杀/播客/课程稿/演讲稿/拆书稿/影评六模板。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 核心能力 ================= -->
+<section id="capabilities">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-title">核心<span class="accent">能力</span></div>
+      <div class="sec-note">不只生成文本——为长篇的连贯性、创作的掌控感与产出的纯净度而设计。</div>
+    </div>
+    <div class="cap-grid">
+      <div class="ccard"><div class="num">01 / 百万字引擎</div><h3>分层规划与滚动重规划</h3><p>总规划 → 卷 → 弧 → 章卡四层结构，支持 100–1500 章规模；写作中途可重排结构而不失连贯。每章落笔前注入前情摘要、活跃伏笔、人物状态与设定词典。</p></div>
+      <div class="ccard"><div class="num">02 / 节奏自控</div><h3>批量写作 · 对话控笔</h3><p>逐章逐场推进，或 5/10/20/50 章为一批；对话里说「再写 N 章」「写完全部」即可。多岗位并行分章齐写，总架构对齐、连续性入库、低分章自动还原。</p></div>
+      <div class="ccard"><div class="num">03 / 连贯保障</div><h3>一致性纲领与一键修复</h3><p>人物/事件/世界观/风格四大硬规则贯穿全书；体检扫描设定冲突，单条或全部一键修复——需要改稿的问题自动启动定向重写，无需人工排查。</p></div>
+      <div class="ccard"><div class="num">04 / 反 AI 腔</div><h3>三层去味 + 相似度门禁</h3><p>表达/用笔/故事逻辑三层扫描；与近章 3-gram 相似度门禁自动拦截复制粘贴；手法账本强制钩子与情绪换型，拒绝千章一面。</p></div>
+      <div class="ccard"><div class="num">05 / 作者署名</div><h3>笔名体系与纯净导出</h3><p>多笔名管理、按文体指定默认、向导就地自定义；成书与 Word/EPUB/Markdown 导出自动署名，概要备注绝不混入正文。</p></div>
+      <div class="ccard"><div class="num">06 / 越写越顺</div><h3>技能进化 · 参考 RAG · 不限预算</h3><p>反馈沉淀画像、候选技能评测转正；参考资料按章检索注入（事实/文风两类）；token 预算护栏支持不限制模式。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 创作五阶 ================= -->
+<section id="pipeline">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-title">一念 → 成书 · <span class="accent">创作五阶</span></div>
+      <div class="sec-note">对话即开写，全程可视、可暂停、可回溯。</div>
+    </div>
+    <div class="pipeline">
+      <div class="step"><div class="no">STAGE 01</div><div class="name">开书向导</div><p>九文体专属三步向导，选题参数智能生成，每次结果不同</p></div>
+      <div class="step"><div class="no">STAGE 02</div><div class="name">分层规划</div><p>人物档案/大纲/文风/圣经/伏笔账本一次建齐</p></div>
+      <div class="step"><div class="no">STAGE 03</div><div class="name">批量写作</div><p>逐章或成批推进，多岗位并行，对话实时控笔</p></div>
+      <div class="step"><div class="no">STAGE 04</div><div class="name">体检修复</div><p>一致性扫描，一键修复，定向重写</p></div>
+      <div class="step"><div class="no">STAGE 05</div><div class="name">成书导出</div><p>成书/Word/EPUB/Markdown，笔名署名自动嵌入</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 快速启动 ================= -->
+<section id="deploy">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-title">安装与<span class="accent">部署</span></div>
+      <div class="sec-note">纯本地运行：数据不出本机，技能库全部内置，解压即跑。</div>
+    </div>
+    <div class="deploy-grid">
+      <div class="term">
+        <div class="bar"><i></i><i></i><i></i><span>quick-start</span></div>
+        <pre><span class="c"># 克隆并启动</span>
+git clone https://github.com/yimuhub/yimu-lit.git
+<span class="g">cd</span> yimu-lit
+pip install -r requirements.txt
+
+<span class="c"># 启动（默认 http://127.0.0.1:46821）</span>
+<span class="g">python</span> run.py
+
+<span class="c"># 或使用一键脚本</span>
+./start.sh        <span class="c"># macOS / Linux</span>
+start.bat         <span class="c"># Windows（双击）</span></pre>
+      </div>
+      <div>
+        <ul class="dlist">
+          <li><b>模型接入</b> —— 首次运行在「设置」填入 OpenAI 兼容接口：DeepSeek / Kimi / 本地 Ollama 均可。</li>
+          <li><b>零配置体验</b> —— 打开 <span style="font-family:var(--font-mono)">?mock=1</span>，内置模拟数据，不调模型即可体验全部交互。</li>
+          <li><b>Docker 部署</b> —— <span style="font-family:var(--font-mono)">docker-compose up -d</span> 一条命令起服务。</li>
+          <li><b>更新检测</b> —— 应用内点击版本号，自动检测 GitHub 最新发布。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 创作岗位 ================= -->
+<section id="roles">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-title">20 专职<span class="accent">创作岗位</span></div>
+      <div class="sec-note">每个文体配备专属的策划 / 写手 / 审校矩阵，全部内置技能包，可按作品单独绑定。</div>
+    </div>
+    <div class="role-grid">
+      <div class="rcard"><h4>小说 · 3 岗位</h4><div class="agents">规划师 · 作家 · 审稿人<br>改写师 · 拟题师 · 去味师 · 总编</div></div>
+      <div class="rcard"><h4>剧本 · 2 岗位</h4><div class="agents">编剧 · 审剧人<br>（时代/在场/场号连续性体检）</div></div>
+      <div class="rcard"><h4>诗词 · 散文 · 4 岗位</h4><div class="agents">诗词作者 · 诗词审校<br>散文作者 · 散文审校</div></div>
+      <div class="rcard"><h4>论文 · 儿童 · 4 岗位</h4><div class="agents">学术写手 · 学术审校<br>童话作家 · 童书审校</div></div>
+      <div class="rcard"><h4>新闻 · 文案 · 4 岗位</h4><div class="agents">新闻编辑 · 新闻审核<br>文案策划 · 文案审核</div></div>
+      <div class="rcard"><h4>其他内容 · 3 岗位</h4><div class="agents">综合策划 · 综合写手 · 综合审校<br>（剧本杀/播客/课程/演讲/拆书/影评）</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 许可 ================= -->
+<section id="license">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-title">许可与<span class="accent">商用条款</span></div>
+      <div class="sec-note">BUSL-1.1 · 版权归属 yimu.hyipf.com</div>
+    </div>
+    <div class="lic-box">
+      <h3>免费使用范围</h3>
+      <p><span class="free">✓ 免费 · 无需申请授权</span>——个人学习、研究、非商业用途；个人创作（含个人账号的广告、带货等收益）；企业内部评估与测试；连续 12 个月内直接商业价值低于人民币 10 万元的任何使用。</p>
+      <p><span class="need">▸ 需商业授权</span>——连续 12 个月内直接商业价值达到或超过人民币 10 万元，须事先获得授权（可免费登记获取，联系 yimu@hyipf.com）。</p>
+      <p>▸ 每个版本首次公开发布满四年后，自动转为 Apache License 2.0。</p>
+      <p style="margin-top:14px"><a class="btn btn-ghost" href="https://github.com/yimuhub/yimu-lit/blob/main/LICENSE" style="font-size:13px;padding:10px 24px">查看完整 LICENSE</a></p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="f-brand">一幕 · YIMU</div>
+  <div>一念起 · 一幕开 · 万象生</div>
+  <div style="margin-top:12px">
+    <a href="https://github.com/yimuhub/yimu-lit">GitHub</a> ·
+    <a href="https://github.com/yimuhub/yimu-lit/releases">Releases</a> ·
+    <a href="https://yimu.hyipf.com">yimu.hyipf.com</a>
+  </div>
+  <div style="margin-top:14px">© 2026 yimu.hyipf.com · BUSL-1.1</div>
+</footer>
+
+</body>
+</html>
