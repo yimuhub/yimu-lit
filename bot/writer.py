@@ -486,6 +486,31 @@ def start_writing(proj: Project, batch_size=None):
     threading.Thread(target=_write_loop, args=(proj, batch_size), daemon=True).start()
 
 # ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
+
+# ---------- v4.15.13：改书名后的 key 别名映射（旧 key → 新 key） ----------
+RENAME_MAP_FILE = os.path.join(ROOT, "data", "rename_map.json")
+
+def _load_rename_map() -> dict:
+    try:
+        d = json.load(open(RENAME_MAP_FILE, encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def record_rename(old_key: str, new_key: str):
+    """目录改名后记录别名；旧 key 的所有请求自动跳到新 key（避免「项目不存在」与幽灵重建）。"""
+    if not old_key or not new_key or old_key == new_key:
+        return
+    m = _load_rename_map()
+    m[old_key] = new_key
+    atomic_write_json(RENAME_MAP_FILE, m)
+
+def resolve_key(key: str) -> str:
+    """解析别名（一层跳转即可——改名链会写成直达）。解析不到返回原 key。"""
+    m = _load_rename_map()
+    return m.get(key, key)
+
+
 def _project_dir(key):
     return safe_join(PROJECTS_DIR, key, label="作品 key")
 
@@ -2742,6 +2767,7 @@ def pick_title(key, title):
         target = proj.path
     if target != proj.path and not os.path.exists(target):
         os.rename(proj.path, target); proj.path = target
+        record_rename(base, os.path.basename(target))   # v4.15.13：旧 key 别名，旧请求自动跳新 key
     plan["novelName"] = title; proj.save_plan({**plan, "meta": meta, "novelName": title})
     # v4.15.2：尊重批量写作设置
     start_writing(proj, batch_size=((plan.get("config") or {}).get("batch_size")))

@@ -105,6 +105,16 @@ def _sess_prune():
 def _get_project(key):
     if not isinstance(key, str) or not key:
         return None   # 缺 key / 非 str → 交调用方 404，不再 500（os.path.join(dir, None) 会 TypeError）
+    # v4.15.13：改书名后目录随之改名——旧 key 按别名映射跳新 key（否则旧标签页全部「项目不存在」）
+    if key not in PROJECT_INDEX:
+        try:
+            _exists = os.path.isdir(writer._project_dir(key))
+        except Exception:
+            _exists = False   # 非法路径 key（如 ../secrets）按原逻辑 404，不因别名检查抛 500
+        if not _exists:
+            _rk = writer.resolve_key(key)
+            if _rk != key:
+                key = _rk
     if key not in PROJECT_INDEX:
         try:
             pdir = writer._project_dir(key)
