@@ -226,16 +226,29 @@ export function renderSettings(container, ctx) {
     const budget = h('input', {
       class: 'input',
       type: 'number',
-      min: '20000',
-      max: '400000',
-      step: '5000',
-      value: String(s.token_budget || 90000),
-      'aria-label': '单次上下文预算'
+      min: '0',
+      max: '2000000',
+      step: '10000',
+      value: String(s.token_budget > 0 ? s.token_budget : 90000),
+      'aria-label': '全书累计 token 预算'
+    });
+    /* v4.15.10：「不限制预算」——token_budget=0 后端即不拦截（budget_blocked cap=0 放行）。
+       此前前端保存兜底 || 90000 把 0 强制变回 9 万，不限制状态存不进去。 */
+    const unlimited = h('input', { type: 'checkbox', checked: !(s.token_budget > 0), 'aria-label': '不限制预算' });
+    function syncBudgetDisabled() {
+      budget.disabled = unlimited.checked;
+      if (unlimited.checked) budget.value = '90000';
+    }
+    unlimited.addEventListener('change', () => {
+      model.settings.token_budget = unlimited.checked ? 0 : (Number(budget.value) || 90000);
+      model.dirty = true;
+      syncBudgetDisabled();
     });
     budget.addEventListener('change', () => {
-      model.settings.token_budget = Number(budget.value) || s.token_budget;
+      model.settings.token_budget = Number(budget.value) || 0;
       model.dirty = true;
     });
+    syncBudgetDisabled();
     qualityBody.append(
       h(
         'div',
@@ -244,9 +257,12 @@ export function renderSettings(container, ctx) {
           'div',
           { class: 'set-row-copy' },
           h('div', { class: 'set-row-title', text: '上下文预算' }),
-          h('div', { class: 'set-row-desc', text: '每次写作调用允许携带的最大 token 数；百万字长篇建议 90k 以上。' })
+          h('div', { class: 'set-row-desc', text: '单本书累计 token 消耗上限，超出即暂停写作（防止烧穿额度）；百万字长篇建议 90 万以上。' })
         ),
-        h('div', { class: 'set-control' }, budget)
+        h('div', { class: 'set-control' },
+          h('label', { class: 'set-check', style: 'display:flex;align-items:center;gap:6px;margin-right:10px;font-size:12px' },
+            unlimited, h('span', { text: '不限制' })),
+          budget)
       )
     );
 
@@ -331,7 +347,7 @@ export function renderSettings(container, ctx) {
     try {
       await api.saveSettings({
         quality_mode: model.settings.quality_mode,
-        token_budget: Number(model.settings.token_budget) || 90000,
+        token_budget: (model.settings.token_budget === 0) ? 0 : (Number(model.settings.token_budget) || 90000),
         lorebook: Boolean(model.settings.lorebook),
         llm_trace: Boolean(model.settings.llm_trace),
         chat_context_limit: model.settings.chat_context_limit || '200k',
