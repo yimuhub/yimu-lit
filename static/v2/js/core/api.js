@@ -410,6 +410,7 @@ export const api = {
   fixConsistency: (issueId, key) => request('/api/fix-consistency', jsonBody({ id: issueId, key })),
   fixConsistencyAll: (key) => request('/api/fix-consistency-all', jsonBody({ key })),
   fetchModels: (payload) => request('/api/providers/fetch-models', jsonBody(payload)),
+  diagnostics: () => request('/api/diagnostics'),
   selfUpdate: () => request('/api/self-update', jsonBody({}), { timeout: 180000 }),
   restart: () => request('/api/restart', jsonBody({})),
   branchBook: (key, chapter) => request('/api/branch', jsonBody({ key, chapter }), { timeout: 60000 }),

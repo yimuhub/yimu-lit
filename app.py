@@ -1928,6 +1928,97 @@ def api_restart(request: Request):
     return {"ok": True, "msg": "服务正在重启，约 5 秒后自动恢复；页面稍后自动刷新"}
 
 
+@app.get("/api/diagnostics")
+def api_diagnostics():
+    """v4.16.0：系统日志聚合——每本书的创作日志（走到哪/卡多久/最后发生了什么）、
+    服务日志尾部、模型调用状态。供「设置→系统日志」展示与一键导出诊断包。"""
+    import time as _t
+    now = int(_t.time())
+    books = []
+    if os.path.isdir(writer.PROJECTS_DIR):
+        for d in sorted(os.listdir(writer.PROJECTS_DIR), reverse=True)[:60]:
+            pdir = os.path.join(writer.PROJECTS_DIR, d)
+            if not os.path.isdir(pdir):
+                continue
+            med, pj, plan = writer._plan_of(pdir)
+            if not med:
+                continue
+            log_path = os.path.join(pdir, "运行日志.txt")
+            tail_lines, last_line, stalled = [], "", 0
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, encoding="utf-8", errors="replace") as f:
+                        tail_lines = [l.rstrip() for l in f.readlines()[-40:]]
+                    if tail_lines:
+                        last_line = tail_lines[-1]
+                        m = re.match(r"\[(\d{2}:\d{2}:\d{2})\]", last_line)
+                        # 卡住判断：日志文件 mtime 距今超 10 分钟且书未完结
+                        age = int(now - os.path.getmtime(log_path))
+                        state = (plan.get("status") or "unknown")
+                        if state in ("in_progress", "writing", "planning") and age > 600:
+                            stalled = age
+                except Exception:
+                    pass
+            books.append({
+                "key": d,
+                "name": plan.get("novelName") or plan.get("scriptName") or plan.get("otherName")
+                        or plan.get("bookName") or plan.get("newsName") or plan.get("copyName") or d,
+                "medium": med,
+                "state": plan.get("status") or "unknown",
+                "done": sum(1 for c in (plan.get("chapters") or []) if c.get("status") == "completed"),
+                "total": len(plan.get("chapters") or []),
+                "stalled_seconds": stalled,
+                "last_line": last_line[-160:],
+                "tail": tail_lines,
+            })
+    # 服务端日志（nb*.log 取最新的）
+    server_tail = []
+    try:
+        nb = sorted([f for f in os.listdir(ROOT) if f.startswith("nb") and f.endswith(".log")],
+                    key=lambda f: os.path.getmtime(os.path.join(ROOT, f)))
+        if nb:
+            with open(os.path.join(ROOT, nb[-1]), encoding="utf-8", errors="replace") as f:
+                server_tail = [l.rstrip() for l in f.readlines()[-60:]]
+    except Exception:
+        pass
+    # 模型调用状态
+    llm_state = {}
+    try:
+        from bot import llm as _llm
+        llm_state = {"last_call_at": int(getattr(_llm, "_last_call", {}).get("ts") or 0),
+                     "ago_seconds": int(now - getattr(_llm, "_last_call", {}).get("ts", 0)) if getattr(_llm, "_last_call", {}).get("ts") else None}
+    except Exception:
+        pass
+    return {"ok": True, "now": now, "version": version.current(),
+            "platform": f"{os.name}/{sys.platform}",
+            "books": books, "server_tail": server_tail, "llm_state": llm_state}
+
+
+@app.post("/api/diagnostics/export")
+def api_diagnostics_export(payload: dict = None):
+    """一键导出诊断包（纯文本，不含任何密钥/作品正文）——发给开发者排查用。"""
+    import datetime as _dt
+    d = api_diagnostics()
+    lines = [f"# 一幕·YIMU 神笔 诊断包", f"- 导出时间: {_dt.datetime.now().isoformat(timespec='seconds')}",
+             f"- 版本: {d['version']} | 平台: {d['platform']}", f"- 模型最近调用: {d.get('llm_state')}", ""]
+    lines.append("== 各作品状态 ==")
+    for b in d["books"]:
+        flag = f"  ⚠️ 疑似卡住 {b['stalled_seconds']//60} 分钟" if b.get("stalled_seconds") else ""
+        lines.append(f"[{b['name']}] {b['medium']} {b['state']} {b['done']}/{b['total']}{flag}")
+        lines.append(f"  最后日志: {b['last_line']}")
+    lines.append("")
+    for b in d["books"]:
+        lines.append(f"===== {b['name']} 运行日志（尾40行）=====")
+        lines.extend(b["tail"])
+        lines.append("")
+    if d["server_tail"]:
+        lines.append("===== 服务端日志（尾60行）=====")
+        lines.extend(d["server_tail"])
+    text = "\n".join(lines)
+    return Response(text, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=yimu-lit-diagnostics.txt"})
+
+
 @app.get("/api/check-update")
 def api_check_update():
     """v4.15.12：检查 GitHub 仓库最新 release——前端版本号点击时调用（此前端点缺失 → 404「网络错误」）。

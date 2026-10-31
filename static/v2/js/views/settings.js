@@ -32,6 +32,7 @@ const GROUPS = [
   { key: 'chat', label: '对话与上下文', icon: 'message', desc: '会话留档与压缩' },
   { key: 'skills', label: '技能与数据', icon: 'sparkles', desc: '进化与本地数据' },
   { key: 'pennames', label: '作者笔名', icon: 'user', desc: '全局默认 · 多笔名 · 按文体默认' },
+  { key: 'syslog', label: '系统日志', icon: 'terminal', desc: '创作日志 · 卡住诊断 · 一键导出' },
   { key: 'advanced', label: '高级', icon: 'sliders', desc: '经典版等' }
 ];
 
@@ -1142,6 +1143,86 @@ export function renderSettings(container, ctx) {
 
   /* ----------------------------------------------------------- 高级 */
 
+  /* ----------------------------------------------------------- 系统日志 */
+
+  const logBody = h('div', {});
+  panes.syslog.append(logBody);
+
+  function paintSyslog(data) {
+    logBody.textContent = '';
+    if (!data) {
+      logBody.append(errorRow('诊断数据加载失败', loadSyslog));
+      return;
+    }
+    const head = h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: `版本 v${data.version} · ${data.platform}` }),
+        h('div', { class: 'set-row-desc', text: `每本书的创作进度、最后日志与卡住判断；点「导出诊断包」生成纯文本发给开发者排查。` })
+      ),
+      h('div', { class: 'set-control' },
+        h('button', { class: 'btn btn-sm btn-accent', type: 'button', text: '导出诊断包', on: {
+          click: async () => {
+            try {
+              const res = await fetch('/api/diagnostics/export', { method: 'POST', credentials: 'include' });
+              const text = await res.text();
+              const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+              const a = h('a', { href: URL.createObjectURL(blob), download: 'yimu-lit-diagnostics.txt' });
+              document.body.append(a); a.click(); a.remove();
+              toast('诊断包已导出', { tone: 'success' });
+            } catch (err) { toast(errorText(err, '导出失败'), { tone: 'danger' }); }
+          }
+        } }),
+        h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => loadSyslog() } })
+      )
+    );
+    logBody.append(head);
+
+    // 各书状态列表（卡住的置顶标红）
+    const books = [...(data.books || [])].sort((a, b) => (b.stalled_seconds || 0) - (a.stalled_seconds || 0));
+    logBody.append(h('div', { class: 'set-group-subhead', text: '作品创作状态（卡住的排最前）' }));
+    const wrap = h('div', { class: 'set-list' });
+    for (const b of books) {
+      const stalled = b.stalled_seconds ? `  ⚠️ 疑似卡住 ${Math.round(b.stalled_seconds / 60)} 分钟` : '';
+      const detail = h('pre', {
+        class: 'diag-tail', style: 'display:none;margin:8px 0 0;padding:10px;background:#0c0c0c;border:1px solid var(--line);border-radius:6px;font-family:var(--font-mono,monospace);font-size:11px;line-height:1.7;color:#c9c4b8;overflow-x:auto;white-space:pre-wrap',
+        text: (b.tail || []).join('\n') || '（无日志）'
+      });
+      wrap.append(h('div', { class: 'set-row', style: 'display:block' },
+        h('div', { class: 'set-row-copy', style: 'cursor:pointer', on: { click: () => { detail.style.display = detail.style.display === 'none' ? '' : 'none'; } } },
+          h('div', { class: 'set-row-title', text: `${b.name}（${b.medium}）${stalled}` }),
+          h('div', { class: 'set-row-desc', text: `${b.state} ${b.done}/${b.total} · 最后: ${b.last_line || '—'}` })
+        ),
+        detail
+      ));
+    }
+    if (!books.length) wrap.append(h('div', { class: 'hint-text', text: '还没有作品。' }));
+    logBody.append(wrap);
+
+    // 服务端日志
+    if ((data.server_tail || []).length) {
+      logBody.append(h('div', { class: 'set-group-subhead', text: '服务端日志（尾 60 行）' }));
+      logBody.append(h('pre', {
+        style: 'padding:10px;background:#0c0c0c;border:1px solid var(--line);border-radius:6px;font-family:var(--font-mono,monospace);font-size:11px;line-height:1.7;color:#c9c4b8;overflow-x:auto;white-space:pre-wrap',
+        text: data.server_tail.join('\n')
+      }));
+    }
+    // 模型调用
+    if (data.llm_state && data.llm_state.ago_seconds != null) {
+      logBody.append(h('div', { class: 'hint-text', text: `模型最近一次调用：${Math.round(data.llm_state.ago_seconds / 60)} 分钟前（超过 10 分钟无调用且书在写作中 = 大概率模型侧卡住）` }));
+    }
+  }
+
+  async function loadSyslog() {
+    logBody.textContent = '';
+    logBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-40' })));
+    try {
+      const data = await api.diagnostics();
+      paintSyslog(data);
+    } catch (err) {
+      paintSyslog(null);
+    }
+  }
+
   /* ----------------------------------------------------------- 作者笔名 */
 
   const penBody = h('div', {});
@@ -1333,6 +1414,7 @@ export function renderSettings(container, ctx) {
   loadProviders();
   loadAgents();
   loadPennames();   /* v4.15.5 修复：笔名面板此前从未在初始化时加载，分组面板永远空白 */
+  loadSyslog();
 
   /* 初始分组：优先恢复上次浏览的分组，其次兼容旧深链值。 */
   const wantTab = store.get().ui.settingsTab;
