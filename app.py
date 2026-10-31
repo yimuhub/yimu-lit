@@ -1916,11 +1916,13 @@ def api_restart(request: Request):
     """重启服务（自更新后调用）。v4.15.18：-m uvicorn 方式（脚本路径方式会遮蔽标准库）+ 端口取自当前请求。"""
     import sys as _sys, subprocess as _sp
     _port = request.url.port or int(os.environ.get("NOVEL_BOT_PORT") or 46821)
-    args = [ _sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(_port) ]
+    _uv = [ _sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(_port) ]
+    # v4.15.18：新进程延迟 2.5 秒再绑定端口——旧进程 timer 0.6s 后退出，避免 address in use 竞争
     if _sys.platform == "win32":
-        _sp.Popen(args, cwd=ROOT, creationflags=_sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS)
+        _sp.Popen(_uv, cwd=ROOT, creationflags=_sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS)
     else:
-        _sp.Popen(args, cwd=ROOT, start_new_session=True,
+        _sh = [ "/bin/bash", "-c", f"sleep 2.5; exec {' '.join(_uv)}" ]
+        _sp.Popen(_sh, cwd=ROOT, start_new_session=True,
                   stdout=open(os.path.join(ROOT, "nb46831.log"), "ab"), stderr=_sp.STDOUT)
     threading.Timer(0.6, lambda: os._exit(0)).start()
     return {"ok": True, "msg": "服务正在重启，约 5 秒后自动恢复；页面稍后自动刷新"}
