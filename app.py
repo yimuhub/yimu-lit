@@ -1982,9 +1982,31 @@ def api_diagnostics():
                      "ago_seconds": int(now - getattr(_llm, "_last_call", {}).get("ts", 0)) if getattr(_llm, "_last_call", {}).get("ts") else None}
     except Exception:
         pass
+    # v4.16.8：供应商配置脱敏摘要（一眼看出 key 未配/供应商未启用——401 排查无需猜）
+    prov_summary = []
+    try:
+        pv = json.load(open(os.path.join(ROOT, "providers.json"), encoding="utf-8"))
+        for p in (pv.get("providers") or []):
+            k = str(p.get("api_key") or "")
+            prov_summary.append({"name": p.get("id") or p.get("name"), "base_url": p.get("base_url"),
+                                 "has_key": bool(k), "key_len": len(k), "key_prefix": k[:6] + "***" if k else "",
+                                 "timeout": p.get("timeout"), "models": (p.get("models") or [])[:5]})
+        prov_summary.append({"default_provider": pv.get("default_provider")})
+    except Exception:
+        prov_summary = [{"error": "providers.json 读取失败"}]
+    # v4.16.8：模型调用错误日志尾部（llm_errors.jsonl）
+    llm_errors = []
+    try:
+        _el = os.path.join(ROOT, "data", "llm_errors.jsonl")
+        if os.path.exists(_el):
+            with open(_el, encoding="utf-8", errors="replace") as f:
+                llm_errors = [l.rstrip() for l in f.readlines()[-40:]]
+    except Exception:
+        pass
     return {"ok": True, "now": now, "version": version.current(),
             "platform": f"{os.name}/{sys.platform}",
-            "books": books, "server_tail": server_tail, "llm_state": llm_state}
+            "books": books, "server_tail": server_tail, "llm_state": llm_state,
+            "providers": prov_summary, "llm_errors": llm_errors}
 
 
 @app.get("/api/book-agents")
@@ -2032,6 +2054,14 @@ def api_diagnostics_export(payload: dict = None):
     d = api_diagnostics()
     lines = [f"# 一幕·YIMU 神笔 诊断包", f"- 导出时间: {_dt.datetime.now().isoformat(timespec='seconds')}",
              f"- 版本: {d['version']} | 平台: {d['platform']}", f"- 模型最近调用: {d.get('llm_state')}", ""]
+    lines.append("== 模型供应商配置（脱敏） ==")
+    for p in (d.get("providers") or []):
+        lines.append(json.dumps(p, ensure_ascii=False))
+    if d.get("llm_errors"):
+        lines.append("")
+        lines.append("== 模型调用错误日志（尾40） ==")
+        lines.extend(d["llm_errors"])
+    lines.append("")
     lines.append("== 各作品状态 ==")
     for b in d["books"]:
         flag = f"  ⚠️ 疑似卡住 {b['stalled_seconds']//60} 分钟" if b.get("stalled_seconds") else ""

@@ -87,14 +87,14 @@ def atomic_write_text(path: str, text: str) -> None:
         # v4.16.1：Windows 上目标文件被并发句柄/杀毒实时扫描短暂锁定时
         # os.replace 抛 WinError 5 → 重试数次（间隔递增），仍失败才抛
         _last = None
-        for _i in range(5):
+        for _i in range(8):   # v4.16.8：Windows 并行多线程高频读写计划文件，1.9s 重试不够 → 指数退避总 ~15s
             try:
                 os.replace(tmp, path)
                 _last = None
                 break
             except PermissionError as _e:
                 _last = _e
-                time.sleep(0.25 * (_i + 1))
+                time.sleep(min(0.3 * (2 ** _i), 5.0))
         if _last is not None:
             raise _last
     except BaseException:

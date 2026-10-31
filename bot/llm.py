@@ -191,6 +191,25 @@ def _throttle(cfg):
         if wait > 0:
             time.sleep(wait)
 
+
+LLM_ERROR_LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "llm_errors.jsonl")
+
+def _log_llm_error(provider_id: str, model: str, base_url: str, status, detail: str,
+                   book: str = "", stage: str = ""):
+    """v4.16.8：模型调用失败全局留痕（data/llm_errors.jsonl）——
+    AI 生成/创作失败后「后台没日志」的直接解。诊断包自动收集。"""
+    try:
+        import datetime as _dt
+        os.makedirs(os.path.dirname(LLM_ERROR_LOG), exist_ok=True)
+        entry = {"ts": _dt.datetime.now().isoformat(timespec="seconds"),
+                 "provider": provider_id, "model": model, "base_url": base_url,
+                 "status": status, "book": book, "stage": stage,
+                 "detail": (detail or "").replace("\n", " ")[:300]}
+        with open(LLM_ERROR_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 def _llm_timeout(cfg, stage, prov):
     """每调用 httpx 超时：defaults.llm_timeout 覆盖供应商默认；planning 环节可再放宽 planning_timeout。"""
     d = ((cfg or {}).get("defaults")) or {}
@@ -350,6 +369,15 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                 time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值（在 guard 外 sleep，不占名额）
                 last_err = LLMError(f"429 限流: {r.text[:200]}")
                 continue
+            if r.status_code in (401, 403):
+                # v4.16.8：鉴权失败给出可行动的中文提示，并记入全局错误日志
+                _log_llm_error(prov.get("id") or "", model, base, r.status_code, r.text[:200],
+                               book=_bk or "", stage=_stage or "")
+                raise LLMError(f"API 密钥无效或未配置（HTTP {r.status_code}）——请到「设置 → 模型与供应商」"
+                               f"检查 {prov.get('id')}/{model} 的接口地址与密钥，点「测试连接」验证。供应商后台无调用记录 = 请求未通过鉴权。")
+            if r.status_code >= 500:
+                _log_llm_error(prov.get("id") or "", model, base, r.status_code, r.text[:200],
+                               book=_bk or "", stage=_stage or "")
             r.raise_for_status()
             data = r.json()
             _last_call["ts"] = time.time()
