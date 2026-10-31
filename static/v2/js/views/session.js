@@ -985,6 +985,7 @@ export function renderSession(container, ctx = {}) {
         patchChat({ streaming: false, phase: '', stopRequested: false });
       }
       chat.destroy();
+      if (composer && typeof composer.destroy === 'function') composer.destroy();
       el.remove();
     }
   };

@@ -213,6 +213,14 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
   }
 
   const tools = h('div', { class: 'composer-tools' }, addBtn, mediumChip, modeChip, parBtn, inviteBtn);
+  /* v4.15.8：分章齐写是小说专有（并行写章节）——非小说文体隐藏该按钮
+     （此前散文页点击提示「章节还未规划」误导用户）。订阅 workMedium 动态显隐。 */
+  function paintParBtn() {
+    const m = store.get().workMedium || store.get().ui?.medium || 'novel';
+    parBtn.style.display = m === 'novel' ? '' : 'none';
+  }
+  paintParBtn();
+  const _unsubPar = store.subscribe(paintParBtn);
   const row = h('div', { class: 'composer-row' }, tools, h('div', { class: 'composer-trailing' }, hint, sendBtn));
   card.append(attachRow, inputWrap, row);
   el.append(card);
@@ -599,6 +607,9 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
   return {
     el,
     textarea,
+    destroy() {
+      try { _unsubPar && _unsubPar(); } catch {}
+    },
     focus() {
       textarea.focus();
       const len = textarea.value.length;
