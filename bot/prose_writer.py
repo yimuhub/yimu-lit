@@ -288,10 +288,16 @@ def gen_draft(cfg: dict, brief: str, material: str, operation: str,
         )
         return _gen("散文 · 重写", task, _ctx("D", cfg=cfg), cfg, "writing", max_tokens=6000)
 
+    from bot import wordguard as _wg
+    _tw = int(cfg.get("target_words") or 0)
+    _tw_line = (f"1. 只输出文章正文，不要标题行、不要说明。\n"
+                f"   **硬性字数下限：不少于 {_wg.target_of(_tw) if _tw else 600} 字**"
+                + (f"（目标约 {_tw} 字的 110%），交稿前自查字数。\n" if _tw else "\n")) if _tw else \
+              "1. 只输出文章正文，不要标题行、不要说明。\n"
     task = (
         f"按下面的 brief 与素材，写一篇{genre}。\n\n"
         f"要求：\n"
-        f"1. 只输出文章正文，不要标题行、不要说明。\n"
+        + _tw_line +
         f"2. 具体优先：能用具体的东西就不用抽象词。\n"
         f"3. 不写 AI 腔套话（至关重要/不可或缺/不仅……更是/让我们一起）与元话语。\n"
         f"4. 每段一件事；段首句是这一段的主张；不要用总结句收尾。\n"
@@ -398,6 +404,25 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
 
     proj.log(f"✍️ 阶段 D：{OPERATIONS[op]}…")
     draft = gen_draft(cfg, brief or "", material or "", op, source_text)
+    # v4.16.3：字数守护——起草不足 → 扩写一轮（采纳门禁）→ 续写拼接兜底
+    from bot import wordguard as _wg
+    _tw = int(cfg.get("target_words") or 0)
+    if _tw and op in ("write", "recreate"):
+        for _i in range(2):
+            if _wg.cn_len(draft) >= _tw:
+                break
+            _cur = _wg.cn_len(draft)
+            if _i == 1:   # 末轮：末尾续写拼接（增量保证）
+                _cont = _wg.clean_continuation(llm.chat(
+                    [{"role": "user", "content": _wg.continue_prompt(draft[-600:], max(400, _tw - _cur + 200))}],
+                    cfg=cfg, stage="writing", max_tokens=4000) or "")
+                if _wg.cn_len(_cont) >= 100:
+                    draft = draft.rstrip() + "\n\n" + _cont
+            else:         # 扩写（带采纳门禁）
+                _new = _gen("散文 · 扩写", _wg.expansion_prompt(_tw, _cur) + f"\n\n原文：\n{draft[:9000]}",
+                            _ctx("D", cfg=cfg), cfg, "writing", max_tokens=6000)
+                if _wg.adoption_ok(draft, _new, _tw):
+                    draft = _new
     if not draft.strip():
         draft = "（生成失败，请重试）"
     _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")

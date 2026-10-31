@@ -1678,8 +1678,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
     #   首写目标 = min_words × 1.1（写作提示带硬下限）；
     #   扩充结果有采纳门禁（比当前短 = LLM 抽风，丢弃防「2858→458」倒退）；
     #   最后一轮改用末尾续写拼接（增量保证，不再全文重写）。
-    def _cn_len(t):
-        return len(_re.findall(r"[\u4e00-\u9fff]", t or ""))
+    from bot import wordguard
+    _cn_len = wordguard.cn_len
     words, ok, i = 0, False, 0
     for i in range(max_retries + 1):
         atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")

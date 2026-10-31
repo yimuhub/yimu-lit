@@ -159,12 +159,21 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
             all_text.append(_read(fp))
             continue
         proj.log(f"✍️ 写第 {i}/{len(sections)} 节：{sec}…")
+        from bot import wordguard as _wg
         prompt = tpl["write_prompt"].format(i=i, sec=sec, words=words_per)
+        prompt += f"\n**本节字数下限：不少于 {_wg.target_of(words_per)} 字**（交稿前自查）。"
         prev = all_text[-1][-300:] if all_text else ""
         body = llm.chat([{"role": "user", "content":
             f"{prompt}\n语气：{tone}\n受众：{audience}\n前文摘要：{prev}\n只输出正文。"}],
             cfg=cfg, stage="writing", max_tokens=4000)
         body = (body or "").strip()
+        # v4.16.3：本节字数守护——不足时续写拼接
+        if _wg.cn_len(body) < words_per:
+            _cont = _wg.clean_continuation(llm.chat([{"role": "user", "content":
+                _wg.continue_prompt(body[-500:], max(300, words_per - _wg.cn_len(body) + 150))}],
+                cfg=cfg, stage="writing", max_tokens=2500) or "")
+            if _wg.cn_len(_cont) >= 80:
+                body = body.rstrip() + "\n\n" + _cont
         atomic_write_text(fp, f"## {sec}\n\n{body}\n")
         all_text.append(body)
     meta["stage"] = "O3"

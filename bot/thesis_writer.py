@@ -142,12 +142,16 @@ def gen_outline(cfg: dict) -> dict:
 # ---------------------------------------------------------------- 撰写 T2
 
 def write_chapter(cfg: dict, outline: dict, ch: dict, refs: list) -> str:
+    """v4.16.3：字数守护接入——写作提示 110% 目标；产出不足时扩写（采纳门禁）→ 续写拼接。"""
+    from bot import wordguard as _wg
     degree = DEGREES.get(cfg.get("degree") or "undergrad", "本科毕业论文")
     ref_lines = "\n".join(f"[{r.get('no')}] {r.get('entry')}" for r in refs[:15])
     sections = "、".join(ch.get("sections") or [])
+    _tw = int(ch.get("target_words") or 2000)
+    _goal = _wg.target_of(_tw)
     task = (
         f"撰写【{degree}】《{outline.get('title')}》的第 {ch.get('no')} 章「{ch.get('title')}」。\n"
-        f"本章小节：{sections}；目标 {ch.get('target_words') or 2000} 字左右。\n"
+        f"本章小节：{sections}；**硬性字数下限：不少于 {_goal} 字**（目标 {_tw} 字的 110%，交稿前自查）。\n"
         f"全文摘要：{outline.get('abstract')}\n"
         f"可用文献（正文引注一律用 [编号] 对应下列条目，不得编造编号外的文献）：\n{ref_lines}\n\n"
         "学术写作纪律：\n"
@@ -156,6 +160,24 @@ def write_chapter(cfg: dict, outline: dict, ch: dict, refs: list) -> str:
         "- 不确定的事实留「有待进一步验证」而非编造。"
     )
     body = _gen(f"论文 · 第{ch.get('no')}章", task, cfg, "writing", max_tokens=8000)
+    for _i in range(2):
+        if _wg.cn_len(body) >= _tw:
+            break
+        _cur = _wg.cn_len(body)
+        if _i == 1:
+            _cont = _wg.clean_continuation(_gen(
+                f"论文 · 第{ch.get('no')}章 续写",
+                _wg.continue_prompt(body[-800:], max(400, _tw - _cur + 200)) + "\n\n"
+                + "学术纪律同前：平实语体、引注 [n]、无 markdown 符号。",
+                cfg, "writing", max_tokens=4000) or "")
+            if _wg.cn_len(_cont) >= 100:
+                body = body.rstrip() + "\n\n" + _cont
+        else:
+            _new = _gen(f"论文 · 第{ch.get('no')}章 扩写",
+                        _wg.expansion_prompt(_tw, _cur) + f"\n\n原文章节：\n{body[:9000]}",
+                        cfg, "writing", max_tokens=8000)
+            if _wg.adoption_ok(body, _new, _tw):
+                body = _new
     return body
 
 

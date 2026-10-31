@@ -160,7 +160,18 @@ def _stage_body(proj, pdir, cfg, plan, ktype, platform, tone):
     prompt += f"\n主题：{cfg.get('title')}\n卖点与受众：{cfg.get('idea')}\n"
     if hooks:
         prompt += f"\n钩子参考（选一个最好的用，不要全用）：\n{hooks}\n"
+    # v4.16.3：字数守护——口播按时长（约 4 字/秒）给下限；其他类型默认 400 字
+    from bot import wordguard as _wg
+    _dur = int(cfg.get("duration_secs") or 0)
+    _min_words = max(300, _dur * 4) if _dur else 400
+    prompt += f"\n**硬性字数下限：不少于 {_wg.target_of(_min_words)} 字**（交稿前自查）。"
     body = llm.chat([{"role": "user", "content": prompt}], cfg=cfg, stage="writing", max_tokens=3000)
+    if _wg.cn_len(body) < _min_words:
+        _cont = _wg.clean_continuation(llm.chat([{"role": "user", "content":
+            _wg.continue_prompt((body or "")[-500:], max(250, _min_words - _wg.cn_len(body) + 120))}],
+            cfg=cfg, stage="writing", max_tokens=2000) or "")
+        if _wg.cn_len(_cont) >= 60:
+            body = (body or "").rstrip() + "\n\n" + _cont
     atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
     meta = plan.setdefault("meta", {})
     meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", body or ""))

@@ -155,6 +155,9 @@ def _stage_write(proj, pdir, cfg, plan, age, ctype):
     outline_text = outline.get("outline") or ""
     body_dir = os.path.join(pdir, F_BODY_DIR)
     os.makedirs(body_dir, exist_ok=True)
+    from bot import wordguard as _wg
+    _tw = int(cfg.get("target_words") or 0)
+    _per = max(300, _tw // max(1, len(sections))) if _tw else 800   # 每单元目标
     all_text = []
     for i, sec in enumerate(sections, 1):
         fp = os.path.join(body_dir, f"{i:02d}-{_safe(sec)}.md")
@@ -167,10 +170,18 @@ def _stage_write(proj, pdir, cfg, plan, age, ctype):
             f"全书提纲：{outline_text[:1500]}\n"
             f"语言分级：{guide}\n"
             f"价值观红线：{cfg.get('values_note') or '正面引导，无说教。'}\n"
-            f"前文摘要：{' '.join(t[-300:] for t in all_text[-2:])}\n"
+            + (f"**本单元字数下限：不少于 {_wg.target_of(_per)} 字**（交稿前自查）。\n" if _tw else "")
+            + f"前文摘要：{' '.join(t[-300:] for t in all_text[-2:])}\n"
             "只输出故事正文，不要标题行、不要解释。"}],
             cfg=cfg, stage="writing", max_tokens=4000)
         body = (body or "").strip()
+        # v4.16.3：单元字数守护——不足时续写拼接（增量保证）
+        if _tw and _wg.cn_len(body) < _per:
+            _cont = _wg.clean_continuation(llm.chat([{"role": "user", "content":
+                _wg.continue_prompt(body[-500:], max(300, _per - _wg.cn_len(body) + 150))}],
+                cfg=cfg, stage="writing", max_tokens=2500) or "")
+            if _wg.cn_len(_cont) >= 80:
+                body = body.rstrip() + "\n\n" + _cont
         atomic_write_text(fp, f"## {sec}\n\n{body}\n")
         all_text.append(body)
     meta = plan.setdefault("meta", {})

@@ -138,9 +138,12 @@ def _stage_material(proj, pdir, cfg, plan, facts, org):
 
 
 def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
+    from bot import wordguard as _wg
+    _min_words = 600   # v4.16.3：新闻稿默认下限（倒金字塔完整结构所需）
     w = plan.get("five_w1h") or {}
     body = llm.chat([{"role": "user", "content":
         f"写一篇{ntype}新闻稿。发布主体：{org}。语体：{style}。\n"
+        f"**硬性字数下限：不少于 {_wg.target_of(_min_words)} 字**（交稿前自查）。\n"
         f"5W1H：{json.dumps(w, ensure_ascii=False)}\n"
         f"原始素材：{facts[:3000]}\n\n"
         "倒金字塔结构：\n"
@@ -154,6 +157,13 @@ def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
         "输出 markdown 正文（含 ## 分节）。"}],
         cfg=cfg, stage="writing", max_tokens=4000)
     atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
+    # v4.16.3：字数守护——不足时从结尾续写拼接（增量保证）
+    if _wg.cn_len(body) < _min_words:
+        _cont = _wg.clean_continuation(llm.chat([{"role": "user", "content":
+            _wg.continue_prompt((body or "")[-600:], max(300, _min_words - _wg.cn_len(body) + 150))}],
+            cfg=cfg, stage="writing", max_tokens=2500) or "")
+        if _wg.cn_len(_cont) >= 80:
+            body = (body or "").rstrip() + "\n\n" + _cont
     meta = plan.setdefault("meta", {})
     meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", body or ""))
     proj.save_plan(plan)
