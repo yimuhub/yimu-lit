@@ -65,11 +65,28 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
         if (!key) { toast('请先打开一本作品', { tone: 'danger' }); return; }
         const st = store.get().work || {};
         if (st.running) { toast('当前已有创作任务在运行', { tone: 'warn', duration: 3000 }); return; }
-        const plan = store.get().plan;
-        if (!plan || !plan.chapters || !plan.chapters.length) {
+        /* v4.15.8：store.plan 是 /api/plan 外层响应（ok/key/plan/...），规划树在 .plan 内层；
+           兼容两套规划结构——旧扁平 chapters 与分层规划 volumes→arcs→chapter_cards。 */
+        const outer = store.get().plan || {};
+        const plan = outer.plan || outer;
+        const allCards = [];
+        if (plan && Array.isArray(plan.chapters) && plan.chapters.length) {
+          for (const c of plan.chapters) {
+            allCards.push({ n: c.chapterNumber ?? c.n, title: c.title, status: c.status });
+          }
+        } else if (plan && Array.isArray(plan.volumes)) {
+          for (const v of plan.volumes) {
+            for (const a of (v && v.arcs) || []) {
+              for (const c of (a && a.chapter_cards) || []) {
+                allCards.push({ n: c.n, title: c.title, status: c.status });
+              }
+            }
+          }
+        }
+        if (!allCards.length) {
           toast('当前作品还没有章节规划，请先完成规划', { tone: 'danger', duration: 4000 }); return;
         }
-        const pendings = plan.chapters.filter(c => c.status !== 'completed');
+        const pendings = allCards.filter(c => c.status !== 'completed' && c.status !== 'done');
         if (pendings.length === 0) { toast('所有章节已完成', { tone: 'info' }); return; }
         parBtn.disabled = true;
         parBtn.style.opacity = '0.6';
