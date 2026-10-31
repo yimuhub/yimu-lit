@@ -318,15 +318,15 @@ export function renderSidebar(container, ctx) {
             const res = await api.checkUpdate();
             if (!res || !res.ok) {
               verNum.textContent = res && res.error ? '⚠' : 'v?';
-              toast((res && res.error) || '检查更新失败', 'error');
+              toast((res && res.error) || '检查更新失败', { tone: 'danger' });
               return;
             }
-            const local = res.local_version || '?';
-            const latest = res.latest_version || '?';
+            const local = res.local || '?';
+            const latest = res.remote || '?';
             if (res.has_update) {
               verNum.textContent = `v${local} → v${latest}`;
               verNum.style.color = 'var(--accent, #4ecb89)';
-              toast(`发现新版本 v${latest}，点击前往更新`, 'info');
+              toast(`发现新版本 v${latest}，点击前往更新`, { tone: 'info', duration: 6000 });
               row.onclick = () => {
                 if (res.release_url) window.open(res.release_url, '_blank');
               };
@@ -335,11 +335,11 @@ export function renderSidebar(container, ctx) {
             } else {
               verNum.textContent = `v${local}`;
               verNum.style.color = '';
-              toast('已是最新版本', 'success');
+              toast('已是最新版本', { tone: 'success' });
             }
           } catch (e) {
             verNum.textContent = '⚠';
-            toast('检查更新失败：网络错误', 'error');
+            toast('检查更新失败：网络错误', { tone: 'danger' });
           } finally {
             row.dataset.checking = 'false';
           }

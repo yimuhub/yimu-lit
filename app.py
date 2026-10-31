@@ -1764,6 +1764,36 @@ def _consistency_fix_one(key: str, issue: str) -> dict:
     return {"issue": issue, "fixed": res.get("fixed"), "actions": actions}
 
 
+@app.get("/api/check-update")
+def api_check_update():
+    """v4.15.12：检查 GitHub 仓库最新 release——前端版本号点击时调用（此前端点缺失 → 404「网络错误」）。
+    GitHub 仓库是唯一更新来源：有新版提示拉取；无新版/网络不通都如实返回。"""
+    import urllib.request
+    local = version.current()
+    repo = "yimuhub/yimu-lit"
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/releases/latest",
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "yimu-lit"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.load(resp)
+        remote = str(data.get("tag_name") or "").lstrip("v")
+        def _vkey(v):
+            try:
+                return [int(x) for x in str(v).split(".")]
+            except Exception:
+                return [0]
+        has_update = bool(remote) and _vkey(remote) > _vkey(local)
+        return {"ok": True, "local": local, "remote": remote or "",
+                "has_update": has_update,
+                "release_url": data.get("html_url") or f"https://github.com/{repo}/releases",
+                "notes": str(data.get("body") or "")[:400]}
+    except Exception as e:
+        return {"ok": False, "local": local, "remote": "", "has_update": False,
+                "error": f"GitHub 访问失败（{type(e).__name__}）；当前版本 {local}"}
+
+
 @app.post("/api/fix-consistency-all")
 def api_fix_consistency_all(payload: dict):
     """全部一键修复：确定性修复批量执行；改稿类合并为一次定向重写（后台）。"""
