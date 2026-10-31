@@ -1,26 +1,62 @@
-MIT License
+一幕·YIMU 神笔文学创作台 V4.15
+Business Source License 1.1
 
-Copyright (c) 2026 novel-bot 团队（一幕·神笔）
+License:             BSL 1.1
+Licensor:            yimu.hyipf.com
+Licensed Work:       一幕·YIMU 神笔文学创作台 V4.15
+                     The Licensed Work is (c) 2026 yimu.hyipf.com
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including the right to use, copy, modify,
-merge, publish, distribute, sublicense, and/or sell copies of the Software,
-and to permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
+Additional Use Grant:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+  【免费 · 无需申请授权】
+  以下用途免费，无需申请商业授权：
+  (1) 个人学习、研究、非商业用途；
+  (2) 个人自媒体创作（含个人账号的广告、带货等收益）；
+  (3) 企业内部的评估与测试；
+  (4) 任何主体在连续 12 个月内，通过使用本作品直接产生的商业价值
+      （包括但不限于：广告分成、带货佣金、内容服务收费、API 转售收入）
+      合计低于人民币 10 万元。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+  【需商业授权】
+  连续 12 个月内通过使用本作品直接产生的商业价值达到或超过人民币
+  10 万元的，须事先获得 Licensor 的商业授权。商业授权可免费登记获取
+  （请联系 yimu@hyipf.com），亦可采用阶梯定价，具体以授权
+  协议为准。Licensor 有权要求被授权方就商业价值规模作出合理说明。
 
----
-本仓库核心创作技能文本（skill/ 目录，「一幕·神笔 · ShenBi NovelCraft」）为
-原创内容，版权归 novel-bot 团队所有；其方法论吸收业界通用创作思想，不复制
-任何第三方技能文本。商业授权范围以本文件与 NOTICE 为准。
+  [EN] You may use the Licensed Work free of charge for personal learning,
+  research, non-commercial purposes, personal content creation (including
+  ad/sales revenue from your own accounts), internal evaluation, and any
+  use where the direct commercial value generated through the Licensed
+  Work is below RMB 100,000 in any rolling 12-month period. Reaching or
+  exceeding this threshold requires a commercial license from the Licensor
+  (available free upon registration at yimu@hyipf.com, or tiered pricing
+  per agreement).
+  The Licensor may request reasonable disclosure of commercial value.
+
+Change Date:         每个版本首次公开发布满四（4）年之日。
+                     （例如 V4.15 于 2026-10-31 发布，则其 Change Date 为 2030-10-31。）
+Change License:      Apache License, Version 2.0
+                     (https://www.apache.org/licenses/LICENSE-2.0)
+
+--------------------------------------------------------------------------------
+Text of BSL 1.1
+
+The Licensor hereby grants you the right to copy, modify, create
+derivative works, redistribute, and make non-production use of the
+Licensed Work. The Licensor may make an Additional Use Grant, above,
+permitting limited production use.
+
+Effective on the Change Date, or the fifth anniversary of the first
+publicly available distribution of a specific version of the Licensed
+Work under this License, whichever comes first, the Licensor hereby
+grants you rights under the terms of the Change License, and the rights
+granted in the paragraph above terminate.
+--------------------------------------------------------------------------------
+
+备注：
+1. 本文件基于 BSL 1.1 官方文本起草并填入上述参数。正式对外发布前，
+   建议请律师核对一次（以上 Additional Use Grant 为本项目定制条款，含
+   10 万元/年商业价值阈值）。
+2. SPDX 标识：BUSL-1.1。
+3. 本 License 仅管代码不管品牌："一幕·YIMU"及相关 slogan 的商标权
+   归 Licensor 所有，需另行注册保护。

@@ -10,7 +10,7 @@
 
 ### 1.1 代码
 
-`app.py`、`bot/`、`static/`、`run.py`、`tests/` 等全部代码：**MIT 协议**，见 [LICENSE](LICENSE)。
+`app.py`、`bot/`、`static/`、`run.py`、`tests/` 等全部代码：**BUSL-1.1 协议**，见 [LICENSE](LICENSE)。
 
 ### 1.2 技能库
 
