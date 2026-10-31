@@ -3,7 +3,7 @@
 import { h, icon, fmtWords, groupByRecency, initials, mediumGlyph, statusMeta, debounce } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { navigate, openProject } from '../core/router.js';
-import { toast } from '../core/ui.js';
+import { toast, confirmDialog, openModal } from '../core/ui.js';
 import { api, errorText } from '../core/api.js';
 
 let localQuery = '';
@@ -326,12 +326,38 @@ export function renderSidebar(container, ctx) {
             if (res.has_update) {
               verNum.textContent = `v${local} → v${latest}`;
               verNum.style.color = 'var(--accent, #4ecb89)';
-              toast(`发现新版本 v${latest}，点击前往更新`, { tone: 'info', duration: 6000 });
-              row.onclick = () => {
-                if (res.release_url) window.open(res.release_url, '_blank');
-              };
-              /* 闪烁提示 */
               row.dataset.update = 'true';
+              /* v4.15.17：一键升级——弹窗确认后自动拉取并重启 */
+              const doUpgrade = async () => {
+                verNum.textContent = '升级中…';
+                try {
+                  const up = await api.selfUpdate();
+                  if (up && up.updated) {
+                    verNum.textContent = `v${up.to}`;
+                    toast(`已更新到 v${up.to}，服务正在重启…`, { tone: 'success', duration: 8000 });
+                    setTimeout(async () => {
+                      for (let i = 0; i < 12; i++) {
+                        try { await fetch('/api/version', { credentials: 'include' }); break; }
+                        catch { await new Promise(r => setTimeout(r, 2000)); }
+                      }
+                      location.reload();
+                    }, 4000);
+                  } else {
+                    verNum.textContent = `v${local}`;
+                    toast((up && up.msg) || '已是最新版本', { tone: 'success' });
+                  }
+                } catch (e) {
+                  verNum.textContent = `v${local}`;
+                  toast(errorText(e, '升级失败（可重试或手动更新）'), { tone: 'danger', duration: 6000 });
+                }
+              };
+              const ok = await confirmDialog({
+                title: `发现新版本 v${latest}`,
+                message: `当前版本 v${local}。是否立即升级到 v${latest}？\n\n升级会自动拉取最新代码并重启服务，作品与配置不受影响。`,
+                confirmText: '立即升级',
+                cancelText: '稍后再说'
+              });
+              if (ok) doUpgrade();
             } else {
               verNum.textContent = `v${local}`;
               verNum.style.color = '';

@@ -1807,6 +1807,128 @@ def api_providers_fetch_models(payload: dict):
         return JSONResponse({"error": f"拉取失败（{type(e).__name__}）：请检查接口地址与密钥"}, status_code=502)
 
 
+# ---------- v4.15.17：应用内一键自更新（弹窗确认 → 拉取 → 覆盖 → 重启） ----------
+
+# 更新时覆盖的白名单（源码与对外文件）；用户数据（projects/config/providers/data/usage）一律不动
+_UPDATE_SYNC = [
+    "app.py", "run.py", "VERSION", "requirements.txt", "requirements-dev.txt",
+    "pyproject.toml", "package.json", "config.example.json",
+    "CHANGELOG.md", "README.md", "README_EN.md", "LICENSE", "NOTICE.md",
+    "start.sh", "start.bat", "build.py",
+    "bot", "static", "skillkit", "tests", "tools", "docs",
+    ".github", "Dockerfile", "docker-compose.yml", ".dockerignore",
+]
+
+@app.post("/api/self-update")
+def api_self_update():
+    """一键自更新：下载 GitHub 最新 release 源码 → 白名单覆盖 → 返回需重启。"""
+    import urllib.request, zipfile, io, shutil, tempfile
+    repo = "yimuhub/yimu-lit"
+    token = None
+    try:
+        import subprocess as _sp
+        _out = _sp.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n",
+                       capture_output=True, text=True, timeout=8).stdout
+        for _line in _out.splitlines():
+            if _line.startswith("password="):
+                token = _line.split("=", 1)[1]
+    except Exception:
+        pass
+    # 1. 最新版本
+    try:
+        req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "yimu-lit",
+                     **({"Authorization": f"Bearer {token}"} if token else {})})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rel = json.load(r)
+        remote = str(rel.get("tag_name") or "").lstrip("v")
+    except Exception as e:
+        return JSONResponse({"error": f"获取最新版本失败（{type(e).__name__}）"}, status_code=502)
+    local = version.current()
+    def _vk(v):
+        try:
+            return [int(x) for x in str(v).split(".")]
+        except Exception:
+            return [0]
+    if not remote or _vk(remote) <= _vk(local):
+        return {"ok": True, "updated": False, "version": local, "msg": f"已是最新版本 v{local}"}
+    # 2. 下载 zipball（tag）
+    try:
+        url = f"https://api.github.com/repos/{repo}/zipball/v{remote}"
+        req = urllib.request.Request(url, headers={"User-Agent": "yimu-lit",
+            **({"Authorization": f"Bearer {token}"} if token else {})})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            blob = r.read()
+    except Exception as e:
+        return JSONResponse({"error": f"下载新版本失败（{type(e).__name__}）"}, status_code=502)
+    # 3. 解压并白名单覆盖
+    root = ROOT
+    backup_dir = os.path.join(root, "data", "update_backup", f"v{local}-{int(time.time())}")
+    replaced = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            names = zf.namelist()
+            if not names:
+                return JSONResponse({"error": "压缩包为空"}, status_code=502)
+            top = names[0].split("/")[0] + "/"
+            # 先备份当前版本的关键源码（可回滚）
+            os.makedirs(backup_dir, exist_ok=True)
+            for item in _UPDATE_SYNC:
+                src = os.path.join(root, item)
+                if os.path.exists(src):
+                    dst = os.path.join(backup_dir, item)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    if os.path.isfile(src):
+                        shutil.copy2(src, dst)
+                    else:
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+            # 覆盖
+            for item in _UPDATE_SYNC:
+                prefix = top + item
+                # v4.15.17 修复：文件/目录判断不能用扩展名（Dockerfile 等无扩展名文件
+                # 会被当目录 → 对已存在文件 makedirs → FileExistsError）；按 zip 内子路径判断。
+                is_dir = any(n.startswith(prefix + "/") for n in names)
+                if is_dir:
+                    os.makedirs(os.path.join(root, item), exist_ok=True)
+                    for n in names:
+                        if not n.startswith(prefix + "/") or n.endswith("/"):
+                            continue
+                        rel = n[len(top):]
+                        target = os.path.join(root, rel)
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        with zf.open(n) as fsrc, open(target, "wb") as fdst:
+                            fdst.write(fsrc.read())
+                    replaced += 1
+                elif prefix in names:
+                    with zf.open(prefix) as fsrc, open(os.path.join(root, item), "wb") as fdst:
+                        fdst.write(fsrc.read())
+                    replaced += 1
+    except Exception as e:
+        return JSONResponse({"error": f"解压覆盖失败（{type(e).__name__}），已保留原版本；备份在 {backup_dir}"}, status_code=500)
+    new_version = version.current()
+    return {"ok": True, "updated": True, "from": local, "to": new_version,
+            "replaced": replaced, "need_restart": True,
+            "msg": f"已更新 v{local} → v{new_version}（覆盖 {replaced} 项），需重启服务生效"}
+
+
+@app.post("/api/restart")
+def api_restart():
+    """重启服务（自更新后调用）：当前进程以 run.py 原样重新拉起。"""
+    import sys as _sys, subprocess as _sp
+    args = [ _sys.executable, os.path.join(ROOT, "run.py") ]
+    if _sys.argv and _sys.argv[0].endswith("run.py"):
+        args = [ _sys.executable ] + list(_sys.argv)
+    elif os.environ.get("NOVEL_BOT_PORT"):
+        args += ["--port", os.environ["NOVEL_BOT_PORT"]]
+    if _sys.platform == "win32":
+        _sp.Popen(args, cwd=ROOT, creationflags=_sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS)
+    else:
+        _sp.Popen(args, cwd=ROOT, start_new_session=True,
+                  stdout=open(os.path.join(ROOT, "nb46831.log"), "ab"), stderr=_sp.STDOUT)
+    threading.Timer(0.6, lambda: os._exit(0)).start()
+    return {"ok": True, "msg": "服务正在重启，约 5 秒后自动恢复；页面稍后自动刷新"}
+
+
 @app.get("/api/check-update")
 def api_check_update():
     """v4.15.12：检查 GitHub 仓库最新 release——前端版本号点击时调用（此前端点缺失 → 404「网络错误」）。
