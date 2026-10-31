@@ -1912,14 +1912,11 @@ def api_self_update():
 
 
 @app.post("/api/restart")
-def api_restart():
-    """重启服务（自更新后调用）：当前进程以 run.py 原样重新拉起。"""
+def api_restart(request: Request):
+    """重启服务（自更新后调用）。v4.15.18：-m uvicorn 方式（脚本路径方式会遮蔽标准库）+ 端口取自当前请求。"""
     import sys as _sys, subprocess as _sp
-    args = [ _sys.executable, os.path.join(ROOT, "run.py") ]
-    if _sys.argv and _sys.argv[0].endswith("run.py"):
-        args = [ _sys.executable ] + list(_sys.argv)
-    elif os.environ.get("NOVEL_BOT_PORT"):
-        args += ["--port", os.environ["NOVEL_BOT_PORT"]]
+    _port = request.url.port or int(os.environ.get("NOVEL_BOT_PORT") or 46821)
+    args = [ _sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(_port) ]
     if _sys.platform == "win32":
         _sp.Popen(args, cwd=ROOT, creationflags=_sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS)
     else:
