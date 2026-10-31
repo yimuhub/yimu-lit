@@ -1836,11 +1836,7 @@ def api_self_update():
         pass
     # 1. 最新版本
     try:
-        req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "yimu-lit",
-                     **({"Authorization": f"Bearer {token}"} if token else {})})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            rel = json.load(r)
+        rel = _gh_fetch(f"https://api.github.com/repos/{repo}/releases/latest", token=token, timeout=12)
         remote = str(rel.get("tag_name") or "").lstrip("v")
     except Exception as e:
         return JSONResponse({"error": f"获取最新版本失败（{type(e).__name__}）"}, status_code=502)
@@ -1855,10 +1851,7 @@ def api_self_update():
     # 2. 下载 zipball（tag）
     try:
         url = f"https://api.github.com/repos/{repo}/zipball/v{remote}"
-        req = urllib.request.Request(url, headers={"User-Agent": "yimu-lit",
-            **({"Authorization": f"Bearer {token}"} if token else {})})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            blob = r.read()
+        blob = _gh_fetch(url, token=token, timeout=120, retries=2, binary=True)
     except Exception as e:
         return JSONResponse({"error": f"下载新版本失败（{type(e).__name__}）"}, status_code=502)
     # 3. 解压并白名单覆盖
@@ -2019,6 +2012,23 @@ def api_diagnostics_export(payload: dict = None):
                     headers={"Content-Disposition": "attachment; filename=yimu-lit-diagnostics.txt"})
 
 
+def _gh_fetch(url: str, token: str | None = None, timeout: int = 15, retries: int = 3, binary: bool = False):
+    """v4.16.4：GitHub 请求重试——大陆网络到 api.github.com 间歇性抖动（实测 3 连发失败 1 次），
+    此前单次失败直接报「联网错误」。binary=True 返回 bytes。"""
+    import urllib.request as _ur
+    last = None
+    for i in range(retries):
+        try:
+            req = _ur.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "yimu-lit",
+                                            **({"Authorization": f"Bearer {token}"} if token else {})})
+            with _ur.urlopen(req, timeout=timeout) as r:
+                return r.read() if binary else json.load(r)
+        except Exception as e:
+            last = e
+            time.sleep(1.2 * (i + 1))
+    raise last
+
+
 @app.get("/api/check-update")
 def api_check_update():
     """v4.15.12：检查 GitHub 仓库最新 release——前端版本号点击时调用（此前端点缺失 → 404「网络错误」）。
@@ -2027,12 +2037,7 @@ def api_check_update():
     local = version.current()
     repo = "yimuhub/yimu-lit"
     try:
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/releases/latest",
-            headers={"Accept": "application/vnd.github+json",
-                     "User-Agent": "yimu-lit"})
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.load(resp)
+        data = _gh_fetch(f"https://api.github.com/repos/{repo}/releases/latest", token=token, timeout=12)
         remote = str(data.get("tag_name") or "").lstrip("v")
         def _vkey(v):
             try:
