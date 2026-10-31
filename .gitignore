@@ -56,3 +56,10 @@ bot/.nlu_probe
 
 # pytest 临时测试目录（各次运行的 fixtures）
 pytest-of-*/
+
+# —— 开发过程文件（只留本地，不入库）——
+问题修复记录.md
+提交规范.md
+升级方案-*.md
+.zcode/
+dist/
