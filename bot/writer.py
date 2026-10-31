@@ -1362,10 +1362,32 @@ def _maybe_backflow_titles(proj, ch_no=None):
         return None
 
 
-def _write_loop_parallel(proj, n_workers=5):
+def _parallel_role_label(proj, wid):
+    """本书绑定的创作岗位轮流署名（Agent#1（作家）），未绑定返回空。v4.16.6。"""
+    try:
+        cfg = (proj.plan() or {}).get("config") or {}
+        named = [a for a in (cfg.get("agents") or []) if isinstance(a, str) and a]
+        if not named:
+            return ""
+        from . import agents as _ag
+        key = named[(wid - 1) % len(named)]
+        return f"（{_ag.AGENTS.get(key, {}).get('label', key)}）"
+    except Exception:
+        return ""
+
+
+def _write_loop_parallel(proj, n_workers=5, rounds=None):
     """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）。
     先熔炼『总架构』，各 worker 领 1..N 章，写完一个立即取下一未完成章；
-    真 LLM 并发由 providers.ConcurrencyGuard 兜底防 429。"""
+    真 LLM 并发由 providers.ConcurrencyGuard 兜底防 429。
+    v4.16.6：rounds=每岗位写几轮（总量=岗位数×轮数，写满即停）；启动时清残留暂停位
+    （此前 batch 停止置 meta.paused 后，分章齐写会被 is_paused 立即打断——Windows 实证）。"""
+    _p0 = proj.plan()
+    if _p0:
+        _p0.setdefault("meta", {})["paused"] = False
+        if _p0.get("status") == "paused":
+            _p0["status"] = "in_progress"
+        proj.save_plan(_p0)
     n_workers = max(1, int(n_workers or 5))
     llm.book(os.path.basename(proj.path), "writing")   # v2.9.0 修复：并行模式下主线程（蓝图/规划）token 也要归集到书
     ensure_blueprint(proj)                       # 写任何一章前先读总架构
@@ -1393,6 +1415,8 @@ def _write_loop_parallel(proj, n_workers=5):
     if _reset:
         proj.save_plan(plan)
         proj.log(f"🔧 检测到 {_reset} 章标记完成但无实际内容，已重置为待写")
+    _start_done = sum(1 for c in plan["chapters"] if c.get("status") == "completed")
+    _total_limit = (n_workers * int(rounds)) if rounds else None
     pend = [c.get("chapterNumber") for c in plan["chapters"] if c.get("status") != "completed"]
     if not pend:
         proj.log("ℹ️ 所有章节均已完成且有内容，无需并行创作")
@@ -1413,6 +1437,14 @@ def _write_loop_parallel(proj, n_workers=5):
         while True:
             if is_paused(proj):
                 break
+            if _total_limit:
+                _p2 = proj.plan() or {}
+                _done_now = sum(1 for c in (_p2.get("chapters") or []) if c.get("status") == "completed")
+                if _done_now - _start_done >= _total_limit:
+                    proj.log(f"⏸ 本轮已完成 {_done_now - _start_done} 章（{n_workers} 岗位 × {rounds} 轮），停在当前进度。")
+                    _p2["status"] = "paused"
+                    proj.save_plan(_p2)
+                    return
             _msg = budget_blocked(proj)
             if _msg:
                 _pause_for_budget(proj, _msg)
@@ -1445,7 +1477,7 @@ def _write_loop_parallel(proj, n_workers=5):
             if not ch:
                 q.task_done(); continue
             try:
-                proj.log(f"🧵 Agent#{wid} 领第{no}章（总架构已注入，写完立即取下一章）")
+                proj.log(f"🧵 Agent#{wid}{_parallel_role_label(proj, wid)} 领第{no}章（总架构已注入，写完立即取下一章）")
                 _maybe_replan(proj, no)
                 _write_chapter(proj, ch, min_words, 3)   # 内部 LLM 走 ConcurrencyGuard
             except llm.BudgetExceeded as e:

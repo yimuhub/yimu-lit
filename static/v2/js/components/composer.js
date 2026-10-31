@@ -90,12 +90,26 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
         }
         const pendings = allCards.filter(c => c.status !== 'completed' && c.status !== 'done');
         if (pendings.length === 0) { toast('所有章节已完成', { tone: 'info' }); return; }
-        /* v4.16.5：弹窗选择并行岗位数——每个创作者的模型/供应商限流不同，不能写死。 */
+        /* v4.16.5/6：弹窗选择并行岗位数与轮数——每个创作者的模型/供应商限流不同，不能写死。 */
         const lastN = Number(localStorage.getItem('shenbi_parallel_workers') || 5) || 5;
+        const lastR = Number(localStorage.getItem('shenbi_parallel_rounds') || 0) || 0;
         const numInput = h('input', {
           class: 'input', type: 'number', min: '1', max: '8',
-          value: String(Math.min(lastN, 8)), 'aria-label': '并行数量'
+          value: String(Math.min(lastN, 8)), 'aria-label': '并行岗位数'
         });
+        const roundsInput = h('input', {
+          class: 'input', type: 'number', min: '0', max: '500',
+          value: String(lastR || ''), placeholder: '留空 = 写完全部剩余章节',
+          'aria-label': '每个岗位写几轮'
+        });
+        const roundsHint = h('div', { class: 'hint-text', style: 'margin-top:6px' });
+        const paintRoundsHint = () => {
+          const n = Math.max(1, Number(numInput.value) || 1);
+          const r = Number(roundsInput.value) || 0;
+          roundsHint.textContent = r ? `本轮将写 ${Math.min(n * r, pendings.length)} 章（${n} 岗位 × ${r} 轮，写完自动停）` : '不填轮数 = 一直写到全部剩余章节完成';
+        };
+        numInput.addEventListener('input', paintRoundsHint);
+        roundsInput.addEventListener('input', paintRoundsHint);
         const chipWrap = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px' });
         const paintChips = (active) => {
           chipWrap.textContent = '';
@@ -103,21 +117,34 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
             chipWrap.append(h('button', {
               class: 'btn btn-sm' + (active === n ? ' btn-accent' : ''),
               type: 'button',
-              text: `${n} 个`,
-              on: { click: () => { numInput.value = String(Math.min(n, 8)); paintChips(n); } }
+              text: `${n} 岗位`,
+              style: active === n ? 'background:var(--accent,#C73A32);color:#fff;border-color:var(--accent,#C73A32)' : '',
+              on: { click: () => { numInput.value = String(Math.min(n, 8)); paintChips(n); paintRoundsHint(); } }
             }));
           }
         };
         paintChips(lastN > 8 ? 10 : lastN);
+        paintRoundsHint();
         const startWith = async () => {
           const n = Math.max(1, Math.min(8, Number(numInput.value) || 5));
+          const r = Number(roundsInput.value) || 0;
           localStorage.setItem('shenbi_parallel_workers', String(n));
+          localStorage.setItem('shenbi_parallel_rounds', String(r));
           parBtn.disabled = true;
           parBtn.style.opacity = '0.6';
           modal.close();
+          /* v4.16.6：写进对话框——用户消息 + 确认回复，进度可见 */
           try {
-            const res = await api.parallelWrite({ key, workers: n });
-            toast((res && res.msg) || `分章齐写已启动：${n} 个岗位并行写 ${pendings.length} 章`, { tone: 'success', duration: 5000 });
+            store.set((st) => {
+              const msgs = [...((st.chat && st.chat.messages) || [])];
+              msgs.push({ id: `par_${Date.now()}`, role: 'user', content: `⚡ 分章齐写：${n} 个岗位并行${r ? `，每岗位写 ${r} 轮（共约 ${Math.min(n * r, pendings.length)} 章）` : '，写到全部剩余章节完成'}` });
+              msgs.push({ id: `par_a_${Date.now()}`, role: 'assistant',
+                          content: `▶ 已启动分章齐写：${n} 个创作岗位同时领章${r ? `，每个岗位写 ${r} 轮（共 ${Math.min(n * r, pendings.length)} 章），` : '，'}写完自动停在本轮进度。总架构对齐后开工，进度看上方目标条，完成后我会汇报。` });
+              return { ...st, chat: { ...(st.chat || {}), messages: msgs } };
+            });
+            window.__parallelJustStarted = true;   // v4.16.6：并行完成时对话框汇报
+            const res = await api.parallelWrite({ key, workers: n, rounds: r || undefined });
+            toast((res && res.msg) || `分章齐写已启动`, { tone: 'success', duration: 5000 });
             if (ctx && ctx.refreshState) ctx.refreshState();
           } catch (err) {
             toast(errorText(err, '启动失败'), { tone: 'danger', duration: 4000 });
@@ -127,15 +154,20 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
           }
         };
         numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startWith(); });
-        const body = h('div', { class: 'wiz-grid' },
-          h('p', { class: 'hint-text', style: 'margin-bottom:6px',
-                   text: `待写 ${pendings.length} 章。每个岗位会依次领取不同章节同时写作；数量取决于你的模型供应商并发/限流承受能力（最多 8）。` }),
-          h('div', { class: 'field' }, h('span', { class: 'field-label', text: '并行数量（1-8）' }), numInput),
-          chipWrap
+        const body = h('div', { class: 'wiz-grid', style: 'display:flex;flex-direction:column;gap:14px' },
+          h('div', { style: 'padding:14px;border:1px solid var(--line,#ddd);border-radius:8px;background:rgba(199,58,50,.04)' },
+            h('div', { style: 'font-size:15px;font-weight:600;margin-bottom:6px', text: `⚡ 分章齐写 · 待写 ${pendings.length} 章` }),
+            h('div', { class: 'hint-text', text: '多个创作岗位同时领不同章节写作（总架构对齐 + 连续性入库）。数量取决于你的模型供应商并发/限流承受能力（1-8）。' })),
+          h('div', { class: 'field' },
+            h('span', { class: 'field-label', text: '并行岗位数（1-8）' }),
+            h('div', { style: 'display:flex;gap:8px;align-items:center' }, numInput, chipWrap)),
+          h('div', { class: 'field' },
+            h('span', { class: 'field-label', text: '每个岗位写几轮（可选）' }),
+            roundsInput, roundsHint)
         );
         const footer = h('div', { class: 'set-actions' },
           h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
-          h('button', { class: 'btn btn-primary', type: 'button', text: '开始并行创作', on: { click: startWith } })
+          h('button', { class: 'btn btn-primary', type: 'button', text: '⚡ 开始并行创作', on: { click: startWith } })
         );
         const modal = openModal({ title: '分章齐写 · 并行岗位', body, footer, size: 'sm' });
       }

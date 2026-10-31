@@ -730,6 +730,21 @@ function startLive(key) {
     onDone() {
       ctx.refreshWork();
       ctx.refreshLibrary();
+      /* v4.16.6：分章齐写结束 → 对话框汇报（之前启动过并行时） */
+      try {
+        const st = store.get();
+        const wasParallel = (st.work && st.work.parallel) || window.__parallelJustStarted;
+        if (wasParallel) {
+          window.__parallelJustStarted = false;
+          const w = st.work || {};
+          store.set((s2) => {
+            const msgs = [...((s2.chat && s2.chat.messages) || [])];
+            msgs.push({ id: `par_done_${Date.now()}`, role: 'assistant',
+                        content: `⚡ 分章齐写完成：当前 ${w.done || 0}/${w.total || 0} 章、约 ${(w.total_words || 0).toLocaleString()} 字。已停在本轮进度，说「再写 N 章」或「写完全部」继续，或逐章检查后进入审稿验收。` });
+            return { ...s2, chat: { ...(s2.chat || {}), messages: msgs } };
+          });
+        }
+      } catch { /* 不影响主流程 */ }
     }
   });
   pollStop = pollBookLive(

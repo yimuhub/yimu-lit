@@ -1987,6 +1987,44 @@ def api_diagnostics():
             "books": books, "server_tail": server_tail, "llm_state": llm_state}
 
 
+@app.get("/api/book-agents")
+def api_book_agents(key: str):
+    """本书绑定的创作岗位（plan.config.agents）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    plan = proj.plan() or {}
+    agents = (plan.get("config") or {}).get("agents") or []
+    from bot import agents as _ag
+    return {"ok": True, "key": key, "agents": [
+        {"agent": a, "label": _ag.AGENTS.get(a, {}).get("label", a),
+         "stage": _ag.AGENTS.get(a, {}).get("stage", ""),
+         "desc": _ag.AGENTS.get(a, {}).get("desc", "")} for a in agents if isinstance(a, str)]}
+
+
+@app.post("/api/book-agents")
+def api_book_agents_set(payload: dict):
+    """设置本书创作岗位（真正参与创作：并行领章署名、写作日志展示）。"""
+    key = str(payload.get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    from bot import agents as _ag
+    from bot import medium as _med_mod
+    raw = payload.get("agents")
+    if not isinstance(raw, list):
+        return JSONResponse({"error": "agents 必须是数组"}, status_code=400)
+    cleaned = []
+    for a in raw:
+        a = str(a or "").strip()
+        if a and (a in _ag.AGENTS or str(key)[:2] == "s_"):
+            cleaned.append(a)
+    plan = proj.plan() or {}
+    plan.setdefault("config", {})["agents"] = cleaned
+    proj.save_plan(plan)
+    return {"ok": True, "key": key, "agents": cleaned}
+
+
 @app.post("/api/diagnostics/export")
 def api_diagnostics_export(payload: dict = None):
     """一键导出诊断包（纯文本，不含任何密钥/作品正文）——发给开发者排查用。"""
@@ -3423,7 +3461,7 @@ def api_parallel_write(payload: dict):
     _PARALLEL_RUNNING[key] = {"running": True, "result": None, "workers": nworkers}
     def _job():
         try:
-            writer._write_loop_parallel(proj, n_workers=nworkers)
+            writer._write_loop_parallel(proj, n_workers=nworkers, rounds=payload.get("rounds"))
             _PARALLEL_RUNNING[key] = {"running": False, "result": "ok", "workers": nworkers}
         except Exception as e:
             _PARALLEL_RUNNING[key] = {"running": False, "result": {"error": str(e)}, "workers": nworkers}

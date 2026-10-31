@@ -497,6 +497,85 @@ export function createCollabPanel(ctx) {
       list = baseList;
     }
     sec.append(sectionHead('创作岗位', list.length ? `${list.length} 个岗位` : ''));
+    /* v4.16.6：本书创作岗位——绑定后真实参与创作（并行领章署名、写作日志展示）。 */
+    const bookAgentsBody = h('div', { class: 'rp-stack', style: 'margin:10px 0' });
+    sec.append(h('div', { class: 'rp-section-head' },
+      h('h3', { text: '本书创作岗位' }),
+      h('div', { class: 'rp-section-actions' },
+        h('button', { class: 'btn btn-sm btn-accent', type: 'button', text: '＋ 绑定岗位', on: {
+          click: () => openBookAgentDialog()
+        } }))
+    ));
+    sec.append(bookAgentsBody);
+    const paintBookAgents = (bookAgents) => {
+      bookAgentsBody.textContent = '';
+      if (!bookAgents.length) {
+        bookAgentsBody.append(h('div', { class: 'hint-text',
+          text: '尚未绑定。绑定的岗位会真实参与本书创作：分章齐写时按岗位轮流领章署名，写作日志可见其分工。' }));
+        return;
+      }
+      for (const a of bookAgents) {
+        bookAgentsBody.append(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border:1px solid var(--line,#ddd);border-radius:6px;margin-bottom:6px' },
+          h('span', { style: 'font-size:13px', text: `${a.label || a.agent}（${a.stage || '—'}）` }),
+          h('button', { class: 'btn btn-sm', type: 'button', text: '移除', on: {
+            click: async () => {
+              try {
+                const rest = bookAgents.filter((x) => x.agent !== a.agent).map((x) => x.agent);
+                await api.setBookAgents({ key, agents: rest });
+                toast('已移除', { tone: 'success', duration: 1500 });
+                await loadAgents();   // 重绘
+              } catch (err) { toast(errorText(err, '移除失败'), { tone: 'danger' }); }
+            }
+          } })
+        ));
+      }
+    };
+    // 拉取本书绑定并渲染（与岗位列表并行）
+    (async () => {
+      try {
+        const ba = await api.bookAgents(key);
+        paintBookAgents((ba && ba.agents) || []);
+      } catch {
+        paintBookAgents([]);
+      }
+    })();
+    async function openBookAgentDialog() {
+      try {
+        const cat = await loadSkillCatalog();   // 触发缓存无碍
+      } catch {}
+      const ba = await api.bookAgents(key).catch(() => ({ agents: [] }));
+      const bound = new Set((ba.agents || []).map((a) => a.agent));
+      const picker = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:340px;overflow:auto' });
+      for (const a of list) {
+        const checked = bound.has(a.agent);
+        const row = h('label', { style: 'display:flex;gap:8px;align-items:center;padding:8px;border:1px solid var(--line,#ddd);border-radius:6px;cursor:pointer' },
+          h('input', { type: 'checkbox', checked, 'data-agent': a.agent }),
+          h('span', { style: 'font-size:13px' },
+            h('b', { text: a.label || a.agent }),
+            h('span', { class: 'hint-text', text: ` ${a.stage || ''} ${a.desc || ''}`.slice(0, 40) }))
+        );
+        picker.append(row);
+      }
+      const body = h('div', {},
+        h('p', { class: 'hint-text', style: 'margin-bottom:10px',
+                 text: '勾选参与本书创作的岗位（建议 1-3 个写作类）。绑定后：分章齐写按岗位轮流领章署名，写作日志可见分工。' }),
+        picker);
+      const footer = h('div', { class: 'set-actions' },
+        h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+        h('button', { class: 'btn btn-primary', type: 'button', text: '保存绑定', on: {
+          click: async () => {
+            const picked = [...picker.querySelectorAll('input:checked')].map((i) => i.dataset.agent);
+            try {
+              await api.setBookAgents({ key, agents: picked });
+              toast(`已绑定 ${picked.length} 个创作岗位`, { tone: 'success' });
+              modal.close();
+              await loadAgents();
+            } catch (err) { toast(errorText(err, '保存失败'), { tone: 'danger' }); }
+          }
+        } })
+      );
+      const modal = openModal({ title: '绑定本书创作岗位', body, footer, size: 'md' });
+    }
     sec.append(h('div', { class: 'collab-add-agent-bar' },
       h('button', {
         class: 'btn btn-sm btn-accent',
