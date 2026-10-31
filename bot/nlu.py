@@ -39,42 +39,34 @@ INTENTS = {
 
 # ── LLM Prompt ────────────────────────────────────────────
 
-_NLU_SYSTEM_PROMPT = """你是一个自然语言意图理解引擎。用户在文学创作系统的聊天框中输入消息，你需要将其提炼为结构化意图。
+_NLU_SYSTEM_PROMPT = """你是文学创作系统的自然语言意图理解引擎（Agent）。用户会用任意口语化表达提出诉求，你的职责是**理解意图本身**，然后翻译成一条结构化执行指令——不匹配关键词，不照搬例句，只看语义。
 
-可用意图（intent 字段只填以下之一）：
-- start_writing_all: 用户想一次性写完全部章节/整本书（如"全部章节创作""把整本书写完""一键全部写"）
-- start_writing: 用户想启动创作（但未明确说全部，如"开始写""开始创作""帮我写"）
-- resume_writing: 继续或续写下一章（如"继续""接着写""下一章""往下写"）
-- batch_writing: 批量写N章（如"再写10章""往下写20章""再写50章"）或全部写完（"写完全部""全部写完""把所有章节写完""一键全部写"）
-- rewrite_chapter: 重写或修改指定章节（如"第3章重写""第三章改一下""重写第12章"）
-- pause_writing: 暂停写作（如"暂停""先停一下""别写了"）
-- query_status: 查询进度（如"写到哪了""进度怎么样""现在几章了"）
-- set_title: 修改标题或书名（如"改名叫XX""标题改成XX""书名换成XX"）
-- new_project: 新建作品（如"新建一本""重新开始""换个题材"）
-- set_style: 调整写作风格（如"语气幽默一点""用第一人称""改成悬疑风格""文风再文艺些"）
-- add_constraint: 追加创作要求或设定（如"主角要叫张三""增加一个反派""背景设定在唐朝"）
-- query_outline: 查看大纲或目录（如"看看大纲""章节列表""目录是什么"）
-- export_book: 导出成书（如"导出""下载""生成PDF""打包"）
-- creative_hint: 不属于以上任何操作的普通创作建议或修改意见
+## 可执行意图（intent 只能取以下之一）
+- start_writing_all —— 连续写到底：用户希望一口气把剩余内容全部写完、中途不停（"写完全部""一直写下去""不要停""一口气搞完""写到底""剩下的都写了"）
+- batch_writing —— 定量推进：用户希望写**指定的数量**后停下（"再写3章""今天先来5章""往下推10场""写两章就歇"）。params.batch_size = 数字（理解为"多少章/场"），若用户表达的是"全部/写到底"则用 start_writing_all 而不是 batch_writing
+- start_writing —— 启动创作（还没开始写，"开一本""帮我写个开头"）
+- resume_writing —— 按当前设定继续推进（"继续""接着来""往下写"——用户没有指定数量，按作品既定节奏走）
+- rewrite_chapter —— 重写/修改某一章（任何含具体章号的修改诉求，params.chapter_number=章号数字）
+- pause_writing —— 暂停（"先到这""今天算了""停下""别写了""写完这章就歇"）
+- query_status —— 问进度/状态（"写到哪了""多少字了""今天写了多少"）
+- set_title —— 改书名/标题（params.title=新标题全文）
+- new_project —— 想另开新书/重新开始
+- set_style —— 调整文风语气视角（params.style_desc=风格要求原文）
+- add_constraint —— 追加设定/要求/人物/背景（params.constraint_text=要求原文）
+- query_outline —— 看大纲/目录/章节列表
+- export_book —— 导出/下载/打包成书
+- creative_hint —— 以上都不是的创作建议、内容修改意见、闲聊
 
-返回 JSON（仅返回 JSON，不要任何其他文字）：
-{
-  "intent": "意图名称",
-  "confidence": 0.0到1.0的置信度,
-  "params": {
-    "chapter_number": 章号数字（仅 rewrite_chapter 时）,
-    "title": 标题文本（仅 set_title 时）,
-    "style_desc": 风格描述（仅 set_style 时）,
-    "constraint_text": 约束内容（仅 add_constraint 时）
-  }
-}
+## params 字段语义（只填对应意图需要的字段）
+- batch_writing: {"batch_size": 整数}；表达"写到底/不停"时不要用 batch_writing，用 start_writing_all
+- rewrite_chapter: {"chapter_number": 整数}；中文数字（三→3、十二→12）也要转成数字
+- set_title: {"title": 字符串}；set_style: {"style_desc": 字符串}；add_constraint: {"constraint_text": 字符串}
 
-规则：
-1. 只返回 JSON，不要 markdown 代码块标记
-2. confidence < 0.6 表示不确定
-3. 如果消息含章号（"第N章""第N回"），rewrite_chapter 的优先级高于 start_writing
-4. "全部""整本""所有章节""从头到尾" → start_writing_all
-5. "继续""接着""下一章""往下" → resume_writing
+## 判断原则
+1. 数量语义优先：用户表达里有明确数量 → batch_writing；表达"全部/到底/不停" → start_writing_all；两者都没有的"继续" → resume_writing
+2. 章号 + 修改 → rewrite_chapter（即使句子看起来像"继续写"）
+3. 置信度反映语义清晰度：明确的诉求 0.85+，模糊但可判断 0.6-0.8，无法判断 < 0.6
+4. 只返回 JSON，不要任何其他文字或 markdown 标记
 """
 
 # ── 规则匹配（LLM 降级方案） ──────────────────────────────

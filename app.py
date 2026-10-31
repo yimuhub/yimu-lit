@@ -1781,6 +1781,32 @@ def _consistency_fix_one(key: str, issue: str) -> dict:
     return {"issue": issue, "fixed": res.get("fixed"), "actions": actions}
 
 
+@app.post("/api/providers/fetch-models")
+def api_providers_fetch_models(payload: dict):
+    """v4.15.15：拉取供应商的可用模型列表（GET {base_url}/models）。
+    添加/编辑供应商时，填完地址与密钥即可一键拉取，模型选择改为下拉。"""
+    import urllib.request as _ur
+    base = str(payload.get("base_url") or "").strip().rstrip("/")
+    key = str(payload.get("api_key") or "").strip()
+    if not base:
+        return JSONResponse({"error": "请先填写接口地址"}, status_code=400)
+    url = f"{base}/models"
+    req = _ur.Request(url, headers={
+        "Authorization": f"Bearer {key}" if key else "",
+        "User-Agent": "yimu-lit",
+        "Accept": "application/json"})
+    try:
+        with _ur.urlopen(req, timeout=12) as resp:
+            data = json.load(resp)
+        ids = [str(m.get("id")) for m in (data.get("data") or []) if m.get("id")]
+        if not ids:
+            # 兼容 {"models":[...]} 形态（Ollama 原生）
+            ids = [str(m.get("name") or m.get("model")) for m in (data.get("models") or []) if (m.get("name") or m.get("model"))]
+        return {"ok": True, "models": sorted(set(ids)), "count": len(set(ids))}
+    except Exception as e:
+        return JSONResponse({"error": f"拉取失败（{type(e).__name__}）：请检查接口地址与密钥"}, status_code=502)
+
+
 @app.get("/api/check-update")
 def api_check_update():
     """v4.15.12：检查 GitHub 仓库最新 release——前端版本号点击时调用（此前端点缺失 → 404「网络错误」）。

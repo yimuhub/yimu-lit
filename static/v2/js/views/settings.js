@@ -559,13 +559,53 @@ export function renderSettings(container, ctx) {
     });
     models.value = existing ? (existing.models || []).join('\n') : '';
 
+    /* v4.15.15：一键拉取模型列表——填完地址与密钥后从 {base_url}/models 拉取，
+       成功后以下拉箭头选择模型，追加进列表（可多选）。 */
+    const modelSelect = h('select', { class: 'input', 'aria-label': '从拉取列表选择模型',
+                                      style: 'display:none;margin-top:8px' });
+    const fetchBtn = h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
+      text: '⟳ 拉取模型列表',
+      on: {
+        click: async () => {
+          if (!baseUrl.value.trim()) { toast('请先填写接口地址', { tone: 'danger' }); return; }
+          fetchBtn.disabled = true; fetchBtn.textContent = '拉取中…';
+          try {
+            const res = await api.fetchModels({ base_url: baseUrl.value.trim(), api_key: apiKey.value.trim() });
+            const list = (res && res.models) || [];
+            if (!list.length) { toast('接口返回空列表，请手填', { tone: 'warn', duration: 4000 }); return; }
+            modelSelect.innerHTML = '';
+            modelSelect.append(h('option', { value: '', text: `— 从 ${list.length} 个可用模型中选择 —` }));
+            for (const id of list) modelSelect.append(h('option', { value: id, text: id }));
+            modelSelect.style.display = '';
+            toast(`拉取成功：${list.length} 个模型`, { tone: 'success', duration: 2500 });
+          } catch (err) {
+            toast(errorText(err, '拉取失败'), { tone: 'danger', duration: 5000 });
+          } finally {
+            fetchBtn.disabled = false; fetchBtn.textContent = '⟳ 拉取模型列表';
+          }
+        }
+      }
+    });
+    modelSelect.addEventListener('change', () => {
+      const id = modelSelect.value;
+      if (!id) return;
+      const cur = models.value.split('\n').map((m) => m.trim()).filter(Boolean);
+      if (!cur.includes(id)) cur.push(id);
+      models.value = cur.join('\n');   // 追加到列表（第一行为默认模型），可继续多选
+      modelSelect.value = '';
+    });
+
     const body = h(
       'div',
       { class: 'wiz-grid' },
       fieldRow('名称', name),
       fieldRow('接口地址（OpenAI 兼容）', baseUrl, 'span-2'),
       fieldRow('API 密钥', apiKey, 'span-2', existing && existing.has_key ? '已保存的密钥不会回显；留空表示不修改。' : ''),
-      fieldRow('模型列表', models, 'span-2', '第一行会成为默认模型。')
+      fieldRow('模型列表', h('div', {}, models,
+        h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:8px' }, fetchBtn, modelSelect)),
+        'span-2', '第一行会成为默认模型；也可一键拉取后从下拉里追加。')
     );
 
     const footer = h(
