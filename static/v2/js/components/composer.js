@@ -3,7 +3,7 @@
 import { h, icon, validateFile, ATTACH_ACCEPT, fmtWords } from '../core/dom.js';
 import { store, patchUi } from '../core/state.js';
 import { USAGE_MODES, usageLabel, MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
-import { toast, popoverMenu } from '../core/ui.js';
+import { toast, popoverMenu, openModal } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
 
 const MODES = [
@@ -65,9 +65,11 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
         if (!key) { toast('请先打开一本作品', { tone: 'danger' }); return; }
         const st = store.get().work || {};
         if (st.running) { toast('当前已有创作任务在运行', { tone: 'warn', duration: 3000 }); return; }
-        /* v4.15.8：store.plan 是 /api/plan 外层响应（ok/key/plan/...），规划树在 .plan 内层；
-           兼容两套规划结构——旧扁平 chapters 与分层规划 volumes→arcs→chapter_cards。 */
-        const outer = store.get().plan || {};
+        /* v4.16.5：store.plan 为空时现场拉取（切书后 refreshPlan 未完成时点击不再误报「未规划」）。 */
+        let outer = store.get().plan || {};
+        if (!outer.plan && !outer.volumes) {
+          try { outer = await api.plan(key) || {}; } catch { outer = {}; }
+        }
         const plan = outer.plan || outer;
         const allCards = [];
         if (plan && Array.isArray(plan.chapters) && plan.chapters.length) {
@@ -88,18 +90,54 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
         }
         const pendings = allCards.filter(c => c.status !== 'completed' && c.status !== 'done');
         if (pendings.length === 0) { toast('所有章节已完成', { tone: 'info' }); return; }
-        parBtn.disabled = true;
-        parBtn.style.opacity = '0.6';
-        try {
-          const res = await api.parallelWrite({ key, workers: 5 });
-          toast((res && res.msg) || `分章齐写已启动：5 个 Agent 并行写 ${pendings.length} 章`, { tone: 'success', duration: 5000 });
-          if (ctx && ctx.refreshState) ctx.refreshState();
-        } catch (err) {
-          toast(errorText(err, '启动失败'), { tone: 'danger', duration: 4000 });
-        } finally {
-          parBtn.disabled = false;
-          parBtn.style.opacity = '';
-        }
+        /* v4.16.5：弹窗选择并行岗位数——每个创作者的模型/供应商限流不同，不能写死。 */
+        const lastN = Number(localStorage.getItem('shenbi_parallel_workers') || 5) || 5;
+        const numInput = h('input', {
+          class: 'input', type: 'number', min: '1', max: '8',
+          value: String(Math.min(lastN, 8)), 'aria-label': '并行数量'
+        });
+        const chipWrap = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px' });
+        const paintChips = (active) => {
+          chipWrap.textContent = '';
+          for (const n of [3, 5, 7, 10]) {
+            chipWrap.append(h('button', {
+              class: 'btn btn-sm' + (active === n ? ' btn-accent' : ''),
+              type: 'button',
+              text: `${n} 个`,
+              on: { click: () => { numInput.value = String(Math.min(n, 8)); paintChips(n); } }
+            }));
+          }
+        };
+        paintChips(lastN > 8 ? 10 : lastN);
+        const startWith = async () => {
+          const n = Math.max(1, Math.min(8, Number(numInput.value) || 5));
+          localStorage.setItem('shenbi_parallel_workers', String(n));
+          parBtn.disabled = true;
+          parBtn.style.opacity = '0.6';
+          modal.close();
+          try {
+            const res = await api.parallelWrite({ key, workers: n });
+            toast((res && res.msg) || `分章齐写已启动：${n} 个岗位并行写 ${pendings.length} 章`, { tone: 'success', duration: 5000 });
+            if (ctx && ctx.refreshState) ctx.refreshState();
+          } catch (err) {
+            toast(errorText(err, '启动失败'), { tone: 'danger', duration: 4000 });
+          } finally {
+            parBtn.disabled = false;
+            parBtn.style.opacity = '';
+          }
+        };
+        numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startWith(); });
+        const body = h('div', { class: 'wiz-grid' },
+          h('p', { class: 'hint-text', style: 'margin-bottom:6px',
+                   text: `待写 ${pendings.length} 章。每个岗位会依次领取不同章节同时写作；数量取决于你的模型供应商并发/限流承受能力（最多 8）。` }),
+          h('div', { class: 'field' }, h('span', { class: 'field-label', text: '并行数量（1-8）' }), numInput),
+          chipWrap
+        );
+        const footer = h('div', { class: 'set-actions' },
+          h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+          h('button', { class: 'btn btn-primary', type: 'button', text: '开始并行创作', on: { click: startWith } })
+        );
+        const modal = openModal({ title: '分章齐写 · 并行岗位', body, footer, size: 'sm' });
       }
     }
   });
