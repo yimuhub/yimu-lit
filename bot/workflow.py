@@ -187,7 +187,7 @@ def _writing_system(ctx):
     if writer_skills:
         parts.append(writer_skills)
     parts += [
-        "硬性要求：正文 3000-5000 汉字；章首引子 50-150 字；对话占比 30%+；全章≥2个爽点/张力波峰；"
+        f"硬性要求：正文不少于 {_target_words(ctx)} 汉字（这是硬下限，交稿前自查字数，不足就继续扩写情节）；章首引子 50-150 字；对话占比 30%+；全章≥2个爽点/张力波峰；"
         "≥1个意外转折；结尾必留钩子；严守人物性格与知情范围一致性；动笔前先消化上一章结尾语态。",
         "【排版纪律】正文只用正常中文标点（，。！？；：""''——……、）；"
         "严禁在正文中出现 *、#、>、`、- 等任何 markdown/列表符号，不要加粗、斜体、列表、分隔线；"
@@ -312,13 +312,42 @@ def write_chapter(ctx):
     return llm.chat([{"role": "system", "content": _writing_system(ctx)},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
 
-def expand_chapter(body, ctx):
+def _target_words(ctx):
+    """本章目标字数：writer 注入的 110% 目标优先，默认 3300。"""
+    try:
+        return max(2000, int(ctx.get("min_words_target") or 0))
+    except (TypeError, ValueError):
+        return 3300
+
+
+def expand_chapter(body, ctx, min_words=3000, current_words=0):
+    """v4.16.2：扩充带真实目标硬约束（此前写死 3000-5000，与实际 min_words 脱节）。"""
+    target = int(min_words * 1.1)
     bp = (ctx.get("blueprint") or "").strip()
     bblock = (bp + "\n") if bp else ""
-    user_p = (f"{bblock}下面这章字数不足 3000，请按 content-expansion.md 的扩充技巧（增加对话场景/人物内心/细节描写）"
-              f"扩写到 3000-5000 字，保持情节与钩子不变，不要注水。\n\n{body}")
+    user_p = (f"{bblock}下面这章目前仅 {current_words} 字，未达到本章硬性下限 {min_words} 字。"
+              f"请按 content-expansion.md 的扩充技巧（增加对话场景/人物内心/细节描写/环境氛围）"
+              f"把正文扩写到不少于 {target} 字，保持情节走向、人物设定与断章钩子完全不变；"
+              f"严禁注水、严禁缩写、严禁输出任何说明性文字，直接输出扩充后的完整章节正文。\n\n{body}")
     return llm.chat([{"role": "system", "content": _writing_system(ctx)},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
+
+
+def continue_chapter(body, ctx, need_words=1000):
+    """v4.16.2：末尾续写兜底——从当前章节结尾直接续写补足字数（拼接后必然 ≥ 当前）。"""
+    bp = (ctx.get("blueprint") or "").strip()
+    bblock = (bp + "\n") if bp else ""
+    tail = body[-600:]
+    user_p = (f"{bblock}下面是本章已有正文的结尾。请从它的断点**无缝继续往下写**约 {need_words} 字，"
+              f"自然延续当前场景与情节，保持同样的人物、文风与叙事节奏；"
+              f"不要重复已有内容、不要总结、不要输出说明文字，直接输出续写的正文。\n\n……{tail}")
+    cont = llm.chat([{"role": "system", "content": _writing_system(ctx)},
+                     {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
+    cont = (cont or "").strip()
+    # 剥离可能的杂音
+    cont = re.sub(r"^(好的|以下是|续写)[:：,，]?\s*", "", cont)
+    cont = re.sub(r"(?m)^#{1,3}\s*.*续.*$", "", cont)
+    return cont
 
 def chapter_meta(body, ctx):
     sys_p = ("从章节正文提取：summary(300-500字本章摘要，供下章承接)、new_terms(本章首次出现的设定名词列表，"

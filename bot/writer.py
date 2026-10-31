@@ -1633,6 +1633,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
         ctx["recent_hooks"] = hooks[-5:]
     except Exception:
         pass
+    ctx["min_words_target"] = int(min_words * 1.1)   # v4.16.2：写作提示带 110% 硬下限，验收仍按 min_words
     qn = _pop_queue_note(proj, no)
     if qn:
         ctx["queue_note"] = qn
@@ -1673,14 +1674,39 @@ def _write_chapter(proj, ch, min_words, max_retries):
             body = body2
         else:
             proj.log(f"⚠️ 第{no}章重写后仍与近期章节相似，已保留第二次结果并标记人工复核")
+    # v4.16.2：字数保障体系——
+    #   首写目标 = min_words × 1.1（写作提示带硬下限）；
+    #   扩充结果有采纳门禁（比当前短 = LLM 抽风，丢弃防「2858→458」倒退）；
+    #   最后一轮改用末尾续写拼接（增量保证，不再全文重写）。
+    def _cn_len(t):
+        return len(_re.findall(r"[\u4e00-\u9fff]", t or ""))
     words, ok, i = 0, False, 0
     for i in range(max_retries + 1):
         atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
         ok, words = skill.check_words(fp, min_words)
         if ok:
             break
-        proj.log(f"⚠️ 第{no}章仅 {words} 字，按 content-expansion.md 扩充（第{i+1}轮）")
-        body = workflow.expand_chapter(body, ctx)
+        prev_len = _cn_len(body)
+        last_round = (i == max_retries)
+        if last_round:
+            need = max(600, min_words - words + 200)
+            proj.log(f"⚠️ 第{no}章仅 {words} 字（下限 {min_words}），末轮从结尾续写补足约 {need} 字…")
+            cont = workflow.continue_chapter(body, ctx, need_words=need)
+            cont_len = _cn_len(cont)
+            if cont_len >= 120:
+                body = body.rstrip() + "\n\n" + cont
+                proj.log(f"➕ 续写拼接 {cont_len} 字（拼接后约 {prev_len + cont_len} 字）")
+            else:
+                proj.log(f"⚠️ 续写返回 {cont_len} 字（过短），保留原稿交由验收阶段处理")
+            continue
+        proj.log(f"⚠️ 第{no}章仅 {words} 字（下限 {min_words}），按 content-expansion.md 扩充（第{i+1}轮）")
+        new_body = _strip_chatter(workflow.expand_chapter(body, ctx, min_words=min_words, current_words=prev_len))
+        new_len = _cn_len(new_body)
+        if new_len < max(prev_len, int(min_words * 0.8)):
+            # 扩充结果比当前还短/明显异常 → 丢弃（LLM 抽风返回删节版曾致 2858→458 倒退）
+            proj.log(f"⚠️ 扩充结果仅 {new_len} 字（劣于当前 {prev_len}），本轮结果已丢弃")
+            continue
+        body = new_body
     # 章节元数据 → 大纲摘要 + 设定词典 + 章节摘要/线索账本（复用同一 meta，不加 LLM 调用）
     try:
         meta = workflow.chapter_meta(_strip_chatter(open(fp, encoding="utf-8").read())[:9000], ctx)
