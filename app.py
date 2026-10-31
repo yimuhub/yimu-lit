@@ -3461,6 +3461,18 @@ def api_parallel_write(payload: dict):
     _PARALLEL_RUNNING[key] = {"running": True, "result": None, "workers": nworkers}
     def _job():
         try:
+            if key.startswith("s_"):
+                # v4.16.7：剧本走多岗位并行分场齐写（场次结构独立引擎）
+                import script_writer as _sw
+                sproj = _sw.get_project(key)
+                if not sproj:
+                    return JSONResponse({"error": "剧本项目不存在"}, status_code=404)
+                _sp2 = threading.Thread(
+                    target=lambda: _sw._write_loop_parallel_scenes(sproj, n_workers=nworkers, rounds=payload.get("rounds")),
+                    daemon=True)
+                _sp2.start()
+                return {"ok": True, "running": True, "workers": nworkers,
+                        "msg": f"⚡ 剧本并行创作中：{nworkers} 个岗位分场齐写（写完一个立即取下一场）"}
             writer._write_loop_parallel(proj, n_workers=nworkers, rounds=payload.get("rounds"))
             _PARALLEL_RUNNING[key] = {"running": False, "result": "ok", "workers": nworkers}
         except Exception as e:

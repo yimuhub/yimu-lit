@@ -853,6 +853,136 @@ def write_scenes(proj: ScriptProject, only: list[int] | None = None, batch_size=
         proj.running = False
 
 
+def _parallel_role_label(proj, wid):
+    """本书绑定的创作岗位轮流署名。v4.16.7。"""
+    try:
+        cfg = (proj.plan() or {}).get("config") or {}
+        named = [a for a in (cfg.get("agents") or []) if isinstance(a, str) and a]
+        if not named:
+            return ""
+        from . import agents as _ag
+        key = named[(wid - 1) % len(named)]
+        return f"（{_ag.AGENTS.get(key, {}).get('label', key)}）"
+    except Exception:
+        return ""
+
+
+def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, rounds: int | None = None):
+    """v4.16.7：剧本多岗位并行分场齐写——N 个岗位领不同场次同时写（工作窃取）。
+    每场：gen_scene_body → 时代校验（带反馈重试一次）→ 写盘 → 状态更新（锁保护）。
+    rounds=每岗位写几轮（总量=岗位数×轮数，写满即停）；启动时清残留暂停位。"""
+    from bot import wordguard as _wg  # noqa: F401（口径一致引用）
+    _p0 = proj.plan() or {}
+    _p0.setdefault("meta", {})["paused"] = False
+    if _p0.get("status") == "paused":
+        _p0["status"] = "in_progress"
+    proj.save_plan(_p0)
+    n_workers = max(1, int(n_workers or 5))
+    proj.log(f"⚡ 剧本并行：{n_workers} 个创作岗位分场齐写（场次清单已就绪）")
+
+    cfg = _merge_cfg(_p0.get("config") or {})
+    cfg.setdefault("title", proj.name)
+    setting = (_p0.get("meta") or {}).get("setting") or {}
+    if setting.get("era"):
+        cfg["setting_era"] = setting["era"]
+    if setting.get("world"):
+        cfg["setting_world"] = setting["world"]
+    bible = _read(os.path.join(proj.path, F_BIBLE))
+    chars = _read(os.path.join(proj.path, F_CHARS))
+    struct_md = _read(os.path.join(proj.path, F_STRUCT))
+    era = _era_of(cfg)
+    world = _world_block(cfg)
+    body_dir = proj.body_dir()
+    total = len(_p0.get("scenes") or [])
+    os.makedirs(body_dir, exist_ok=True)
+
+    from bot import writer as _wr
+    _key = os.path.basename(proj.path)
+    _wr.mark_pipeline(_key, True)
+    proj.running = True
+    start_done = sum(1 for sc in (_p0.get("scenes") or []) if sc.get("status") == "completed")
+    total_limit = (n_workers * int(rounds)) if rounds else None
+    plan_lock = threading.Lock()
+    queue = [sc.get("no") for sc in (_p0.get("scenes") or []) if sc.get("status") != "completed"]
+    qidx = {"i": 0}
+    stop = {"flag": False}
+
+    def _worker(wid: int):
+        llm.book(_key, "writing")
+        done_by_me = 0
+        while True:
+            if stop["flag"]:
+                return
+            with plan_lock:
+                if qidx["i"] >= len(queue):
+                    return
+                no = queue[qidx["i"]]; qidx["i"] += 1
+            if total_limit and done_by_me >= rounds:
+                return
+            plan = proj.plan() or {}
+            sc = next((x for x in (plan.get("scenes") or []) if x.get("no") == no), None)
+            if not sc or sc.get("status") == "completed":
+                continue
+            proj.log(f"🧵 Agent#{wid}{_parallel_role_label(proj, wid)} 领第 {no} 场（并行）")
+            extra = (f"【创作圣经·全文（节选）】\n{bible[:6000]}\n\n"
+                     f"【人物小传】\n{chars[:2500]}\n\n【结构大纲】\n{struct_md[:2500]}\n\n{world}")
+            hint = _act_hint(struct_md, no if isinstance(no, int) else 0, total)
+            if hint:
+                extra += "\n\n" + hint
+            text = gen_scene_body(sc, extra, cfg)
+            if not text.strip():
+                proj.log(f"⚠️ 第 {no} 场生成失败，跳过")
+                with plan_lock:
+                    sc["status"] = "failed"
+                    proj.save_plan(plan)
+                continue
+            check = script_checker.check_text(text, era)
+            if not check["ok"]:
+                retry = gen_scene_body(sc, extra + "\n\n" + _era_feedback(check["issues"]), cfg)
+                if retry.strip():
+                    text = retry
+            _write(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"), text.strip() + "\n")
+            with plan_lock:
+                plan2 = proj.plan() or plan
+                sc2 = next((x for x in (plan2.get("scenes") or []) if x.get("no") == no), sc)
+                sc2["status"] = "completed"
+                sc2["wordCount"] = len(re.findall(r"[\u4e00-\u9fff]", text))
+                proj.save_plan(plan2)
+            done_by_me += 1
+            proj.log(f"✅ 第 {no}/{total} 场完成（{sc2['wordCount']} 字）")
+
+    threads = [threading.Thread(target=_worker, args=(w + 1,), daemon=True) for w in range(n_workers)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        plan = proj.plan() or {}
+        done = sum(1 for sc in (plan.get("scenes") or []) if sc.get("status") == "completed")
+        if done >= total and total:
+            plan["status"] = "completed"
+            plan.setdefault("meta", {})["stage"] = "S7"
+        else:
+            plan["status"] = "in_progress"
+        proj.save_plan(plan)
+        proj.log(f"⚡ 并行分场齐写结束：{done}/{total} 场完成")
+        # AI 短剧/漫剧自动分镜
+        try:
+            if cfg.get("form") in ("short_drama", "comic_drama") and not (plan.get("meta") or {}).get("storyboard_done"):
+                def _sb():
+                    try:
+                        gen_storyboard(_key)
+                    except Exception as e:
+                        print(f"[bg] 分镜生成失败: {e}", flush=True)
+                threading.Thread(target=_sb, daemon=True).start()
+                proj.log("🎬 已自动启动分镜头拆解（08-分镜表）…")
+        except Exception:
+            pass
+    finally:
+        _wr.mark_pipeline(_key, False)
+        proj.running = False
+
+
 def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, batch_size=None) -> dict:
     """（write_scenes 的原实现体；v3.1.0 拆出以便维护 running 标志）
     v4.15.0：batch_size 控制每批写多少场（"all"=全部写完；int=写N场后停在当前进度）。"""

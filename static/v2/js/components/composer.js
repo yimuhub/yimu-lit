@@ -137,9 +137,11 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
           try {
             store.set((st) => {
               const msgs = [...((st.chat && st.chat.messages) || [])];
-              msgs.push({ id: `par_${Date.now()}`, role: 'user', content: `⚡ 分章齐写：${n} 个岗位并行${r ? `，每岗位写 ${r} 轮（共约 ${Math.min(n * r, pendings.length)} 章）` : '，写到全部剩余章节完成'}` });
+              const _unit = store.get().workMedium === 'script' ? '场' : '章';
+              const _label = store.get().workMedium === 'script' ? '分场齐写' : '分章齐写';
+              msgs.push({ id: `par_${Date.now()}`, role: 'user', content: `⚡ ${_label}：${n} 个岗位并行${r ? `，每岗位写 ${r} 轮（共约 ${Math.min(n * r, pendings.length)} ${_unit}）` : '，写到全部剩余内容完成'}` });
               msgs.push({ id: `par_a_${Date.now()}`, role: 'assistant',
-                          content: `▶ 已启动分章齐写：${n} 个创作岗位同时领章${r ? `，每个岗位写 ${r} 轮（共 ${Math.min(n * r, pendings.length)} 章），` : '，'}写完自动停在本轮进度。总架构对齐后开工，进度看上方目标条，完成后我会汇报。` });
+                          content: `▶ 已启动${_label}：${n} 个创作岗位同时领${_unit}${r ? `，每个岗位写 ${r} 轮（共 ${Math.min(n * r, pendings.length)} ${_unit}），` : '，'}写完自动停在本轮进度。总架构对齐后开工，进度看上方目标条，完成后我会汇报。` });
               return { ...st, chat: { ...(st.chat || {}), messages: msgs } };
             });
             window.__parallelJustStarted = true;   // v4.16.6：并行完成时对话框汇报
@@ -156,7 +158,8 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
         numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startWith(); });
         const body = h('div', { class: 'wiz-grid', style: 'display:flex;flex-direction:column;gap:14px' },
           h('div', { style: 'padding:14px;border:1px solid var(--line,#ddd);border-radius:8px;background:rgba(199,58,50,.04)' },
-            h('div', { style: 'font-size:15px;font-weight:600;margin-bottom:6px', text: `⚡ 分章齐写 · 待写 ${pendings.length} 章` }),
+            h('div', { style: 'font-size:15px;font-weight:600;margin-bottom:6px',
+                       text: `⚡ ${store.get().workMedium === 'script' ? '分场齐写' : '分章齐写'} · 待写 ${pendings.length} ${store.get().workMedium === 'script' ? '场' : '章'}` }),
             h('div', { class: 'hint-text', text: '多个创作岗位同时领不同章节写作（总架构对齐 + 连续性入库）。数量取决于你的模型供应商并发/限流承受能力（1-8）。' })),
           h('div', { class: 'field' },
             h('span', { class: 'field-label', text: '并行岗位数（1-8）' }),
@@ -304,7 +307,11 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
      （此前散文页点击提示「章节还未规划」误导用户）。订阅 workMedium 动态显隐。 */
   function paintParBtn() {
     const m = store.get().workMedium || store.get().ui?.medium || 'novel';
-    parBtn.style.display = m === 'novel' ? '' : 'none';
+    /* v4.16.7：剧本也支持多岗位并行（分场齐写） */
+    parBtn.style.display = (m === 'novel' || m === 'script') ? '' : 'none';
+    const label = m === 'script' ? '分场齐写' : '分章齐写';
+    const span = parBtn.querySelector('span');
+    if (span) span.textContent = label;
   }
   paintParBtn();
   const _unsubPar = store.subscribe(paintParBtn);
