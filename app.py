@@ -1738,6 +1738,83 @@ def api_title_candidates(key: str):
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     return {"items": _read_title_items(key)}
 
+# ---------- v4.15.11：一致性一键修复（单个深度修复 + 全部一键修复） ----------
+
+_FIXABLE_REWRITE_RE = re.compile(r"第(\d+)章")
+
+
+def _consistency_fix_one(key: str, issue: str) -> dict:
+    """单个体检问题的修复：先确定性修复（continuity.fix），改稿类自动升级 LLM 定向重写。"""
+    from bot import continuity as _cont
+    res = _cont.fix(_project_dir(key), issue)
+    actions = list(res.get("actions") or [])
+    if not res.get("fixed"):
+        # 改稿类：定位章号（无章号则取最近完成章），启动定向重写（后台，状态进 _REWRITING）
+        m = _FIXABLE_REWRITE_RE.search(issue)
+        plan = writer.Project(_project_dir(key), key).plan() or {}
+        no = int(m.group(1)) if m else max(
+            [c.get("chapterNumber") or 0 for c in (plan.get("chapters") or [])
+             if c.get("status") == "completed"] or [0])
+        if no:
+            ok = _start_rewrite(key, chapters=[no], dimensions=[issue], max_rounds=1)
+            actions.append(f"已启动第{no}章定向重写（LLM 修复后台进行）" if ok
+                           else "已有重写任务在跑，本章修复已排队语义跳过")
+        else:
+            actions.append("没有可定位的章节，仅标记已处理")
+    return {"issue": issue, "fixed": res.get("fixed"), "actions": actions}
+
+
+@app.post("/api/fix-consistency-all")
+def api_fix_consistency_all(payload: dict):
+    """全部一键修复：确定性修复批量执行；改稿类合并为一次定向重写（后台）。"""
+    key = str(payload.get("key") or "")
+    proj = _get_project(key) if key else _current_proj()
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    key = os.path.basename(proj.path)
+    fp = os.path.join(proj.path, "22-规划体检.json")
+    issues: list[str] = []
+    handled: set = set()
+    try:
+        audit = json.load(open(fp, encoding="utf-8")) or {}
+        issues = [str(x) for x in (audit.get("issues") or [])]
+        handled = set(audit.get("handled") or [])
+    except Exception:
+        pass
+    pending = [x for x in issues if x not in handled]
+    if not pending:
+        return {"ok": True, "key": key, "fixed_count": 0, "rewrite_started": False,
+                "msg": "没有待修复的问题", "results": []}
+    from bot import continuity as _cont
+    results, rewrite_chapters, rewrite_dims = [], [], []
+    fixed_count = 0
+    for issue in pending:
+        res = _cont.fix(proj.path, issue)   # 确定性修复 + 标记 handled
+        if res.get("fixed"):
+            fixed_count += 1
+            results.append({"issue": issue, "fixed": True, "actions": res.get("actions") or []})
+            continue
+        m = _FIXABLE_REWRITE_RE.search(issue)
+        plan = proj.plan() or {}
+        no = int(m.group(1)) if m else max(
+            [c.get("chapterNumber") or 0 for c in (plan.get("chapters") or [])
+             if c.get("status") == "completed"] or [0])
+        if no:
+            rewrite_chapters.append(no)
+            rewrite_dims.append(issue)
+        results.append({"issue": issue, "fixed": False, "queued_rewrite": no})
+    rewrite_started = False
+    if rewrite_chapters:
+        rewrite_started = _start_rewrite(key, chapters=sorted(set(rewrite_chapters)),
+                                         dimensions=rewrite_dims, max_rounds=1)
+    return {"ok": True, "key": key, "fixed_count": fixed_count,
+            "rewrite_started": rewrite_started,
+            "rewrite_chapters": sorted(set(rewrite_chapters)),
+            "msg": (f"确定性修复 {fixed_count} 项" +
+                    (f"；已启动 {len(set(rewrite_chapters))} 章 LLM 定向重写（后台）" if rewrite_chapters else "")),
+            "results": results}
+
+
 @app.post("/api/audit")
 def api_audit(payload: dict):
     """确定性一致性体检：arc/volume/book 三档，结果落 22-规划体检.json 供状态 pane 复读。"""

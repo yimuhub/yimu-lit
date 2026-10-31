@@ -350,7 +350,9 @@ function showConsistencyIssue(ctx, issue) {
           /* v2.8.0：ctx 上没有 api（原写法直接抛 TypeError）；api 已在模块顶部导入 */
           const res = await api.fixConsistency(issue.id || issue.type || issue.desc || '', store.get().currentKey || '');
           const acts = ((res && res.result && res.result.actions) || []).join('；');
-          toast(acts ? `修复完成：${acts}` : '修复完成', { tone: 'success', duration: 5000 });
+          const isRewrite = acts && acts.includes('定向重写');
+          toast(acts ? (isRewrite ? `已启动修复：${acts}（完成后状态页签自动更新）` : `修复完成：${acts}`) : '修复完成',
+                { tone: 'success', duration: 6000 });
           ctx.refreshState();
           document.querySelector('.rp-modal-overlay')?.remove();
         } catch (err) { toast(errorText(err, '修复失败'), { tone: 'danger' }); }
@@ -1487,9 +1489,34 @@ function auditSection(ctx, payload) {
       }
     }
   });
+  /* v4.15.11：全部一键修复——确定性修复批量执行，改稿类合并为一次 LLM 定向重写（后台） */
+  const fixAllBtn = h('button', {
+    class: 'btn btn-sm btn-accent',
+    type: 'button',
+    html: `${icon('wand', 12)}<span>全部一键修复</span>`,
+    disabled: !key,
+    on: {
+      click: async () => {
+        fixAllBtn.disabled = true;
+        toast('正在批量修复…', { tone: 'info' });
+        try {
+          const res = await api.fixConsistencyAll(key);
+          toast((res && res.msg) || '批量修复已执行', { tone: 'success', duration: 6000 });
+          if (ctx.refreshState) {
+            try { await ctx.refreshState(); } catch { /* ignore */ }
+          }
+          ctx.rerenderPanel();
+        } catch (err) {
+          toast(errorText(err, '批量修复失败'), { tone: 'danger' });
+        } finally {
+          fixAllBtn.disabled = false;
+        }
+      }
+    }
+  });
   sec.append(
     h('div', { class: 'rp-section-head' }, h('h3', { text: '一致性体检' }),
-      h('div', { class: 'rp-section-actions' }, runBtn))
+      h('div', { class: 'rp-section-actions' }, runBtn, fixAllBtn))
   );
   if (panel.auditError) sec.append(h('div', { class: 'error-text', text: panel.auditError }));
   if (!audit) {

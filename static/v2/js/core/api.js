@@ -408,6 +408,7 @@ export const api = {
   rollbackSkill: (name, version) => request('/api/skills/evolution/rollback', jsonBody({ name, version })),
   toggleSkill: (payload) => request('/api/skills/evolution/toggle', jsonBody(payload)),
   fixConsistency: (issueId, key) => request('/api/fix-consistency', jsonBody({ id: issueId, key })),
+  fixConsistencyAll: (key) => request('/api/fix-consistency-all', jsonBody({ key })),
   branchBook: (key, chapter) => request('/api/branch', jsonBody({ key, chapter }), { timeout: 60000 }),
   chapterNamesBackfill: (key) => request('/api/chapter-names/backfill', jsonBody({ key }), { timeout: 20000 }),
   bookSkills: (key) => request('/api/book-skills', { query: { key } }),
