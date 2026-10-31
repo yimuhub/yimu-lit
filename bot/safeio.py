@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 
 
 class UnsafePathError(ValueError):
@@ -83,7 +84,19 @@ def atomic_write_text(path: str, text: str) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, _target_mode(path))
-        os.replace(tmp, path)
+        # v4.16.1：Windows 上目标文件被并发句柄/杀毒实时扫描短暂锁定时
+        # os.replace 抛 WinError 5 → 重试数次（间隔递增），仍失败才抛
+        _last = None
+        for _i in range(5):
+            try:
+                os.replace(tmp, path)
+                _last = None
+                break
+            except PermissionError as _e:
+                _last = _e
+                time.sleep(0.25 * (_i + 1))
+        if _last is not None:
+            raise _last
     except BaseException:
         try:
             os.unlink(tmp)

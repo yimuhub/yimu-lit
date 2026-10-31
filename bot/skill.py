@@ -32,7 +32,13 @@ def _skill_root():
     sp = (cfg.get("skill_path") or "").strip()
     if not sp:
         return os.path.join(ROOT, NOVEL_ROOT)
-    return sp if os.path.isabs(sp) else os.path.join(ROOT, sp)
+    cand = sp if os.path.isabs(sp) else os.path.join(ROOT, sp)
+    # v4.16.1 兜底：旧版 config.skill_path 指向的 skill/ 目录在新版不存在（升级后模板
+    # 已迁到 skillkit/novel/）→ 坏配置曾让人物档案/大纲模板全部 Errno 2、规划必挂。
+    # 目录无效或缺 SKILL.md 时自动回落默认技能目录。
+    if not os.path.isfile(os.path.join(cand, "SKILL.md")):
+        return os.path.join(ROOT, NOVEL_ROOT)
+    return cand
 
 
 @cache
