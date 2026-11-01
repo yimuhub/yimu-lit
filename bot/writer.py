@@ -2004,6 +2004,18 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
     _index_chapter_continuity(proj, ch, ctx.get("cfg"))
     _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
+    # v4.21.5：章节完成卡永久写入对话流（type=chapter，含最终评分）——
+    # 刷新后历史原样重放为章节卡（预览/展开全文/复制全文/从此章分支创作/章节工作台）。
+    # v4.21.0 活动流改版后旧 SSE 追章链路停走，此记录无人再写、章节卡一度消失，此处恢复。
+    try:
+        from bot.v2api import _save_chat_msg, _clean_chapter_text
+        _final_score = ((proj.plan().get("meta") or {}).get("chapter_scores") or {}).get(str(no), {}).get("score")
+        _save_chat_msg(proj, "assistant", _clean_chapter_text(open(fp, encoding="utf-8").read()),
+                       {"type": "chapter", "no": no, "title": ch.get("title") or f"第{no}章",
+                        "words": words, "quality": _final_score,
+                        "completedAt": _ch_started_at if _soft_ok else ""})
+    except Exception:
+        pass
     llm.set_chapter(None)   # v2.9.0：本章结束，之后的审校/成书调用不再计入任何章
 
 def _validate_and_finish(proj):

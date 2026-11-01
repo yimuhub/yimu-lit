@@ -469,6 +469,30 @@ function stepMsText(st) {
   return ms > 0 ? `· ${(ms / 1000).toFixed(1)}s` : '';
 }
 
+function chapterBranchBtn(st) {
+  /* v4.21.5：从本章分支出新书（全新思路/规划）——正文全文卡与实时完成卡共用 */
+  if (!(Number(st && st.chapter) > 0)) return null;
+  return h('button', {
+    class: 'step-link', type: 'button',
+    html: `${icon('branch', 11)}<span>从此章分支</span>`,
+    title: '复制 1..N 章成一本新书，从下一章开始全新思路与规划',
+    on: { click: async (event) => {
+      const btn = event.currentTarget;
+      const key = store.get().currentKey;
+      if (!key) return;
+      btn.disabled = true;
+      try {
+        const res = await api.branchBook(key, Number(st.chapter));
+        toast(`已创建分支《${res.name || res.key}》，第${(Number(st.chapter) || 0) + 1}章起按新思路创作`, { tone: 'success', duration: 4200 });
+        navigate(`/work/${encodeURIComponent(res.key)}`);
+      } catch (err) {
+        toast(errorText(err, '分支失败'), { tone: 'danger' });
+        btn.disabled = false;
+      }
+    } }
+  });
+}
+
 function isThinkCard0(st) {
   return Boolean(st && (st.is_thinking || /（模型思考）$/.test(String(st.title || ''))));
 }
@@ -606,6 +630,8 @@ export function renderStepMessage(msg) {
           on: { click: () => updateMessage(msg.id, { collapsed: false }) }
         })
       );
+      const brBtn1 = chapterBranchBtn(st);
+      if (brBtn1) acts.append(brBtn1);
       const chBtn = stepChapterBtn(st);
       if (chBtn) acts.append(chBtn);
       main.append(acts);
@@ -684,6 +710,8 @@ export function renderStepMessage(msg) {
         }));
         main.append(body);
       }
+      const brBtn2 = chapterBranchBtn(st);
+      if (brBtn2) acts.append(brBtn2);
       const chBtn = stepChapterBtn(st);
       if (chBtn) acts.append(chBtn);
       main.append(acts);

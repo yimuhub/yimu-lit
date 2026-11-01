@@ -98,6 +98,9 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
     meta = plan["meta"]
     plan["config"] = {k: v for k, v in cfg.items() if k != "api_key"}
     plan.setdefault("chapterStatus", {})
+    from . import steps as _steps
+    import time as _time
+    _bk = os.path.basename(proj.path)
     for code, label, fn in stages:
         if (plan.get("chapterStatus") or {}).get(code) == "completed":
             continue
@@ -105,10 +108,16 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
             plan["status"] = "paused"
             proj.save_plan(plan)
             proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            _steps.emit(_bk, "system", "warn", title="已暂停", output=f"停在阶段 {code} {label}")
             return plan
         proj.log(f"📋 {code} {label}…")
+        # v4.21.5：阶段埋点入创作活动流（儿童/新闻/文案/其他全文体统一「谁在干什么」）
+        _t0 = _time.time()
+        _steps.emit(_bk, "writer", phase="start", title=f"{code} {label}",
+                    thinking=f"按体裁规范推进「{label}」阶段，产出落盘后进入下一步")
         meta["stage"] = code
         proj.save_plan(plan)
+        _stage_err = ""
         try:
             fn()
             plan["chapterStatus"][code] = "completed"
@@ -117,9 +126,15 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
         except Exception as e:
             proj.log(f"⚠️ {code} 失败（不阻断后续）：{e}")
             plan["chapterStatus"][code] = "failed"
+            _stage_err = str(e)[:120]
         meta["stage"] = code
         plan["meta"] = meta
         proj.save_plan(plan)
+        _steps.emit(_bk, "writer",
+                    phase="warn" if _stage_err else "done",
+                    title=f"{code} {label} 完成" if not _stage_err else f"{code} 失败（不阻断后续）",
+                    chapter=0, ms=int((_time.time() - _t0) * 1000),
+                    output=_stage_err or "")
     plan["status"] = "completed"
     meta["stage"] = "F"
     proj.save_plan(plan)
