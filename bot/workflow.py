@@ -312,6 +312,39 @@ def write_chapter(ctx):
     return llm.chat([{"role": "system", "content": _writing_system(ctx)},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
 
+def score_model_cfg(cfg):
+    """v4.18.0：评分专用模型路由——config.defaults.score_provider_id / score_model
+    配置了就用独立评分模型（未配置回落创作模型）。返回供 llm 调用的 cfg 或 None。"""
+    d = (cfg or {}).get("defaults") or {}
+    sp = str(d.get("score_provider_id") or "").strip()
+    sm = str(d.get("score_model") or "").strip()
+    if not sp and not sm:
+        return None
+    out = {"defaults": {}}
+    if sp:
+        out["defaults"]["provider_id"] = sp
+    if sm:
+        out["defaults"]["model"] = sm
+    return out
+
+
+# 评分标准锚点（rubric）：每维 0-10 的判分标准，评审 prompt 必带
+SCORE_RUBRIC = (
+    "【评分标准（每维 0-10，严格按锚点判分，评分必须给出对应该档的理由）】\n"
+    "· 结构：9-10 段落功能明确、节奏张弛有度、转场自然；7-8 结构完整、有推进；\n"
+    "  4-6 有内容但推进平缓或比例失衡；0-3 结构混乱、原地打转或明显断裂。\n"
+    "· 因果可信：9-10 每个转折都有动机与代价、因果链完整；7-8 主线因果成立、个别跳跃；\n"
+    "  4-6 有明显「突然/莫名其妙」；0-3 靠巧合推动、动机缺失。\n"
+    "· 人物：9-10 动机清晰、言行一致且有成长弧；7-8 立得住、少起伏；\n"
+    "  4-6 工具人化或情绪突变；0-3 前后矛盾、面目模糊。\n"
+    "· 连续性：9-10 与前文/设定/伏笔零冲突；7-8 个别小瑕疵；4-6 有明显矛盾；0-3 多处断裂。\n"
+    "· 语言：9-10 语言有风格、零套话、细节有质感；7-8 干净流畅；\n"
+    "  4-6 AI 腔明显或表达平庸；0-3 大量套话、机器味重。\n"
+    "· 读者体验：9-10 欲罢不能、钩子有力；7-8 顺畅有吸引力；\n"
+    "  4-6 平淡想跳读；0-3 读不下去。\n"
+    "判分纪律：先按锚点定档，再在档内微调；不得无证据给高分，也不得无证据压分。")
+
+
 def _target_words(ctx):
     """本章目标字数：writer 注入的 110% 目标优先，默认 3300。"""
     try:
@@ -611,8 +644,10 @@ def chapter_review(ch_body, cfg, context=""):
             sys_p += "\n" + _slop
         except Exception:
             pass
+        sys_p += "\n" + SCORE_RUBRIC
         out = llm.chat_json([{"role": "system", "content": sys_p},
-                             {"role": "user", "content": user_p}], cfg=cfg, stage="review")
+                             {"role": "user", "content": user_p}],
+                            cfg=score_model_cfg(cfg) or cfg, stage="review")
         if not isinstance(out, dict) or not out.get("scores"):
             return {}
         scores = out.get("scores")
@@ -650,12 +685,14 @@ def five_role_review(book_md, cfg, l1_findings=None, position_note=""):
              "\"severity\":\"high|mid|low\",\"evidence\":\"原句引用\",\"problem\":\"问题\",\"fix\":\"建议\"}],"
              "\"fix_actions\":[{\"chapter\":N,\"action\":\"具体可执行的局部重写指令\"}]}。"
              "fix_actions 只放 severity=high 且能定位到章节的（最多 6 条）。只输出 JSON。")
+    sys_p += "\n" + SCORE_RUBRIC
     user_p = (position_note + "\n" if position_note else "") + f"待评正文：\n{book_md[:30000]}"
     editor_skills = agent_skills_block("editor", cfg, "P4")
     if editor_skills:
         sys_p += "\n" + editor_skills
     return llm.chat_json([{"role": "system", "content": sys_p},
-                          {"role": "user", "content": user_p}], cfg=cfg, stage="review")
+                          {"role": "user", "content": user_p}],
+                         cfg=score_model_cfg(cfg) or cfg, stage="review")
 
 # ---------- P5c：读者人格 beta 读（可选，reader_panel 开关） ----------
 _READER_PERSONAS = ["数据流爽文党（追更新、爱逆袭打脸、容忍度低）",

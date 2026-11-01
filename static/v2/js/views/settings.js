@@ -250,6 +250,46 @@ export function renderSettings(container, ctx) {
       model.dirty = true;
     });
     syncBudgetDisabled();
+    /* v4.18.0：评分专用模型——空 = 跟随创作模型；指定后逐章评分与全书审校都用它 */
+    const scoreSel = h('select', { class: 'set-select', 'aria-label': '评分专用模型', on: {
+      change: () => {
+        model.settings.score_provider_id = scoreSel.value.split('::')[0] || '';
+        model.settings.score_model = scoreSel.value.split('::').slice(1).join('::');
+        model.dirty = true;
+      }
+    } });
+    const paintScoreSel = () => {
+      const st = model.settings || {};
+      const cur = `${st.score_provider_id || ''}::${st.score_model || ''}`;
+      scoreSel.textContent = '';
+      scoreSel.append(h('option', { value: '', text: '跟随创作模型（默认）' }));
+      for (const o of (model.scoreModelOptions || [])) {
+        scoreSel.append(h('option', { value: o.value, selected: o.value === cur, text: o.label || o.value }));
+      }
+    };
+    api.agents?.().then((v) => {
+      const opts = [];
+      for (const prov of ((v && v.options) || [])) {
+        for (const m of (prov.models || [])) {
+          opts.push({ value: `${prov.id}::${m}`, label: `${prov.name || prov.id} · ${m}` });
+        }
+      }
+      model.scoreModelOptions = opts;
+      paintScoreSel();
+    }).catch(() => paintScoreSel());
+    qualityBody.append(
+      h(
+        'div',
+        { class: 'set-row' },
+        h(
+          'div',
+          { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '评分专用模型' }),
+          h('div', { class: 'set-row-desc', text: '逐章评分与全书审校专用的大模型；可选便宜快速的模型降成本，留空跟随创作模型。评分按六维锚点标准（0-10 判分）执行。' })
+        ),
+        h('div', { class: 'set-control' }, scoreSel)
+      )
+    );
     qualityBody.append(
       h(
         'div',
@@ -349,6 +389,8 @@ export function renderSettings(container, ctx) {
       await api.saveSettings({
         quality_mode: model.settings.quality_mode,
         token_budget: (model.settings.token_budget === 0) ? 0 : (Number(model.settings.token_budget) || 90000),
+        score_provider_id: model.settings.score_provider_id || '',
+        score_model: model.settings.score_model || '',
         lorebook: Boolean(model.settings.lorebook),
         llm_trace: Boolean(model.settings.llm_trace),
         chat_context_limit: model.settings.chat_context_limit || '200k',

@@ -2659,7 +2659,9 @@ def api_settings():
             "lorebook": bool(d.get("lorebook", True)), "llm_trace": bool(d.get("llm_trace", True)),
             "call_gap": d.get("call_gap", 2), "max_global_agents": d.get("max_global_agents", 4),
             "chat_context_limit": chatsum.load_limit(),
-            "chat_auto_compress": chatsum.compress_enabled()}
+            "chat_auto_compress": chatsum.compress_enabled(),
+            "score_provider_id": d.get("score_provider_id", ""),
+            "score_model": d.get("score_model", "")}
 
 
 @app.post("/api/settings")
@@ -2694,6 +2696,11 @@ def api_settings_save(payload: dict):
         d["chat_context_limit"] = v
     if "chat_auto_compress" in payload:
         d["chat_auto_compress"] = bool(payload.get("chat_auto_compress"))
+    # v4.18.0：评分专用模型（空 = 跟随创作模型）
+    if "score_provider_id" in payload:
+        d["score_provider_id"] = str(payload.get("score_provider_id") or "").strip()[:60]
+    if "score_model" in payload:
+        d["score_model"] = str(payload.get("score_model") or "").strip()[:80]
     atomic_write_json(cf, cfg)
     return api_settings()
 
