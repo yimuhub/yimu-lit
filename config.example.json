@@ -19,7 +19,7 @@
       "enabled": true,
       "mode": "report",
       "max_fix_rounds": 2,
-      "pass_line": 90
+      "pass_line": 80
     },
     "stage_models": {
       "planning": {},

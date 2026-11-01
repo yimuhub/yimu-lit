@@ -1719,6 +1719,31 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
     if (final or 0) < (base_score or 0):
         atomic_write_text(fp, orig_body)
         final = base_score
+    # v4.21.2 字数底线复核：重写/还原可能让字数缩水，跌破验收线（标准字数 90%）时
+    # 一次轻量续写补足（不整章重写，不做多轮——与字数新标准同一策略）。
+    try:
+        _pl = proj.plan() or {}
+        _minw = int(_pl.get("minWordsPerChapter") or 3000)
+        _floor = int(_minw * 0.9)
+        _ch = next((c for c in (_pl.get("chapters") or []) if c.get("chapterNumber") == ch_no), None)
+        _body = open(fp, encoding="utf-8").read()
+        from bot import wordguard as _wguard
+        _wc = _wguard.cn_len(_clean_chapter_text(_body))
+        if _ch and _wc < _floor:
+            _need = max(300, _floor - _wc + 150)
+            proj.log(f"📏 第{ch_no}章重写后 {_wc} 字（低于验收线 {_floor}），轻量补足约 {_need} 字…")
+            _evt(os.path.basename(proj.path), "writer", phase="warn", title="重写后字数低于验收线，轻量补足",
+                 output=f"{_wc} 字，续写约 {_need} 字", chapter=ch_no)
+            try:
+                _ctx = _build_ctx(proj, _ch)
+            except Exception:
+                _ctx = {}
+            _cont = workflow.continue_chapter(_body, _ctx, need_words=_need)
+            if _wguard.cn_len(_cont) >= 120:
+                atomic_write_text(fp, _body.rstrip() + "\n\n" + _cont)
+                proj.log(f"➕ 重写后补足完成（验收线 {_floor} 字）")
+    except Exception:
+        pass
     return final
 
 def per_chapter_scores(proj):
@@ -1829,17 +1854,37 @@ def _write_chapter(proj, ch, min_words, max_retries):
     #   最后一轮改用末尾续写拼接（增量保证，不再全文重写）。
     from bot import wordguard
     _cn_len = wordguard.cn_len
+    # v4.21.2 字数新标准（用户定稿）：验收线 = 标准字数的 90%，达到 70% 只做一次
+    # 末尾轻量续写补足（不再整章反复扩写——无效编写极耗 token）；评分 ≥ pass_line
+    # （80）的章不做整章重写，与字数解耦。
+    word_floor = int(min_words * 0.9)
+    soft_floor = int(min_words * 0.7)
     words, ok, i = 0, False, 0
     for i in range(max_retries + 1):
         atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
-        ok, words = skill.check_words(fp, min_words)
+        ok, words = skill.check_words(fp, word_floor)
         if ok:
             break
         prev_len = _cn_len(body)
         last_round = (i == max_retries)
+        pct = f"{words * 100 // min_words}%" if min_words else "?"
+        # 达到标准 70%：字数已大体成形，整章扩写是无效编写——直接末尾续写补足到 90% 线
+        if not last_round and words >= soft_floor:
+            need = max(300, word_floor - words + 150)
+            proj.log(f"⚠️ 第{no}章 {words} 字（标准的 {pct}，验收线 {word_floor}），末尾轻量续写补足约 {need} 字…")
+            _evt(_bk, "writer", phase="warn", title="字数未达 90% 线，轻量续写补足",
+                 output=f"{words} 字（{pct}），续写约 {need} 字", chapter=no)
+            cont = workflow.continue_chapter(body, ctx, need_words=need)
+            cont_len = _cn_len(cont)
+            if cont_len >= 120:
+                body = body.rstrip() + "\n\n" + cont
+                proj.log(f"➕ 续写拼接 {cont_len} 字（拼接后约 {prev_len + cont_len} 字）")
+            else:
+                proj.log(f"⚠️ 续写返回 {cont_len} 字（过短），保留原稿交由验收阶段处理")
+            continue
         if last_round:
-            need = max(600, min_words - words + 200)
-            proj.log(f"⚠️ 第{no}章仅 {words} 字（下限 {min_words}），末轮从结尾续写补足约 {need} 字…")
+            need = max(600, word_floor - words + 200)
+            proj.log(f"⚠️ 第{no}章仅 {words} 字（标准的 {pct}，验收线 {word_floor}），末轮从结尾续写补足约 {need} 字…")
             _evt(_bk, "writer", phase="warn", title="字数不足，末轮续写补足",
                  output=f"{words} 字，续写约 {need} 字", chapter=no)
             cont = workflow.continue_chapter(body, ctx, need_words=need)
@@ -1850,9 +1895,9 @@ def _write_chapter(proj, ch, min_words, max_retries):
             else:
                 proj.log(f"⚠️ 续写返回 {cont_len} 字（过短），保留原稿交由验收阶段处理")
             continue
-        proj.log(f"⚠️ 第{no}章仅 {words} 字（下限 {min_words}），按 content-expansion.md 扩充（第{i+1}轮）")
-        _evt(_bk, "writer", phase="warn", title=f"字数不足，扩写第{i+1}轮",
-             output=f"{words} 字，少于下限 {min_words}", chapter=no)
+        proj.log(f"⚠️ 第{no}章仅 {words} 字（不足标准的 70%），按 content-expansion.md 扩写（第{i+1}轮）")
+        _evt(_bk, "writer", phase="warn", title=f"字数不足标准的70%，扩写第{i+1}轮",
+             output=f"{words} 字，少于软线 {soft_floor}", chapter=no)
         new_body = _strip_chatter(workflow.expand_chapter(body, ctx, min_words=min_words, current_words=prev_len))
         new_len = _cn_len(new_body)
         if new_len < max(prev_len, int(min_words * 0.8)):

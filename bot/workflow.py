@@ -651,7 +651,7 @@ def deslop_chapter(ch_body, ctx, max_findings=15, key="", chapter_no=0):
 # ---------- 排行级质检：五角色审校 + 百分制（对标 90 达标线） ----------
 
 SCORE_WEIGHTS = {"结构": 20, "因果可信": 20, "人物": 15, "连续性": 20, "语言": 15, "读者体验": 10}
-PASS_LINE = 90  # 百分制达标线
+PASS_LINE = 80  # 百分制达标线（v4.21.2：80 分以上直接通过，不再整章重写）
 
 def _slice_book(book_md: str, max_chars: int = 26000, max_slices: int = 8):
     """长篇分段：按「## 」章节边界切块，每块 ≤max_chars；块数超限均匀采样。"""
