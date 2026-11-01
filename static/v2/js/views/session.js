@@ -68,6 +68,11 @@ function finishSteps(process, { title, duration, tokens, stage = 'done' } = {}) 
   };
 }
 
+/* v4.21.1：创作活动流去重水位（模块级，跨双挂载也生效）——
+   mountKey -> Set(事件 no)；creatorAction 用 mountKey -> ts。 */
+const _seenSteps = new Map();
+const _seenCreatorTs = new Map();
+
 export function renderSession(container, ctx = {}) {
   const mountKey = store.get().currentKey;
   const el = h('div', { class: 'session-view' });
@@ -834,6 +839,176 @@ export function renderSession(container, ctx = {}) {
     }
   }
 
+  // ---------- v4.21 创作活动流：步骤卡 / 实时输出 / 创作按钮回显 ----------
+  // app.js 的 book-live 轮询把 steps / stream 写进 store；这里只负责把增量转成
+  // 对话消息：steps 按 no 水位线追加，stream 维护一条「实时输出」卡片（正文走
+  // 直改 DOM，与追章 paintChapter 同款套路）。进入书页不回放历史：水位线初始
+  // 取当前 items 的最大 no（重挂载也不回放；历史在右栏「本章档案」查）。
+  const maxStepNo = (list) =>
+    (list || []).reduce((acc, it) => Math.max(acc, Number(it && it.no) || 0), 0);
+  let lastStepNo = maxStepNo(store.get().steps && store.get().steps.items);
+  let streamEpoch = 0;
+  let streamMsgId = '';
+  let streamDoneTimer = 0;
+  let creatorTs = (store.get().ui && store.get().ui.creatorAction && store.get().ui.creatorAction.ts) || 0;
+
+  function paintSteps() {
+    const state = store.get();
+    if (state.currentKey !== mountKey) return;
+    const items = (state.steps && state.steps.items) || [];
+    if (!items.length) {
+      /* 被重置过（切书）：水位线归零，等新书的增量 */
+      lastStepNo = 0;
+      return;
+    }
+    /* v4.21.1：模块级已见集合——即使极端场景下出现双订阅/双挂载，
+       同一事件也只进一次对话流（此前重复事件成对出现）。 */
+    let seen = _seenSteps.get(mountKey);
+    if (!seen) {
+      seen = new Set();
+      _seenSteps.set(mountKey, seen);
+    }
+    const fresh = items.filter((it) => {
+      const no = Number(it && it.no) || 0;
+      return it && no > lastStepNo && !seen.has(no);
+    });
+    if (!fresh.length) return;
+    lastStepNo = maxStepNo(items);
+    const addedIds = [];
+    for (const item of fresh) {
+      const no = Number(item.no) || 0;
+      seen.add(no);
+      const added = addMessage({ kind: 'step', role: 'assistant', step: { ...item }, content: '' });
+      addedIds.push(added.id);
+    }
+    scrollIfNear();
+    /* v4.21.1 渲染看门狗：消息已进 store 但 1.2s 后仍未出现在消息流 DOM
+       （极端场景下 chat 视图签名失步）→ 强制整流重渲染一次，保证收敛。 */
+    const lastId = addedIds[addedIds.length - 1];
+    setTimeout(() => {
+      if (disposed || !lastId) return;
+      if (!chat.el.querySelector(`.msg-step[data-id="${lastId}"]`)) {
+        console.warn('[session] 步骤卡未上屏，强制重渲染消息流');
+        try { chat.refresh(); } catch { /* ignore */ }
+      }
+    }, 1200);
+  }
+
+  function paintStreamNode(text) {
+    if (!streamMsgId || disposed) return;
+    requestAnimationFrame(() => {
+      if (disposed) return;
+      const node = chat.el.querySelector(`.msg-step[data-id="${streamMsgId}"] .step-stream-text`);
+      if (!node) return;
+      if (node.dataset.raw !== text) {
+        node.dataset.raw = text;
+        node.textContent = text || '正在输出…';
+      }
+      const box = node.parentElement;
+      if (box) box.scrollTop = box.scrollHeight;
+    });
+  }
+
+  function paintStream() {
+    const state = store.get();
+    if (state.currentKey !== mountKey) return;
+    const st = state.stream || {};
+    const epoch = st.epoch || 0;
+
+    if (st.active && st.key === state.currentKey) {
+      let msg = streamMsgId ? state.chat.messages.find((m) => m.id === streamMsgId) : null;
+      if (epoch !== streamEpoch || !msg) {
+        streamEpoch = epoch;
+        if (streamDoneTimer) {
+          clearTimeout(streamDoneTimer);
+          streamDoneTimer = 0;
+        }
+        const wantedId = `step-live-${epoch}`;
+        msg = state.chat.messages.find((m) => m.id === wantedId);
+        if (msg) {
+          /* 重挂载等场景：同一条流已在对话里，直接接管 */
+          streamMsgId = msg.id;
+          if ((msg.content || '') !== (st.text || '')) {
+            updateMessage(msg.id, { content: st.text || '' });
+          }
+        } else {
+          const created = addMessage({
+            id: wantedId,
+            kind: 'step',
+            role: 'assistant',
+            stream: true,
+            step: {
+              agent: st.agent || 'system',
+              agent_label: st.agent_label || '实时输出',
+              title: st.title || (st.chapter ? `第${st.chapter}章` : '实时输出'),
+              chapter: st.chapter || 0,
+              phase: 'start',
+              streaming: true,
+              ts: Math.floor(Date.now() / 1000)
+            },
+            content: st.text || ''
+          });
+          streamMsgId = created.id;
+          scrollIfNear();
+        }
+      } else if ((msg.content || '') !== (st.text || '')) {
+        /* 只同步 content 供重渲染兜底；视觉更新交给 paintStreamNode 直改 DOM */
+        updateMessage(streamMsgId, { content: st.text || '' });
+      }
+      paintStreamNode(st.text || '');
+      return;
+    }
+
+    /* 一轮输出收尾：转完成态（✓ + 耗时 + 全文），1.5s 后收起为可展开完成卡 */
+    if (streamMsgId && epoch === streamEpoch && (st.text || '')) {
+      const msg = state.chat.messages.find((m) => m.id === streamMsgId);
+      if (msg && msg.step && msg.step.streaming) {
+        const durationMs = Math.max(0, Date.now() - (Number(msg.step.ts) || 0) * 1000);
+        updateMessage(streamMsgId, (m) => ({
+          ...m,
+          content: st.text || '',
+          step: {
+            ...(m.step || {}),
+            phase: 'done',
+            streaming: false,
+            ms: durationMs > 500 ? Math.round(durationMs / 100) * 100 : 0
+          }
+        }));
+        if (!streamDoneTimer) {
+          streamDoneTimer = setTimeout(() => {
+            streamDoneTimer = 0;
+            if (!disposed) updateMessage(streamMsgId, { collapsed: true });
+          }, 1500);
+        }
+        scrollIfNear();
+      }
+    }
+  }
+
+  /* 创作按钮（继续/暂停）成功后 planbar 会写 ui.creatorAction；这里转成
+     创作者视角的用户气泡，ts 水位线去重（含挂载时跳过旧事件；
+     v4.21.1 水位线模块级化——双挂载场景也不重复插气泡）。 */
+  function paintCreatorAction() {
+    const state = store.get();
+    if (state.currentKey !== mountKey) return;
+    const act = state.ui && state.ui.creatorAction;
+    if (!act || !act.ts || act.ts <= creatorTs) return;
+    const seenTs = _seenCreatorTs.get(mountKey);
+    if (seenTs && act.ts <= seenTs) return;
+    _seenCreatorTs.set(mountKey, act.ts);
+    creatorTs = act.ts;
+    if (act.key !== mountKey) return;
+    const text = String(act.text || '').trim();
+    if (!text) return;
+    addMessage({
+      role: 'user',
+      content: text,
+      creatorNote: '来自创作按钮',
+      created_at: new Date().toISOString()
+    });
+    scrollIfNear();
+  }
+
   function retryMessage(msg) {
     if (msg && msg.chapter) {
       toast('章节内容是对话生成的，不能单独重试', { duration: 2200 });
@@ -935,6 +1110,9 @@ export function renderSession(container, ctx = {}) {
     paintPlan();
     paintBanner();
     paintBind();
+    paintSteps();
+    paintStream();
+    paintCreatorAction();
     if (state.plan && !state.chat.approval) deriveApproval();
   });
 
@@ -973,6 +1151,10 @@ export function renderSession(container, ctx = {}) {
     destroy() {
       disposed = true;
       epoch += 1;
+      if (streamDoneTimer) {
+        clearTimeout(streamDoneTimer);
+        streamDoneTimer = 0;
+      }
       if (turn && turn.clockTimer) clearInterval(turn.clockTimer);
       if (turn && turn.controller) {
         try {

@@ -612,6 +612,8 @@ function syncShell(state, force = false) {
     state.currentKey,
     state.ui.rightTab,
     state.ui.rightOpen,
+    /* v4.21.0：对话产出卡「查看本章过程」→ 右栏档案页签联动 */
+    (state.ui.chapterArchive && state.ui.chapterArchive.ts) || 0,
     JSON.stringify(state.features),
     state.work ? [state.work.running, state.work.done, state.work.total, state.work.state].join('~') : '',
     state.workError || '',
@@ -747,29 +749,154 @@ function startLive(key) {
       } catch { /* 不影响主流程 */ }
     }
   });
-  pollStop = pollBookLive(
-    key,
-    (data) => {
-      patch('work', (w) => {
-        if (!w) return w;
-        const prog = data.progress || {};
-        return {
-          ...w,
-          running: Boolean(data.running),
-          paused: Boolean(data.paused),
-          done: prog.done != null ? prog.done : w.done,
-          total: prog.total != null ? prog.total : w.total,
-          phase: data.phase || w.phase
-        };
-      });
-      const lines = (data && data.live_log) || [];
-      if (lines.length) {
-        patch('live', (arr) => (arr.length >= lines.length ? arr : lines.map((m) => ({ message: m, level: 'info', at: Date.now() }))));
+  /* v4.21 创作活动流：book-live 轮询内联化——同一份返回体既喂原有进度逻辑，
+     也喂对话里的步骤卡（steps）与实时输出（stream）。请求带上 state 里的
+     steps_cursor / stream_offset 续传游标；节奏与原 pollBookLive 一致：
+     2.5s 间隔、页面隐藏暂停、防重入、错误静默（404/501 旧后端优雅降级）。
+     mock 模式继续走原 pollBookLive（api.bookLive → mock 数据，无 steps/stream）。 */
+  const applyLive = (data) => {
+    patch('work', (w) => {
+      if (!w) return w;
+      const prog = data.progress || {};
+      return {
+        ...w,
+        running: Boolean(data.running),
+        paused: Boolean(data.paused),
+        done: prog.done != null ? prog.done : w.done,
+        total: prog.total != null ? prog.total : w.total,
+        phase: data.phase || w.phase
+      };
+    });
+    const lines = (data && data.live_log) || [];
+    if (lines.length) {
+      patch('live', (arr) => (arr.length >= lines.length ? arr : lines.map((m) => ({ message: m, level: 'info', at: Date.now() }))));
+    }
+  };
+
+  /* steps 增量合并：首个返回批只作基线推进游标（进入书页不回放历史，
+     历史在右栏「本章档案」查），之后按 no 去重追加，cap 300 条防内存。 */
+  const mergeSteps = (bookKey, data) => {
+    if (bookKey !== store.get().currentKey) return;
+    const steps = data && data.steps;
+    if (!steps || !Array.isArray(steps.items)) return;
+    patch('steps', (prev) => {
+      const incoming = steps.items.filter(Boolean);
+      const maxNo = incoming.reduce((acc, it) => Math.max(acc, Number(it.no) || 0), 0);
+      const srvCursor = Number(steps.cursor) || 0;
+      if (!prev.baselined) {
+        return { baselined: true, cursor: srvCursor || maxNo || prev.cursor || 0, items: prev.items };
       }
-    },
-    () => {},
-    2500
-  );
+      const seen = new Set(prev.items.map((it) => Number(it.no) || 0));
+      const fresh = incoming.filter((it) => {
+        const no = Number(it.no) || 0;
+        return no > 0 && !seen.has(no);
+      });
+      const nextCursor = srvCursor || Math.max(prev.cursor || 0, maxNo);
+      if (!fresh.length && nextCursor === prev.cursor) return prev;
+      return {
+        baselined: true,
+        cursor: nextCursor,
+        items: [...prev.items, ...fresh].slice(-300)
+      };
+    });
+  };
+
+  /* stream 合并：text 按 offset 增量累加到本地缓冲；active=false 时 offset 归零
+     （缓冲停止增长，文本保留给完成卡），下一轮流式开始（epoch+1）时重置缓冲。 */
+  const mergeStream = (bookKey, data) => {
+    if (bookKey !== store.get().currentKey) return;
+    const stream = data && data.stream;
+    if (!stream || typeof stream !== 'object') return;
+    const piece = typeof stream.text === 'string' ? stream.text : '';
+    const active = Boolean(stream.active) && !stream.done;
+    patch('stream', (prev) => {
+      if (active) {
+        const starting = !prev.active;
+        const text = (starting ? '' : prev.text || '') + piece;
+        const srvOffset = Number(stream.offset);
+        const offset =
+          Number.isFinite(srvOffset) && srvOffset > 0
+            ? srvOffset
+            : (starting ? 0 : prev.offset || 0) + Array.from(piece).length;
+        return {
+          key: bookKey,
+          active: true,
+          doneAt: 0,
+          epoch: starting ? (prev.epoch || 0) + 1 : prev.epoch || 1,
+          agent: stream.agent || prev.agent || '',
+          agent_label: stream.agent_label || prev.agent_label || '',
+          title: stream.title || prev.title || '',
+          chapter: Number(stream.chapter) || 0,
+          offset,
+          text
+        };
+      }
+      if (!prev.active) {
+        return prev.offset === 0 ? prev : { ...prev, offset: 0 };
+      }
+      return { ...prev, active: false, offset: 0, doneAt: Date.now() };
+    });
+  };
+
+  if (store.get().mock) {
+    pollStop = pollBookLive(key, applyLive, () => {}, 2500);
+  } else {
+    let liveTimer = 0;
+    let liveStopped = false;
+    let liveBusy = false;
+
+    const liveTick = async () => {
+      if (liveStopped || liveBusy || document.hidden) return;
+      if (store.get().currentKey !== key) return;
+      liveBusy = true;
+      try {
+        const s = store.get();
+        const qs = new URLSearchParams({
+          key,
+          steps_cursor: String((s.steps && s.steps.cursor) || 0),
+          stream_offset: String((s.stream && s.stream.offset) || 0)
+        });
+        const ctrl = new AbortController();
+        const kill = setTimeout(() => ctrl.abort(), 12000);
+        let data = null;
+        try {
+          const res = await fetch(`/api/book-live?${qs.toString()}`, {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' },
+            signal: ctrl.signal
+          });
+          if (res.ok) data = await res.json().catch(() => null);
+          /* 404/501（旧后端）等非 2xx：静默降级，与原 pollBookLive 的 isMissing 一致 */
+        } catch {
+          /* 网络抖动 / 超时：静默，下个周期重试 */
+        } finally {
+          clearTimeout(kill);
+        }
+        if (liveStopped || document.hidden || !data) return;
+        applyLive(data);
+        mergeSteps(key, data);
+        mergeStream(key, data);
+      } finally {
+        liveBusy = false;
+      }
+    };
+
+    const liveLoop = () => {
+      if (liveStopped) return;
+      liveTick();
+      liveTimer = setTimeout(liveLoop, 2500);
+    };
+    const liveOnVisibility = () => {
+      if (!document.hidden) liveTick();
+    };
+    document.addEventListener('visibilitychange', liveOnVisibility);
+    liveLoop();
+    pollStop = () => {
+      liveStopped = true;
+      clearTimeout(liveTimer);
+      document.removeEventListener('visibilitychange', liveOnVisibility);
+    };
+  }
 
   /* 全界面进度自动刷新：每 10 秒拉取一次规划状态、作品库列表与状态库，
      让左侧菜单栏进度、对话界面上方整体进度、右侧面板进度都实时更新，

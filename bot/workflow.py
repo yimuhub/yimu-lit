@@ -1,8 +1,8 @@
 """创作工作流：「一幕·一幕·YIMU 神笔」创作系统四阶段落地
 阶段0 偏好加载 / 阶段1 三层问答(快车道) / 阶段2 规划 / 阶段3 逐章创作 / 阶段4 校验
 """
-import json, os, re, datetime
-from . import llm, skill
+import json, os, re, datetime, time
+from . import llm, skill, steps
 from .safeio import atomic_write_json
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,6 +23,28 @@ def load_prefs():
 def save_prefs(p):
     p["updatedAt"] = datetime.date.today().isoformat()
     atomic_write_json(PREFS_FILE, p)
+
+
+# ---------- v4.21.0：创作事件埋点（bot/steps.py 事件总线）----------
+
+def _evt(key, agent, phase="done", title="", thinking="", output="", chapter=0, level="info", ms=0):
+    """steps.emit 安全壳：任何异常静默吞掉——埋点失败绝不影响创作主流程。"""
+    try:
+        steps.emit(key, agent, phase=phase, title=title, thinking=thinking, output=output,
+                   chapter=chapter, level=level, ms=ms)
+    except Exception:
+        pass
+
+
+def _evt_key(key=""):
+    """埋点用书 key：优先调用方显式传入；缺失回读 llm 线程本地记账标记（写作线程均已 llm.book() 归集）。"""
+    try:
+        k = str(key or "").strip()
+        if k:
+            return k
+        return str(getattr(getattr(llm, "_TL", None), "book", "") or "")
+    except Exception:
+        return ""
 
 # ---------- 阶段1：主题提取（快车道） ----------
 
@@ -112,7 +134,7 @@ def gen_characters(cfg):
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
-def gen_outline(cfg):
+def gen_outline(cfg, book_key=""):
     sys_p = (
         "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
         "参考 plot-structures.md 选一种经典结构。大纲必须人物驱动、冲突递进、每章有钩子。\n"
@@ -126,8 +148,17 @@ def gen_outline(cfg):
     planner_skills = agent_skills_block("planner", cfg, "P0")
     if planner_skills:
         sys_p += "\n\n" + planner_skills
-    return llm.chat([{"role": "system", "content": sys_p},
-                     {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
+    msgs = [{"role": "system", "content": sys_p},
+            {"role": "user", "content": user_p}]
+    book_key = book_key or llm.current_book()   # 未显式传参时复用 token 记账的线程书标记（create_project 已 llm.book）
+    if book_key:      # 流式接线：大纲逐字进活动流（planner 岗、全书级 chapter=0）
+        from . import steps
+        out = llm.chat_stream(msgs, cfg=cfg, stage="planning",
+                              on_delta=lambda chunk: steps.emit_delta(book_key, "planner", 0, chunk,
+                                                                      title="生成大纲"))
+        steps.emit_delta(book_key, "planner", 0, "", done=True, title="生成大纲")
+        return out
+    return llm.chat(msgs, cfg=cfg, stage="planning")
 
 def gen_style(cfg):
     sys_p = ("你执行 「一幕·一幕·YIMU 神笔」创作系统的 03-文风基准 生成，包含四部分：\n"
@@ -256,10 +287,28 @@ def _p5_block(ctx):
         parts.append(s)
     return "\n".join(parts)
 
-def write_chapter(ctx):
+def write_chapter(ctx, book_key="", chapter_no=0):
     cont = _continuity_block(ctx)
     p5 = _p5_block(ctx)
     lf = _longform_block(ctx)
+    # 流式接线：最终产出的这次 LLM 调用走 chat_stream，增量正文逐字广播到活动流（writer 岗）
+    try:
+        no = int(chapter_no or ctx.get("chapter_no") or 0)
+    except (TypeError, ValueError):
+        no = int(chapter_no or 0)
+
+    def _finish_stream(msgs):
+        """只有最终产出那次走流式；书 key 取显式参数，缺省复用 token 记账的线程书标记
+        （写稿线程进入前已 llm.book(key, "writing")）；两者皆空（旧调用方/反撞车重试）保持原 chat() 路径不变。"""
+        bk = book_key or llm.current_book()
+        if not bk:
+            return llm.chat(msgs, cfg=ctx.get("cfg"), stage="writing")
+        from . import steps
+        out = llm.chat_stream(msgs, cfg=ctx.get("cfg"), stage="writing",
+                              on_delta=lambda chunk: steps.emit_delta(bk, "writer", no, chunk,
+                                                                      title=f"写第{no}章"))
+        steps.emit_delta(bk, "writer", no, "", done=True, title=f"写第{no}章")
+        return out
     # v0.4：读者即时修正指令（运行中随时插一条，标 immediate 立即生效 / 否则下一条生效）
     qnote = (ctx.get("queue_note") or "").strip()
     qblock = ("\n【读者即时指令（本章必须优先满足，不破坏既有剧情设定）】\n" + qnote) if qnote else ""
@@ -298,8 +347,8 @@ def write_chapter(ctx):
             f"自然推进剧情，可引入新的转折/冲突/角色（须符合人物性格与既定设定），严禁重复已写情节；"
             f"严守人物性格一致性，结尾必留钩子。输出章节文件内容。"
         )
-        return llm.chat([{"role": "system", "content": _writing_system(ctx)},
-                         {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
+        return _finish_stream([{"role": "system", "content": _writing_system(ctx)},
+                               {"role": "user", "content": user_p}])
     user_p = (
         f"{bblock}"
         f"{lf}\n"
@@ -314,8 +363,8 @@ def write_chapter(ctx):
         f"现在写第 {ctx['chapter_no']} 章「{ctx['chapter_title']}」。严格按该章在大纲中的规划（核心事件/承接/钩子/出场人物/场景）创作。"
         f"输出章节文件内容。"
     )
-    return llm.chat([{"role": "system", "content": _writing_system(ctx)},
-                     {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
+    return _finish_stream([{"role": "system", "content": _writing_system(ctx)},
+                           {"role": "user", "content": user_p}])
 
 def score_model_cfg(cfg):
     """v4.18.0：评分专用模型路由——config.defaults.score_provider_id / score_model
@@ -443,6 +492,7 @@ def plan_drift_check(proj, cfg=None, batch_wrote=0):
                  '只输出 JSON：{"drift": true 或 false, "guidance": "≤200字的纠偏指引（无跑偏给一句方向确认；'
                  '跑偏则给出下一批章节该怎么拉回来的具体做法）"}')
         user_p = (f"【大纲（节选）】\n{outline or '（无）'}\n\n【最近章节（开头/结尾节选）】\n" + "\n\n".join(segs))
+        _t0 = time.perf_counter()   # v4.21.0：校准耗时
         res = llm.chat_json([{"role": "system", "content": sys_p},
                              {"role": "user", "content": user_p}],
                             cfg=cfg or {}, stage="planning", agent="planner")
@@ -451,6 +501,11 @@ def plan_drift_check(proj, cfg=None, batch_wrote=0):
         drift = bool(res.get("drift"))
         guidance = str(res.get("guidance") or "").strip()[:300]
         out = {"drift": drift, "guidance": guidance}
+        # v4.21.0：创作事件——规划师校准结论（全书级 chapter=0）
+        _evt(os.path.basename(proj.path), "planner", phase="done", title="规划师校准",
+             output=(f"发现跑偏：{guidance[:80]}" if drift else "无跑偏"),
+             thinking="对照大纲检查最近几章主线推进/人物知情范围/世界观/承接是否跑偏",
+             ms=int((time.perf_counter() - _t0) * 1000))
         if guidance:
             try:
                 with proj.lock:
@@ -544,15 +599,21 @@ def fix_chapter(ch_body, action, ctx):
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="review", agent="rewriter")
 
-def deslop_chapter(ch_body, ctx, max_findings=15):
+def deslop_chapter(ch_body, ctx, max_findings=15, key="", chapter_no=0):
     """AI 腔定点去味（两阶段，不装确定）：
     1) 纯规则 slop_checker.scan → blocking/advisory findings + top_words（不调 LLM，零误报定位）
     2) 把 findings 交给 LLM 出「最小改法」定点改写（保留情节/钩子/字数量级，只修被指出的位置）
     返回 {"report": dict, "cleaned": str, "findings": list}；LLM 失败时 cleaned 保持原文。
-    v4.20：去味师是必经环节，但用户显式停用 deslopper 岗位时跳过（原样返回，不做去味）。"""
+    v4.20：去味师是必经环节，但用户显式停用 deslopper 岗位时跳过（原样返回，不做去味）。
+    v4.21.0：key/chapter_no 供创作事件埋点（steps.emit，deslopper 岗），缺省安全降级。"""
+    _k = _evt_key(key)
     if _agent_disabled("deslopper"):
+        _evt(_k, "deslopper", phase="warn", title="去味师已停用，跳过去味", chapter=chapter_no)
         return {"report": {"skipped": True, "reason": "去味师岗位已停用"},
                 "cleaned": ch_body, "findings": []}
+    _t0 = time.perf_counter()   # v4.21.0：去味耗时
+    _evt(_k, "deslopper", phase="start", title="去 AI 味扫描", chapter=chapter_no,
+         thinking="先规则层定位 AI 腔（排比/总结句/模糊权威），再做最小改写保情节不变")
     from . import slop_checker
     cfg = ctx.get("cfg") or {}
     report = slop_checker.scan(ch_body)
@@ -560,6 +621,8 @@ def deslop_chapter(ch_body, ctx, max_findings=15):
     top = slop_checker.top_words(ch_body, n=8)
     top_txt = "、".join(f"{w}×{c}" for w, c in top) if top else "（无明显重复 2-gram）"
     if not findings:
+        _evt(_k, "deslopper", phase="done", title="去 AI 味扫描", chapter=chapter_no,
+             output="规则层零命中，无需改写", ms=int((time.perf_counter() - _t0) * 1000))
         return {"report": report, "cleaned": ch_body, "findings": []}
     flines = []
     for f in findings[:max_findings]:
@@ -579,6 +642,14 @@ def deslop_chapter(ch_body, ctx, max_findings=15):
             cleaned = ch_body
     except Exception:
         cleaned = ch_body
+    # v4.21.0：创作事件——去味结果（done=已改写；warn=改写未生效保留原文）
+    _ms = int((time.perf_counter() - _t0) * 1000)
+    if cleaned and cleaned != ch_body:
+        _evt(_k, "deslopper", phase="done", title="去 AI 味扫描", chapter=chapter_no,
+             output=f"命中 {len(findings)} 处 · 去味改写 {abs(len(cleaned) - len(ch_body))} 字", ms=_ms)
+    else:
+        _evt(_k, "deslopper", phase="warn", title="去 AI 味扫描", chapter=chapter_no,
+             output=f"命中 {len(findings)} 处 · 改写未生效，保留原文", ms=_ms)
     return {"report": report, "cleaned": cleaned, "findings": findings}
 
 # ---------- 排行级质检：五角色审校 + 百分制（对标 90 达标线） ----------
@@ -706,14 +777,20 @@ def score_dimensions(scores):
             weight += w
     return round(total, 1) if weight else 0
 
-def chapter_review(ch_body, cfg, context=""):
+def chapter_review(ch_body, cfg, context="", key="", chapter_no=0):
     """v0.5 M1：对**单章**做 5 角色百分制评分（评这一章而非整书）。
     返回 {"scores":{6维0-10}, "weak":[维度名×3], "verdict":"一句话"}；失败返回 {}。
     评的是"这一章在本书里是否达标"，吃 context（文风/人物/前后章）做参照。
     v4.20：路由到审稿人（reviewer）岗位；reviewer 被停用 → 返回 {}（调用方逐章评分得 None、
-    自动重写自然跳过，绝不抛异常阻断写作）。"""
+    自动重写自然跳过，绝不抛异常阻断写作）。
+    v4.21.0：key/chapter_no 供创作事件埋点（steps.emit，reviewer 岗），缺省安全降级。"""
     if _agent_disabled("reviewer"):
         return {}
+    _k = _evt_key(key)
+    _t0 = time.perf_counter()   # v4.21.0：审校耗时
+    _evt_title = f"第{chapter_no}章审校" if chapter_no else "章节审校"
+    _evt(_k, "reviewer", phase="start", title=_evt_title, chapter=chapter_no,
+         thinking="按六维锚点判分：结构/因果可信/人物/连续性/语言/读者体验，就事论事按证据打分")
     try:
         genre_txt = skill.genre(_craft_genre(cfg))
         sys_p = ("你是「一幕·一幕·YIMU 神笔」五角色审校团。现在只审**下面这一章**（在整本书语境下），"
@@ -749,6 +826,8 @@ def chapter_review(ch_body, cfg, context=""):
                              {"role": "user", "content": user_p}],
                             cfg=score_model_cfg(cfg) or cfg, stage="review", agent="reviewer")
         if not isinstance(out, dict) or not out.get("scores"):
+            _evt(_k, "reviewer", phase="warn", title=_evt_title, chapter=chapter_no,
+                 output="审校结果解析失败", ms=int((time.perf_counter() - _t0) * 1000))
             return {}
         scores = out.get("scores")
         # weak：没给就按最低 3 维补齐
@@ -758,18 +837,30 @@ def chapter_review(ch_body, cfg, context=""):
                                           key=lambda kv: (kv[1] if isinstance(kv[1], (int, float)) else 99))[:3]]
         ev = [e for e in (out.get("evidence") or [])
               if isinstance(e, dict) and e.get("quote")][:6]
-        return {"scores": scores, "weak": [w for w in weak if w in SCORE_WEIGHTS][:3] or weak[:3],
+        _weak = [w for w in weak if w in SCORE_WEIGHTS][:3] or weak[:3]
+        # v4.21.0：创作事件——审校完成（最弱维度 + 耗时）
+        _evt(_k, "reviewer", phase="done", title=_evt_title, chapter=chapter_no,
+             output=("最弱 " + "、".join(_weak)) if _weak else "已评",
+             ms=int((time.perf_counter() - _t0) * 1000))
+        return {"scores": scores, "weak": _weak,
                 "evidence": ev, "verdict": (out.get("verdict") or "").strip()[:200]}
-    except Exception:
+    except Exception as e:
+        _evt(_k, "reviewer", phase="warn", title=_evt_title, chapter=chapter_no,
+             output=f"审校失败：{str(e)[:80]}", ms=int((time.perf_counter() - _t0) * 1000))
         return {}
 
-def five_role_review(book_md, cfg, l1_findings=None, position_note=""):
+def five_role_review(book_md, cfg, l1_findings=None, position_note="", key=""):
     """五角色审校团（Architect/Scribe/Editor/Guardian/Curator）单次 LLM 覆盖，
     吃 L1 确定性结果作为证据；返回 6 维(0-10)评分 + findings + fix_actions。
     v4.17.0：position_note——超长篇分段评审时告知「本段位置」，防评审因
     「看不到结局/看不到开头」对整本书误扣结构/人物分。
     v4.20：总编（editor）被停用时保留基础审校（去掉 Editor 角色分工继续评）；
-    llm 调用显式路由 editor 岗位（agent_models 绑定生效）。"""
+    llm 调用显式路由 editor 岗位（agent_models 绑定生效）。
+    v4.21.0：key 供创作事件埋点（steps.emit，editor 岗），缺省安全降级。"""
+    _k = _evt_key(key)
+    _t0 = time.perf_counter()   # v4.21.0：审校耗时
+    _evt(_k, "editor", phase="start", title="五角色审校",
+         thinking="Architect/Scribe/Editor/Guardian/Curator 分工评审，逐条引用原句作证据，按权重合成百分制")
     genre_txt = skill.genre(_craft_genre(cfg))
     roles = ["Architect(结构/节拍/黄金三章)", "Scribe(正文是否注水/推进)"]
     editor_off = _agent_disabled("editor")
@@ -795,9 +886,27 @@ def five_role_review(book_md, cfg, l1_findings=None, position_note=""):
     editor_skills = agent_skills_block("editor", cfg, "P4")
     if editor_skills and not editor_off:
         sys_p += "\n" + editor_skills
-    return llm.chat_json([{"role": "system", "content": sys_p},
-                          {"role": "user", "content": user_p}],
-                         cfg=score_model_cfg(cfg) or cfg, stage="review", agent="editor")
+    try:
+        res = llm.chat_json([{"role": "system", "content": sys_p},
+                             {"role": "user", "content": user_p}],
+                            cfg=score_model_cfg(cfg) or cfg, stage="review", agent="editor")
+    except Exception as e:
+        # v4.21.0：审校失败也广播（warn），再原样抛出保持旧行为
+        _evt(_k, "editor", phase="warn", title="五角色审校",
+             output=f"审校失败：{str(e)[:80]}", ms=int((time.perf_counter() - _t0) * 1000))
+        raise
+    # v4.21.0：创作事件——五角色审校完成（结论条数 + 百分制达标与否）
+    try:
+        _res = res if isinstance(res, dict) else {}
+        _total = score_dimensions(_res.get("scores"))
+        _n = len(_res.get("findings") or [])
+        _evt(_k, "editor", phase="done", title="五角色审校",
+             output=f"{_n} 条结论 · 百分制 {_total}"
+                    f"（{'达标' if _total >= PASS_LINE else '未达标'}）",
+             ms=int((time.perf_counter() - _t0) * 1000))
+    except Exception:
+        pass
+    return res
 
 # ---------- P5c：读者人格 beta 读（可选，reader_panel 开关） ----------
 _READER_PERSONAS = ["数据流爽文党（追更新、爱逆袭打脸、容忍度低）",

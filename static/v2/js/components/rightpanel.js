@@ -29,8 +29,12 @@ const TABS = [
   { key: 'state', label: '状态', icon: 'activity' },
   { key: 'refs', label: '参考', icon: 'folder' },
   { key: 'skills', label: '技能', icon: 'sparkles' },
-  { key: 'collab', label: '协作', icon: 'layers' }
+  { key: 'collab', label: '协作', icon: 'layers' },
+  { key: 'archive', label: '档案', icon: 'history' }
 ];
+
+/* v4.21.0：对话产出卡「查看本章过程」→ 自动切到档案页签的水位线（每次点击只触发一次切换） */
+let _archiveSeenTs = 0;
 
 /* 协作面板带轮询与订阅，跨 tab / 跨书必须显式销毁，否则 interval 会残留。 */
 let collabInst = null;
@@ -2508,13 +2512,102 @@ async function promoteSkill(ctx, cand) {
 
 /* --------------------------------------------------------------- shell */
 
+/* v4.21.0：本章创作档案——该章的全部创作事件时间线（岗位/思考/产出，新→旧）。
+   数据源 /api/chapter-steps（bot/steps.chapter_events：内存 ring + 历史 JSONL 去重合并）。 */
+function archivePane(ctx) {
+  const state = store.get();
+  const key = state.currentKey;
+  const work = state.work || {};
+  const total = Number(work.total || 0);
+  const requested = (state.ui.chapterArchive && state.ui.chapterArchive.key === key)
+    ? state.ui.chapterArchive : {};
+  let chapter = Number(requested.chapter || work.current_chapter || 1) || 1;
+  if (total && chapter > total) chapter = total;
+  if (chapter < 1) chapter = 1;
+
+  const pane = h('div', { class: 'arch-pane' });
+  const sel = h('select', { class: 'input arch-select', 'aria-label': '选择章节' });
+  const list = h('div', { class: 'arch-list' });
+  const head = h('div', { class: 'arch-head' },
+    h('span', { class: 'arch-head-label', text: '章节' }), sel,
+    h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => load() } })
+  );
+  pane.append(head, list);
+
+  function paint(items) {
+    list.textContent = '';
+    if (items == null) {
+      list.append(h('div', { class: 'hint-text', style: 'padding:12px 4px', text: '档案加载失败，请重试。' }));
+      return;
+    }
+    if (!items.length) {
+      list.append(h('div', { class: 'hint-text', style: 'padding:12px 4px',
+        text: '这一章还没有记录。创作过程中每个岗位的动作（规划/写作/审校/去味）都会逐步沉淀到这里。' }));
+      return;
+    }
+    for (const e of items) list.append(archRow(e));
+  }
+
+  function archRow(e) {
+    const wrap = h('div', { class: 'arch-entry' });
+    const mark = e.phase === 'start' ? '▶' : (e.phase === 'warn' ? '⚠' : '✓');
+    const msTxt = e.ms ? ` · ${(e.ms / 1000).toFixed(1)}s` : '';
+    const row = h('div', { class: 'arch-row' },
+      h('span', { class: 'arch-time mono', text: String(e.time || '').slice(0, 8) || '—' }),
+      h('span', { class: 'arch-badge', dataset: { agent: e.agent || 'system' }, text: e.agent_label || e.agent || '系统' }),
+      h('span', { class: 'arch-title', text: `${mark} ${e.title || ''}${msTxt}` })
+    );
+    const det = [e.thinking, e.output].filter(Boolean).join('\n');
+    if (det) {
+      const pre = h('pre', { class: 'arch-detail', style: 'display:none', text: det });
+      row.classList.add('arch-expandable');
+      row.title = '点击展开/收起详情';
+      row.addEventListener('click', () => {
+        pre.style.display = pre.style.display === 'none' ? '' : 'none';
+      });
+      wrap.append(row, pre);
+    } else {
+      wrap.append(row);
+    }
+    return wrap;
+  }
+
+  async function load() {
+    list.textContent = '';
+    list.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-50' })));
+    try {
+      const res = await fetch(`/api/chapter-steps?key=${encodeURIComponent(key || '')}&chapter=${chapter}`,
+        { credentials: 'include' });
+      const data = await res.json();
+      paint(data && data.ok ? (data.items || []) : null);
+    } catch {
+      paint(null);
+    }
+  }
+
+  /* 章号下拉：有总量就列全章；否则只列当前章 */
+  sel.append(h('option', { value: String(chapter), text: `第 ${chapter} 章`, selected: true }));
+  if (total > 1) {
+    sel.textContent = '';
+    for (let n = 1; n <= total; n++) {
+      sel.append(h('option', { value: String(n), selected: n === chapter, text: `第 ${n} 章` }));
+    }
+  }
+  sel.addEventListener('change', () => {
+    chapter = Number(sel.value) || 1;
+    load();
+  });
+  load();
+  return pane;
+}
+
 export function renderRightPanel(container, ctx) {
   const state = store.get();
   resetPanelFor(state.currentKey);
   const mediumBench = isMediumBench(state.workMedium);
   const available = TABS.filter((item) => {
     /* v4.6.2：规划/状态/参考/协作全部文体都有（数据源按文体分流到各自引擎） */
-    if (mediumBench && !['work', 'skills', 'refs', 'collab', 'plan', 'state'].includes(item.key)) return false;
+    if (mediumBench && !['work', 'skills', 'refs', 'collab', 'plan', 'state', 'archive'].includes(item.key)) return false;
     if (item.key === 'plan') return state.features.plan !== false;
     if (item.key === 'state') return state.features.state !== false;
     if (item.key === 'refs') return state.features.references !== false;
@@ -2522,7 +2615,14 @@ export function renderRightPanel(container, ctx) {
     return true;
   });
   const requested = state.ui.rightTab || 'work';
-  const tab = available.some((t) => t.key === requested) ? requested : 'work';
+  let tab = available.some((t) => t.key === requested) ? requested : 'work';
+  /* v4.21.0：对话产出卡点了「查看本章过程」→ 本次渲染直接落到档案页签（ts 水位线保证只切一次） */
+  const _ca = state.ui.chapterArchive;
+  if (_ca && _ca.ts && _ca.ts > _archiveSeenTs && _ca.key === state.currentKey
+      && available.some((t) => t.key === 'archive')) {
+    _archiveSeenTs = _ca.ts;
+    tab = 'archive';
+  }
   if (tab !== 'collab') destroyCollab();
   const scrollTop = (() => {
     const body = container.querySelector('.rp-body');
@@ -2571,6 +2671,7 @@ export function renderRightPanel(container, ctx) {
   else if (tab === 'state') pane = statePane(ctx);
   else if (tab === 'refs') pane = refsPane(ctx);
   else if (tab === 'collab') pane = collabPane(ctx);
+  else if (tab === 'archive') pane = archivePane(ctx);
   else pane = skillsPane(ctx);
   body.append(pane);
   wrap.append(body);

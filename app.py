@@ -13,6 +13,7 @@ from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
 from bot import syslog as syslog_mod
+from bot import steps as steps_mod
 from bot import export as export_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -2403,7 +2404,7 @@ def api_audit(payload: dict):
     return {"ok": True, "at": at, "scope": scope, "issues": list(issues or [])[:50]}
 
 @app.get("/api/book-live")
-def api_book_live(key: str):
+def api_book_live(key: str, request: Request):
     """v0.7 R4：对话区「本书在干什么」live 卡数据源（纯读、无 LLM、按书隔离）。
     聚合 阶段/当前章/进度/实时日志，前端 1.5s 轮询原地刷新（Hermes 式 live 工具步骤）。"""
     proj = _get_project(key)
@@ -2467,7 +2468,26 @@ def api_book_live(key: str):
         "paused": st.get("paused"), "parallel": bool(par), "rewriting": bool(rw), "releasing": bool(rel),
         "live_log": live,
         "updated_at": int(time.time()),
+        # v4.21.0：创作活动流增量 + 当前流式步骤（对话内 Agent 逐条动作/思考/产出）
+        "steps": steps_mod.since(key, _q_int(request, "steps_cursor")),
+        "stream": steps_mod.stream_state(key, _q_int(request, "stream_offset")),
     }
+
+
+def _q_int(request: Request, name: str) -> int:
+    try:
+        return int(request.query_params.get(name) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+@app.get("/api/chapter-steps")
+def api_chapter_steps(key: str, chapter: int = 0, limit: int = 400):
+    """v4.21.0：本章创作档案——该章的全部创作事件（岗位/思考/产出，新→旧）。
+    内存 ring + 历史 JSONL 去重合并，跨重启可查。"""
+    if _get_project(key) is None:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return {"ok": True, "items": steps_mod.chapter_events(key, chapter, limit=limit)}
 
 @app.post("/api/cmd")
 def api_cmd(payload: dict):

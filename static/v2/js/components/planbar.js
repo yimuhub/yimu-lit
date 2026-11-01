@@ -2,7 +2,7 @@
 
 import { h, icon, fmtWords } from '../core/dom.js';
 import { api, errorText } from '../core/api.js';
-import { store, patch } from '../core/state.js';
+import { store, patch, patchUi } from '../core/state.js';
 import { toast } from '../core/ui.js';
 
 /* ------------------------------------------------------- v4.20.0 创作控制三态按钮
@@ -181,6 +181,7 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
           return;
         }
         mergeWorkLive(key, res, true);
+        patchUi({ creatorAction: { key, text: '暂停', ts: Date.now() } });
         if (ctx && ctx.refreshWork) ctx.refreshWork();
       } catch (err) {
         optimistic = null;
@@ -213,6 +214,7 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
           return;
         }
         mergeWorkLive(key, res, false);
+        patchUi({ creatorAction: { key, text: '继续', ts: Date.now() } });
         toast('已继续创作', { tone: 'success' });
         if (ctx && ctx.refreshWork) ctx.refreshWork();
       } catch (err) {

@@ -3267,3 +3267,105 @@
   font-size: 11.5px;
   gap: 5px;
 }
+
+/* ================= v4.21.0 输入框创作态 + 本章档案时间线 ================= */
+
+/* 输入器「创作中」主按钮（点击=暂停；一有输入即变回发送） */
+.send-btn.composer-creative {
+  background: var(--warn-soft);
+  color: var(--warn-label);
+}
+
+.send-btn.composer-creative:hover {
+  background: var(--warn);
+  color: var(--accent-contrast, #fff);
+}
+
+/* 本章档案时间线（对齐系统日志 ops 行视觉） */
+.arch-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.arch-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.arch-head-label {
+  color: var(--ink-secondary);
+  flex: none;
+  font-size: 12px;
+}
+
+.arch-select { max-width: 180px; }
+
+.arch-list {
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.arch-entry { border-bottom: 0.5px solid var(--line-1); }
+.arch-entry:last-child { border-bottom: 0; }
+
+.arch-row {
+  align-items: center;
+  color: var(--ink-primary);
+  display: flex;
+  font-size: 12.5px;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 10px;
+}
+
+.arch-row.arch-expandable { cursor: pointer; }
+.arch-row.arch-expandable:hover { background: var(--hover); }
+
+.arch-time {
+  color: var(--ink-caption);
+  flex: none;
+  font-size: 11px;
+}
+
+.arch-badge {
+  border-radius: var(--radius-xs);
+  flex: none;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 6px;
+}
+
+.arch-badge[data-agent="planner"] { background: var(--accent-soft); color: var(--accent-ink); }
+.arch-badge[data-agent="writer"] { background: var(--success-soft); color: var(--success); }
+.arch-badge[data-agent="reviewer"] { background: var(--info-soft); color: var(--accent-ink); }
+.arch-badge[data-agent="deslopper"] { background: var(--warn-soft); color: var(--warn-label); }
+.arch-badge[data-agent="rewriter"] { background: var(--warn-soft); color: var(--warn-label); }
+.arch-badge[data-agent="editor"] { background: var(--bg-chip); color: var(--ink-secondary); }
+.arch-badge[data-agent="system"] { background: var(--bg-chip); color: var(--ink-secondary); }
+
+.arch-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-detail {
+  background: var(--code-fill);
+  border: 0.5px solid var(--line-1);
+  border-radius: var(--radius-sm);
+  color: var(--ink-secondary);
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 0 0 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 9px 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

@@ -392,20 +392,39 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
 
   function refreshSend() {
     const has = textarea.value.trim().length > 0 || attachments.length > 0;
+    /* v4.21.0 创作状态机：写作线程存活且输入为空 → 主按钮变「创作中」标记（点击=暂停）；
+       一旦输入任何内容立即变回「发送」，消息走创作指令链路。 */
+    const _w = store.get().work || {};
+    const creating = Boolean(_w.running) && !streaming && Boolean(store.get().currentKey);
+    const chapLabel = _w.current_chapter ? ` · 第 ${_w.current_chapter} 章` : '';
     if (streaming) {
+      sendBtn.classList.remove('composer-creative');
       sendBtn.dataset.mode = 'stop';
       sendBtn.disabled = false;
       sendBtn.innerHTML = icon('stop', 14);
       sendBtn.setAttribute('aria-label', '停止生成');
       sendBtn.title = '停止生成';
       hint.textContent = textarea.value.trim() ? 'Enter 加入队列' : '正在生成…';
+    } else if (creating && !has) {
+      sendBtn.classList.add('composer-creative');
+      sendBtn.dataset.mode = 'creative';
+      sendBtn.disabled = false;
+      sendBtn.innerHTML = icon('pause', 16);
+      sendBtn.setAttribute('aria-label', '正在创作，点击暂停');
+      sendBtn.title = '正在创作 · 点击暂停（当前章节完成后停止）';
+      hint.textContent = `✍️ 正在创作${chapLabel}… 输入内容可下达创作指令`;
+      textarea.placeholder = `✍️ 正在创作${chapLabel}…（输入内容可下达创作指令）`;
     } else {
+      sendBtn.classList.remove('composer-creative');
       sendBtn.dataset.mode = 'send';
       sendBtn.disabled = !has;
       sendBtn.innerHTML = icon('arrow-up', 17);
       sendBtn.setAttribute('aria-label', '发送');
       sendBtn.title = '发送（Enter）';
-      hint.textContent = 'Enter 发送 · Shift+Enter 换行';
+      hint.textContent = creating ? 'Enter 发送创作指令 · Shift+Enter 换行' : 'Enter 发送 · Shift+Enter 换行';
+      if (textarea.placeholder !== (placeholder || '描述你想写的故事，或直接说「继续第 47 章」…')) {
+        textarea.placeholder = placeholder || '描述你想写的故事，或直接说「继续第 47 章」…';
+      }
     }
     el.dataset.streaming = streaming ? 'true' : 'false';
   }
@@ -686,9 +705,38 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
     textarea.focus();
   }
 
+  /* v4.21.0：创作中主按钮 = 暂停（与目标条三态按钮同义），暂停后经 creatorAction 在对话里留痕 */
+  async function pauseCreation() {
+    const key = store.get().currentKey;
+    if (!key) return;
+    sendBtn.disabled = true;
+    try {
+      const res = await fetch('/api/pause', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data && data.ok !== false) {
+        toast(data.msg || '暂停请求已发出，当前章节完成后停止', { tone: 'success', duration: 2600 });
+        patchUi({ creatorAction: { key, text: '暂停', ts: Date.now() } });
+      } else {
+        toast((data && data.msg) || '暂停请求未生效', { tone: 'warn' });
+      }
+    } catch (err) {
+      toast(errorText(err, '暂停请求失败'), { tone: 'danger' });
+    }
+    sendBtn.disabled = false;
+    refreshSend();
+  }
+
   sendBtn.addEventListener('click', () => {
     if (streaming) {
       if (onStop) onStop();
+      return;
+    }
+    if (sendBtn.dataset.mode === 'creative') {
+      pauseCreation();
       return;
     }
     submit();
@@ -697,12 +745,15 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
   refreshSend();
   renderAttachments();
   requestAnimationFrame(autoGrow);
+  /* v4.21.0：work.running/current_chapter 变化时刷新创作态（发送按钮/占位符/提示行） */
+  const _unsubCreative = store.subscribe(() => refreshSend());
 
   return {
     el,
     textarea,
     destroy() {
       try { _unsubPar && _unsubPar(); } catch {}
+      try { _unsubCreative && _unsubCreative(); } catch {}
     },
     focus() {
       textarea.focus();

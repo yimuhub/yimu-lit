@@ -1,8 +1,8 @@
 /* 消息渲染：安全 Markdown、过程卡、思考态、流式光标、操作与错误。 */
 
-import { h, icon, relTime, fmtNum } from '../core/dom.js';
+import { h, icon, relTime, fmtNum, parseDate, fmtTime } from '../core/dom.js';
 import { renderMarkdownInto } from '../core/markdown.js';
-import { updateMessage } from '../core/state.js';
+import { store, updateMessage, patchUi } from '../core/state.js';
 import { navigate } from '../core/router.js';
 import { usageLabel } from '../core/constants.js';
 import { toast, openFeedback } from '../core/ui.js';
@@ -78,6 +78,10 @@ export function renderUserMessage(msg) {
   const atts = userAttachments(msg);
   if (atts) el.append(atts);
   el.append(h('div', { class: 'bubble', text: msg.content || '' }));
+  /* v4.21：创作按钮（继续/暂停）回显气泡的副标注 */
+  if (msg.creatorNote) {
+    el.append(h('div', { class: 'bubble-note', text: msg.creatorNote }));
+  }
   const meta = h(
     'div',
     { class: 'user-meta' },
@@ -428,5 +432,180 @@ export function renderQueueRow(queue, { onRemove } = {}) {
     row.append(chip);
   });
   return row;
+}
+
+/* --------------------------------------------- v4.21 对话内创作活动流
+   步骤卡（kind:'step'）：左侧岗位徽标头像 + 标题行（agent_label · title +
+   状态点 + 时间 + 耗时 + 可选「思考」折叠钮）+ 单行 output 摘要；
+   chapter>0 且有产出时附「查看本章过程」→ patchUi.chapterArchive（右栏弹本章档案）。
+   流式卡（msg.stream）：同一外壳，正文换成自动滚底的流式文本区；完成后收起为
+   保留「展开查看全文」的完成卡。phase: start=呼吸点 / done=绿✓ / warn=警示。 */
+
+const STEP_AGENT_ICONS = {
+  planner: 'target',
+  writer: 'pen',
+  reviewer: 'check',
+  deslopper: 'sparkles',
+  rewriter: 'wand',
+  editor: 'eye',
+  system: 'clock'
+};
+
+function stepOneLine(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function stepTimeText(msg) {
+  const st = msg.step || {};
+  const raw = String(st.time || '').trim();
+  if (/^\d{1,2}:\d{2}/.test(raw)) return raw.slice(0, 5);
+  const d = parseDate(st.ts || raw);
+  if (d) return fmtTime(d);
+  return msg.created_at ? relTime(msg.created_at) : '';
+}
+
+function stepMsText(st) {
+  const ms = Number(st && st.ms) || 0;
+  return ms > 0 ? `· ${(ms / 1000).toFixed(1)}s` : '';
+}
+
+function stepChapterBtn(st) {
+  if (!(Number(st.chapter) > 0)) return null;
+  return h('button', {
+    class: 'step-link',
+    type: 'button',
+    html: `${icon('book-open', 11)}<span>查看本章过程</span>`,
+    title: '在右侧打开本章创作档案',
+    on: {
+      click: () => {
+        const key = store.get().currentKey;
+        if (!key) return;
+        patchUi({ chapterArchive: { key, chapter: Number(st.chapter), ts: Date.now() } });
+      }
+    }
+  });
+}
+
+function stepStreamBox(msg, live) {
+  const box = h('div', { class: `step-stream${live ? '' : ' is-open'}` });
+  box.append(
+    h('div', {
+      class: `step-stream-text${live ? ' step-streaming' : ''}`,
+      dataset: { raw: msg.content || '' },
+      text: msg.content || '正在输出…'
+    })
+  );
+  return box;
+}
+
+export function renderStepMessage(msg) {
+  const st = msg.step || {};
+  const agent = String(st.agent || 'system');
+  const label = String(st.agent_label || '系统').trim() || '系统';
+  const phase = String(st.phase || (st.streaming ? 'start' : 'done'));
+  const isStreamCard = Boolean(msg.stream);
+  const collapsed = Boolean(msg.collapsed);
+
+  const el = h('div', { class: 'msg-step step-msg', dataset: { id: msg.id } });
+
+  /* 岗位徽标头像：圆形底 + 岗位 icon（缺映射时退回 agent_label 首字） */
+  const avaIcon = STEP_AGENT_ICONS[agent];
+  el.append(
+    h(
+      'span',
+      { class: `step-ava step-ava-${agent}`, title: label },
+      avaIcon ? h('span', { html: icon(avaIcon, 12) }) : label.slice(0, 1)
+    )
+  );
+
+  const main = h('div', { class: 'step-main' });
+
+  /* 标题行：agent_label · title + 状态 + 时间/耗时 + 「思考」 */
+  const head = h('div', { class: 'step-head' });
+  head.append(
+    h(
+      'span',
+      { class: 'step-title' },
+      h('span', { class: 'st-agent', text: label }),
+      h('span', { class: 'st-sep', text: '·' }),
+      h('span', {
+        class: 'st-name',
+        text: stepOneLine(st.title) || (Number(st.chapter) > 0 ? `第${st.chapter}章` : '创作活动')
+      })
+    )
+  );
+  if (phase === 'start') head.append(h('span', { class: 'step-dot-live', 'aria-label': '进行中' }));
+  else if (phase === 'warn') head.append(h('span', { class: 'step-phase-warn', html: icon('alert', 12), title: '需要注意' }));
+  else head.append(h('span', { class: 'step-phase-done', html: icon('check', 12), title: '已完成' }));
+
+  const timeText = stepTimeText(msg);
+  const msText = stepMsText(st);
+  const right = h('span', { class: 'step-right' });
+  if (timeText || msText) {
+    right.append(h('span', { class: 'step-meta', text: [timeText, msText].filter(Boolean).join(' ') }));
+  }
+  const thinking = String(st.thinking || '').trim();
+  if (thinking && !isStreamCard) {
+    right.append(
+      h('button', {
+        class: `step-think-btn${msg.thinkOpen ? ' is-open' : ''}`,
+        type: 'button',
+        'aria-expanded': msg.thinkOpen ? 'true' : 'false',
+        text: '思考',
+        on: { click: () => updateMessage(msg.id, { thinkOpen: !msg.thinkOpen }) }
+      })
+    );
+  }
+  if (right.childNodes.length) head.append(right);
+  main.append(head);
+
+  if (thinking && !isStreamCard && msg.thinkOpen) {
+    main.append(h('div', { class: 'step-think', text: thinking }));
+  }
+
+  if (isStreamCard) {
+    if (collapsed) {
+      /* 完成卡：默认收起，保留「展开查看全文」 */
+      const acts = h('div', { class: 'step-output' });
+      acts.append(
+        h('button', {
+          class: 'step-link',
+          type: 'button',
+          html: `${icon('eye', 11)}<span>展开查看全文</span>`,
+          on: { click: () => updateMessage(msg.id, { collapsed: false }) }
+        })
+      );
+      const chBtn = stepChapterBtn(st);
+      if (chBtn) acts.append(chBtn);
+      main.append(acts);
+    } else {
+      main.append(stepStreamBox(msg, phase === 'start'));
+      const acts = h('div', { class: 'step-output' });
+      acts.append(
+        h('button', {
+          class: 'step-link',
+          type: 'button',
+          html: `${icon('eye', 11)}<span>收起</span>`,
+          on: { click: () => updateMessage(msg.id, { collapsed: true }) }
+        })
+      );
+      const chBtn = stepChapterBtn(st);
+      if (chBtn) acts.append(chBtn);
+      main.append(acts);
+    }
+  } else {
+    /* 普通步骤卡：单行 output 摘要 + 章节入口 */
+    const out = stepOneLine(st.output);
+    if (out) {
+      const acts = h('div', { class: 'step-output' });
+      acts.append(h('span', { class: 'so-text', text: out, title: out }));
+      const chBtn = stepChapterBtn(st);
+      if (chBtn) acts.append(chBtn);
+      main.append(acts);
+    }
+  }
+
+  el.append(main);
+  return el;
 }
 

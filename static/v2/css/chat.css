@@ -1244,3 +1244,217 @@
   max-height: 260px;
   overflow: auto;
 }
+
+/* ---------------------------------------------------- v4.21 对话内创作活动流 */
+
+.chat-flow > .msg-step { margin-top: 2px; }
+.chat-flow > .msg + .msg-step,
+.chat-flow > .msg-step + .msg { margin-top: 8px; }
+
+.step-msg {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 3px 0;
+}
+
+/* 岗位徽标头像：圆形底，按岗位区分底色（tokens 驱动，深色模式自动适配） */
+.step-ava {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--bg-chip);
+  color: var(--ink-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.step-ava-planner { background: var(--accent-soft); color: var(--accent-ink); }
+.step-ava-writer { background: var(--success-soft); color: var(--success); }
+.step-ava-reviewer { background: var(--info-soft); color: var(--accent-ink); }
+.step-ava-deslopper { background: var(--warn-soft); color: var(--warn-label); }
+.step-ava-rewriter { background: var(--accent-soft-2); color: var(--accent-ink); }
+.step-ava-editor { background: var(--success-soft); color: var(--success); }
+.step-ava-system { background: var(--bg-chip); color: var(--ink-tertiary); }
+
+.step-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 20px;
+}
+
+.step-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--ink-secondary);
+  font-size: 12px;
+}
+
+.step-title .st-agent { flex: none; color: var(--ink-primary); font-weight: 500; }
+.step-title .st-sep { flex: none; color: var(--ink-dimmed); }
+.step-title .st-name { overflow: hidden; text-overflow: ellipsis; }
+
+/* phase=start 呼吸点（复用 pulse-dot keyframes） */
+.step-dot-live {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.step-phase-done { display: inline-flex; flex: none; color: var(--success); }
+.step-phase-warn { display: inline-flex; flex: none; color: var(--warn-label); }
+
+.step-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+}
+
+.step-meta {
+  color: var(--ink-caption);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.step-think-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  color: var(--ink-caption);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.step-think-btn:hover {
+  background: var(--hover);
+  color: var(--ink-secondary);
+}
+
+.step-think-btn.is-open {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* 思考正文：浅底圆角块（类似代码块） */
+.step-think {
+  margin-top: 5px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--ink-tertiary);
+  font-size: 11.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.step-output {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  min-height: 18px;
+}
+
+.step-output .so-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.step-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 20px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 0.5px solid transparent;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.step-link:hover {
+  color: var(--accent);
+  border-bottom-color: currentColor;
+}
+
+/* 流式文本区：折叠态（max-height + 自动滚底） */
+.step-stream {
+  margin-top: 5px;
+  max-height: 180px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+.step-stream.is-open { max-height: 340px; }
+
+.step-stream-text {
+  min-height: 1.7em;
+  color: var(--ink-secondary);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 流式光标：复用 caret-blink keyframes */
+.step-streaming::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: caret-blink 1.05s steps(2, start) infinite;
+}
+
+/* 创作者按钮回显气泡的副标注 */
+.msg-user .bubble-note {
+  padding-right: 2px;
+  color: var(--ink-caption);
+  font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  .step-ava { display: none; }
+}

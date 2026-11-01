@@ -6,6 +6,7 @@ import { renderMarkdownInto } from '../core/markdown.js';
 import {
   renderUserMessage,
   renderAssistantMessage,
+  renderStepMessage,
   renderApprovalCard,
   renderQueueRow,
   processCard
@@ -13,9 +14,16 @@ import {
 
 function messageSignature(chat) {
   /* v2.9.0：章节卡的折叠/展开要触发整行重渲染（正文在 card 内按状态渲染），
-     所以签名里带上章节卡状态位。 */
+     所以签名里带上章节卡状态位。
+     v4.21：step 消息（创作活动流）的折叠 / 思考展开 / 阶段与流式位同样进签名。 */
   return (chat.messages || [])
-    .map((m) => `${m.id}${m.chapterMeta ? (m.collapsed ? '~c' : '~o') : ''}`)
+    .map((m) => {
+      if (m.kind === 'step') {
+        const st = m.step || {};
+        return `${m.id}~s${m.collapsed ? 'c' : 'o'}${m.thinkOpen ? 't' : ''}${st.phase || ''}${st.streaming ? 'r' : ''}`;
+      }
+      return `${m.id}${m.chapterMeta ? (m.collapsed ? '~c' : '~o') : ''}`;
+    })
     .join('|');
 }
 
@@ -188,16 +196,28 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
       flow.append(buildEmpty());
     } else {
       for (const msg of messages) {
-        const node =
-          msg.role === 'user'
-            ? renderUserMessage(msg)
-            : renderAssistantMessage(msg, {
-                onRetry: handlers.onRetry,
-                workKey: state.currentKey,
-                chapter: state.route.chapter,
-                onBranch: handlers.onBranch,
-                onDismissError: () => handlers.onDismissError && handlers.onDismissError(msg)
-              });
+        /* v4.21：step（创作活动流步骤卡 / 实时输出卡）走独立渲染管线。
+           v4.21.1：逐条容错——一条消息渲染抛错不再冻结整个消息流（否则
+           订阅签名停在旧值，后续所有消息都上不了屏）。 */
+        let node = null;
+        try {
+          node =
+            msg.kind === 'step'
+              ? renderStepMessage(msg)
+              : msg.role === 'user'
+                ? renderUserMessage(msg)
+                : renderAssistantMessage(msg, {
+                    onRetry: handlers.onRetry,
+                    workKey: state.currentKey,
+                    chapter: state.route.chapter,
+                    onBranch: handlers.onBranch,
+                    onDismissError: () => handlers.onDismissError && handlers.onDismissError(msg)
+                  });
+        } catch (err) {
+          console.error('[chat] 消息渲染失败:', msg && msg.id, err);
+          node = h('div', { class: 'msg msg-assistant', dataset: { id: msg.id } },
+            h('div', { class: 'bubble', text: '（这条消息渲染失败，其他消息不受影响）' }));
+        }
         currentNodeMap.set(msg.id, node);
         flow.append(node);
       }
