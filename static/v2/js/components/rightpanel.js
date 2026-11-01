@@ -221,6 +221,39 @@ function showQualityDetail(ctx, work) {
     h('span', { class: 'kv-v', text: fmtWords(work.total_words) })
   ));
   body.append(kv);
+  /* v4.17.3：章节评分列表——每章分数一目了然，低分章可单独改写 */
+  const chList = h('div', { style: 'max-height:260px;overflow:auto;border:1px solid var(--line,#ddd);border-radius:6px;padding:6px;margin-top:10px' },
+    h('div', { class: 'hint-text', style: 'padding:6px', text: '章节评分加载中…' }));
+  body.append(h('div', { class: 'rp-section' },
+    h('div', { class: 'section-head', text: '章节评分（低分章可单独改写）' }), chList));
+  (async () => {
+    try {
+      const key = store.get().currentKey || '';
+      const d = await api.chapterScores(key);
+      const pl = d.pass_line || 90;
+      const scores = (d.scores || []).filter((x) => typeof x.score === 'number');
+      chList.textContent = '';
+      if (!scores.length) { chList.append(h('div', { class: 'hint-text', style: 'padding:6px', text: '还没有逐章评分。' })); return; }
+      for (const r of scores) {
+        const low = r.score < pl;
+        chList.append(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--line,#eee)' },
+          h('span', { style: `font-size:13px;${low ? 'color:var(--vermilion,#C73A32)' : ''}`,
+                       text: `第 ${r.ch} 章` }),
+          h('span', { style: 'display:flex;gap:8px;align-items:center' },
+            h('span', { style: `font-size:13px;font-weight:600;${low ? 'color:var(--vermilion,#C73A32)' : ''}`,
+                         text: `${r.score} 分${low ? ' ↓' : ''}` }),
+            low ? h('button', { class: 'btn btn-sm', type: 'button', text: '改写此章', on: {
+              click: async () => {
+                try {
+                  toast(`第 ${r.ch} 章改写已启动`, { tone: 'success', duration: 3000 });
+                  await api.rewriteParallel({ key: store.get().currentKey, chapters: [r.ch], workers: 1 });
+                } catch (err) { toast(errorText(err, '启动失败'), { tone: 'danger' }); }
+              }
+            } }) : null)));
+      }
+    } catch { chList.textContent = ''; chList.append(h('div', { class: 'hint-text', text: '章节评分加载失败' })); }
+  })();
+
   if (q == null) {
     body.append(h('div', { class: 'hint-text', text: '当前作品尚无质量评分。点击下方按钮可立即生成评分。评分基于五维质量信号（文笔、节奏、钩子、连续性、爽点），每章 0–100 分。' }));
     body.append(h('div', { class: 'rp-modal-foot', style: 'margin-top:16px' },
@@ -299,6 +332,9 @@ function showQualityDetail(ctx, work) {
     body.append(h('div', { class: 'rp-section' },
       h('div', { class: 'section-head', text: '评分分布' }), bar
     ));
+    body.append(h('div', { class: 'rp-modal-foot', style: 'margin-top:12px' },
+      h('button', { class: 'btn btn-primary btn-sm', type: 'button', text: '⚡ 查看章节评分 / 改写低分章', on: {
+        click: () => openParallelRewrite(store.get().currentKey) } })));
   }
   _modalBox('质量评分详情', body);
 }

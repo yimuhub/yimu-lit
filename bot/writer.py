@@ -2649,7 +2649,7 @@ def _pch_before(proj, ch_no):
 _PARA_RW_PROGRESS: dict = {}
 
 @_serialize_book
-def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1):
+def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=None):
     """v4.17.2：多岗位并行改写低分章——
     - 审稿问题（20b-审稿findings.json）一次性按章下发，改写指令带着问题清单
     - 每章独立线程改写，同时最多 workers 个；每章 max_rounds=1 轮（不烧 token）
@@ -2691,8 +2691,10 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1):
                 return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
             before = score_chapter(proj, ch_no)
             dims = findings_by_ch.get(ch_no) or []
+            # v4.17.3：target 驱动——改写评分达到目标分即停（每章最多 2 轮，不烧 token）
+            _stop_at = max(_pass_line(), int(target)) if target else _pass_line()
             try:
-                _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, extra_dims=dims or None)
+                _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, pass_line=_stop_at, extra_dims=dims or None)
             except Exception as e:
                 proj.log(f"⚠️ 第{ch_no}章并行改写异常：{e}")
             after = score_chapter(proj, ch_no)

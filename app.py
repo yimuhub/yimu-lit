@@ -818,6 +818,29 @@ def _chat_attached(s, proj, msg):
                 f"「给女主加一场反击」）；要开新书请用左侧『新建作品』。")
 
     # start_writing_all / start_writing / resume_writing → 启动或继续写作
+    # v4.17.3：rewrite_low_score——自然语言按分数阈值改写低分章（「低于65分的全部重写，目标80分」）
+    if _intent == "rewrite_low_score":
+        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+            return f"⚠️ 按分数改写暂支持小说；其他文体请用评分详情里的「多岗位并行改写」。"
+        _below = _nlu["params"].get("below") or 65
+        _tgt = _nlu["params"].get("target") or max(int(_below) + 15, 80)
+        _lows = [p["ch"] for p in writer.per_chapter_scores(proj)
+                 if isinstance(p.get("score"), (int, float)) and p["score"] < int(_below)]
+        if not _lows:
+            return f"✅ 没有低于 {_below} 分的章节（逐章分最低见「评分详情」），无需改写。"
+        if _PARA_RW_RUNNING.get(key, {}).get("running"):
+            return "⚠️ 该书已有改写任务在跑，请稍候。"
+        _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+        def _rw_job():
+            try:
+                writer.run_parallel_rewrite(key, chapters=_lows, workers=3, max_rounds=2, target=int(_tgt))
+            finally:
+                _PARA_RW_RUNNING[key]["running"] = False
+        threading.Thread(target=_rw_job, daemon=True).start()
+        return (f"⚡ 已启动按分改写：{_lows.__len__()} 章低于 {_below} 分"
+                f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章），{3} 个岗位并行改写，"
+                f"目标 {int(_tgt)} 分——每章最多 2 轮，改写分必须高于原分否则回滚。完成后逐章汇报。")
+
     # v4.15.0：batch_writing 意图识别「再写N章 / 写完全部」——统一并入写作分支
     if _intent == "batch_writing":
         _batch_param = _nlu["params"].get("batch_size") or "1"
@@ -2025,9 +2048,11 @@ def api_rewrite_parallel(payload: dict):
     chapters = payload.get("chapters")
     workers = max(1, min(8, int(payload.get("workers") or 3)))
     _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+    _target = payload.get("target")
     def _job():
         try:
-            res = writer.run_parallel_rewrite(key, chapters=chapters, workers=workers, max_rounds=1)
+            res = writer.run_parallel_rewrite(key, chapters=chapters, workers=workers, max_rounds=1,
+                                              target=_target)
             _PARA_RW_RUNNING[key] = {"running": False, "result": res}
         except Exception as e:
             _PARA_RW_RUNNING[key] = {"running": False, "result": {"error": str(e)}}

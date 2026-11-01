@@ -540,9 +540,8 @@ export function createCollabPanel(ctx) {
       }
     })();
     async function openBookAgentDialog() {
-      try {
-        const cat = await loadSkillCatalog();   // 触发缓存无碍
-      } catch {}
+      const key = store.get().currentKey;   // v4.16.6 修复：此前引用未定义的 key → ReferenceError 被吞 → 点击无任何反应
+      if (!key) { toast('请先打开一本作品', { tone: 'danger' }); return; }
       const ba = await api.bookAgents(key).catch(() => ({ agents: [] }));
       const bound = new Set((ba.agents || []).map((a) => a.agent));
       const picker = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:340px;overflow:auto' });

@@ -25,6 +25,7 @@ INTENTS = {
     "rewrite_chapter":   "重写 / 修改指定章节",
     "resume_writing":    "继续 / 续写 / 接着写下一章",
     "batch_writing":     "批量写 N 章 / 写完全部 / 再写 N 章",
+    "rewrite_low_score": "改写低分章（如「低于65分的全部重写目标80分」「70分以下的章节都改好」）",
     "pause_writing":     "暂停写作",
     "query_status":      "查询进度 / 看看写到哪了",
     "set_title":         "修改标题或书名",
@@ -85,6 +86,13 @@ _PAT_START = re.compile(
     r"生成.*?(正文|内容)|写.*?正文|动手.*?写|"
     r"(剧本|诗词|散文|小说|诗歌).{0,6}(创作|来一部|来一个)|"
     r"写.{0,4}(正文|内容)",
+    re.I,
+)
+
+# rewrite_low_score: 按分数阈值改写低分章
+_PAT_RW_LOW = re.compile(
+    r"((低于|不到|不足|小于)\s*(\d{2})\s*分?|(\d{2})\s*分?(以下|之内|之下)).{0,24}?(重写|改写|修改|改好|提到|提升|达标)"
+    r"|(重写|改写|改好).{0,16}((低于|不到|不足|小于)\s*(\d{2})\s*分?|(\d{2})\s*分?(以下|之下))",
     re.I,
 )
 
@@ -219,6 +227,14 @@ def _rule_parse(text):
         if nums:
             ch_no = _cn_to_int(nums[0])
         return "rewrite_chapter", {"chapter_number": ch_no}, 0.85
+
+    # rewrite_low_score: 按分数阈值改写低分章（规则兜底，LLM 优先）
+    m = _PAT_RW_LOW.search(t)
+    if m:
+        nums = [int(x) for x in re.findall(r"\d{2}", t) if 30 <= int(x) <= 100]
+        below = nums[0] if nums else 65
+        target = nums[1] if len(nums) > 1 and nums[1] > below else max(below + 15, 80)
+        return "rewrite_low_score", {"below": below, "target": target}, 0.85
 
     # batch_writing: 再写N章 / 写完全部（优先于 start_writing_all 的泛化匹配）
     m = _PAT_BATCH.search(t)
@@ -411,6 +427,17 @@ def parse_intent(text, project_status=None):
                     pass
             elif re.search(r"全部|所有|整本|整个|完|一直写|连续写|不停|别停|写到底|不要停", text or ""):
                 params["batch_size"] = "all"   # 「写完全部」「一直写下去」→ 连续写到底
+        # v4.17.3：分数阈值改写语义强制校验——「X分以下/低于X分 + 重写/改好」这类表达
+        # LLM 常误判为 creative_hint/rewrite_chapter，规则命中即覆盖
+        if intent != "rewrite_low_score":
+            _m = _PAT_RW_LOW.search(text or "")
+            if _m:
+                _nums = [int(x) for x in re.findall(r"\d{2}", text) if 30 <= int(x) <= 100]
+                _below = _nums[0] if _nums else 65
+                _target = _nums[1] if len(_nums) > 1 and _nums[1] > _below else max(_below + 15, 80)
+                return {"intent": "rewrite_low_score",
+                        "params": {"below": _below, "target": _target},
+                        "confidence": max(conf, 0.85), "source": "rule", "raw": text}
         return {"intent": intent, "confidence": conf, "params": params, "source": "llm", "raw": text}
 
     # 降级规则
