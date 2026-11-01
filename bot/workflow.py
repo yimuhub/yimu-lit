@@ -484,7 +484,7 @@ def _slice_book(book_md: str, max_chars: int = 26000, max_slices: int = 8):
     return picked
 
 
-def longform_book_review(book_md: str, cfg, l1_findings=None, chapter_avg: float | None = None):
+def longform_book_review(book_md: str, cfg, l1_findings=None, chapter_avg: float | None = None, progress_cb=None):
     """v4.17.0：超长篇分层评审——此前 five_role_review 只读前 3 万字就给全书打分，
     几百万字的书评审只见到开头 3%，必然评出「结构混乱/人物失忆」式的假低分。
 
@@ -510,11 +510,25 @@ def longform_book_review(book_md: str, cfg, l1_findings=None, chapter_avg: float
         except Exception:
             results[idx] = None
 
+    if progress_cb:
+        try:
+            progress_cb(len(slices))
+        except Exception:
+            pass
+    _done_count = {"n": 0}
+    def _report_done():
+        _done_count["n"] += 1
+        if progress_cb:
+            try:
+                progress_cb(len(slices), _done_count["n"])
+            except Exception:
+                pass
     threads = [_th.Thread(target=_one, args=(i, pos, t), daemon=True) for i, (pos, _n, t) in enumerate(slices)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+        _report_done()
 
     dims = ["结构", "因果可信", "人物", "连续性", "语言", "读者体验"]
     agg = {k: [] for k in dims}
@@ -540,13 +554,15 @@ def longform_book_review(book_md: str, cfg, l1_findings=None, chapter_avg: float
         seen.add(key)
         uniq.append(f)
     fix = [a for a in all_fix if isinstance(a.get("chapter"), int)][:6]
-    # 双轨合成：段评均分 × 0.6 + 逐章均分 × 0.4
+    # 双轨合成：段评百分制（按权重，复用 score_dimensions）× 0.6 + 逐章分均分 × 0.4
+    # v4.17.1 修复：此前 block_avg×6 的粗转把段评 68 分压成 40.8，双轨总分被低估 14 分
     blended = None
     if chapter_avg:
-        block_avg = sum(sum(v) / len(v) for v in agg.values() if v) / max(1, sum(1 for v in agg.values() if v))
-        blended = round(block_avg * 6 * 0.6 + chapter_avg * 0.4, 1)
+        block_total = score_dimensions(scores)   # 段评均分 → 百分制（按维度权重）
+        blended = round(block_total * 0.6 + chapter_avg * 0.4, 1)
     return {"scores": scores, "findings": uniq[:40], "fix_actions": fix,
             "_meta": {"slices": len(slices), "blended_total": blended,
+                      "block_total": block_total if chapter_avg else None,
                       "chapter_avg": chapter_avg}}
 
 

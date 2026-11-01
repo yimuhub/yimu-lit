@@ -422,7 +422,8 @@ export const api = {
   chatHistory: (key) => request(`/api/chat/history?key=${encodeURIComponent(key)}`),
   chatClear: (key) => request('/api/chat/clear', jsonBody({ key })),
   addAgent: (data) => request('/api/agents/add', jsonBody(data)),
-  scoreBook: (key) => request('/api/score', jsonBody({ key }), { timeout: 120000 }),
+  scoreBook: (key, force) => request('/api/score', jsonBody({ key, force: !!force }), { timeout: 120000 }),
+  scoreProgress: (key) => request('/api/score/progress', { query: { key } }),
 
   /* 技能库（#/skills）：树、单文件、统计、本书命中与注入预览 */
   skillkitTree: (medium = '') => request('/api/skills/tree', { query: { medium } }),

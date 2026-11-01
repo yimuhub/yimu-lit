@@ -1298,8 +1298,20 @@ def register_v2_routes(app, get_project, chat_func=None):
             return _bad(f"修复失败：{e}", 500)
 
     # ------------------------------------------------------------ v2.5.1 手动评分
+    _SCORE_PROGRESS: dict = {}
+
+    @app.get("/api/score/progress")
+    def api_score_progress(key: str = ""):
+        """评分进度轮询（v4.17.1：评分过程可视化）。"""
+        st = _SCORE_PROGRESS.get(key)
+        if not st:
+            return {"ok": True, "running": False}
+        return {"ok": True, **st}
+
     @app.post("/api/score")
     def api_score(payload: dict):
+        """v4.17.1 重构：强制重新评分（不再被旧报告挡住）+ 异步进度上报。
+        评分走 validate_project 全流程（L1 → 分层采样评审 → 双轨合成 → 质量报告）。"""
         key = str(payload.get("key") or "")
         if not key:
             proj = _current_proj()
@@ -1310,44 +1322,50 @@ def register_v2_routes(app, get_project, chat_func=None):
         proj = get_project(key)
         if not proj:
             return _bad("作品不存在", 404)
-        try:
-            import threading as _th
-            from bot import writer as _w
-            pdir = proj.path
-            # 先尝试从现有质量报告读取
+        import threading as _th
+        from bot import writer as _w
+        pdir = proj.path
+        force = bool(payload.get("force"))
+        # 已有报告且未强制 → 直接返回（前端展示「重新评分」按钮单独走 force）
+        if not force:
             q = _w.quality_score(pdir) if hasattr(_w, "quality_score") else None
             if q is not None:
                 return {"ok": True, "score": q, "source": "existing_report"}
-            # 没有评分 → 后台触发评分（调用 run_release_gate 或直接生成质量报告）
-            def _bg_score():
-                try:
-                    proj.log("📊 正在生成质量评分…")
-                    if hasattr(_w, "run_release_gate"):
-                        _w.run_release_gate(os.path.basename(pdir))
-                    else:
-                        # 降级：直接调用 quality_report 生成
-                        from bot import longform as _lf
-                        if hasattr(_lf, "quality_report"):
-                            _lf.quality_report(proj)
-                except Exception as _e:
-                    try:
-                        proj.log(f"⚠️ 评分失败：{_e}")
-                    except Exception:
-                        pass
-            _th.Thread(target=_bg_score, daemon=True).start()
-            # 立即返回，告知用户后台正在评分
-            # 同时用字数估算一个临时分数（每万字基准 60 分，上下浮动）
-            try:
-                plan = proj.plan() if hasattr(proj, "plan") else {}
-                chs = (plan or {}).get("chapters") or []
-                done = sum(1 for c in chs if isinstance(c, dict) and c.get("status") == "completed")
-                est = min(85, 55 + done * 2) if done > 0 else None
-            except Exception:
-                est = None
-            return {"ok": True, "score": est, "source": "estimating", "msg": "正在后台生成评分，请稍后刷新查看"}
-        except Exception as e:
-            return _bad(f"评分失败：{e}", 500)
 
+        _prog = _SCORE_PROGRESS.setdefault(os.path.basename(pdir),
+                                           {"running": True, "stage": "准备", "pct": 2, "detail": "", "done": False})
+        _prog.update({"running": True, "stage": "准备", "pct": 2, "done": False, "error": ""})
+
+        def _bg_score():
+            try:
+                from bot import continuity as _cont
+                _prog.update({"stage": "一致性体检（L1）", "pct": 8, "detail": "扫描人物/伏笔/设定冲突"})
+                l1 = _cont.run_project(pdir)
+                _prog.update({"stage": "分层采样评审", "pct": 20, "detail": "五角色审校团分段并行评审"})
+                # 走 validate_project（内部自动选分层评审/单次评审 + 双轨合成 + 写 14/13 报告）
+                def _review_cb(total, done=None):
+                    if done is None:
+                        _prog.update({"stage": "分层采样评审", "pct": 25, "detail": f"共 {total} 段并行评审"})
+                    else:
+                        _prog.update({"stage": "分层采样评审", "pct": 25 + int(60 * done / max(1, total)),
+                                      "detail": f"已完成 {done}/{total} 段"})
+                _w.validate_project(_w.Project(pdir, os.path.basename(pdir)), mode="report", max_rounds=0,
+                                    progress_cb=_review_cb)
+                _prog.update({"stage": "合成总分", "pct": 92, "detail": "段评均分 + 逐章分加权"})
+                q = _w.quality_score(pdir)
+                _prog.update({"running": False, "done": True, "pct": 100,
+                              "stage": "完成", "score": q,
+                              "detail": f"总分 {q} 分" if q is not None else "评分完成"})
+            except Exception as _e:
+                _prog.update({"running": False, "done": True, "error": str(_e)[:300],
+                              "stage": "评分失败", "pct": 100})
+                try:
+                    proj.log(f"⚠️ 评分失败：{_e}")
+                except Exception:
+                    pass
+
+        _th.Thread(target=_bg_score, daemon=True).start()
+        return {"ok": True, "started": True, "msg": "评分已启动（过程可视化，请看弹窗进度）"}
     # ------------------------------------------------------------ 固定评测
     @app.get("/api/eval/cases")
     def api_eval_cases(medium: str = ""):

@@ -227,24 +227,63 @@ function showQualityDetail(ctx, work) {
       h('button', {
         class: 'btn btn-primary btn-sm', type: 'button', text: '立即评分',
         on: { click: async () => {
-          const btn = arguments[0] || event?.target;
+          const key = store.get().currentKey || '';
+          /* v4.17.1：评分过程可视化——中间弹窗内步骤清单 + 进度条轮询 */
+          const stepL1 = h('div', { style: 'padding:4px 0', text: '① 一致性体检（人物/伏笔/设定）…' });
+          const stepReview = h('div', { style: 'padding:4px 0', text: '② 分层采样评审…' });
+          const stepBlend = h('div', { style: 'padding:4px 0', text: '③ 双轨合成总分…' });
+          const bar = h('div', { class: 'progress-track', style: 'height:8px;margin:12px 0' },
+            h('span', { style: 'width:2%;background:var(--accent,#C73A32);display:block;height:100%;border-radius:4px;transition:width .5s' }));
+          const detail = h('div', { class: 'hint-text', text: '准备中…' });
+          const resultBox = h('div', {});
+          const progBody = h('div', { style: 'min-height:160px' }, stepL1, stepReview, stepBlend, bar, detail, resultBox);
+          _modalBox('评分进行中', progBody);
+          const setStep = (doneIdx, activeIdx, pct, dtext) => {
+            [stepL1, stepReview, stepBlend].forEach((el, i) => {
+              el.style.color = i < doneIdx ? '#7d9a6a' : (i === activeIdx ? 'var(--accent,#C73A32)' : 'inherit');
+              if (i < doneIdx) el.textContent = el.textContent.replace(/…$/, ' ✓');
+            });
+            const inner = bar.querySelector('span');
+            if (inner) inner.style.width = `${Math.min(100, pct)}%`;
+            detail.textContent = dtext || '';
+          };
           try {
-            toast('正在生成评分…', { tone: 'info' });
-            if (btn) btn.disabled = true;
-            const key = store.get().currentKey || '';
-            const res = await api.scoreBook(key);
-            if (res && res.score != null) {
-              toast(`评分完成：${res.score} 分`, { tone: 'success' });
-              document.querySelector('.rp-modal-overlay')?.remove();
-              ctx.refreshState?.();
-              ctx.refreshLibrary?.();
-            } else {
-              toast('评分已提交，请稍后刷新查看结果', { tone: 'info' });
-              document.querySelector('.rp-modal-overlay')?.remove();
+            const first = await api.scoreBook(key, true);
+            if (first && first.score != null && first.source === 'existing_report' && !first.started) {
+              setStep(3, -1, 100, `已有评分：${first.score} 分`);
+              return;
+            }
+            // 轮询进度
+            for (let i = 0; i < 240; i++) {
+              await new Promise(r => setTimeout(r, 2000));
+              let pr;
+              try { pr = await api.scoreProgress(key); } catch { continue; }
+              if (!pr || !pr.running && !pr.done) continue;
+              if (pr.stage === '一致性体检（L1）') setStep(0, 0, pr.pct, pr.detail || '');
+              else if (pr.stage === '分层采样评审') setStep(1, 1, pr.pct, pr.detail || '');
+              else if (pr.stage === '合成总分') setStep(2, 2, pr.pct, pr.detail || '');
+              if (pr.done || pr.error) {
+                if (pr.error) {
+                  setStep(3, -1, 100, `❌ ${pr.error}`);
+                  return;
+                }
+                setStep(3, -1, 100, '');
+                resultBox.innerHTML = '';
+                const q = pr.score;
+                resultBox.append(h('div', { style: 'text-align:center;padding:14px 0' },
+                  h('div', { style: 'font-size:34px;font-weight:700;color:var(--accent,#C73A32)',
+                             text: q != null ? `${q} 分` : '完成' }),
+                  h('div', { class: 'hint-text', text: q != null
+                    ? (q >= 90 ? '已达标（≥90）' : q >= 70 ? '接近达标（70-89）' : '低于 70——建议查看 14-质量报告 的改进建议')
+                    : '评分完成' })));
+                toast(`评分完成：${q != null ? `${q} 分` : ''}`, { tone: 'success', duration: 5000 });
+                ctx.refreshState?.();
+                ctx.refreshLibrary?.();
+                return;
+              }
             }
           } catch (err) {
-            toast(errorText(err, '评分失败'), { tone: 'danger' });
-            if (btn) btn.disabled = false;
+            detail.textContent = `评分失败：${errorText(err, '未知错误')}`;
           }
         } }
       })

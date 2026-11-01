@@ -1885,9 +1885,9 @@ def _validate_and_finish(proj):
         g.append(plan["config"]["genre"])
     workflow.save_prefs(p)
 
-def _run_layered(proj, mode, max_rounds):
+def _run_layered(proj, mode, max_rounds, progress_cb=None):
     """L1 确定性引擎 + 五角色审校 + 百分制；autofix 且未达标时对 high 项有界重写并重评。
-    写 13-修订记录.md + 14-质量报告.md。"""
+    写 13-修订记录.md + 14-质量报告.md。v4.17.1：progress_cb 透传给分层采样评审。"""
     plan = proj.plan(); cfg = plan["config"]
     _book_skills_into(cfg, plan)   # v3.0.0：审校/总编同样吃到本书绑定
     pdir = proj.path
@@ -1907,8 +1907,11 @@ def _run_layered(proj, mode, max_rounds):
         proj.log(f"📖 超长篇（约 {_book_cn // 10000} 万字）→ 分层采样评审（8 段并行 + 逐章分合成）…")
         _pcs = [p.get("score") for p in per_chapter_scores(proj) if isinstance(p.get("score"), (int, float))]
         _ch_avg = (sum(_pcs) / len(_pcs)) if _pcs else None
-        review = workflow.longform_book_review(book_text, cfg, l1["findings"], chapter_avg=_ch_avg) or {}
-        proj.log(f"📊 分层评审完成：段评/逐章合成总分待计（段数 {len((review.get('_meta') or {}).get('slices', []))}）")
+        review = workflow.longform_book_review(book_text, cfg, l1["findings"], chapter_avg=_ch_avg,
+                                               progress_cb=progress_cb) or {}
+        _meta = review.get("_meta") or {}
+        proj.log(f"📊 分层评审完成：{_meta.get('slices', '?')} 段采样 × 五角色；"
+                 + (f"双轨合成 {_meta.get('blended_total')} 分（逐章均分 {_meta.get('chapter_avg')}）" if _meta.get("chapter_avg") else "（无逐章分，仅段评）"))
     else:
         review = workflow.five_role_review(book_text, cfg, l1["findings"]) or {}
     total = workflow.score_dimensions(review.get("scores"))
@@ -1996,7 +1999,7 @@ def _write_quality_report(proj, l1, review, total, mode, fixed, pass_line, reade
     atomic_write_text(os.path.join(proj.path, "14-质量报告.md"),
                       body + "\n_模板：quality-report（一幕·一幕·YIMU 神笔 · 一幕·神笔 NovelCraft）。_")
 
-def validate_project(proj, mode="report", max_rounds=2):
+def validate_project(proj, mode="report", max_rounds=2, progress_cb=None):
     """端点用：对已完成/任意项目按需跑分层审稿（report 或 autofix），返回 JSON 摘要。"""
     plan = proj.plan()
     plan["status"] = "validating"
@@ -2004,7 +2007,7 @@ def validate_project(proj, mode="report", max_rounds=2):
     proj.log(f"🔍 手动分层审稿（{mode}）…")
     res = {}
     try:
-        res = _run_layered(proj, mode, max_rounds)
+        res = _run_layered(proj, mode, max_rounds, progress_cb=progress_cb)
         proj.log(f"✅ 五角色审校 + 确定性引擎完成：百分制 {res.get('total')}（达标 {'是' if res.get('pass') else '否'}），"
                  f"autofix {res.get('fixed', 0)} 处 → 14-质量报告.md")
     except Exception as e:
