@@ -851,6 +851,7 @@ export function renderSession(container, ctx = {}) {
   const maxStepNo = (list) =>
     (list || []).reduce((acc, it) => Math.max(acc, Number(it && it.no) || 0), 0);
   let lastStepNo = maxStepNo(store.get().steps && store.get().steps.items);
+  let replayBatch = true;   // v4.21.7：挂载后的第一批为历史回放（章内过程不散落，进章节卡下拉）
   let streamEpoch = 0;
   let streamMsgId = '';
   let streamDoneTimer = 0;
@@ -879,9 +880,16 @@ export function renderSession(container, ctx = {}) {
       if (it.agent === 'writer' && /（正文全文）$/.test(String(it.title || '')) && Number(it.chapter) > 0) {
         return false;
       }
+      /* v4.21.7：回放批次跳过「章内过程」事件（chapter>0）——同一章所有 Agent 的
+         思考/工作/产出已收进章节完成卡的「本章过程」下拉，不再散落刷屏；
+         实时创作批次不受影响（保持当前逐步展示形式）。 */
+      if (replayBatch && Number(it.chapter || 0) > 0) {
+        return false;
+      }
       return true;
     });
     if (!fresh.length) return;
+    replayBatch = false;   // 首批之后都是实时增量（逐步展示）
     lastStepNo = maxStepNo(items);
     const addedIds = [];
     for (const item of fresh) {

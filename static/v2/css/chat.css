@@ -1388,3 +1388,45 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* v4.21.7 章节完成卡：本章过程下拉 */
+.cc-head { cursor: pointer; }
+.cc-head-spacer { flex: 1; }
+
+.cc-proc-btn {
+  align-items: center;
+  background: var(--bg-chip);
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  color: var(--ink-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 4px;
+  padding: 3px 10px;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.cc-proc-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+}
+
+.cc-proc-btn[aria-expanded="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+}
+
+.cc-process {
+  border-bottom: 0.5px solid var(--line-1);
+  background: var(--bg-sunken);
+  max-height: 300px;
+  overflow: auto;
+  padding: 6px 12px;
+}
+
+.cc-process .arch-row { font-size: 12px; padding: 5px 2px; }
+.cc-process .arch-detail { margin: 0 0 6px 4px; }
+.cc-process-loading { padding: 8px 2px; }

@@ -121,18 +121,74 @@ function renderChapterCard(msg, handlers = {}) {
   const expanded = !msg.collapsed;
   const card = h('div', { class: `chapter-card${expanded ? ' is-open' : ''}` });
 
-  const head = h('button', {
+  /* v4.21.7：标题去重（章名缺省「第N章」时不再显示「第45章 · 第45章」） */
+  const _t = String(meta.title || '').trim();
+  const titleText = _t && !_t.match(/^第\s*\d+\s*章$/) ? `第${meta.no ?? '?'}章 · ${_t}` : `第${meta.no ?? '?'}章`;
+  /* v4.21.7：本章过程下拉——同一章所有 Agent 的思考/工作/产出收进一个可展开区（懒加载） */
+  let procLoaded = false;
+  const procBody = h('div', { class: 'cc-process', style: { display: 'none' } },
+    h('div', { class: 'hint-text cc-process-loading', text: '加载中…' }));
+  const procBtn = h('button', {
+    class: 'cc-proc-btn', type: 'button',
+    'aria-expanded': 'false',
+    title: '查看所有参与本章创作的 Agent 的思考、工作与产出过程',
+    html: `${icon('history', 12)}<span>本章过程</span>`,
+    on: { click: async (event) => {
+      event.stopPropagation();
+      const show = procBody.style.display === 'none';
+      procBody.style.display = show ? '' : 'none';
+      procBtn.setAttribute('aria-expanded', show ? 'true' : 'false');
+      if (show && !procLoaded) {
+        procLoaded = true;
+        try {
+          const key = handlers.workKey || store.get().currentKey;
+          const res = await fetch(`/api/chapter-steps?key=${encodeURIComponent(key)}&chapter=${meta.no}`, { credentials: 'include' });
+          const data = await res.json();
+          procBody.textContent = '';
+          const items = (data && data.items) || [];
+          if (!items.length) {
+            procBody.append(h('div', { class: 'hint-text cc-process-loading', text: '这一章还没有过程记录。' }));
+            return;
+          }
+          for (const e of items) {
+            const row = h('div', { class: 'arch-row' },
+              h('span', { class: 'arch-time mono', text: String(e.time || '').slice(0, 8) || '—' }),
+              h('span', { class: 'arch-badge', dataset: { agent: e.agent || 'system' }, text: e.agent_label || e.agent || '系统' }),
+              h('span', { class: 'arch-title', text: `${e.phase === 'start' ? '▶' : e.phase === 'warn' ? '⚠' : '✓'} ${e.title || ''}${e.ms ? ` · ${(e.ms / 1000).toFixed(1)}s` : ''}` }));
+            const det = [e.thinking, e.output].filter(Boolean).join('\n');
+            if (det) {
+              const pre = h('pre', { class: 'arch-detail', style: { display: 'none' }, text: det });
+              row.classList.add('arch-expandable');
+              row.addEventListener('click', () => { pre.style.display = pre.style.display === 'none' ? '' : 'none'; });
+              procBody.append(h('div', {}, row, pre));
+              continue;
+            }
+            procBody.append(row);
+          }
+        } catch {
+          procBody.textContent = '';
+          procBody.append(h('div', { class: 'hint-text cc-process-loading', text: '过程加载失败，请重试。' }));
+        }
+      }
+    } }
+  });
+  /* cc-head 从 button 改为 div（内部嵌本章过程按钮，button 不能嵌套 button） */
+  const head = h('div', {
     class: 'cc-head',
-    type: 'button',
+    role: 'button',
+    tabindex: '0',
     'aria-expanded': expanded ? 'true' : 'false',
     title: expanded ? '收起本章' : '展开本章全文',
     on: { click: () => updateMessage(msg.id, { collapsed: expanded }) }
   },
     h('span', { class: 'cc-icon', html: icon('book-open', 14) }),
-    h('span', { class: 'cc-title', text: `第${meta.no ?? '?'}章 · ${meta.title || ''}` }),
+    h('span', { class: 'cc-title', text: titleText }),
+    h('span', { class: 'cc-head-spacer' }),
+    procBtn,
     h('span', { class: 'cc-chev', html: icon(expanded ? 'pause' : 'play', 12) })
   );
   card.append(head);
+  card.append(procBody);
 
   const chips = h('div', { class: 'cc-meta' });
   const items = [];
@@ -508,7 +564,9 @@ function stepChapterBtn(st) {
       click: () => {
         const key = store.get().currentKey;
         if (!key) return;
-        patchUi({ chapterArchive: { key, chapter: Number(st.chapter), ts: Date.now() } });
+        /* v4.21.7：同时打开右栏并切到档案页签——此前右栏关闭时点击无任何反应 */
+        patchUi({ chapterArchive: { key, chapter: Number(st.chapter), ts: Date.now() },
+                  rightOpen: true, rightTab: 'archive' });
       }
     }
   });
