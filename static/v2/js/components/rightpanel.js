@@ -270,12 +270,16 @@ function showQualityDetail(ctx, work) {
                 setStep(3, -1, 100, '');
                 resultBox.innerHTML = '';
                 const q = pr.score;
+                const rwBtn = h('button', { class: 'btn btn-primary btn-sm', type: 'button',
+                  style: 'margin-top:12px', text: '⚡ 多岗位并行改写低分章', on: {
+                  click: () => openParallelRewrite(key) } });
                 resultBox.append(h('div', { style: 'text-align:center;padding:14px 0' },
                   h('div', { style: 'font-size:34px;font-weight:700;color:var(--accent,#C73A32)',
                              text: q != null ? `${q} 分` : '完成' }),
                   h('div', { class: 'hint-text', text: q != null
-                    ? (q >= 90 ? '已达标（≥90）' : q >= 70 ? '接近达标（70-89）' : '低于 70——建议查看 14-质量报告 的改进建议')
-                    : '评分完成' })));
+                    ? (q >= 90 ? '已达标（≥90）' : q >= 70 ? '接近达标（70-89）——可并行改写低分章提分' : '低于 70——建议并行改写低分章')
+                    : '评分完成' }),
+                  q != null && q < 90 ? rwBtn : null));
                 toast(`评分完成：${q != null ? `${q} 分` : ''}`, { tone: 'success', duration: 5000 });
                 ctx.refreshState?.();
                 ctx.refreshLibrary?.();
@@ -1594,6 +1598,89 @@ function auditSection(ctx, payload) {
     }
   }
   return sec;
+}
+
+/* v4.17.2：多岗位并行改写弹窗——低分章清单 + 岗位数选择 + 启动与进度 */
+async function openParallelRewrite(key) {
+  try {
+    const prog = await api.rewriteParallelProgress(key);
+    if (prog.rw_running) { toast('该书已有改写任务在跑，请稍候', { tone: 'warn' }); return; }
+  } catch { /* 忽略进度查询失败 */ }
+  const numInput = h('input', { class: 'input', type: 'number', min: '1', max: '8', value: '3',
+                                'aria-label': '并行岗位数' });
+  const listWrap = h('div', { style: 'max-height:220px;overflow:auto;border:1px solid var(--line,#ddd);border-radius:6px;padding:8px' });
+  let chapters = [];
+  const paintList = (items) => {
+    listWrap.textContent = '';
+    if (!items.length) { listWrap.append(h('div', { class: 'hint-text', text: '没有低于达标线的章节。' })); return; }
+    for (const r of items) {
+      listWrap.append(h('label', { style: 'display:flex;gap:8px;align-items:center;padding:5px;cursor:pointer' },
+        h('input', { type: 'checkbox', checked: true, 'data-ch': r.ch }),
+        h('span', { style: 'font-size:13px', text: `第 ${r.ch} 章 · ${r.score} 分` })));
+    }
+  };
+  const paintFrom = async () => {
+    try {
+      const scores = await api.chapterScores(key);
+      const pl = Number(store.get().work?.pass_line || 90);
+      chapters = (scores || []).filter((x) => typeof x.score === 'number' && x.score < pl);
+      paintList(chapters);
+    } catch { paintList([]); }
+  };
+  await paintFrom();
+  const body = h('div', {},
+    h('p', { class: 'hint-text', style: 'margin-bottom:8px',
+             text: '勾选要改写的低分章（默认全选）。审稿问题清单会一次性下发给改写岗位；每章只改 1 轮；改写分数必须高于原分，否则自动回滚原稿（质量只进不退）。' }),
+    listWrap,
+    h('div', { class: 'field', style: 'margin-top:10px' },
+      h('span', { class: 'field-label', text: '并行岗位数（1-8）' }), numInput));
+  const footer = h('div', { class: 'set-actions' },
+    h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+    h('button', { class: 'btn btn-primary', type: 'button', text: '⚡ 开始并行改写', on: {
+      click: async () => {
+        const picked = [...listWrap.querySelectorAll('input:checked')].map((i) => Number(i.dataset.ch));
+        if (!picked.length) { toast('请至少勾选一章', { tone: 'danger' }); return; }
+        const workers = Math.max(1, Math.min(8, Number(numInput.value) || 3));
+        modal.close();
+        /* 写进对话框：用户指令 + Agent 确认（进度体验闭环） */
+        try {
+          store.set((st) => {
+            const msgs = [...((st.chat && st.chat.messages) || [])];
+            msgs.push({ id: `rw_${Date.now()}`, role: 'user',
+                        content: `⚡ 多岗位并行改写：${picked.length} 个低分章（第 ${picked.slice(0, 6).join('、')}${picked.length > 6 ? '…' : ''} 章），${workers} 个岗位同时改` });
+            msgs.push({ id: `rw_a_${Date.now()}`, role: 'assistant',
+                        content: `▶ 已启动并行改写：审稿问题清单已下发给 ${workers} 个改写岗位，每章只改 1 轮；改写分数必须高于原分，未提分的章节自动回滚原稿。完成后我会逐章汇报提分情况。` });
+            return { ...st, chat: { ...(st.chat || {}), messages: msgs } };
+          });
+        } catch { /* 对话注入失败不影响改写 */ }
+        try {
+          await api.rewriteParallel({ key, chapters: picked, workers });
+          toast('并行改写已启动', { tone: 'success', duration: 4000 });
+          /* 进度轮询 → 完成后逐章汇报进对话框 */
+          const poll = setInterval(async () => {
+            try {
+              const pr = await api.rewriteParallelProgress(key);
+              if (pr.rw_running === false && (pr.done || pr.error)) {
+                clearInterval(poll);
+                const results = pr.results || [];
+                const lines = results.map((r) => `第${r.ch}章 ${r.before ?? '?'}→${r.after ?? '?'}${r.kept ? ' ↑' : '（回滚）'}`);
+                store.set((st) => {
+                  const msgs = [...((st.chat && st.chat.messages) || [])];
+                  msgs.push({ id: `rw_done_${Date.now()}`, role: 'assistant',
+                              content: `⚡ 并行改写完成：${results.filter((r) => r.kept).length}/${results.length} 章提分。\n${lines.join('\n')}\n\n未提分的章节已回滚原稿（质量只进不退）。可再次评分查看总分变化。` });
+                  return { ...st, chat: { ...(st.chat || {}), messages: msgs } };
+                });
+                ctx.refreshState?.(); ctx.refreshLibrary?.();
+              }
+            } catch { /* 轮询失败下次再试 */ }
+          }, 4000);
+        } catch (err) {
+          toast(errorText(err, '启动失败'), { tone: 'danger' });
+        }
+      }
+    } })
+  );
+  _modalBox('多岗位并行改写', body, { footer });
 }
 
 function statePane(ctx) {

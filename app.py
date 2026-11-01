@@ -2009,6 +2009,51 @@ def api_diagnostics():
             "providers": prov_summary, "llm_errors": llm_errors}
 
 
+_PARA_RW_RUNNING: dict = {}
+
+@app.post("/api/rewrite-parallel")
+def api_rewrite_parallel(payload: dict):
+    """v4.17.2：多岗位并行改写低分章——审稿问题一次性下发，每章独立改写，
+    分数必须高于原分（保留更好守护），每章 1 轮不烧 token。异步执行。"""
+    key = str(payload.get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    key = os.path.basename(proj.path)
+    if _PARA_RW_RUNNING.get(key, {}).get("running"):
+        return JSONResponse({"error": "该书已有改写任务在跑"}, status_code=409)
+    chapters = payload.get("chapters")
+    workers = max(1, min(8, int(payload.get("workers") or 3)))
+    _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+    def _job():
+        try:
+            res = writer.run_parallel_rewrite(key, chapters=chapters, workers=workers, max_rounds=1)
+            _PARA_RW_RUNNING[key] = {"running": False, "result": res}
+        except Exception as e:
+            _PARA_RW_RUNNING[key] = {"running": False, "result": {"error": str(e)}}
+    threading.Thread(target=_job, daemon=True).start()
+    return {"ok": True, "started": True, "workers": workers,
+            "msg": f"⚡ 多岗位并行改写已启动（同时 {workers} 个岗位，改完自动停）"}
+
+
+@app.get("/api/rewrite-parallel/progress")
+def api_rewrite_parallel_progress(key: str):
+    st = _PARA_RW_RUNNING.get(key) or {}
+    prog = writer._PARA_RW_PROGRESS.get(key) or {}
+    return {"ok": True, **st, **{k: prog.get(k) for k in ("done", "total", "results") if k in prog},
+            "rw_running": prog.get("running", False)}
+
+
+@app.get("/api/chapter-scores")
+def api_chapter_scores(key: str):
+    """逐章评分列表（多岗位并行改写弹窗数据源）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    return {"ok": True, "key": key, "scores": writer.per_chapter_scores(proj),
+            "pass_line": writer._pass_line()}
+
+
 @app.get("/api/book-agents")
 def api_book_agents(key: str):
     """本书绑定的创作岗位（plan.config.agents）。"""

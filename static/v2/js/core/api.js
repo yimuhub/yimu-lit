@@ -424,6 +424,9 @@ export const api = {
   addAgent: (data) => request('/api/agents/add', jsonBody(data)),
   scoreBook: (key, force) => request('/api/score', jsonBody({ key, force: !!force }), { timeout: 120000 }),
   scoreProgress: (key) => request('/api/score/progress', { query: { key } }),
+  rewriteParallel: (payload) => request('/api/rewrite-parallel', jsonBody(payload)),
+  rewriteParallelProgress: (key) => request('/api/rewrite-parallel/progress', { query: { key } }),
+  chapterScores: (key) => request('/api/chapter-scores', { query: { key } }),
 
   /* 技能库（#/skills）：树、单文件、统计、本书命中与注入预览 */
   skillkitTree: (medium = '') => request('/api/skills/tree', { query: { medium } }),

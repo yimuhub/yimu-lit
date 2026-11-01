@@ -1,6 +1,6 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
-import json, os, re, datetime, threading, queue
+import json, os, re, datetime, threading, queue, time
 from . import workflow, skill, continuity, llm, providers, versions
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -1547,7 +1547,7 @@ def score_chapter(proj, ch_no):
         proj.save_plan(plan)
     return total
 
-def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
+def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_dims=None):
     """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。"""
     plan = proj.plan()
     d = _cfg_defaults()
@@ -1584,6 +1584,8 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None):
         if not weak:
             break
         fix = "\n".join(f"【第{ch_no}章·主攻】提升【{w}】维度" for w in weak[:3])
+        if extra_dims:
+            fix += "\n【审稿问题（逐条落实）】\n" + "\n".join(f"- {d}" for d in extra_dims[:6])
         try:
             ctx = _build_ctx(proj, ch)
         except Exception:
@@ -1943,6 +1945,15 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
     reader_data = workflow.reader_panel(book_text, cfg)[:3] if _cfg_defaults().get("reader_panel") else []
     _write_quality_report(proj, l1, review, total, mode, fixed, pass_line, reader_data=reader_data)
     _write_revision_log(proj, review, mode, fixed, total)
+    # v4.17.2：findings/fix_actions 持久化（多岗位并行改写时一次性下发问题清单）
+    try:
+        atomic_write_json(os.path.join(pdir, "20b-审稿findings.json"), {
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "total": total, "pass_line": pass_line,
+            "findings": (review.get("findings") or [])[:60],
+            "fix_actions": (review.get("fix_actions") or [])[:12]})
+    except Exception:
+        pass
     return {"scores": review.get("scores"), "total": total, "pass": total >= pass_line,
             "findings": review.get("findings"), "l1": l1["findings"], "fixed": fixed, "book": book_text}
 
@@ -2635,7 +2646,77 @@ def _pch_before(proj, ch_no):
     except Exception:
         return None
 
+_PARA_RW_PROGRESS: dict = {}
+
 @_serialize_book
+def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1):
+    """v4.17.2：多岗位并行改写低分章——
+    - 审稿问题（20b-审稿findings.json）一次性按章下发，改写指令带着问题清单
+    - 每章独立线程改写，同时最多 workers 个；每章 max_rounds=1 轮（不烧 token）
+    - 分数保证：保留更好守护（重写评分必须 ≥ 原分，否则自动还原原稿；最终低于基线也还原）
+    返回 [{ch, before, after, delta, kept}]。"""
+    import concurrent.futures as _cf
+    proj = Project(_project_dir(key), key)
+    plan = proj.plan()
+    pass_line = _pass_line()
+    # 低分章：未指定时取全部低于达标线的章（有评分的）
+    if not chapters:
+        chapters = [p["ch"] for p in per_chapter_scores(proj)
+                    if isinstance(p.get("score"), (int, float)) and p["score"] < pass_line]
+    if not chapters:
+        return {"ok": True, "results": [], "msg": "没有低于达标线的章节，无需改写"}
+    chapters = sorted(set(int(c) for c in chapters if str(c).isdigit()))
+    # 审稿问题按章归集（一次性下发）
+    findings_by_ch: dict[int, list] = {}
+    try:
+        fj = json.load(open(os.path.join(_project_dir(key), "20b-审稿findings.json"), encoding="utf-8"))
+        for f in (fj.get("findings") or []):
+            chno = f.get("chapter")
+            if isinstance(chno, int):
+                d = f.get("problem") or ""
+                fx = f.get("fix") or ""
+                findings_by_ch.setdefault(chno, []).append(f"{d}{('（' + fx + '）') if fx else ''}")
+    except Exception:
+        pass
+    prog = _PARA_RW_PROGRESS.setdefault(key, {"running": True, "done": 0, "total": len(chapters),
+                                              "results": [], "started_at": int(time.time())})
+    prog.update({"running": True, "done": 0, "total": len(chapters), "results": []})
+    llm.book(key, "rewrite")
+    sem = threading.Semaphore(max(1, int(workers)))
+    proj.log(f"⚡ 多岗位并行改写：{len(chapters)} 个低分章（同时 {workers} 个岗位，每章 {max_rounds} 轮）")
+
+    def _one(ch_no):
+        with sem:
+            if is_paused(proj):
+                return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
+            before = score_chapter(proj, ch_no)
+            dims = findings_by_ch.get(ch_no) or []
+            try:
+                _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, extra_dims=dims or None)
+            except Exception as e:
+                proj.log(f"⚠️ 第{ch_no}章并行改写异常：{e}")
+            after = score_chapter(proj, ch_no)
+            delta = (after or 0) - (before or 0)
+            kept = (after or 0) > (before or 0)
+            r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1), "kept": kept}
+            proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '已回滚原稿，质量优先'}）")
+            with proj.lock:
+                prog["done"] += 1
+                prog["results"].append(r)
+            return r
+
+    with _cf.ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
+        list(ex.map(_one, chapters))
+    prog["running"] = False
+    results = prog.get("results") or []
+    improved = sum(1 for r in results if r.get("kept"))
+    total_delta = sum(r.get("delta") or 0 for r in results)
+    proj.log(f"⚡ 并行改写完成：{improved}/{len(results)} 章提分，总提升 {total_delta} 分"
+             f"（未提分章节已全部回滚原稿，质量只进不退）")
+    return {"ok": True, "results": results, "improved": improved,
+            "total_delta": round(total_delta, 1), "msg": f"并行改写完成：{improved}/{len(results)} 章提分（其余已回滚原稿）"}
+
+
 def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_over=None):
     """执行『审查后定向重写』：把要求书逐条带进目标章重写，重评出前后对比，写 16-重写记录.md。
     v0.7 R2：逐章实时进度写 _RW_PROGRESS[key]（供 /api/rewrite-progress 轮询）+ 支持取消（_RW_CANCEL）。"""
