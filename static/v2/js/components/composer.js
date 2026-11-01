@@ -720,6 +720,7 @@ export function createComposer({ variant = 'docked', ctx, onSend, onQueue, onSto
       if (res.ok && data && data.ok !== false) {
         toast(data.msg || '暂停请求已发出，当前章节完成后停止', { tone: 'success', duration: 2600 });
         patchUi({ creatorAction: { key, text: '暂停', ts: Date.now() } });
+        try { api.chatNote(key, '暂停', '来自创作按钮'); } catch { /* 入库失败不影响交互 */ }
       } else {
         toast((data && data.msg) || '暂停请求未生效', { tone: 'warn' });
       }

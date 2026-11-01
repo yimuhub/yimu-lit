@@ -13,11 +13,46 @@ from collections import deque
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECTS_DIR = os.path.join(ROOT, "projects")
-MAX_PER_BOOK = 600          # 内存环形缓冲上限
-JSONL_MAX_BYTES = 2 * 1024 * 1024
-JSONL_KEEP = 1500           # 裁剪后保留行数
+MAX_PER_BOOK = 1200         # 内存环形缓冲上限
+JSONL_MAX_BYTES = 8 * 1024 * 1024
+JSONL_KEEP = 3000           # 裁剪后保留行数（创作过程要求永久保留，随书删除才清）
 
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
+_HYDRATED = {}             # key -> True（每进程每书只灌一次）
+
+
+def _hydrate(key):
+    """环形缓冲为空且落盘 JSONL 有历史时（典型：服务重启），把最近 300 条
+    灌回内存——保证「刷新/重启后创作过程仍在」。幂等：只灌一次。"""
+    key = str(key or "")
+    if not key or _HYDRATED.get(key):
+        return
+    _HYDRATED[key] = True
+    path = _jsonl_path(key)
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()[-300:]
+        with _LOCK:
+            ring = _RING.setdefault(key, deque(maxlen=MAX_PER_BOOK))
+            max_no = _SEQ.get(key, 0)
+            for line in lines:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                # 顺序重编号：历史文件里 no 可能跨启动碰撞（旧版无自愈），
+                # 回放只关心先后顺序，统一重新编号最稳。
+                max_no += 1
+                e["no"] = max_no
+                ring.append(e)
+            _SEQ[key] = max(_SEQ.get(key, 0), max_no)
+    except Exception:
+        pass
+
 _RING: dict = {}            # key -> deque[dict]
 _SEQ: dict = {}             # key -> 自增序号
 _STREAM: dict = {}          # key -> {"agent","chapter","text","ts"}（当前流式步骤；done 后保留至下一次 emit 流）
@@ -49,7 +84,7 @@ def _trim_jsonl(path):
 
 
 def emit(key, agent, phase="done", title="", thinking="", output="",
-         chapter=0, level="info", ms=0):
+         chapter=0, level="info", ms=0, stream_text=""):
     """广播一条离散创作步骤。phase: start（进行中）/ done（完成）/ warn。
     title: 动作名（如「生成人物档案」「写第3章」）；thinking: 思考摘要；output: 产出摘要；
     chapter: 关联章节号（0=全书级）；ms: 该步耗时毫秒。"""
@@ -71,6 +106,8 @@ def emit(key, agent, phase="done", title="", thinking="", output="",
             "ts": int(now),
             "time": time.strftime("%H:%M:%S"),
         }
+        if stream_text:
+            entry["stream_text"] = str(stream_text)[:30000]
         path = _jsonl_path(key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with _LOCK:
@@ -87,9 +124,11 @@ def emit(key, agent, phase="done", title="", thinking="", output="",
 
 
 def since(key, cursor=0, limit=60):
-    """增量拉取：返回 {items:[no>cursor 的事件], cursor:最新序号}。"""
+    """增量拉取：返回 {items:[no>cursor 的事件], cursor:最新序号}。
+    v4.21.3：重启后自动从落盘 JSONL 自愈，历史创作过程永久可回放。"""
     try:
         key = str(key or "")
+        _hydrate(key)
         with _LOCK:
             ring = _RING.get(key) or deque()
             cur = _SEQ.get(key, 0)
@@ -116,6 +155,14 @@ def emit_delta(key, agent, chapter, chunk, done=False, title=""):
                 st["text"] = (st.get("text") or "") + str(chunk)[-20000:]
             if done:
                 st["done"] = True
+                # v4.21.3：流式全文永久落盘——作为独立 done 事件写入 ring + JSONL，
+                # 刷新/重启后前端以「正文全文」卡回放（豆包式对话留存）。
+                _text = st.get("text") or ""
+                if _text.strip():
+                    emit(key, st.get("agent"), "done",
+                         title=(st.get("title") or "实时输出") + "（正文全文）",
+                         chapter=st.get("chapter", 0),
+                         stream_text=_text[:30000])
     except Exception:
         pass
 

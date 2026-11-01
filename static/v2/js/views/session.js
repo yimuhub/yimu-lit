@@ -155,6 +155,8 @@ export function renderSession(container, ctx = {}) {
               content: item.content || '',
               ts: item.ts || 0,
               historical: true,
+              // v4.21.3：创作按钮气泡（继续/暂停）的落盘副标注，刷新后原样回放
+              ...(item.note ? { creatorNote: item.note } : {}),
             };
             // v2.9.0：章节完成记录 → 章节卡片（默认折叠，可展开/复制/分支）
             if (item.type === 'chapter') {

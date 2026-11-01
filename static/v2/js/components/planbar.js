@@ -182,6 +182,7 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
         }
         mergeWorkLive(key, res, true);
         patchUi({ creatorAction: { key, text: '暂停', ts: Date.now() } });
+        try { api.chatNote(key, '暂停', '来自创作按钮'); } catch { /* 入库失败不影响交互 */ }
         if (ctx && ctx.refreshWork) ctx.refreshWork();
       } catch (err) {
         optimistic = null;
@@ -215,6 +216,7 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
         }
         mergeWorkLive(key, res, false);
         patchUi({ creatorAction: { key, text: '继续', ts: Date.now() } });
+        try { api.chatNote(key, '继续', '来自创作按钮'); } catch { /* 入库失败不影响交互 */ }
         toast('已继续创作', { tone: 'success' });
         if (ctx && ctx.refreshWork) ctx.refreshWork();
       } catch (err) {

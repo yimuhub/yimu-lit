@@ -2419,6 +2419,23 @@ def _q_int(request: Request, name: str) -> int:
         return 0
 
 
+@app.post("/api/chat/note")
+def api_chat_note(payload: dict):
+    """v4.21.3：创作按钮（继续/暂停）的气泡永久入库——写入 chat_log.jsonl，
+    刷新/重开后对话流原样回放。payload: {key, text, note}"""
+    key = str(payload.get("key") or "")
+    text = str(payload.get("text") or "").strip()[:60]
+    note = str(payload.get("note") or "来自创作按钮").strip()[:30]
+    if not key or not text:
+        return JSONResponse({"error": "缺少 key 或 text"}, status_code=400)
+    from bot.v2api import _save_chat_msg
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    _save_chat_msg(proj, "user", text, {"note": note})
+    return {"ok": True}
+
+
 @app.get("/api/chapter-steps")
 def api_chapter_steps(key: str, chapter: int = 0, limit: int = 400):
     """v4.21.0：本章创作档案——该章的全部创作事件（岗位/思考/产出，新→旧）。

@@ -594,11 +594,33 @@ export function renderStepMessage(msg) {
       main.append(acts);
     }
   } else {
-    /* 普通步骤卡：单行 output 摘要 + 章节入口 */
+    /* 普通步骤卡：单行 output 摘要 + 章节入口。
+       v4.21.3：流式正文全文已永久落盘（stream_text）——历史回放时以可展开卡呈现。 */
+    const fullText = String(st.stream_text || '').trim();
     const out = stepOneLine(st.output);
-    if (out) {
+    if (out || fullText) {
       const acts = h('div', { class: 'step-output' });
-      acts.append(h('span', { class: 'so-text', text: out, title: out }));
+      if (out) acts.append(h('span', { class: 'so-text', text: out, title: out }));
+      if (fullText) {
+        const body = h('pre', {
+          class: 'step-stream-text',
+          style: { display: 'none', maxHeight: '260px', overflow: 'auto', margin: '8px 0 0',
+                   padding: '10px 12px', background: 'var(--code-fill)', border: '0.5px solid var(--line-2)',
+                   borderRadius: 'var(--radius-md)', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                   fontSize: '12px', lineHeight: '1.8', color: 'var(--ink-secondary)' },
+          text: fullText
+        });
+        acts.append(h('button', {
+          class: 'step-link', type: 'button',
+          html: `${icon('eye', 11)}<span>正文全文</span>`,
+          on: { click: () => {
+            const show = body.style.display === 'none';
+            body.style.display = show ? '' : 'none';
+            if (show) body.scrollTop = 0;
+          } }
+        }));
+        main.append(body);
+      }
       const chBtn = stepChapterBtn(st);
       if (chBtn) acts.append(chBtn);
       main.append(acts);

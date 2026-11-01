@@ -841,8 +841,14 @@ function startLive(key) {
       const incoming = steps.items.filter(Boolean);
       const maxNo = incoming.reduce((acc, it) => Math.max(acc, Number(it.no) || 0), 0);
       const srvCursor = Number(steps.cursor) || 0;
+      /* v4.21.3：首批不再吞历史——回放最近 60 条（创作过程要求刷新后永久可见；
+         更早的在右栏「本章档案」）。cursor 仍推进到服务端位置，之后走增量。 */
       if (!prev.baselined) {
-        return { baselined: true, cursor: srvCursor || maxNo || prev.cursor || 0, items: prev.items };
+        return {
+          baselined: true,
+          cursor: srvCursor || maxNo || prev.cursor || 0,
+          items: incoming.slice(-60)
+        };
       }
       const seen = new Set(prev.items.map((it) => Number(it.no) || 0));
       const fresh = incoming.filter((it) => {
