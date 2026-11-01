@@ -1645,11 +1645,19 @@ async function openParallelRewrite(key, ctx) {
   const numInput = h('input', { class: 'input', type: 'number', min: '1', max: '8', value: '3',
                                 'aria-label': '并行岗位数' });
   const listWrap = h('div', { style: 'max-height:220px;overflow:auto;border:1px solid var(--line,#ddd);border-radius:6px;padding:8px' });
+  /* v4.17.5：达标线自选（70/80/90/自定义）——选完未达标章即时刷出，改写目标联动 */
+  let threshold = Number(store.get().work?.pass_line || 90) || 90;
+  let allScores = [];
   let chapters = [];
-  const paintList = (items) => {
+  const paintList = () => {
     listWrap.textContent = '';
-    if (!items.length) { listWrap.append(h('div', { class: 'hint-text', text: '没有低于达标线的章节。' })); return; }
-    for (const r of items) {
+    chapters = allScores.filter((x) => typeof x.score === 'number' && x.score < threshold);
+    if (!chapters.length) {
+      listWrap.append(h('div', { class: 'hint-text',
+        text: allScores.length ? `没有低于 ${threshold} 分的章节（可调低达标线）。` : '还没有逐章评分。' }));
+      return;
+    }
+    for (const r of chapters) {
       listWrap.append(h('label', { style: 'display:flex;gap:8px;align-items:center;padding:5px;cursor:pointer' },
         h('input', { type: 'checkbox', checked: true, 'data-ch': r.ch }),
         h('span', { style: 'font-size:13px', text: `第 ${r.ch} 章 · ${r.score} 分` })));
@@ -1657,22 +1665,43 @@ async function openParallelRewrite(key, ctx) {
   };
   const paintFrom = async () => {
     try {
-      const scores = await api.chapterScores(key);
-      const pl = Number(store.get().work?.pass_line || 90);
-      chapters = (scores || []).filter((x) => typeof x.score === 'number' && x.score < pl);
-      paintList(chapters);
-    } catch { paintList([]); }
+      const d = await api.chapterScores(key);
+      allScores = (d.scores || []).filter((x) => typeof x.score === 'number');
+      paintList();
+    } catch { paintList(); }
   };
   await paintFrom();
+  const thresholdInput = h('input', { class: 'input', type: 'number', min: '30', max: '100',
+    value: String(threshold), style: 'width:76px', 'aria-label': '自定义达标线' });
+  const chipWrap = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px' });
+  const paintChips = () => {
+    chipWrap.textContent = '';
+    for (const n of [70, 80, 90]) {
+      chipWrap.append(h('button', { class: 'btn btn-sm' + (threshold === n ? ' btn-accent' : ''),
+        type: 'button', text: `${n} 分`,
+        on: { click: () => { threshold = n; thresholdInput.value = String(n); paintChips(); paintList(); } } }));
+    }
+  };
+  paintChips();
+  thresholdInput.addEventListener('input', () => {
+    const v = Number(thresholdInput.value);
+    if (v >= 30 && v <= 100) { threshold = v; paintChips(); paintList(); }
+  });
   const body = h('div', {},
     h('p', { class: 'hint-text', style: 'margin-bottom:8px',
-             text: '勾选要改写的低分章（默认全选）。审稿问题清单会一次性下发给改写岗位；每章只改 1 轮；改写分数必须高于原分，否则自动回滚原稿（质量只进不退）。' }),
+             text: '先选达标线，未达标章节自动列出（默认全选）。审稿问题清单一次性下发给改写岗位；每章只改 1 轮；改写分数必须高于原分，否则自动回滚原稿（质量只进不退）。' }),
+    h('div', { class: 'field' },
+      h('span', { class: 'field-label', text: '达标线（满分 100）' }),
+      h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, chipWrap, thresholdInput)),
     listWrap,
     h('div', { class: 'field', style: 'margin-top:10px' },
       h('span', { class: 'field-label', text: '并行岗位数（1-8）' }), numInput));
   let modal;   // v4.17.4：此前 footer 里引用未定义的 modal → 取消/启动点击即 ReferenceError
   const footer = h('div', { class: 'set-actions' },
-    h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+    h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => {
+      try { modal.close(); } catch {}
+      document.querySelector('.rp-modal-overlay')?.remove();   // 兜底：确保总能关掉
+    } } }),
     h('button', { class: 'btn btn-primary', type: 'button', text: '⚡ 开始并行改写', on: {
       click: async () => {
         const picked = [...listWrap.querySelectorAll('input:checked')].map((i) => Number(i.dataset.ch));
@@ -1691,7 +1720,7 @@ async function openParallelRewrite(key, ctx) {
           });
         } catch { /* 对话注入失败不影响改写 */ }
         try {
-          await api.rewriteParallel({ key, chapters: picked, workers });
+          await api.rewriteParallel({ key, chapters: picked, workers, target: threshold });
           toast('并行改写已启动', { tone: 'success', duration: 4000 });
           /* 进度轮询 → 完成后逐章汇报进对话框 */
           const poll = setInterval(async () => {
