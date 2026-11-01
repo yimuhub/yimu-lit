@@ -412,12 +412,14 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                 latency_ms=int((time.time() - _t0) * 1000))
     raise last_err or LLMError("LLM 调用失败（retries=0）")
 
-def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None,
+def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_thinking=None,
                 json_mode=False, temperature=None, max_tokens=None, retries=3, use_cache=None):
     """chat() 的流式版：同一套路由/限流/预算/日志；增量文本经 on_delta(text_chunk) 回调；返回完整文本。
 
     - agent/stage 路由与 chat() 一致（agent 缺省按 stage 推导 planner/writer/reviewer）。
     - SSE 逐帧解析 choices[0].delta.content，data: [DONE] 结束；末帧 usage 回读进 token 账本。
+    - v4.21.4：delta.reasoning_content（深度思考模型的思维链）经 on_thinking(piece) 单独回调，
+      不混入正文；供应商不给 reasoning 时该回调不触发（前端回退到模板化思考摘要）。
     - 响应不是 SSE（普通 JSON）→ 取整段文本回调一次并返回（视为不支持流式）。
     - 流式任何异常（供应商不支持/网络中断/解析失败/超时）→ 丢弃已收文本，回退调 chat() 非流式一次性返回。"""
     from . import model_rules
@@ -458,6 +460,14 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None,
         except Exception:
             pass
 
+    def _safe_think(piece):
+        """on_thinking 回调（模型思维链增量），与正文分流、同样绝不阻断生成。"""
+        try:
+            if on_thinking and piece:
+                on_thinking(piece)
+        except Exception:
+            pass
+
     # 缓存/预算：与 chat() 同一套（缓存命中 → 整段回调一次直接返回，不计费）
     _ce = _cache_enabled(cfg, use_cache)
     _ck = _cache_key(body["model"], body["temperature"], json_mode, _msgs,
@@ -491,9 +501,12 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None,
                     if "text/event-stream" not in (r.headers.get("content-type") or "").lower():
                         # 供应商不支持流式：普通 JSON 整段回调一次并返回
                         data = json.loads(r.read().decode("utf-8", "replace"))
-                        _piece = str((data["choices"][0].get("message") or {}).get("content") or "")
+                        _msg0 = data["choices"][0].get("message") or {}
+                        _piece = str(_msg0.get("content") or "")
+                        _think0 = str(_msg0.get("reasoning_content") or _msg0.get("reasoning") or "")
                         usage = data.get("usage") or {}
                         got.append(_piece)
+                        _safe_think(_think0)
                         _safe_cb(_piece)
                     else:
                         _done_seen = False
@@ -517,7 +530,11 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None,
                             chs = ev.get("choices") or []
                             if not chs:
                                 continue
-                            piece = ((chs[0].get("delta") or {}).get("content")) or ""
+                            _delta = chs[0].get("delta") or {}
+                            _think = _delta.get("reasoning_content") or _delta.get("reasoning") or ""
+                            if _think:
+                                _safe_think(_think)   # 模型思维链增量（与正文分流）
+                            piece = _delta.get("content") or ""
                             if piece:
                                 got.append(piece)
                                 _safe_cb(piece)   # 增量文本实时回调（在调用线程，emit 侧自带锁）

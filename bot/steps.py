@@ -84,7 +84,7 @@ def _trim_jsonl(path):
 
 
 def emit(key, agent, phase="done", title="", thinking="", output="",
-         chapter=0, level="info", ms=0, stream_text=""):
+         chapter=0, level="info", ms=0, stream_text="", think=False):
     """广播一条离散创作步骤。phase: start（进行中）/ done（完成）/ warn。
     title: 动作名（如「生成人物档案」「写第3章」）；thinking: 思考摘要；output: 产出摘要；
     chapter: 关联章节号（0=全书级）；ms: 该步耗时毫秒。"""
@@ -108,6 +108,8 @@ def emit(key, agent, phase="done", title="", thinking="", output="",
         }
         if stream_text:
             entry["stream_text"] = str(stream_text)[:30000]
+        if think:
+            entry["is_thinking"] = True
         path = _jsonl_path(key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with _LOCK:
@@ -133,13 +135,17 @@ def since(key, cursor=0, limit=60):
             ring = _RING.get(key) or deque()
             cur = _SEQ.get(key, 0)
             items = [dict(e) for e in ring if e.get("no", 0) > int(cursor or 0)]
-        return {"items": items[:max(1, min(int(limit or 60), 200))], "cursor": cur}
+        # v4.21.4：全量回放（cursor=0）时返回最新的 limit 条——此前返回最旧的 60 条
+        # 而游标直接跳到最新，导致含正文全文的最新事件被整段跳过。
+        items = items[-max(1, min(int(limit or 60), 200)):]
+        return {"items": items, "cursor": cur}
     except Exception:
         return {"items": [], "cursor": 0}
 
 
-def emit_delta(key, agent, chapter, chunk, done=False, title=""):
-    """流式步骤：chunk 为增量文本。done=True 结束本次流（保留全文到下一次流开始）。"""
+def emit_delta(key, agent, chapter, chunk, done=False, title="", tchunk=""):
+    """流式步骤：chunk 为正文增量；tchunk 为模型思维链增量（reasoning），分开累积。
+    done=True 结束本次流：正文全文 + 模型思考全文各自落盘（永久记录，随书删除才清）。"""
     try:
         key = str(key or "")
         if not key:
@@ -147,37 +153,50 @@ def emit_delta(key, agent, chapter, chunk, done=False, title=""):
         with _LOCK:
             st = _STREAM.get(key)
             if st is None or st.get("agent") != str(agent or "") or st.get("chapter") != int(chapter or 0):
-                st = _STREAM.setdefault(key, {"agent": str(agent or ""), "text": ""})
+                st = _STREAM.setdefault(key, {"agent": str(agent or ""), "text": "", "thinking": ""})
             st.update({"agent": str(agent or ""), "chapter": int(chapter or 0),
                        "title": str(title or st.get("title") or ""),
                        "ts": int(time.time())})
             if chunk:
                 st["text"] = (st.get("text") or "") + str(chunk)[-20000:]
+            if tchunk:
+                st["thinking"] = (st.get("thinking") or "") + str(tchunk)[-30000:]
             if done:
                 st["done"] = True
-                # v4.21.3：流式全文永久落盘——作为独立 done 事件写入 ring + JSONL，
-                # 刷新/重启后前端以「正文全文」卡回放（豆包式对话留存）。
+                # v4.21.3/4：流式全文永久落盘——正文与模型思考各自作为 done 事件
+                # 写入 ring + JSONL，刷新/重启后前端原样回放（豆包式对话留存）。
                 _text = st.get("text") or ""
+                _think = st.get("thinking") or ""
+                if _think.strip():
+                    emit(key, st.get("agent"), "done",
+                         title=(st.get("title") or "实时输出") + "（模型思考）",
+                         chapter=st.get("chapter", 0),
+                         stream_text=_think[:30000], think=True)
                 if _text.strip():
                     emit(key, st.get("agent"), "done",
                          title=(st.get("title") or "实时输出") + "（正文全文）",
                          chapter=st.get("chapter", 0),
                          stream_text=_text[:30000])
+                st["text"] = ""
+                st["thinking"] = ""
     except Exception:
         pass
 
 
-def stream_state(key, offset=0):
-    """前端拉当前流式步骤：{agent, chapter, title, offset, text(自 offset 起), done}；无流返回 {active: False}。"""
+def stream_state(key, offset=0, think_offset=0):
+    """前端拉当前流式步骤：正文与模型思考两条独立增量流；无流返回 {active: False}。"""
     try:
         st = _STREAM.get(str(key or ""))
-        if not st or not st.get("text"):
+        if not st or (not st.get("text") and not st.get("thinking")):
             return {"active": False}
         text = st.get("text") or ""
+        think = st.get("thinking") or ""
         off = max(0, int(offset or 0))
+        toff = max(0, int(think_offset or 0))
         return {"active": True, "agent": st.get("agent"), "agent_label": _agent_label(st.get("agent")),
                 "chapter": st.get("chapter", 0), "title": st.get("title") or "",
-                "offset": len(text), "text": text[off:], "done": bool(st.get("done"))}
+                "offset": len(text), "text": text[off:], "done": bool(st.get("done")),
+                "think_offset": len(think), "thinking": think[toff:]}
     except Exception:
         return {"active": False}
 

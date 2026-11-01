@@ -60,7 +60,9 @@ const initialStream = () => ({
   title: '',
   chapter: 0,
   offset: 0,
-  text: ''
+  text: '',
+  thinkOffset: 0,
+  thinking: ''
 });
 
 export const initialState = {

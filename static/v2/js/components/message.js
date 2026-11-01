@@ -469,6 +469,10 @@ function stepMsText(st) {
   return ms > 0 ? `· ${(ms / 1000).toFixed(1)}s` : '';
 }
 
+function isThinkCard0(st) {
+  return Boolean(st && (st.is_thinking || /（模型思考）$/.test(String(st.title || ''))));
+}
+
 function stepChapterBtn(st) {
   if (!(Number(st.chapter) > 0)) return null;
   return h('button', {
@@ -538,6 +542,9 @@ export function renderStepMessage(msg) {
   else if (phase === 'warn') head.append(h('span', { class: 'step-phase-warn', html: icon('alert', 12), title: '需要注意' }));
   else head.append(h('span', { class: 'step-phase-done', html: icon('check', 12), title: '已完成' }));
 
+  if (isThinkCard0(st)) {
+    head.append(h('span', { class: 'chip chip-muted', text: '思考', title: '模型思维链全文' }));
+  }
   const timeText = stepTimeText(msg);
   const msText = stepMsText(st);
   const right = h('span', { class: 'step-right' });
@@ -564,9 +571,33 @@ export function renderStepMessage(msg) {
   }
 
   if (isStreamCard) {
+    /* v4.21.4：模型思维链实时区（session 的 paintStreamNode 直改 .step-stream-think-text） */
+    if (msg.withThinking) {
+      const thinkWrap = h('div', { class: 'step-stream-think', hidden: true },
+        h('div', { class: 'step-stream-think-label' },
+          h('span', { html: icon('sparkles', 11) }),
+          h('span', { text: '模型思考中…' })),
+        h('pre', { class: 'step-stream-think-text' }, '（等待模型思维链…）'));
+      main.append(thinkWrap);
+    }
     if (collapsed) {
-      /* 完成卡：默认收起，保留「展开查看全文」 */
+      /* 完成卡：默认收起，保留「展开查看全文」+ 复制全文 */
       const acts = h('div', { class: 'step-output' });
+      acts.append(
+        h('button', {
+          class: 'step-link',
+          type: 'button',
+          html: `${icon('copy', 11)}<span>复制全文</span>`,
+          on: { click: async () => {
+            try {
+              await navigator.clipboard.writeText(msg.content || '');
+              toast('全文已复制', { duration: 1400 });
+            } catch {
+              toast('复制失败', { tone: 'danger' });
+            }
+          } }
+        })
+      );
       acts.append(
         h('button', {
           class: 'step-link',
@@ -585,6 +616,21 @@ export function renderStepMessage(msg) {
         h('button', {
           class: 'step-link',
           type: 'button',
+          html: `${icon('copy', 11)}<span>复制已出内容</span>`,
+          on: { click: async () => {
+            try {
+              await navigator.clipboard.writeText(msg.content || '');
+              toast('已复制当前已流出的内容', { duration: 1400 });
+            } catch {
+              toast('复制失败', { tone: 'danger' });
+            }
+          } }
+        })
+      );
+      acts.append(
+        h('button', {
+          class: 'step-link',
+          type: 'button',
           html: `${icon('eye', 11)}<span>收起</span>`,
           on: { click: () => updateMessage(msg.id, { collapsed: true }) }
         })
@@ -597,6 +643,7 @@ export function renderStepMessage(msg) {
     /* 普通步骤卡：单行 output 摘要 + 章节入口。
        v4.21.3：流式正文全文已永久落盘（stream_text）——历史回放时以可展开卡呈现。 */
     const fullText = String(st.stream_text || '').trim();
+    const isThinkCard = Boolean(st.is_thinking);
     const out = stepOneLine(st.output);
     if (out || fullText) {
       const acts = h('div', { class: 'step-output' });
@@ -610,13 +657,29 @@ export function renderStepMessage(msg) {
                    fontSize: '12px', lineHeight: '1.8', color: 'var(--ink-secondary)' },
           text: fullText
         });
+        const toggle = (btn) => {
+          const show = body.style.display === 'none';
+          body.style.display = show ? '' : 'none';
+          const label = btn.querySelector('span');
+          if (label) label.textContent = show ? '收起' : (isThinkCard ? '思考全文' : '正文全文');
+          if (show) body.scrollTop = 0;
+        };
         acts.append(h('button', {
           class: 'step-link', type: 'button',
-          html: `${icon('eye', 11)}<span>正文全文</span>`,
-          on: { click: () => {
-            const show = body.style.display === 'none';
-            body.style.display = show ? '' : 'none';
-            if (show) body.scrollTop = 0;
+          html: `${icon('eye', 11)}<span>${isThinkCard ? '思考全文' : '正文全文'}</span>`,
+          on: { click: (e) => toggle(e.currentTarget) }
+        }));
+        acts.append(h('button', {
+          class: 'step-link', type: 'button',
+          title: '复制全文',
+          html: `${icon('copy', 11)}<span>复制</span>`,
+          on: { click: async () => {
+            try {
+              await navigator.clipboard.writeText(fullText);
+              toast('全文已复制', { duration: 1400 });
+            } catch {
+              toast('复制失败，请手动选择文本', { tone: 'danger' });
+            }
           } }
         }));
         main.append(body);

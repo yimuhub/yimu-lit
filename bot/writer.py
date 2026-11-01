@@ -1996,7 +1996,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
         elif _cfg_defaults().get("chapter_quality", True):
             try:
                 _d = _cfg_defaults()
-                proj.log(f"📊 第{no}章逐章评分（<90 自动局部重写，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
+                proj.log(f"📊 第{no}章逐章评分（低于达标线 {_pass_line()} 自动局部重写，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
                 fin = _auto_rewrite_chapter(proj, no, skip_deslop=True)
                 _st = ((proj.plan().get("meta") or {}).get("chapter_scores", {}).get(str(no), {}).get("status"))
                 proj.log(f"📊 第{no}章 {fin if fin is not None else '?'} 分（{_st}）")

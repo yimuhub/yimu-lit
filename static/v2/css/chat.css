@@ -1357,3 +1357,34 @@
 @media (max-width: 640px) {
   .step-ava { display: none; }
 }
+
+/* v4.21.4 模型思维链实时区（流式卡内，正文上方） */
+.step-stream-think {
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--warn-soft);
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.step-stream-think-label {
+  align-items: center;
+  color: var(--warn-label);
+  display: flex;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 4px;
+  padding: 6px 10px 0;
+}
+
+.step-stream-think-text {
+  color: var(--ink-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 0;
+  max-height: 150px;
+  overflow: auto;
+  padding: 6px 10px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

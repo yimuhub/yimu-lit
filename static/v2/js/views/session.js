@@ -896,11 +896,25 @@ export function renderSession(container, ctx = {}) {
     }, 1200);
   }
 
-  function paintStreamNode(text) {
+  function paintStreamNode(text, thinking) {
     if (!streamMsgId || disposed) return;
     requestAnimationFrame(() => {
       if (disposed) return;
-      const node = chat.el.querySelector(`.msg-step[data-id="${streamMsgId}"] .step-stream-text`);
+      const card = chat.el.querySelector(`.msg-step[data-id="${streamMsgId}"]`);
+      if (!card) return;
+      /* v4.21.4：模型思维链实时流（思考区在正文上方，默认展开随流滚动） */
+      const thinkNode = card.querySelector('.step-stream-think-text');
+      if (thinkNode) {
+        const tk = thinking || '';
+        if (thinkNode.dataset.raw !== tk) {
+          thinkNode.dataset.raw = tk;
+          thinkNode.textContent = tk || '（等待模型思维链…）';
+          thinkNode.parentElement.hidden = !tk;
+        }
+        const tbox = thinkNode.parentElement;
+        if (tbox && !tbox.hidden) tbox.scrollTop = tbox.scrollHeight;
+      }
+      const node = card.querySelector('.step-stream-text');
       if (!node) return;
       if (node.dataset.raw !== text) {
         node.dataset.raw = text;
@@ -939,6 +953,7 @@ export function renderSession(container, ctx = {}) {
             kind: 'step',
             role: 'assistant',
             stream: true,
+            withThinking: true,   // v4.21.4：实时卡带模型思维链区（renderStepMessage 输出）
             step: {
               agent: st.agent || 'system',
               agent_label: st.agent_label || '实时输出',
@@ -957,7 +972,7 @@ export function renderSession(container, ctx = {}) {
         /* 只同步 content 供重渲染兜底；视觉更新交给 paintStreamNode 直改 DOM */
         updateMessage(streamMsgId, { content: st.text || '' });
       }
-      paintStreamNode(st.text || '');
+      paintStreamNode(st.text || '', st.thinking || '');
       return;
     }
 

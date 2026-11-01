@@ -155,7 +155,9 @@ def gen_outline(cfg, book_key=""):
         from . import steps
         out = llm.chat_stream(msgs, cfg=cfg, stage="planning",
                               on_delta=lambda chunk: steps.emit_delta(book_key, "planner", 0, chunk,
-                                                                      title="生成大纲"))
+                                                                      title="生成大纲"),
+                              on_thinking=lambda t: steps.emit_delta(book_key, "planner", 0, "",
+                                                                     tchunk=t, title="生成大纲"))
         steps.emit_delta(book_key, "planner", 0, "", done=True, title="生成大纲")
         return out
     return llm.chat(msgs, cfg=cfg, stage="planning")
@@ -306,7 +308,9 @@ def write_chapter(ctx, book_key="", chapter_no=0):
         from . import steps
         out = llm.chat_stream(msgs, cfg=ctx.get("cfg"), stage="writing",
                               on_delta=lambda chunk: steps.emit_delta(bk, "writer", no, chunk,
-                                                                      title=f"写第{no}章"))
+                                                                      title=f"写第{no}章"),
+                              on_thinking=lambda t: steps.emit_delta(bk, "writer", no, "",
+                                                                     tchunk=t, title=f"写第{no}章"))
         steps.emit_delta(bk, "writer", no, "", done=True, title=f"写第{no}章")
         return out
     # v0.4：读者即时修正指令（运行中随时插一条，标 immediate 立即生效 / 否则下一条生效）

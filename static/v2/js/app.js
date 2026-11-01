@@ -872,6 +872,8 @@ function startLive(key) {
     const stream = data && data.stream;
     if (!stream || typeof stream !== 'object') return;
     const piece = typeof stream.text === 'string' ? stream.text : '';
+    /* v4.21.4：模型思维链（reasoning）独立增量流——与正文分开累积、分开游标 */
+    const tpiece = typeof stream.thinking === 'string' ? stream.thinking : '';
     const active = Boolean(stream.active) && !stream.done;
     patch('stream', (prev) => {
       if (active) {
@@ -882,6 +884,12 @@ function startLive(key) {
           Number.isFinite(srvOffset) && srvOffset > 0
             ? srvOffset
             : (starting ? 0 : prev.offset || 0) + Array.from(piece).length;
+        const thinking = (starting ? '' : prev.thinking || '') + tpiece;
+        const srvThink = Number(stream.think_offset);
+        const thinkOffset =
+          Number.isFinite(srvThink) && srvThink > 0
+            ? srvThink
+            : (starting ? 0 : prev.thinkOffset || 0) + Array.from(tpiece).length;
         return {
           key: bookKey,
           active: true,
@@ -892,13 +900,17 @@ function startLive(key) {
           title: stream.title || prev.title || '',
           chapter: Number(stream.chapter) || 0,
           offset,
-          text
+          text,
+          thinkOffset,
+          thinking
         };
       }
       if (!prev.active) {
-        return prev.offset === 0 ? prev : { ...prev, offset: 0 };
+        return prev.offset === 0 && prev.thinkOffset === 0
+          ? prev
+          : { ...prev, offset: 0, thinkOffset: 0 };
       }
-      return { ...prev, active: false, offset: 0, doneAt: Date.now() };
+      return { ...prev, active: false, offset: 0, thinkOffset: 0, doneAt: Date.now() };
     });
   };
 
