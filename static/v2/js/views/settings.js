@@ -609,7 +609,12 @@ export function renderSettings(container, ctx) {
       type: 'button',
       text: '⟳ 拉取模型列表'
     });
-    const fetchState = h('span', { class: 'pe-fetch-state', text: '填好接口地址（密钥选填）后点左侧按钮，自动获取全部可用模型' });
+    const fetchState = h('span', {
+      class: 'pe-fetch-state',
+      text: existing && existing.has_key
+        ? '未重填密钥时，将自动使用已保存的密钥拉取'
+        : '填好接口地址（密钥选填）后点左侧按钮，自动获取全部可用模型'
+    });
     const searchIn = h('input', { class: 'input mp-search', type: 'search', placeholder: '搜索模型名…', 'aria-label': '搜索模型' });
     const listEl = h('div', { class: 'mp-list', role: 'group', 'aria-label': '候选模型' });
     const pickedCount = h('span', { class: 'mp-count' });
@@ -679,7 +684,13 @@ export function renderSettings(container, ctx) {
       fetchState.textContent = '正在从接口拉取模型列表…';
       fetchState.dataset.tone = '';
       try {
-        const res = await api.fetchModels({ base_url: baseUrl.value.trim(), api_key: apiKey.value.trim() });
+        /* v4.19.1：编辑态密钥框留空时带 provider_id——后端自动回落已保存的密钥。
+           此前把空密钥直接发给接口，401 后用户误以为密钥丢失。 */
+        const res = await api.fetchModels({
+          base_url: baseUrl.value.trim(),
+          api_key: apiKey.value.trim(),
+          provider_id: existing ? existing.id : ''
+        });
         const list = (res && res.models) || [];
         if (!list.length) {
           fetchState.textContent = '接口返回了空列表，请在下方手动输入模型名';
@@ -690,7 +701,9 @@ export function renderSettings(container, ctx) {
         fetched = list;
         pickerEl.style.display = '';
         paintAll();
-        fetchState.textContent = `拉取成功：接口下共 ${list.length} 个模型，勾选需要的即可`;
+        fetchState.textContent = res && res.used_saved_key
+          ? `已用已保存的密钥拉取成功：共 ${list.length} 个模型，勾选需要的即可`
+          : `拉取成功：接口下共 ${list.length} 个模型，勾选需要的即可`;
         fetchState.dataset.tone = 'success';
         toast(`拉取成功：${list.length} 个模型`, { tone: 'success', duration: 2500 });
       } catch (err) {
@@ -718,6 +731,9 @@ export function renderSettings(container, ctx) {
     manualIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addManual(); } });
     searchIn.addEventListener('input', paintList);
 
+    const keyHint = existing && existing.has_key
+      ? `当前已保存的密钥：${existing.key_display || '已设置'}（出于安全不回显明文）。留空表示不修改；拉取模型与实际调用都会继续使用它。`
+      : '';
     const body = h(
       'div',
       { class: 'prov-editor' },
@@ -726,7 +742,7 @@ export function renderSettings(container, ctx) {
         h('div', { class: 'wiz-grid' },
           fieldRow('名称', name),
           fieldRow('接口地址（OpenAI 兼容）', baseUrl, 'span-2'),
-          fieldRow('API 密钥', apiKey, 'span-2', existing && existing.has_key ? '已保存的密钥不会回显；留空表示不修改。' : '')
+          fieldRow('API 密钥', apiKey, 'span-2', keyHint)
         )
       ),
       h('div', { class: 'pe-section' },

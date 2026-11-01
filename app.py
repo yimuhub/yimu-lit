@@ -1830,11 +1830,23 @@ def _consistency_fix_one(key: str, issue: str) -> dict:
 
 @app.post("/api/providers/fetch-models")
 def api_providers_fetch_models(payload: dict):
-    """v4.15.15：拉取供应商的可用模型列表（GET {base_url}/models）。
-    添加/编辑供应商时，填完地址与密钥即可一键拉取，模型选择改为下拉。"""
+    """拉取供应商的可用模型列表（GET {base_url}/models）。
+    添加/编辑供应商时，填完地址与密钥即可一键拉取。
+    v4.19.1 修复：编辑已保存供应商时密钥框按设计不回显（留空=不修改），
+    此前把空密钥直接发给接口导致 401，用户误以为密钥丢失。现在留空且带
+    provider_id 时自动回落到该供应商已保存的密钥（明文不回显但服务端可复用）。"""
     import urllib.request as _ur
     base = str(payload.get("base_url") or "").strip().rstrip("/")
     key = str(payload.get("api_key") or "").strip()
+    pid = str(payload.get("provider_id") or "").strip()
+    used_saved_key = False
+    if not key and pid:
+        try:
+            _p = providers._require_id(providers.load_data(), pid)
+            key = providers.key_of(_p)
+            used_saved_key = bool(key)
+        except providers.ProviderError:
+            pass
     if not base:
         return JSONResponse({"error": "请先填写接口地址"}, status_code=400)
     url = f"{base}/models"
@@ -1849,7 +1861,8 @@ def api_providers_fetch_models(payload: dict):
         if not ids:
             # 兼容 {"models":[...]} 形态（Ollama 原生）
             ids = [str(m.get("name") or m.get("model")) for m in (data.get("models") or []) if (m.get("name") or m.get("model"))]
-        return {"ok": True, "models": sorted(set(ids)), "count": len(set(ids))}
+        return {"ok": True, "models": sorted(set(ids)), "count": len(set(ids)),
+                "used_saved_key": used_saved_key}
     except Exception as e:
         return JSONResponse({"error": f"拉取失败（{type(e).__name__}）：请检查接口地址与密钥"}, status_code=502)
 

@@ -323,8 +323,13 @@ def update_provider(pid, payload):
         allowed = {"name", "api_key", "api_key_file", "temperature", "max_tokens",
                    "timeout", "active"}
         for k in allowed:
-            if k in payload:
-                p[k] = payload[k]
+            if k not in payload:
+                continue
+            # v4.19.1 兜底：密钥不回显，前端「留空=不修改」；空串/空白一律视为不修改，
+            # 绝不能把已保存的密钥覆盖成空（一旦清掉，所有模型调用立即 401）。
+            if k in ("api_key", "api_key_file") and not str(payload.get(k) or "").strip():
+                continue
+            p[k] = payload[k]
         if "base_url" in payload and payload["base_url"]:
             if not _valid_base_url(payload["base_url"]):
                 raise ProviderError("base_url 非法")
