@@ -20,6 +20,8 @@ import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
 import { createCollabPanel } from './collab.js';
 import { openDistillModal } from './distill.js';
+/* v4.20.0：创作控制三态按钮工厂（创作中→暂停 / 已暂停→继续），与目标条共用同一交互规范 */
+import { createCreativeToggle } from './planbar.js';
 
 const TABS = [
   { key: 'work', label: '作品', icon: 'book-open' },
@@ -743,35 +745,12 @@ function mediumWorkPane(work, ctx) {
       on: { click: () => navigate(`/work/${encodeURIComponent(work.key)}/bench/1`) }
     })
   );
-  /* 断点恢复：服务重启/线程中断后（planning/writing 但没有活动线程），一键续跑。
-     v3.1.0：running 时切换为「创作中」状态展示，动作必须有明确变化。 */
-  if (work.running) {
-    actions.append(
-      h('span', { class: 'status-chip', dataset: { tone: 'running' },
-        text: '创作中…' },
-        h('span', { class: 'hint-text', text: '进度见工作台运行日志' }))
-    );
-  } else if (['planning', 'writing', 'in_progress'].includes(work.state)) {
-    actions.append(
-      h('button', {
-        class: 'btn btn-primary btn-sm',
-        type: 'button',
-        html: `${icon('play', 13)}<span>继续创作</span>`,
-        title: '从上次中断处继续',
-        on: {
-          click: async () => {
-            try {
-              await api.continueWork(work.key);
-              toast('已从中断处恢复创作', { tone: 'success' });
-              ctx && ctx.refreshWork && ctx.refreshWork();
-            } catch (err) {
-              toast(errorText(err, '恢复失败'), { tone: 'danger' });
-            }
-          }
-        }
-      })
-    );
-  }
+  /* 断点恢复 / 暂停控制：v4.20.0 起与其他入口统一三态——
+     running→「创作中」可点击请求暂停（api.pause）；running 且 paused→「暂停中…」disabled；
+     非运行但 planning/writing/in_progress（或 paused）→「继续」（api.resume，后端已全文体统一，
+     对未跑过线程的书会代理到 continue）；空闲/完成→不渲染。乐观反馈与防连点由工厂统一提供。 */
+  const creativeBtn = createCreativeToggle({ work, ctx });
+  if (creativeBtn) actions.append(creativeBtn);
   actions.append(
     h('button', {
       class: 'btn btn-sm',
@@ -1023,23 +1002,9 @@ function workPane(ctx) {
         }
       }
     }),
-    h('button', {
-      class: 'btn btn-sm',
-      type: 'button',
-      html: `${icon(work.running ? 'pause' : 'play', 13)}<span>${work.running ? '暂停' : '继续'}</span>`,
-      on: {
-        click: async () => {
-          try {
-            if (work.running) await api.pause(work.key);
-            else await api.resume(work.key);
-            toast(work.running ? '已暂停创作' : '已继续创作', { tone: 'success' });
-            ctx.refreshWork();
-          } catch (err) {
-            toast(errorText(err, '操作失败'), { tone: 'danger' });
-          }
-        }
-      }
-    }),
+    /* v4.20.0：统一三态创作控制——running→「创作中」（竖杠闪烁、点击请求暂停、乐观反馈）；
+       paused / 线程中断→「继续」（点击恢复）；空闲/完成→隐藏。防连点由工厂统一处理。 */
+    createCreativeToggle({ work, ctx }),
     h('button', {
       class: 'btn btn-sm',
       type: 'button',

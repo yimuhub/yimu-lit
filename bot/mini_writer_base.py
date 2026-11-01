@@ -103,6 +103,12 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None):
     for i, (code, label, fn) in enumerate(stages):
         if code in done_set and i < len(stages) - 1:
             continue
+        # v4.20.0：阶段间检查暂停位——用户点「暂停」后跑完当前阶段即停（儿童/新闻/文案/其他共用）
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return plan
         proj.log(f"📋 {code} {label}…")
         meta["stage"] = code
         proj.save_plan(plan)

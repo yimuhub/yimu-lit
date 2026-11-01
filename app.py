@@ -1452,7 +1452,8 @@ def api_create(payload: dict):
             if title:
                 plan["meta"] = meta
                 proj.save_plan(plan)
-                writer.start_writing(proj)
+                # v4.20.0：开书第一批也要遵守「一次写几张」设置（此前漏传 → 第一批直接全写完）
+                writer.start_writing(proj, batch_size=(plan.get("config") or {}).get("batch_size"))
             else:
                 meta["title_candidates"] = cands
                 meta["awaiting_title"] = True
@@ -2144,10 +2145,11 @@ def api_book_agents(key: str = ""):
     plan = proj.plan() or {}
     agents = (plan.get("config") or {}).get("agents") or []
     from bot import agents as _ag
+    _merged = _ag._all_agents()   # v4.20：内置 + 自定义岗位都能正确显示 label/stage/desc
     return {"ok": True, "key": key, "agents": [
-        {"agent": a, "label": _ag.AGENTS.get(a, {}).get("label", a),
-         "stage": _ag.AGENTS.get(a, {}).get("stage", ""),
-         "desc": _ag.AGENTS.get(a, {}).get("desc", "")} for a in agents if isinstance(a, str)]}
+        {"agent": a, "label": _merged.get(a, {}).get("label", a),
+         "stage": _merged.get(a, {}).get("stage", ""),
+         "desc": _merged.get(a, {}).get("desc", "")} for a in agents if isinstance(a, str)]}
 
 
 @app.post("/api/book-agents")
@@ -2165,7 +2167,8 @@ def api_book_agents_set(payload: dict):
     cleaned = []
     for a in raw:
         a = str(a or "").strip()
-        if a and (a in _ag.AGENTS or str(key)[:2] == "s_"):
+        # v4.20：is_known_agent 覆盖内置 + 自定义岗位（此前自定义岗位加不进本书名单）
+        if a and (_ag.is_known_agent(a) or str(key)[:2] == "s_"):
             cleaned.append(a)
     plan = proj.plan() or {}
     plan.setdefault("config", {})["agents"] = cleaned
@@ -2175,35 +2178,96 @@ def api_book_agents_set(payload: dict):
 
 @app.post("/api/diagnostics/export")
 def api_diagnostics_export(payload: dict = None):
-    """一键导出诊断包（纯文本，不含任何密钥/作品正文）——发给开发者排查用。"""
+    """导出诊断包（纯文本，不含任何密钥/作品正文）——发给开发者排查用。
+    v4.20.0：支持按需选择范围。payload 可选 {sections:[works|sysops|server|llm|providers],
+    logs:bool}；sections 缺省=全部（兼容旧版一键导出）；logs=True 附全部日志全文（可读、
+    截断防爆：服务端 2000 行 / 每本运行日志 800 行 / 系统操作日志 2000 条）。"""
     import datetime as _dt
+    body = payload if isinstance(payload, dict) else {}
+    sections = body.get("sections") if isinstance(body.get("sections"), list) else None
+    want = set(sections) if sections else {"works", "sysops", "server", "llm", "providers"}
+    logs_full = bool(body.get("logs"))
     d = api_diagnostics()
-    lines = [f"# 一幕·YIMU 神笔 诊断包", f"- 导出时间: {_dt.datetime.now().isoformat(timespec='seconds')}",
-             f"- 版本: {d['version']} | 平台: {d['platform']}", f"- 模型最近调用: {d.get('llm_state')}", ""]
-    lines.append("== 模型供应商配置（脱敏） ==")
-    for p in (d.get("providers") or []):
-        lines.append(json.dumps(p, ensure_ascii=False))
-    if d.get("llm_errors"):
+    lines = [f"# 一幕·YIMU 神笔 诊断包",
+             f"- 导出时间: {_dt.datetime.now().isoformat(timespec='seconds')}",
+             f"- 版本: {d['version']} | 平台: {d['platform']}",
+             f"- 范围: {'、'.join(sorted(want)) or '（无）'}{' + 日志全文' if logs_full else ''}",
+             f"- 模型最近调用: {d.get('llm_state')}", ""]
+
+    if "providers" in want:
+        lines.append("== 模型供应商配置（脱敏） ==")
+        for p in (d.get("providers") or []):
+            lines.append(json.dumps(p, ensure_ascii=False))
         lines.append("")
-        lines.append("== 模型调用错误日志（尾40） ==")
-        lines.extend(d["llm_errors"])
-    lines.append("")
-    lines.append("== 各作品状态 ==")
-    for b in d["books"]:
-        flag = f"  ⚠️ 疑似卡住 {b['stalled_seconds']//60} 分钟" if b.get("stalled_seconds") else ""
-        lines.append(f"[{b['name']}] {b['medium']} {b['state']} {b['done']}/{b['total']}{flag}")
-        lines.append(f"  最后日志: {b['last_line']}")
-    lines.append("")
-    for b in d["books"]:
-        lines.append(f"===== {b['name']} 运行日志（尾40行）=====")
-        lines.extend(b["tail"])
+
+    if "llm" in want:
+        if d.get("llm_errors"):
+            lines.append("== 模型调用错误日志（尾40） ==")
+            lines.extend(d["llm_errors"])
+            lines.append("")
+
+    if "works" in want:
+        lines.append("== 各作品状态 ==")
+        for b in d["books"]:
+            flag = f"  ⚠️ 疑似卡住 {b['stalled_seconds']//60} 分钟" if b.get("stalled_seconds") else ""
+            lines.append(f"[{b['name']}] {b['medium']} {b['state']} {b['done']}/{b['total']}{flag}")
+            lines.append(f"  最后日志: {b['last_line']}")
         lines.append("")
-    if d["server_tail"]:
-        lines.append("===== 服务端日志（尾60行）=====")
+        for b in d["books"]:
+            lines.append(f"===== {b['name']} 运行日志（尾40行）=====")
+            lines.extend(b["tail"])
+            lines.append("")
+
+    if "sysops" in want:
+        lines.append("== 系统操作日志（最新在前，尾 500 条） ==")
+        for e in syslog_mod.tail(limit=500):
+            lines.append(f"[{e.get('time')}] [{e.get('kind')}] {e.get('summary') or e.get('action')}")
+            det = e.get("detail")
+            if det not in (None, {}, [], ""):
+                lines.append(f"    详情: {json.dumps(det, ensure_ascii=False, default=str)[:400]}")
+        lines.append("")
+
+    if "server" in want and d.get("server_tail"):
+        lines.append("== 服务端日志（尾60行） ==")
         lines.extend(d["server_tail"])
+        lines.append("")
+
+    # v4.20.0：日志全文（可读、截断防爆）
+    if logs_full:
+        try:
+            nb = sorted([f for f in os.listdir(ROOT) if f.startswith("nb") and f.endswith(".log")],
+                        key=lambda f: os.path.getmtime(os.path.join(ROOT, f)))
+            if nb:
+                with open(os.path.join(ROOT, nb[-1]), encoding="utf-8", errors="replace") as f:
+                    srv_all = [l.rstrip() for l in f.readlines()[-2000:]]
+                lines.append(f"== 服务端日志全文（{nb[-1]} 尾 2000 行） ==")
+                lines.extend(srv_all)
+                lines.append("")
+        except Exception:
+            pass
+        for b in d["books"]:
+            log_path = os.path.join(writer.PROJECTS_DIR, b["key"], "运行日志.txt")
+            try:
+                if os.path.exists(log_path):
+                    with open(log_path, encoding="utf-8", errors="replace") as f:
+                        full = [l.rstrip() for l in f.readlines()[-800:]]
+                    lines.append(f"===== {b['name']} 运行日志全文（尾 800 行）=====")
+                    lines.extend(full)
+                    lines.append("")
+            except Exception:
+                continue
+        lines.append("== 系统操作日志全文（最新在前，尾 2000 条） ==")
+        for e in syslog_mod.tail(limit=2000):
+            lines.append(f"[{e.get('time')}] [{e.get('kind')}] {e.get('summary') or e.get('action')}")
+            det = e.get("detail")
+            if det not in (None, {}, [], ""):
+                lines.append(f"    详情: {json.dumps(det, ensure_ascii=False, default=str)[:400]}")
+        lines.append("")
+
+    scope = "all" if not sections else "-".join(sorted(want))
     text = "\n".join(lines)
     return Response(text, media_type="text/plain; charset=utf-8",
-                    headers={"Content-Disposition": "attachment; filename=yimu-lit-diagnostics.txt"})
+                    headers={"Content-Disposition": f"attachment; filename=yimu-lit-diagnostics-{scope}.txt"})
 
 
 def _gh_fetch(url: str, token: str | None = None, timeout: int = 15, retries: int = 3, binary: bool = False):
@@ -2938,21 +3002,72 @@ def api_release_cancel(payload: dict):
     return writer.cancel_release_gate(payload.get("key"))
 
 # ---------- v0.4：暂停 / 继续 / 读者即时指令（像 Agent 聊天一样随时控）----------
+def _nonnovel_set_paused(key, paused: bool) -> bool:
+    """v4.20.0：非小说文体通用暂停位——直接写 plan.meta.paused，
+    各引擎在步骤/章间检查该位后自停（剧本引擎原生支持，其余本次补齐）。"""
+    from bot import script_writer, poetry_writer, prose_writer, thesis_writer
+    from bot import children_writer, news_writer, copy_writer, other_writer
+    for mod in (script_writer, poetry_writer, prose_writer, thesis_writer,
+                children_writer, news_writer, copy_writer, other_writer):
+        gp = getattr(mod, "get_project", None)
+        if not callable(gp):
+            continue
+        try:
+            proj = gp(key)
+        except Exception:
+            proj = None
+        if proj is None:
+            continue
+        try:
+            pl = proj.plan() or {}
+        except Exception:
+            continue
+        pl.setdefault("meta", {})["paused"] = bool(paused)
+        if paused:
+            if pl.get("status") in ("in_progress", "writing", "planning"):
+                pl["status"] = "paused"
+        elif pl.get("status") == "paused":
+            pl["status"] = "in_progress"
+        try:
+            proj.save_plan(pl)
+            return True
+        except Exception:
+            return False
+    return False
+
+
+_NONNOVEL_PREFIXES = ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_")
+
+
 @app.post("/api/pause")
 def api_pause(payload: dict):
     key = payload.get("key")
-    if not _get_project(key):
+    if str(key)[:2] in _NONNOVEL_PREFIXES:
+        if not _nonnovel_set_paused(key, True):
+            return JSONResponse({"error": "项目不存在或该文体不支持暂停"}, status_code=404)
+        return {"ok": True, "msg": "⏸ 暂停请求已发出：当前步骤做完即停", "running": True,
+                "paused": True, "state": "in_progress"}
+    proj = _get_project(key)
+    if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     ok = writer.pause_book(key)
-    return {"ok": ok, "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停"}
+    st = proj.status()
+    return {"ok": ok, "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停",
+            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")}
 
 @app.post("/api/resume")
 def api_resume(payload: dict):
     key = payload.get("key")
-    if not _get_project(key):
+    if str(key)[:2] in _NONNOVEL_PREFIXES:
+        _nonnovel_set_paused(key, False)
+        return api_continue({"key": key})
+    proj = _get_project(key)
+    if not proj:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     ok = writer.resume_book(key)
-    return {"ok": ok, "msg": "▶ 继续写作中（接着写剩余章节）…" if ok else "无法继续"}
+    st = proj.status()
+    return {"ok": ok, "msg": "▶ 继续写作中（接着写剩余章节）…" if ok else "无法继续",
+            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")}
 
 @app.post("/api/queue")
 def api_queue(payload: dict):
@@ -3198,11 +3313,15 @@ def api_continue(payload: dict):
     if _medium_mod:
         import threading as _th
         from bot import script_writer, poetry_writer, prose_writer, thesis_writer
+        from bot import children_writer, news_writer, copy_writer, other_writer
         mod = {"script_writer": script_writer, "poetry_writer": poetry_writer,
-               "prose_writer": prose_writer, "thesis_writer": thesis_writer}[_medium_mod]
+               "prose_writer": prose_writer, "thesis_writer": thesis_writer,
+               "children_writer": children_writer, "news_writer": news_writer,
+               "copy_writer": copy_writer, "other_writer": other_writer}[_medium_mod]
         fn = getattr(mod, "resume_project", None)
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
+        _nonnovel_set_paused(key, False)   # v4.20.0：继续前清掉暂停位（统一「继续=接着跑」语义）
         def _bg():
             writer.mark_pipeline(key, True)   # v3.1.0：恢复期间「创作中」可见
             try:
@@ -3212,7 +3331,7 @@ def api_continue(payload: dict):
             finally:
                 writer.mark_pipeline(key, False)
         _th.Thread(target=_bg, daemon=True).start()
-        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。"}
+        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。", "running": True, "paused": False}
     proj = _get_project(key)
     if not proj:
         # 内存中未命中时尝试从磁盘加载
@@ -3231,12 +3350,17 @@ def api_continue(payload: dict):
     if extra > 0:
         # 续写：追加 extra 章（对已完成/未完成都适用），复用作品的默认供应商/模型
         writer.append_chapters(proj, extra)
-        writer.start_writing(proj)
-        return {"ok": True, "msg": f"《{proj.name}》续写 {extra} 章中…（已完成 {st.get('done')}/{st.get('total')} 章）"}
+        writer.start_writing(proj, batch_size=extra)
+        return {"ok": True, "msg": f"《{proj.name}》续写 {extra} 章中…（已完成 {st.get('done')}/{st.get('total')} 章）",
+                "running": True, "paused": False}
     if st.get("state") == "completed":
         return {"ok": True, "msg": f"《{proj.name}》已完成。想加章请在作品上点「▶ 续写」。"}
-    writer.start_writing(proj)
-    return {"ok": True, "msg": f"继续写作《{proj.name}》…"}
+    # v4.20.0：按开书时设置的「一次写几张」（plan.config.batch_size）写，写完一批自动暂停；
+    # 设了「全部写完」才一口气写到底。此前这里漏传批量 → 点一次继续就全书写完。
+    _batch = (proj.plan().get("config") or {}).get("batch_size")
+    writer.start_writing(proj, batch_size=_batch)
+    return {"ok": True, "msg": f"继续写作《{proj.name}》…（本批 {_batch or '全部'} 章，写完自动暂停）",
+            "running": True, "paused": False}
 
 @app.post("/api/branch")
 def api_branch(payload: dict):
@@ -3611,6 +3735,51 @@ def api_agents_maxglobal(payload: dict):
     _v = agents.set_max_global(_n)
     syslog_mod.log_event("agent", "改并发上限", {"max_global_agents": _v}, f"全局并发上限改为 {_v}")
     return {"ok": True, "max_global_agents": _v}
+
+@app.post("/api/agents-toggle")
+def api_agents_toggle(payload: dict):
+    """v4.20：启用/停用创作岗位（停用 = 流水线跳过该岗位环节；作家 writer 不可停用）。"""
+    agent = str(payload.get("agent") or "").strip()
+    enabled = bool(payload.get("enabled"))
+    try:
+        _disabled = agents.set_agent_enabled(agent, enabled)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    syslog_mod.log_event("agent", "岗位启停",
+                         {"agent": agent, "enabled": enabled},
+                         f"{'启用' if enabled else '停用'}岗位「{agent}」")
+    return {"ok": True, "agent": agent, "enabled": enabled, "agent_disabled": _disabled}
+
+@app.post("/api/agents/remove")
+def api_agents_remove(payload: dict):
+    """v4.20：删除自定义岗位（内置岗位只能停用不能删；模型/技能绑定与停用状态一并清除）。"""
+    name = str(payload.get("name") or "").strip()
+    try:
+        agents.remove_custom_agent(name)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    syslog_mod.log_event("agent", "删除岗位", {"name": name}, f"删除自定义岗位「{name}」")
+    return {"ok": True, "name": name}
+
+@app.get("/api/global-model")
+def api_global_model_get():
+    """v4.20：全局默认模型（= default_provider + 其 default_model）。"""
+    return {"ok": True, **providers.global_model()}
+
+@app.post("/api/global-model")
+def api_global_model_set(payload: dict):
+    """v4.20：设全局默认模型（provider_id + model；校验供应商 active 且模型在其列表里）。POST 返回最新全局默认。"""
+    try:
+        providers.set_global_model(payload.get("provider_id"), payload.get("model"))
+    except providers.ProviderError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    _g = providers.global_model()
+    syslog_mod.log_event("provider", "设全局默认模型",
+                         {"provider_id": _g.get("provider_id"), "model": _g.get("model")},
+                         f"全局默认模型设为 {_g.get('provider_id') or '—'} · {_g.get('model') or '—'}")
+    return {"ok": True, **_g}
 
 @app.post("/api/agents-dispatch")
 def api_agents_dispatch(payload: dict):

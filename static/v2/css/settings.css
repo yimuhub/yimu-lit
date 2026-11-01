@@ -1549,3 +1549,69 @@
 
 .ops-empty { padding: 12px 4px; }
 .ops-more { padding: 6px 4px; }
+
+/* ================= v4.20.0 系统日志/作品诊断重构：日志块与诊断导出弹窗 ================= */
+
+.diag-log {
+  background: var(--code-fill);
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  color: var(--ink-secondary);
+  font-family: var(--font-code);
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 0 0 12px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.export-list {
+  background: var(--bg-sunken);
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.export-item {
+  align-items: flex-start;
+  border-bottom: 0.5px solid var(--line-1);
+  color: var(--ink-primary);
+  cursor: pointer;
+  display: flex;
+  font-size: 12.5px;
+  gap: 9px;
+  padding: 8px 11px;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.export-item:last-child { border-bottom: 0; }
+.export-item:hover { background: var(--hover); }
+
+.export-item input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: none;
+  height: 14px;
+  margin: 2px 0 0;
+  width: 14px;
+}
+
+.export-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.export-label { font-weight: 500; }
+
+.export-desc {
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}

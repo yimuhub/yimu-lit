@@ -495,18 +495,33 @@ def resume_project(key: str) -> ProseProject | None:
     proj.log("▶ 断点恢复：检查已有产物…")
     source_text = cfg.get("sourceText") or ""
 
+    # v4.20.0：步骤间检查暂停位——点「暂停」后当前步骤做完即停
+    def _hit_pause() -> bool:
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return True
+        return False
+
     brief = _read(os.path.join(pdir, F_BRIEF))
     if not brief.strip():
+        if _hit_pause():
+            return proj
         proj.log("📋 阶段 B：创作简报…")
         brief = gen_brief(cfg) or ""
         _write(os.path.join(pdir, F_BRIEF), f"# {name} · 创作简报\n\n" + (brief or "（简报生成失败）"))
     material = _read(os.path.join(pdir, F_MATERIAL))
     if not material.strip():
+        if _hit_pause():
+            return proj
         proj.log("🗂 阶段 S：素材与细节库…")
         material = gen_material(cfg, brief) or ""
         _write(os.path.join(pdir, F_MATERIAL), f"# {name} · 素材\n\n" + (material or "（素材生成失败）"))
     draft = _read(os.path.join(pdir, F_DRAFT))
     if not draft.strip():
+        if _hit_pause():
+            return proj
         proj.log(f"✍️ 阶段 D：{OPERATIONS[op]}…")
         draft = gen_draft(cfg, brief, material, op, source_text) or "（生成失败，请重试）"
         _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
@@ -529,6 +544,8 @@ def resume_project(key: str) -> ProseProject | None:
     if polished.strip() and os.path.exists(os.path.join(pdir, F_FINAL)):
         pass   # 去味与定稿都已在盘上：只补状态，不重写
     elif not polished.strip():
+        if _hit_pause():
+            return proj
         proj.log("🔍 阶段 A：去味与精修…")
         polished = gen_polish(draft, cfg)
         if not polished.strip():

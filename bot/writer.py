@@ -1547,8 +1547,10 @@ def score_chapter(proj, ch_no):
         proj.save_plan(plan)
     return total
 
-def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_dims=None):
-    """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。"""
+def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_dims=None, skip_deslop=False):
+    """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。
+    v4.20：skip_deslop=True 供 _write_chapter 在「去味必跑」拆出后复用（避免同章 deslop 两次）；
+    改写师（rewriter）被停用时跳过重写轮（评分也会因 reviewer 停用得 None 而自然跳过）。"""
     plan = proj.plan()
     d = _cfg_defaults()
     if max_rounds is None:
@@ -1564,18 +1566,24 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
     base_score = score_chapter(proj, ch_no)
     orig_body = open(fp, encoding="utf-8").read()
     versions.snapshot(proj.path, ch_no, orig_body, label="自动重写前")
-    # deslop 定点去味（规则层定位 + LLM 最小改法；LLM 失败自动保留原文）
+    if not skip_deslop:
+        # deslop 定点去味（规则层定位 + LLM 最小改法；LLM 失败自动保留原文）
+        try:
+            ds = workflow.deslop_chapter(orig_body, {"cfg": plan.get("config") or {}})
+            if ds.get("cleaned") and ds["cleaned"] != orig_body:
+                atomic_write_text(fp, ds["cleaned"])
+                proj.log(f"🧹 第{ch_no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
+                orig_body = ds["cleaned"]
+                base_score = score_chapter(proj, ch_no) or base_score
+        except Exception:
+            pass
     try:
-        ds = workflow.deslop_chapter(orig_body, {"cfg": plan.get("config") or {}})
-        if ds.get("cleaned") and ds["cleaned"] != orig_body:
-            atomic_write_text(fp, ds["cleaned"])
-            proj.log(f"🧹 第{ch_no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
-            orig_body = ds["cleaned"]
-            base_score = score_chapter(proj, ch_no) or base_score
+        from . import agents as _agents_mod
+        _rewriter_off = "rewriter" in _agents_mod.disabled_agents()
     except Exception:
-        pass
+        _rewriter_off = False
     rounds = 0
-    while rounds < max_rounds:
+    while rounds < max_rounds and not _rewriter_off:
         sc = score_chapter(proj, ch_no)
         if sc is None or sc >= pass_line:
             break
@@ -1647,6 +1655,13 @@ def _write_chapter(proj, ch, min_words, max_retries):
         if plan0:
             proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
+    # v4.20 C3：规划师纠偏指引（每批收尾时规划师校准写入 plan.meta.drift_guidance，随写作提示注入）
+    try:
+        _dg = str(((proj.plan() or {}).get("meta") or {}).get("drift_guidance") or "").strip()
+        if _dg:
+            ctx["drift_guidance"] = _dg
+    except Exception:
+        pass
     # v4.7.0（借鉴 reveric 手法账本）：把最近几章的断章钩子/情绪/紧张度注入写作上下文，
     # 防止连续多章用同款钩子、同款情绪（模式收敛）。
     try:
@@ -1798,16 +1813,39 @@ def _write_chapter(proj, ch, min_words, max_retries):
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
              if (ok or words >= int(min_words * 0.6)) else f"❌ 第{no}章未达标（{words}字）")
     # v0.5 M1：逐章评分 + 低于 90 自动局部重写（可配关，失败不阻断主流程）
+    # v4.20 C4：去味师是必经环节——正文定稿（字数达标）后总是先跑 deslop，与质量门禁开关解耦
+    #（deslopper 被停用时 deslop_chapter 内部自动跳过原样返回；LLM 失败保留原文，绝不阻断）。
     if ok:
         try:
-            _d = _cfg_defaults()
-            if _d.get("chapter_quality", True):
+            _cfg_now = (proj.plan() or {}).get("config") or {}
+            _body_now = open(fp, encoding="utf-8").read()
+            ds = workflow.deslop_chapter(_body_now, {"cfg": _cfg_now})
+            if ds.get("cleaned") and ds["cleaned"] != _body_now:
+                try:
+                    versions.snapshot(proj.path, no, _body_now, label="去味前")
+                except OSError:
+                    pass
+                atomic_write_text(fp, ds["cleaned"])
+                proj.log(f"🧹 第{no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
+        except Exception as e:
+            proj.log(f"⚠️ 第{no}章去味失败（不阻断）：{e}")
+        # 逐章评分/自动重写：仍受 chapter_quality 开关与审稿人岗位启停控制（deslop 已拆出，不再依赖此分支）
+        try:
+            from . import agents as _agents_mod
+            _reviewer_off = "reviewer" in _agents_mod.disabled_agents()
+        except Exception:
+            _reviewer_off = False
+        if _reviewer_off:
+            proj.log(f"⏭️ 审稿人岗位已停用：第{no}章跳过逐章评分/自动重写")
+        elif _cfg_defaults().get("chapter_quality", True):
+            try:
+                _d = _cfg_defaults()
                 proj.log(f"📊 第{no}章逐章评分（<90 自动局部重写，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
-                fin = _auto_rewrite_chapter(proj, no)
+                fin = _auto_rewrite_chapter(proj, no, skip_deslop=True)
                 _st = ((proj.plan().get("meta") or {}).get("chapter_scores", {}).get(str(no), {}).get("status"))
                 proj.log(f"📊 第{no}章 {fin if fin is not None else '?'} 分（{_st}）")
-        except Exception as e:
-            proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
+            except Exception as e:
+                proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
     _index_chapter_continuity(proj, ch, ctx.get("cfg"))
     _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
     llm.set_chapter(None)   # v2.9.0：本章结束，之后的审校/成书调用不再计入任何章
@@ -2063,6 +2101,11 @@ def _write_loop(proj: Project, batch_size=None):
                 _rest = [c for c in (plan.get("chapters") or [])
                          if (c.get("chapterNumber") or 0) > _no and c.get("status") != "completed"]
                 if _rest:
+                    # v4.20 C3：批次收尾 → 规划师校准（每批一次，盯规划有没有跑偏；失败不阻断暂停返回）
+                    try:
+                        workflow.plan_drift_check(proj, plan.get("config") or {}, wrote)
+                    except Exception:
+                        pass
                     proj.log(f"⏸ 本批已写 {wrote} 章（batch={batch_limit}），停在当前进度。说「再写N章」或「写完全部」继续。")
                     plan2 = proj.plan(); plan2["status"] = "paused"
                     plan2.setdefault("meta", {})["paused"] = True   # 与循环后 is_paused 检查同一口径
@@ -2085,6 +2128,11 @@ def _write_loop(proj: Project, batch_size=None):
             proj.log("⏸ 已暂停（停在当前进度，点「▶继续」恢复；也可「⏹ 停止」）")
             _skeleton_refresh(os.path.basename(proj.path))
             return
+        # v4.20 C3：完结收尾前最后一轮规划师校准（纠偏指引会注入校验轮里失败章的重写；失败不阻断完结）
+        try:
+            workflow.plan_drift_check(proj, (proj.plan() or {}).get("config") or {}, wrote)
+        except Exception:
+            pass
         _validate_and_finish(proj)
         _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：全书写完 → 刷新写作骨架
     except llm.BudgetExceeded as e:

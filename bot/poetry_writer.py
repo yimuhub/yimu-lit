@@ -462,22 +462,39 @@ def resume_project(key: str) -> PoetryProject | None:
         return proj
     proj.log("▶ 断点恢复：检查已有产物…")
 
+    # v4.20.0：步骤间检查暂停位——点「暂停」后当前步骤做完即停
+    def _hit_pause() -> bool:
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return True
+        return False
+
     note = _read(os.path.join(pdir, F_NOTE))
     if not note.strip():
+        if _hit_pause():
+            return proj
         proj.log("🖋 阶段 I：释读…")
         note = gen_note(cfg) or ""
         _write(os.path.join(pdir, F_NOTE), f"# {name} · 题记\n\n" + (note or "（释读生成失败）"))
     plan_md = _read(os.path.join(pdir, F_IMAGERY))
     if not plan_md.strip():
+        if _hit_pause():
+            return proj
         proj.log("📋 阶段 P：创作规划…")
         plan_md = gen_plan(cfg) or ""
         _write(os.path.join(pdir, F_IMAGERY), f"# {name} · 创作规划\n\n" + (plan_md or "（规划生成失败）"))
     draft = _read(os.path.join(pdir, F_DRAFT))
     if not draft.strip():
+        if _hit_pause():
+            return proj
         proj.log("✍️ 阶段 C：起草…")
         draft = gen_draft(cfg, plan_md) or "（起草失败，请重试）"
         _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
 
+    if _hit_pause():
+        return proj
     _check_and_finalize(proj, plan, cfg, form, draft.strip())
     return proj
 

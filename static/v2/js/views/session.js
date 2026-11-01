@@ -223,9 +223,12 @@ export function renderSession(container, ctx = {}) {
     const state = store.get();
     if (state.currentKey !== mountKey) return;
     const work = state.work;
+    /* v4.20.0：签名加入 paused / state——暂停请求发出后 planbar 也要重绘（三态按钮收敛） */
     const sig = JSON.stringify({
       k: state.currentKey,
       r: work && work.running,
+      p: work && work.paused,
+      s: work && work.state,
       d: work && work.done,
       t: work && work.total,
       v: state.plan && state.plan.plan && state.plan.plan.version,

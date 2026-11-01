@@ -443,6 +443,12 @@ export const api = {
   agentsSet: (payload) => request('/api/agents-set', jsonBody(payload)),
   agentsMaxGlobal: (n) => request('/api/agents-maxglobal', jsonBody({ n })),
   agentsSkills: (payload) => request('/api/agents-skills', jsonBody(payload)),
+  /* v4.20：岗位启停（writer 不可停用）与删除自定义岗位 */
+  agentsToggle: (payload) => request('/api/agents-toggle', jsonBody(payload)),
+  agentsRemove: (name) => request('/api/agents/remove', jsonBody({ name })),
+  /* v4.20：全局默认模型（default_provider + 其 default_model） */
+  globalModel: () => request('/api/global-model'),
+  globalModelSet: (payload) => request('/api/global-model', jsonBody(payload)),
   parallelWrite: (payload) => request('/api/parallel-write', jsonBody(payload), { timeout: 60000 }),
   parallelLog: (key) => request('/api/parallel-log', { query: { key } }),
   jobs: (key = '') => request('/api/jobs', { query: { key } }),

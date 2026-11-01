@@ -1,8 +1,211 @@
-/* 对话区上方的目标条：当前章、规模、进度、暂停/继续。 */
+/* 对话区上方的目标条：当前章、规模、进度、创作控制（三态）。 */
 
 import { h, icon, fmtWords } from '../core/dom.js';
-import { api, errorText, IS_MOCK } from '../core/api.js';
+import { api, errorText } from '../core/api.js';
+import { store, patch } from '../core/state.js';
 import { toast } from '../core/ui.js';
+
+/* ------------------------------------------------------- v4.20.0 创作控制三态按钮
+   全部文体、全部入口（目标条 / 右栏作品页签）共用的统一交互规范：
+   - 创作中（running）→「创作中」+ 竖杠闪烁，点击请求暂停（api.pause）；
+   - 暂停请求已发出（running && paused）→「暂停中…」disabled，等线程走到安全点；
+   - 已暂停 / 线程中断 →「继续」+ play，点击恢复（api.resume，后端已全文体统一）；
+   - 空闲 / 完成 → 不渲染按钮。
+   点击后立即乐观反馈并防连点；成功后用返回体乐观落库，等轮询（2.5s）确认后
+   自然落到真实状态；失败 toast 并还原。 */
+
+/* 由 work 推导创作控制态：running=创作中 / pausing=暂停请求已发出 / resume=待继续 / idle=空闲或完成 */
+export function creativeToggleState(work) {
+  const running = Boolean(work && work.running);
+  const paused = Boolean(work && work.paused);
+  const st = String((work && work.state) || '');
+  if (running && paused) return 'pausing';
+  if (running) return 'running';
+  if (paused || st === 'paused') return 'resume';
+  /* 线程中断（服务重启 / 断点）但进度未完：一键续跑也归入「继续」态 */
+  if (['planning', 'writing', 'in_progress', 'validating'].includes(st)) return 'resume';
+  return 'idle';
+}
+
+/* 用操作返回体（含 running/paused/state）乐观合并进 store.work，让目标条 / 顶栏
+   在下一次轮询前先落到真实态；返回体缺字段时按操作语义补齐（pause→paused:true）。 */
+function mergeWorkLive(key, res, expectPaused) {
+  try {
+    patch('work', (w) => {
+      if (!w || w.key !== key) return w;
+      return {
+        ...w,
+        running: res && res.running != null ? Boolean(res.running) : w.running,
+        paused: res && res.paused != null ? Boolean(res.paused) : Boolean(expectPaused),
+        state: res && res.state ? res.state : w.state
+      };
+    });
+  } catch {
+    /* store 未就绪（理论上不会）时静默，等轮询兜底 */
+  }
+}
+
+/* 创作控制按钮工厂：planbar / rightpanel 共用，保证所有入口文案、图标、
+   乐观反馈与防连点行为完全一致。idle 态返回 null（调用方不渲染）。
+   - compact：目标条里的紧凑尺寸；
+   - ctx.refreshWork：操作成功后主动拉一次 /api/status，加速各处收敛。
+   按钮自带 store 订阅：右栏的 rightSig 不含 paused（app.js 不可改），乐观态之后
+   由这里按最新 work 收敛；元素离开文档后自动退订，不残留监听。 */
+export function createCreativeToggle({ work, ctx, compact = false } = {}) {
+  if (!work || !work.key) return null;
+  const key = work.key;
+  let phase = creativeToggleState(work); // 当前视觉阶段
+  let optimistic = null; // 'pausing' | 'resuming'：乐观期间屏蔽重复点击、且不被旧轮询数据打回
+  let optimisticTimer = 0;
+
+  const currentWork = () => {
+    const s = store.get();
+    if (s.work && s.work.key === key) return s.work;
+    return s.library.items.find((i) => i.key === key) || work;
+  };
+
+  const el = h('button', { class: 'btn-creative', type: 'button' });
+  if (compact) el.classList.add('btn-creative-compact');
+
+  function paint(st) {
+    phase = st;
+    el.disabled = false;
+    el.classList.remove('btn-creative-running', 'btn-creative-resume', 'btn-creative-busy');
+    el.textContent = '';
+    if (st === 'running') {
+      el.classList.add('btn-creative-running');
+      el.title = '点击请求暂停，当前章节写完后停止';
+      el.setAttribute('aria-label', '暂停创作');
+      el.append(
+        h('span', { html: icon('pause', 13, 'creative-bars') }),
+        h('span', { text: '创作中' })
+      );
+    } else if (st === 'pausing') {
+      el.classList.add('btn-creative-running', 'btn-creative-busy');
+      el.disabled = true;
+      el.title = '暂停请求已发出，当前章节完成后停止';
+      el.setAttribute('aria-label', '暂停请求已发出');
+      el.append(
+        h('span', { html: icon('pause', 13, 'creative-bars') }),
+        h('span', { text: '暂停中…' })
+      );
+    } else if (st === 'resume') {
+      el.classList.add('btn-creative-resume');
+      el.title = '从上次中断处继续创作';
+      el.setAttribute('aria-label', '继续创作');
+      el.append(
+        h('span', { html: icon('play', 13) }),
+        h('span', { text: '继续' })
+      );
+    } else if (st === 'resuming') {
+      el.classList.add('btn-creative-resume', 'btn-creative-busy');
+      el.disabled = true;
+      el.title = '正在恢复创作…';
+      el.setAttribute('aria-label', '正在恢复创作');
+      el.append(
+        h('span', { html: icon('play', 13) }),
+        h('span', { text: '正在恢复…' })
+      );
+    }
+  }
+
+  /* store 变化时的收敛逻辑：确认了乐观态才落地，避免被 2.5s 轮询里的旧数据打回。 */
+  function sync(w) {
+    if (!w || w.key !== key) return;
+    const st = creativeToggleState(w);
+    if (optimistic === 'pausing') {
+      /* 暂停已确认：后端停在同一安全点（resume）或已进入暂停中（pausing） */
+      if (st === 'pausing' || st === 'resume') {
+        optimistic = null;
+        if (optimisticTimer) clearTimeout(optimisticTimer);
+        paint(st);
+      }
+      return;
+    }
+    if (optimistic === 'resuming') {
+      if (st === 'running' || st === 'pausing') {
+        optimistic = null;
+        if (optimisticTimer) clearTimeout(optimisticTimer);
+        paint(st);
+      }
+      return;
+    }
+    if (st !== phase) paint(st);
+  }
+
+  /* 挂载期订阅：每次 store patch 都按最新 work 校准一次；元素离场即退订。
+     （首次连接前不退订——创建与 append 在同一 tick，但防御未来异步挂载的调用方） */
+  let mountedOnce = false;
+  const unsub = store.subscribe((state) => {
+    if (!el.isConnected) {
+      if (mountedOnce) {
+        unsub();
+        if (optimisticTimer) clearTimeout(optimisticTimer);
+      }
+      return;
+    }
+    mountedOnce = true;
+    const w =
+      state.work && state.work.key === key
+        ? state.work
+        : (state.library.items || []).find((i) => i.key === key);
+    if (w) sync(w);
+  });
+
+  el.addEventListener('click', async () => {
+    if (el.disabled || optimistic) return;
+    const st = phase;
+    if (st === 'running') {
+      /* 乐观反馈：立刻切「暂停中…」并禁用，防连点 */
+      optimistic = 'pausing';
+      paint('pausing');
+      toast('暂停请求已发出，当前章节完成后停止', { duration: 2600 });
+      if (optimisticTimer) clearTimeout(optimisticTimer);
+      optimisticTimer = setTimeout(() => {
+        /* 兜底：20s 内没等到确认（网络异常等）就按服务端真实态恢复按钮 */
+        if (optimistic === 'pausing') {
+          optimistic = null;
+          paint(creativeToggleState(currentWork()));
+        }
+      }, 20000);
+      try {
+        const res = await api.pause(key);
+        mergeWorkLive(key, res, true);
+        if (ctx && ctx.refreshWork) ctx.refreshWork();
+      } catch (err) {
+        optimistic = null;
+        if (optimisticTimer) clearTimeout(optimisticTimer);
+        paint(creativeToggleState(currentWork()));
+        toast(errorText(err, '暂停请求失败'), { tone: 'danger' });
+      }
+    } else if (st === 'resume') {
+      optimistic = 'resuming';
+      paint('resuming');
+      toast('正在恢复创作…', { duration: 2000 });
+      if (optimisticTimer) clearTimeout(optimisticTimer);
+      optimisticTimer = setTimeout(() => {
+        if (optimistic === 'resuming') {
+          optimistic = null;
+          paint(creativeToggleState(currentWork()));
+        }
+      }, 20000);
+      try {
+        const res = await api.resume(key);
+        mergeWorkLive(key, res, false);
+        toast('已继续创作', { tone: 'success' });
+        if (ctx && ctx.refreshWork) ctx.refreshWork();
+      } catch (err) {
+        optimistic = null;
+        if (optimisticTimer) clearTimeout(optimisticTimer);
+        paint(creativeToggleState(currentWork()));
+        toast(errorText(err, '恢复失败'), { tone: 'danger' });
+      }
+    }
+  });
+
+  paint(phase);
+  return el;
+}
 
 export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
   if (!work) return null;
@@ -39,30 +242,10 @@ export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
   );
 
   const actions = h('span', { class: 'goal-actions' });
-  const toggle = h('button', {
-    class: 'icon-btn',
-    type: 'button',
-    'aria-label': work.running ? '暂停创作' : '继续创作',
-    title: work.running ? '暂停创作' : '继续创作',
-    html: icon(work.running ? 'pause' : 'play', 14)
-  });
-  toggle.addEventListener('click', async () => {
-    if (IS_MOCK) {
-      work.running = !work.running;
-      toast(work.running ? '已继续（演示）' : '已暂停（演示）', { duration: 1500 });
-      if (ctx && ctx.refreshWork) ctx.refreshWork();
-      return;
-    }
-    try {
-      if (work.running) await api.pause(work.key);
-      else await api.resume(work.key);
-      toast(work.running ? '已暂停，当前章会在安全点停下' : '已继续创作', { tone: 'success' });
-      if (ctx && ctx.refreshWork) ctx.refreshWork();
-    } catch (err) {
-      toast(errorText(err, '操作失败'), { tone: 'danger' });
-    }
-  });
-  actions.append(toggle);
+  /* v4.20.0：三态创作控制（创作中→暂停 / 已暂停→继续 / 空闲→隐藏），
+     与右栏、其他文体入口同一交互规范；mock 模式也走同一工厂（mock 接口已实现 pause/resume）。 */
+  const toggle = createCreativeToggle({ work, ctx, compact: true });
+  if (toggle) actions.append(toggle);
   actions.append(
     h('button', {
       class: 'icon-btn',

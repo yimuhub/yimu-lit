@@ -299,6 +299,12 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = 
     # ---- T1 提纲 ----
     outline = plan.get("outline") or {}
     if not outline.get("chapters"):
+        # v4.20.0：步骤间检查暂停位——点「暂停」后当前步骤做完即停
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return plan
         proj.log("📐 T1：生成提纲与引用池…")
         outline = gen_outline(cfg)
         plan["outline"] = {"title": outline.get("title"), "abstract": outline.get("abstract"),
@@ -325,6 +331,12 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = 
         no = int(ch.get("no") or 0)
         if plan.get("chapterStatus", {}).get(str(no)) == "completed":
             continue
+        # v4.20.0：章间检查暂停位
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return plan
         proj.log(f"✍️ T2：撰写第 {no} 章「{ch.get('title')}」…")
         body = write_chapter(cfg, plan.get("outline") or {}, ch, plan.get("refs") or [])
         _write(os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md"), body)

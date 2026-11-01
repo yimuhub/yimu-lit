@@ -13,6 +13,65 @@ function currentTitle(state) {
   return item ? item.name : '作品';
 }
 
+/* v4.20.0：状态胶囊的局部重绘。app.js 的 topbarSig 不含 paused（本线程只改组件层），
+   顶栏在这里自行订阅 store：running/paused/进度/状态标签变化时只重绘胶囊本身，
+   不整栏重绘；路由离开作品页或无 work 时置空 painter，订阅保持空转。 */
+let chipPainter = null;
+let chipSig = '';
+let chipUnsub = null;
+
+function workChipSig(work) {
+  if (!work) return '';
+  return [
+    Boolean(work.running),
+    Boolean(work.paused),
+    work.done,
+    work.total,
+    work.state || '',
+    work.status_label || ''
+  ].join('~');
+}
+
+/* v4.20.0：胶囊四态——暂停请求已发出（running&&paused）、已暂停、写作中、空闲/完成 */
+function paintWorkChip(chip, work) {
+  const running = Boolean(work && work.running);
+  const paused = Boolean(work && work.paused);
+  const pct = work && work.total ? Math.round((work.done / work.total) * 100) : 0;
+  let dotClass = 'dot';
+  let label = '';
+  let title = '查看创作状态';
+  if (running && paused) {
+    dotClass = 'dot dot-warn';
+    label = `暂停中… · ${work.done}/${work.total}`;
+    title = '暂停请求已发出，当前章节完成后停止';
+  } else if (paused) {
+    dotClass = 'dot dot-warn';
+    label = `已暂停 · ${work.done}/${work.total}`;
+    title = '已人工暂停，点击查看实时状态';
+  } else if (running) {
+    dotClass = 'dot dot-running';
+    label = `写作中 · ${work.done}/${work.total}`;
+    title = '正在创作，点击查看实时状态';
+  } else {
+    label = `${(work && work.status_label) || '空闲'} · ${pct}%`;
+  }
+  chip.title = title;
+  chip.textContent = '';
+  chip.append(h('span', { class: dotClass }), h('span', { class: 'tb-label', text: label }));
+}
+
+function ensureChipSubscription() {
+  if (chipUnsub) return;
+  chipUnsub = store.subscribe((state) => {
+    /* work 短暂为空（切书间隙）不重绘，保持旧文案等整栏重渲染接管 */
+    if (!chipPainter || !state.work) return;
+    const sig = workChipSig(state.work);
+    if (sig === chipSig) return;
+    chipSig = sig;
+    chipPainter();
+  });
+}
+
 export function renderTopbar(container, ctx) {
   const state = store.get();
   const route = state.route;
@@ -61,32 +120,35 @@ export function renderTopbar(container, ctx) {
 
   const right = h('div', { class: 'topbar-right' });
 
-  // work live chip
+  // work live chip（v4.20.0：增加「暂停中…/已暂停」态，warn 色 dot；paused 变化由自订阅收敛）
   if (route.name === 'work' || route.name === 'bench') {
     const work = state.work;
     if (work) {
-      const running = Boolean(work.running);
-      const pct = work.total ? Math.round((work.done / work.total) * 100) : 0;
       const chip = h(
         'button',
         {
           class: 'tb-chip',
           type: 'button',
-          title: running ? '正在创作，点击查看实时状态' : '查看创作状态',
           on: {
             click: () => {
               ctx.openRight('work');
             }
           }
-        },
-        h('span', { class: `dot${running ? ' dot-running' : ''}` }),
-        h('span', {
-          class: 'tb-label',
-          text: running ? `写作中 · ${work.done}/${work.total}` : `${work.status_label || '空闲'} · ${pct}%`
-        })
+        }
       );
+      paintWorkChip(chip, work);
+      chipSig = workChipSig(work);
+      chipPainter = () => {
+        chipSig = workChipSig(store.get().work);
+        paintWorkChip(chip, store.get().work);
+      };
       right.append(chip);
+      ensureChipSubscription();
+    } else {
+      chipPainter = null;
     }
+  } else {
+    chipPainter = null;
   }
 
   // model chip

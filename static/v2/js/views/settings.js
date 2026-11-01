@@ -31,8 +31,9 @@ const GROUPS = [
   { key: 'agents', label: '创作岗位', icon: 'layers', desc: '岗位 × 模型 × 技能' },
   { key: 'chat', label: '对话与上下文', icon: 'message', desc: '会话留档与压缩' },
   { key: 'skills', label: '技能与数据', icon: 'sparkles', desc: '进化与本地数据' },
-  { key: 'pennames', label: '作者笔名', icon: 'user', desc: '全局默认 · 多笔名 · 按文体默认' },
-  { key: 'syslog', label: '系统日志', icon: 'terminal', desc: '系统操作 · 会话状态 · 一键导出' },
+  { key: 'pennames', label: '作者笔名', icon: 'pen', desc: '全局默认 · 多笔名 · 按文体默认' },
+  { key: 'workdiag', label: '作品诊断', icon: 'eye', desc: '创作状态 · 卡顿排查 · 导出' },
+  { key: 'syslog', label: '系统日志', icon: 'terminal', desc: '版本 · 系统操作 · 服务日志 · 导出' },
   { key: 'advanced', label: '高级', icon: 'sliders', desc: '经典版等' }
 ];
 
@@ -135,7 +136,7 @@ export function renderSettings(container, ctx) {
     for (const [k, btn] of Object.entries(navBtns)) {
       btn.setAttribute('aria-current', k === key ? 'true' : 'false');
     }
-    if (key === 'syslog') loadSyslog();   // 每次进入日志分组都刷新，保证看到最新动作
+    if (key === 'syslog' || key === 'workdiag') loadDiagnostics();   // 每次进入日志/诊断分组都刷新
     patchUi({ settingsTab: key });
   }
 
@@ -252,7 +253,7 @@ export function renderSettings(container, ctx) {
     });
     syncBudgetDisabled();
     /* v4.18.0：评分专用模型——空 = 跟随创作模型；指定后逐章评分与全书审校都用它 */
-    const scoreSel = h('select', { class: 'set-select', 'aria-label': '评分专用模型', on: {
+    const scoreSel = h('select', { class: 'input', 'aria-label': '评分专用模型', on: {
       change: () => {
         model.settings.score_provider_id = scoreSel.value.split('::')[0] || '';
         model.settings.score_model = scoreSel.value.split('::').slice(1).join('::');
@@ -410,6 +411,7 @@ export function renderSettings(container, ctx) {
   /* ---------------------------------------------------- 模型与供应商 */
 
   const provBody = h('div', { class: 'provider-list' });
+  const globalModelBody = h('div', {});
   panes.providers.append(
     h('div', { class: 'set-actions set-actions-top' },
       h('button', {
@@ -419,11 +421,75 @@ export function renderSettings(container, ctx) {
         on: { click: () => providerDialog(null) }
       })
     ),
+    globalModelBody,
     provBody
   );
 
+  /* v4.20：全局默认模型（default_provider + 其 default_model），供应商列表加载后重绘。 */
+  function paintGlobalModel() {
+    globalModelBody.textContent = '';
+    if (model.providerError || !model.providers) return;
+    const provs = (model.providers.providers || []).filter((p) => p.active !== false);
+    const options = [];
+    for (const p of provs) {
+      for (const m of (p.models || [])) {
+        options.push({ value: `${p.id}::${m}`, label: `${p.name || p.id} · ${m}` });
+      }
+    }
+    if (!options.length) return;
+    const dp = model.providers.default_provider;
+    const dpRow = provs.find((p) => p.id === dp);
+    const curModel = dpRow ? (dpRow.default_model || (dpRow.models || [])[0]) : '';
+    const curValue = dp && curModel ? `${dp}::${curModel}` : '';
+    const sel = h('select', { class: 'input', 'aria-label': '全局默认模型' },
+      options.map((o) => h('option', { value: o.value, text: o.label, selected: o.value === curValue })));
+    if (curValue) sel.value = curValue;
+    globalModelBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title' }, h('span', { text: '全局默认模型' }),
+            h('span', { class: 'badge badge-accent', text: '默认' })),
+          h('div', { class: 'set-row-desc', text: '所有创作岗位默认使用该模型；岗位在「创作岗位」里单独绑定模型时以绑定为准。' })
+        ),
+        h('div', { class: 'set-control' },
+          sel,
+          h('button', {
+            class: 'btn btn-primary btn-sm',
+            type: 'button',
+            text: '保存',
+            on: { click: (event) => saveGlobalModel(event.currentTarget, sel) }
+          })
+        )
+      )
+    );
+  }
+
+  async function saveGlobalModel(btn, sel) {
+    const v = String(sel.value || '');
+    const idx = v.indexOf('::');
+    const providerId = idx >= 0 ? v.slice(0, idx) : '';
+    const m = idx >= 0 ? v.slice(idx + 2) : '';
+    if (!providerId || !m) {
+      toast('请先选择全局默认模型', { tone: 'danger' });
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+      await api.globalModelSet({ provider_id: providerId, model: m });
+      await loadProviders();
+      const opt = sel.options[sel.selectedIndex];
+      toast(`全局默认模型已设为 ${opt ? opt.textContent : `${providerId} · ${m}`}`, { tone: 'success', duration: 2200 });
+    } catch (err) {
+      toast(errorText(err, '保存失败'), { tone: 'danger' });
+    }
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+
   function paintProviders() {
     provBody.textContent = '';
+    paintGlobalModel();
     if (model.providerError) {
       provBody.append(errorRow(model.providerError, loadProviders));
       return;
@@ -1101,12 +1167,48 @@ export function renderSettings(container, ctx) {
     const modal = openModal({ title: '添加自定义创作岗位', body, footer, size: 'md' });
   }
 
+  /* v4.20：岗位启停/删除。停用 = 流水线跳过该岗位环节；作家是创作引擎不可停用。 */
+  async function toggleAgent(a, enabled) {
+    try {
+      await collabCall('agentsToggle', { agent: a.agent, enabled: !!enabled });
+      toast(`${a.label || a.agent} 已${enabled ? '启用' : '停用'}`, { tone: 'success', duration: 1800 });
+      await loadAgents();
+    } catch (err) {
+      toast(errorText(err, '操作失败'), { tone: 'danger' });
+    }
+  }
+
+  async function removeAgent(a) {
+    const ok = await confirmDialog({
+      title: `删除岗位「${a.label || a.agent}」？`,
+      message: '只删除本机自定义岗位，其模型/技能绑定一并清除。内置岗位只能停用、不能删除。',
+      confirmText: '删除',
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await collabCall('agentsRemove', a.agent);
+      toast(`已删除岗位「${a.label || a.agent}」`, { tone: 'success', duration: 1800 });
+      await loadAgents();
+    } catch (err) {
+      toast(errorText(err, '删除失败'), { tone: 'danger' });
+    }
+  }
+
   function agentMatrixRow(a) {
     const modelText = a.model || (a.provider_id ? '供应商默认模型' : a.effective) || '未绑定';
+    /* v4.20：状态（后端没返回 enabled 时按启用处理，兼容旧 /api/agents）；custom 标记自定义岗位。 */
+    const enabled = a.enabled !== false;
+    const isCustom = a.custom === true;
+    const isWriter = a.agent === 'writer';
     const copy = h(
       'div',
       { class: 'set-row-copy' },
-      h('div', { class: 'set-row-title' }, h('span', { text: a.label || a.agent }), ' ', collabSourceBadge(a), a.stage ? h('span', { class: 'chip chip-muted', text: a.stage }) : null),
+      h('div', { class: 'set-row-title' },
+        h('span', { text: a.label || a.agent }), ' ',
+        h('span', { class: enabled ? 'badge badge-accent' : 'badge', dataset: { tone: enabled ? '' : 'muted' }, text: enabled ? '启用中' : '已停用' }),
+        ' ',
+        collabSourceBadge(a), a.stage ? h('span', { class: 'chip chip-muted', text: a.stage }) : null),
       h('div', { class: 'set-row-desc', text: `${modelText}${a.desc ? ` · ${a.desc}` : ''}` })
     );
     /* skills 是并行同事新增字段：缺失就整块不渲染技能区，不能报错。 */
@@ -1115,9 +1217,9 @@ export function renderSettings(container, ctx) {
       for (const sk of a.skills) chips.append(h('span', { class: 'chip', text: SKILL_TITLES[String(sk)] || String(sk) }));
       copy.append(chips);
     }
-    return h(
+    const row = h(
       'div',
-      { class: 'set-row' },
+      { class: 'set-row', dataset: { agent: a.agent } },
       copy,
       h(
         'div',
@@ -1134,9 +1236,33 @@ export function renderSettings(container, ctx) {
           type: 'button',
           text: '绑技能',
           on: { click: () => openAgentSkillsDialog(a) }
-        })
+        }),
+        isWriter
+          ? h('button', {
+              class: 'btn btn-sm',
+              type: 'button',
+              text: '停用',
+              disabled: true,
+              title: '作家岗位是创作引擎，不能停用'
+            })
+          : h('button', {
+              class: 'btn btn-sm',
+              type: 'button',
+              text: enabled ? '停用' : '启用',
+              on: { click: () => toggleAgent(a, !enabled) }
+            }),
+        isCustom
+          ? h('button', {
+              class: 'btn btn-sm',
+              type: 'button',
+              text: '删除',
+              on: { click: () => removeAgent(a) }
+            })
+          : null
       )
     );
+    if (!enabled) row.style.opacity = '0.55';   /* 已停用岗位整行降透明度 */
+    return row;
   }
 
   function paintAgentsMatrix() {
@@ -1181,7 +1307,7 @@ export function renderSettings(container, ctx) {
           })
         )
       ),
-      h('div', { class: 'set-subhead' }, h('h3', { text: '创作岗位' }), h('span', { class: 'hint-text', text: '每个岗位可单独指定模型与技能；绑定在此处全局生效。' }))
+      h('div', { class: 'set-subhead' }, h('h3', { text: '创作岗位' }), h('span', { class: 'hint-text', text: '核心岗位（规划师/作家/审稿人/去味师）默认自动启用、可单独绑模型与技能；不需要的岗位可停用（作家除外）。' }))
     );
 
     const agents = Array.isArray(viewData.agents) ? viewData.agents : [];
@@ -1297,9 +1423,10 @@ export function renderSettings(container, ctx) {
 
   /* ----------------------------------------------------------- 高级 */
 
-  /* ----------------------------------------------------------- 系统日志 */
-  /* v4.19.0：分两层——系统级操作日志（设置/供应商/技能/岗位/服务启停等系统侧
-     动作流水，支持按类别过滤与关键词搜索）在前；会话级创作状态与服务端日志在后。 */
+  /* ------------------------------------------- 系统日志 / 作品诊断（v4.20.0 重构） */
+  /* 「系统日志」：版本信息置顶 → 系统操作日志 → 服务端日志 → 模型调用与错误，全部整合在一页。
+     「作品诊断」：各作品创作状态/卡顿/会话级运行日志，独立分组（排在「作者笔名」后，与系统日志同套样式）。
+     导出诊断包支持 全部 / 单选 / 多选（复选框），可选附日志全文（可读）。 */
 
   const OPS_KINDS = [
     { key: '', label: '全部' },
@@ -1312,9 +1439,95 @@ export function renderSettings(container, ctx) {
   ];
   const OPS_KIND_LABEL = Object.fromEntries(OPS_KINDS.map((k) => [k.key, k.label]));
 
+  /* ---------- 诊断导出弹窗：全部 / 单选 / 多选 + 日志全文 ---------- */
+
+  const EXPORT_SECTIONS = [
+    { key: 'works', label: '作品状态诊断', desc: '各书进度、卡顿判断与运行日志尾 40 行' },
+    { key: 'sysops', label: '系统操作日志', desc: '设置/供应商/技能/岗位等系统侧动作流水' },
+    { key: 'server', label: '服务端日志（尾 60 行）', desc: '' },
+    { key: 'llm', label: '模型调用与错误', desc: '最近调用状态 + 模型错误日志尾 40 行' },
+    { key: 'providers', label: '供应商配置摘要（脱敏）', desc: '不含密钥明文' }
+  ];
+
+  function downloadText(text, filename) {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: filename });
+    document.body.append(a); a.click(); a.remove();
+  }
+
+  function openExportDialog() {
+    const picked = new Set(EXPORT_SECTIONS.map((s) => s.key));   // 默认=全部诊断
+    const logsCb = h('input', { type: 'checkbox', 'aria-label': '附日志全文（可读）' });
+    const listEl = h('div', { class: 'export-list' });
+
+    function paintRows() {
+      listEl.textContent = '';
+      for (const s of EXPORT_SECTIONS) {
+        const cb = h('input', { type: 'checkbox', checked: picked.has(s.key), 'aria-label': `选择${s.label}` });
+        cb.addEventListener('change', () => {
+          if (cb.checked) picked.add(s.key); else picked.delete(s.key);
+        });
+        listEl.append(h('label', { class: 'export-item' }, cb,
+          h('span', { class: 'export-copy' },
+            h('span', { class: 'export-label', text: s.label }),
+            s.desc ? h('span', { class: 'export-desc', text: s.desc }) : null)));
+      }
+    }
+    paintRows();
+
+    const body = h('div', { class: 'prov-editor' },
+      h('div', { class: 'pe-section' },
+        h('div', { class: 'pe-sec-title', text: '诊断范围' }),
+        h('div', { class: 'pe-sec-hint', text: '默认全选 = 导出全部诊断；只勾需要的项即单项导出，勾多项即打包多选导出。' }),
+        h('div', { class: 'ops-chips' },
+          h('button', { class: 'ops-chip', type: 'button', text: '全选', on: {
+            click: () => { EXPORT_SECTIONS.forEach((s) => picked.add(s.key)); paintRows(); } } }),
+          h('button', { class: 'ops-chip', type: 'button', text: '清空', on: {
+            click: () => { picked.clear(); paintRows(); } } })
+        ),
+        listEl,
+        h('div', { class: 'pe-sec-title', text: '日志全文（可读）', style: 'margin-top:16px' }),
+        h('label', { class: 'export-item', style: 'border:0.5px solid var(--line-2);border-radius:var(--radius-md)' }, logsCb,
+          h('span', { class: 'export-copy' },
+            h('span', { class: 'export-label', text: '附全部运行日志全文' }),
+            h('span', { class: 'export-desc', text: '服务端日志（尾 2000 行）+ 各作品运行日志（每本尾 800 行）+ 系统操作日志全文，全部转成可读纯文本，便于排查；文件较大。' })))
+      ));
+
+    const footer = h('div', { class: 'set-actions' },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+      h('button', {
+        class: 'btn btn-primary', type: 'button', text: '导出',
+        on: {
+          click: async (event) => {
+            const btn = event.currentTarget;
+            if (!picked.size && !logsCb.checked) { toast('请至少勾选一项', { tone: 'danger' }); return; }
+            btn.disabled = true; btn.textContent = '导出中…';
+            try {
+              const res = await fetch('/api/diagnostics/export', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sections: Array.from(picked), logs: logsCb.checked })
+              });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const text = await res.text();
+              const scope = picked.size === EXPORT_SECTIONS.length ? '全部' : `${picked.size}项`;
+              downloadText(text, `yimu-lit-诊断包-${scope}${logsCb.checked ? '-含日志全文' : ''}.txt`);
+              toast('诊断包已导出', { tone: 'success' });
+              modal.close();
+            } catch (err) {
+              toast(errorText(err, '导出失败'), { tone: 'danger' });
+              btn.disabled = false; btn.textContent = '导出';
+            }
+          }
+        }
+      })
+    );
+    const modal = openModal({ title: '导出诊断包', body, footer, size: 'md' });
+  }
+
+  /* ---------- 系统操作日志（原 v4.19.0 逻辑保留） ---------- */
+
   const opsBody = h('div', {});
-  const logBody = h('div', {});
-  panes.syslog.append(opsBody, logBody);
 
   let opsKind = '';
   let opsQ = '';
@@ -1418,45 +1631,71 @@ export function renderSettings(container, ctx) {
     }
   }
 
-  function paintSyslog(data) {
-    logBody.textContent = '';
+  /* ---------- 系统日志 pane：版本信息置顶 + 操作日志 + 服务端日志 + 模型调用与错误 ---------- */
+
+  const verBody = h('div', {});
+  const sysTailBody = h('div', {});
+  panes.syslog.append(verBody, opsBody, sysTailBody);
+
+  function paintSysChrome(data) {
+    verBody.textContent = '';
+    sysTailBody.textContent = '';
     if (!data) {
-      logBody.append(errorRow('诊断数据加载失败', loadSyslog));
+      verBody.append(errorRow('诊断数据加载失败', loadDiagnostics));
       return;
     }
-    const head = h('div', { class: 'set-row' },
-      h('div', { class: 'set-row-copy' },
-        h('div', { class: 'set-row-title', text: `版本 v${data.version} · ${data.platform}` }),
-        h('div', { class: 'set-row-desc', text: `每本书的创作进度、最后日志与卡住判断；点「导出诊断包」生成纯文本发给开发者排查。` })
-      ),
-      h('div', { class: 'set-control' },
-        h('button', { class: 'btn btn-sm btn-accent', type: 'button', text: '导出诊断包', on: {
-          click: async () => {
-            try {
-              const res = await fetch('/api/diagnostics/export', { method: 'POST', credentials: 'include' });
-              const text = await res.text();
-              const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-              const a = h('a', { href: URL.createObjectURL(blob), download: 'yimu-lit-diagnostics.txt' });
-              document.body.append(a); a.click(); a.remove();
-              toast('诊断包已导出', { tone: 'success' });
-            } catch (err) { toast(errorText(err, '导出失败'), { tone: 'danger' }); }
-          }
-        } }),
-        h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => loadSyslog() } })
+    const ago = data.llm_state && data.llm_state.ago_seconds != null
+      ? `模型最近调用：${Math.round(data.llm_state.ago_seconds / 60)} 分钟前 · ` : '';
+    verBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: `版本 v${data.version} · ${data.platform}` }),
+          h('div', { class: 'set-row-desc', text: `${ago}版本信息、系统操作流水、服务端日志与模型调用状态全部整合在本页。` })
+        ),
+        h('div', { class: 'set-control' },
+          h('button', { class: 'btn btn-sm', type: 'button', text: '导出诊断', on: { click: openExportDialog } }),
+          h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => loadDiagnostics() } })
+        )
       )
     );
-    logBody.append(head);
+    if ((data.server_tail || []).length) {
+      sysTailBody.append(h('div', { class: 'set-group-subhead', text: '服务端日志（尾 60 行）' }));
+      sysTailBody.append(h('pre', { class: 'diag-log', text: data.server_tail.join('\n') }));
+    }
+    if ((data.llm_errors || []).length) {
+      sysTailBody.append(h('div', { class: 'set-group-subhead', text: '模型调用错误（尾 40 行）' }));
+      sysTailBody.append(h('pre', { class: 'diag-log', text: data.llm_errors.join('\n') }));
+    }
+  }
 
-    // 各书状态列表（卡住的置顶标红）
+  /* ---------- 作品诊断 pane（独立分组，与系统日志同套样式） ---------- */
+
+  const diagBody = h('div', {});
+  panes.workdiag.append(diagBody);
+
+  function paintWorkDiag(data) {
+    diagBody.textContent = '';
+    if (!data) {
+      diagBody.append(errorRow('诊断数据加载失败', loadDiagnostics));
+      return;
+    }
+    diagBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '作品创作状态（卡住的排最前）' }),
+          h('div', { class: 'set-row-desc', text: '每本书的会话级创作进度、最后日志与卡顿判断；点击行展开该作品的运行日志。' })
+        ),
+        h('div', { class: 'set-control' },
+          h('button', { class: 'btn btn-sm', type: 'button', text: '导出诊断', on: { click: openExportDialog } }),
+          h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => loadDiagnostics() } })
+        )
+      )
+    );
     const books = [...(data.books || [])].sort((a, b) => (b.stalled_seconds || 0) - (a.stalled_seconds || 0));
-    logBody.append(h('div', { class: 'set-group-subhead', text: '会话级 · 作品创作状态（卡住的排最前）' }));
     const wrap = h('div', { class: 'set-list' });
     for (const b of books) {
       const stalled = b.stalled_seconds ? `  ⚠️ 疑似卡住 ${Math.round(b.stalled_seconds / 60)} 分钟` : '';
-      const detail = h('pre', {
-        class: 'diag-tail', style: 'display:none;margin:8px 0 0;padding:10px;background:#0c0c0c;border:1px solid var(--line);border-radius:6px;font-family:var(--font-mono,monospace);font-size:11px;line-height:1.7;color:#c9c4b8;overflow-x:auto;white-space:pre-wrap',
-        text: (b.tail || []).join('\n') || '（无日志）'
-      });
+      const detail = h('pre', { class: 'diag-log', style: 'display:none;margin:8px 0 0', text: (b.tail || []).join('\n') || '（无日志）' });
       wrap.append(h('div', { class: 'set-row', style: 'display:block' },
         h('div', { class: 'set-row-copy', style: 'cursor:pointer', on: { click: () => { detail.style.display = detail.style.display === 'none' ? '' : 'none'; } } },
           h('div', { class: 'set-row-title', text: `${b.name}（${b.medium}）${stalled}` }),
@@ -1466,31 +1705,23 @@ export function renderSettings(container, ctx) {
       ));
     }
     if (!books.length) wrap.append(h('div', { class: 'hint-text', text: '还没有作品。' }));
-    logBody.append(wrap);
-
-    // 服务端日志
-    if ((data.server_tail || []).length) {
-      logBody.append(h('div', { class: 'set-group-subhead', text: '服务端日志（尾 60 行）' }));
-      logBody.append(h('pre', {
-        style: 'padding:10px;background:#0c0c0c;border:1px solid var(--line);border-radius:6px;font-family:var(--font-mono,monospace);font-size:11px;line-height:1.7;color:#c9c4b8;overflow-x:auto;white-space:pre-wrap',
-        text: data.server_tail.join('\n')
-      }));
-    }
-    // 模型调用
-    if (data.llm_state && data.llm_state.ago_seconds != null) {
-      logBody.append(h('div', { class: 'hint-text', text: `模型最近一次调用：${Math.round(data.llm_state.ago_seconds / 60)} 分钟前（超过 10 分钟无调用且书在写作中 = 大概率模型侧卡住）` }));
-    }
+    diagBody.append(wrap);
   }
 
-  async function loadSyslog() {
-    loadOps();   // v4.19.0：系统级日志与会话级诊断一并刷新
-    logBody.textContent = '';
-    logBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-40' })));
+  /* ---------- 统一加载：一次诊断接口喂两个分组 ---------- */
+
+  async function loadDiagnostics() {
+    loadOps();
+    diagBody.textContent = '';
+    diagBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-40' })));
+    verBody.textContent = '';
     try {
       const data = await api.diagnostics();
-      paintSyslog(data);
+      paintWorkDiag(data);
+      paintSysChrome(data);
     } catch (err) {
-      paintSyslog(null);
+      paintWorkDiag(null);
+      paintSysChrome(null);
     }
   }
 
@@ -1509,58 +1740,72 @@ export function renderSettings(container, ctx) {
     const list = pn.list || [];
     const defaultName = pn.default || '';
 
-    // 默认笔名选择
-    const defaultRow = h('div', { class: 'set-row' },
-      h('div', { class: 'set-row-copy' },
-        h('div', { class: 'set-row-title', text: '全局默认笔名' }),
-        h('div', { class: 'set-row-desc', text: '新建作品时默认使用的作者名；可在每个向导里单独选择其他笔名。' })
-      ),
-      h('select', { class: 'set-select', on: {
-        change: async (e) => {
-          const val = e.target.value;
-          try {
-            await api.pennamesSave({ list, default: val });
-            await loadPennames();
-          } catch (err) { toast(errorText(err, '保存失败'), { tone: 'danger' }); }
-        }
-      } },
-        h('option', { value: '', text: '（未设置）' }),
-        ...list.map(c => h('option', {
-          value: c.name, selected: c.name === defaultName,
-          text: c.name + (c.desc ? `（${c.desc}）` : '')
-        }))
+    /* v4.20.0：与其他分组同构——控件统一包 .set-control、用有样式的 .input，
+       默认标记用「默认」徽标（与供应商行同款），删除走确认弹窗。 */
+    penBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '全局默认笔名' }),
+          h('div', { class: 'set-row-desc', text: '新建作品时默认使用的作者名；可在每个向导里单独选择其他笔名。' })
+        ),
+        h('div', { class: 'set-control' },
+          h('select', { class: 'input', 'aria-label': '全局默认笔名', on: {
+            change: async (e) => {
+              const val = e.target.value;
+              try {
+                await api.pennamesSave({ list, default: val });
+                await loadPennames();
+              } catch (err) { toast(errorText(err, '保存失败'), { tone: 'danger' }); }
+            }
+          } },
+            h('option', { value: '', text: '（未设置）' }),
+            ...list.map(c => h('option', {
+              value: c.name, selected: c.name === defaultName,
+              text: c.name + (c.desc ? `（${c.desc}）` : '')
+            }))
+          )
+        )
       )
     );
-    penBody.append(defaultRow);
 
-    // 笔名列表
+    /* 笔名列表 */
     penBody.append(h('div', { class: 'set-group-subhead', text: '笔名列表' }));
     const listWrap = h('div', { class: 'set-list' });
     if (!list.length) {
-      listWrap.append(h('div', { class: 'hint-text', text: '还没有笔名。点击下方按钮添加。' }));
+      listWrap.append(h('div', { class: 'hint-text', style: 'padding:10px 4px', text: '还没有笔名。点下方「添加笔名」创建第一个。' }));
     }
     for (const c of list) {
-      const row = h('div', { class: 'set-row' },
+      listWrap.append(h('div', { class: 'set-row' },
         h('div', { class: 'set-row-copy' },
-          h('div', { class: 'set-row-title', text: c.name + (c.name === defaultName ? '  ★默认' : '') }),
+          h('div', { class: 'set-row-title' },
+            h('span', { text: c.name }),
+            c.name === defaultName ? h('span', { class: 'badge badge-accent', text: '默认' }) : null
+          ),
           h('div', { class: 'set-row-desc', text: c.desc || '（无描述）' })
         ),
         h('div', { class: 'set-control' },
-          h('button', { class: 'btn btn-sm btn-danger', type: 'button', text: '删除', on: {
+          h('button', { class: 'btn btn-sm', type: 'button', text: '删除', on: {
             click: async () => {
+              const ok = await confirmDialog({
+                title: `删除笔名「${c.name}」？`,
+                message: '只影响署名选择列表，已创作的作品不受影响。',
+                confirmText: '删除',
+                danger: true
+              });
+              if (!ok) return;
               try {
                 await api.pennamesDelete({ name: c.name });
                 await loadPennames();
+                toast('已删除', { duration: 1600 });
               } catch (err) { toast(errorText(err, '删除失败'), { tone: 'danger' }); }
             }
           } })
         )
-      );
-      listWrap.append(row);
+      ));
     }
     penBody.append(listWrap);
 
-    // v4.15.6：按文体默认笔名（每个文体一个下拉；未设置=用全局默认）
+    /* v4.15.6：按文体默认笔名（每个文体一个下拉；未设置=用全局默认） */
     penBody.append(h('div', { class: 'set-group-subhead', text: '按文体默认笔名' }));
     const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文', thesis: '论文',
                             children: '儿童文学', news: '新闻稿', copy: '文案', other: '其他' };
@@ -1571,42 +1816,38 @@ export function renderSettings(container, ctx) {
         h('div', { class: 'set-row-copy' },
           h('div', { class: 'set-row-title', text: label })
         ),
-        h('select', { class: 'set-select', on: {
-          change: async (e) => {
-            try {
-              await api.pennamesSave({ list, default: defaultName, by_medium: { ...byMed, [med]: e.target.value } });
-              await loadPennames();
-            } catch (err) { toast(errorText(err, '保存失败'), { tone: 'danger' }); }
-          }
-        } },
-          h('option', { value: '', text: '（用全局默认）' }),
-          ...list.map(c => h('option', { value: c.name, selected: byMed[med] === c.name, text: c.name }))
+        h('div', { class: 'set-control' },
+          h('select', { class: 'input', 'aria-label': `${label}默认笔名`, on: {
+            change: async (e) => {
+              try {
+                await api.pennamesSave({ list, default: defaultName, by_medium: { ...byMed, [med]: e.target.value } });
+                await loadPennames();
+              } catch (err) { toast(errorText(err, '保存失败'), { tone: 'danger' }); }
+            }
+          } },
+            h('option', { value: '', text: '（用全局默认）' }),
+            ...list.map(c => h('option', { value: c.name, selected: byMed[med] === c.name, text: c.name }))
+          )
         )
       ));
     }
     penBody.append(medWrap);
 
-    // 添加笔名
-    const addRow = h('div', { class: 'set-row' },
-      h('div', { class: 'set-row-copy' },
-        h('div', { class: 'set-row-title', text: '添加笔名' }),
-        h('div', { class: 'set-row-desc', text: '可为不同文体风格设置不同笔名，向导中会以备选出现。' })
-      ),
-      h('div', { class: 'set-control' },
-        h('button', { class: 'btn btn-sm btn-accent', type: 'button', text: '添加笔名', on: {
-          click: () => openAddPennameDialog()
-        } })
-      )
-    );
-    penBody.append(addRow);
+    /* 添加笔名（动作行；btn-accent 是无样式的死类，统一用 btn-primary） */
+    penBody.append(h('div', { class: 'set-actions' },
+      h('button', { class: 'btn btn-sm btn-primary', type: 'button', text: '添加笔名', on: {
+        click: () => openAddPennameDialog()
+      } })
+    ));
   }
 
   function openAddPennameDialog() {
-    const nameInput = h('input', { class: 'set-input', placeholder: '笔名（必填）' });
-    const descInput = h('input', { class: 'set-input', placeholder: '描述（选填）' });
+    /* v4.20.0：改用本页统一的 fieldRow（wiz-label + .input），与供应商/岗位弹窗同款 */
+    const nameInput = h('input', { class: 'input', placeholder: '笔名（必填）', 'aria-label': '笔名' });
+    const descInput = h('input', { class: 'input', placeholder: '描述（选填），例如：古风短篇', 'aria-label': '描述' });
     const body = h('div', { class: 'wiz-grid' },
-      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '笔名' }), nameInput),
-      h('div', { class: 'field' }, h('span', { class: 'field-label', text: '描述' }), descInput)
+      fieldRow('笔名', nameInput),
+      fieldRow('描述', descInput, '', '可留空；描述会显示在选择列表里帮助区分。')
     );
     const footer = h('div', { class: 'set-actions' },
       h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
@@ -1614,11 +1855,16 @@ export function renderSettings(container, ctx) {
         click: async () => {
           const name = nameInput.value.trim();
           if (!name) { toast('笔名不能为空', { tone: 'danger' }); return; }
+          if ((model.pennames.list || []).some((c) => c.name === name)) {
+            toast('已存在同名笔名', { tone: 'danger' });
+            return;
+          }
           const newList = [...(model.pennames.list || []), { name, desc: descInput.value.trim() }];
           try {
             await api.pennamesSave({ list: newList, default: model.pennames.default || '' });
             await loadPennames();
             modal.close();
+            toast('笔名已添加', { tone: 'success', duration: 1600 });
           } catch (err) { toast(errorText(err, '添加失败'), { tone: 'danger' }); }
         }
       } })
@@ -1685,7 +1931,7 @@ export function renderSettings(container, ctx) {
   loadProviders();
   loadAgents();
   loadPennames();   /* v4.15.5 修复：笔名面板此前从未在初始化时加载，分组面板永远空白 */
-  loadSyslog();
+  loadDiagnostics();   /* v4.20.0：系统日志 + 作品诊断两分组共用一次诊断加载 */
 
   /* 初始分组：优先恢复上次浏览的分组，其次兼容旧深链值。 */
   const wantTab = store.get().ui.settingsTab;

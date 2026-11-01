@@ -604,3 +604,44 @@ def active_model_options():
         out.append({"id": p["id"], "name": p["name"],
                     "models": p.get("models", []), "default_model": p.get("default_model", "")})
     return out
+
+
+# ---------- 全局默认模型（v4.20：设置页「模型与供应商」的全局默认选择项） ----------
+
+def global_model():
+    """当前全局默认模型 {provider_id, model}（= default_provider + 其 default_model）。
+    没有可用默认时返回 {"provider_id": "", "model": ""}，绝不抛异常。"""
+    try:
+        data = load_data()
+        dp = data.get("default_provider") or ""
+        p = next((x for x in data["providers"] if x.get("id") == dp), None)
+        if not p:
+            return {"provider_id": "", "model": ""}
+        model = p.get("default_model") or (p.get("models") or [""])[0] or ""
+        return {"provider_id": dp, "model": model}
+    except Exception:
+        return {"provider_id": "", "model": ""}
+
+
+def set_global_model(provider_id, model):
+    """设置全局默认模型：default_provider=provider_id，且该供应商 default_model=model。
+    校验：供应商必须存在且 active；model 必须在其 models 里（model 为空则取其 default_model）。
+    返回 {"provider_id", "model"}；非法输入抛 ProviderError。"""
+    provider_id = str(provider_id or "").strip()
+    model = str(model or "").strip()
+    with _LOCK:
+        data = load_data()
+        p = _require_id(data, provider_id)
+        if not p.get("active"):
+            raise ProviderError("供应商已停用，不能设为全局默认：%s" % provider_id)
+        if not model:
+            model = p.get("default_model") or (p.get("models") or [""])[0]
+        if not model:
+            raise ProviderError("供应商 %s 没有可选模型，请先在供应商里添加模型" % provider_id)
+        if model not in (p.get("models") or []):
+            raise ProviderError("模型 %s 不在供应商 %s 的模型列表里" % (model, provider_id))
+        set_default(provider_id)          # 设为默认（其内部会激活并落盘 default_provider）
+        data2 = load_data()
+        _require_id(data2, provider_id)["default_model"] = model
+        _write(data2)
+    return {"provider_id": provider_id, "model": model}

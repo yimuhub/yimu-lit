@@ -817,3 +817,23 @@ kbd {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* v4.20.0：创作控制按钮「创作中」态的双竖杠闪烁（加在 :root 之外，全局可用） */
+@keyframes bars-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* v4.20.0：补上 JS 里已广泛使用但没有样式定义的 .btn-accent（次级强调按钮） */
+.btn-accent {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent-ink);
+}
+
+.btn-accent:hover { background: var(--accent-soft-2); }
