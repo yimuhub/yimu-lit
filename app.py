@@ -844,6 +844,50 @@ def _chat_attached(s, proj, msg):
                 f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章），{3} 个岗位并行改写，"
                 f"目标 {int(_tgt)} 分——每章最多 2 轮，改写分必须高于原分否则回滚。完成后逐章汇报。")
 
+    # v4.21.9：rewrite_all_below——「重写所有未达标的章节」（无章号/分数也准确理解）
+    if _intent == "rewrite_all_below":
+        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+            return "⚠️ 批量重写暂支持小说；其他文体请在评分详情里逐章处理。"
+        if _PARA_RW_RUNNING.get(key, {}).get("running"):
+            return "⚠️ 该书已有改写任务在跑，请稍候。"
+        _pass = writer._pass_line()
+        _lows = [p["ch"] for p in writer.per_chapter_scores(proj)
+                 if isinstance(p.get("score"), (int, float)) and p["score"] < _pass]
+        if not _lows:
+            return f"✅ 所有章节都达到 {_pass} 分达标线，没有需要重写的章节。"
+        _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+        def _rw_all_job():
+            try:
+                writer.run_parallel_rewrite(key, chapters=_lows, workers=3, max_rounds=2)
+            finally:
+                _PARA_RW_RUNNING[key]["running"] = False
+        threading.Thread(target=_rw_all_job, daemon=True).start()
+        return (f"⚡ 已启动重写全部未达标章节：共 {len(_lows)} 章"
+                f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章，均低于达标线 {_pass} 分），"
+                f"3 个岗位并行定向重写——每章最多 2 轮，改写分必须高于原分否则回滚原稿。完成后逐章汇报。")
+
+    # v4.21.9：score_all_unscored——「给所有未评分的章节进行评分」
+    if _intent == "score_all_unscored":
+        _meta_sc = (proj.plan().get("meta") or {}).get("chapter_scores") or {}
+        _unsc = [c["chapterNumber"] for c in (proj.plan().get("chapters") or [])
+                 if c.get("status") == "completed" and not _meta_sc.get(str(c.get("chapterNumber")))]
+        if not _unsc:
+            return "✅ 所有章节都已有评分，无需补评。"
+        def _score_all_job():
+            try:
+                for _n in sorted(_unsc):
+                    try:
+                        writer.score_chapter(proj, _n)
+                    except Exception as e:
+                        proj.log(f"⚠️ 第{_n}章评分失败（继续下一章）：{e}")
+                proj.log(f"📚 全部未评分章节评分完成（{len(_unsc)} 章）")
+            except Exception as e:
+                proj.log(f"⚠️ 补评分异常：{e}")
+        threading.Thread(target=_score_all_job, daemon=True).start()
+        _head = _unsc[:8]
+        return (f"📚 已开始为 {len(_unsc)} 个未评分章节评分"
+                f"（第 {_head}{'…' if len(_unsc) > 8 else ''} 章），完成后章节卡会自动显示质量分。")
+
     # v4.15.0：batch_writing 意图识别「再写N章 / 写完全部」——统一并入写作分支
     if _intent == "batch_writing":
         _batch_param = _nlu["params"].get("batch_size") or "1"

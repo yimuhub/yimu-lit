@@ -2915,6 +2915,10 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
         with sem:
             if is_paused(proj):
                 return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
+            # v4.21.9：改写消耗计入该章 token 账本 + 过程并入本章创作活动流
+            llm.set_chapter(ch_no)
+            _evt(key, "rewriter", phase="start", title=f"定向重写第{ch_no}章", chapter=ch_no,
+                 thinking="按审稿问题清单逐条定点改写——改写分必须高于原分，否则自动回滚原稿")
             before = score_chapter(proj, ch_no)
             dims = findings_by_ch.get(ch_no) or []
             # v4.17.3：target 驱动——改写评分达到目标分即停（每章最多 2 轮，不烧 token）
@@ -2928,6 +2932,28 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
             kept = (after or 0) > (before or 0)
             r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1), "kept": kept}
             proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '已回滚原稿，质量优先'}）")
+            _evt(key, "rewriter", phase="done" if kept else "warn",
+                 title=f"定向重写第{ch_no}章", chapter=ch_no,
+                 output=f"{before}→{after} 分（{'保留改稿' if kept else '已回滚原稿'}）")
+            # v4.21.9：改稿保留后更新对话流章节卡（同 no 追加最新记录、completedAt 保持
+            # 原值 → 读取端按章去重后章节卡仍在原位，只更新内容/评分/token）。
+            if kept:
+                try:
+                    from bot.v2api import _save_chat_msg
+                    _pl2 = proj.plan()
+                    _ch2 = next((c for c in (_pl2.get("chapters") or []) if c.get("chapterNumber") == ch_no), None)
+                    _fp2 = os.path.join(proj.path, _ch2.get("filePath")) if _ch2 and _ch2.get("filePath") else None
+                    if _ch2 and _fp2 and os.path.exists(_fp2):
+                        _save_chat_msg(proj, "assistant", _clean_chapter_text(open(_fp2, encoding="utf-8").read()),
+                                       {"type": "chapter", "no": ch_no,
+                                        "title": _ch2.get("title") or f"第{ch_no}章",
+                                        "words": _ch2.get("wordCount"), "quality": after,
+                                        "tokens": llm.book_chapter_tokens(os.path.basename(proj.path), ch_no),
+                                        "ts": int(time.time()),
+                                        "completedAt": _ch2.get("completedAt") or ""})
+                except Exception:
+                    pass
+            llm.set_chapter(None)
             with proj.lock:
                 prog["done"] += 1
                 prog["results"].append(r)

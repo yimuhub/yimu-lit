@@ -25,6 +25,8 @@ INTENTS = {
     "resume_writing":    "继续 / 续写 / 接着写下一章",
     "batch_writing":     "批量写 N 章 / 写完全部 / 再写 N 章",
     "rewrite_low_score": "改写低分章（如「低于65分的全部重写目标80分」「70分以下的章节都改好」）",
+    "rewrite_all_below": "重写所有未达标/不达标/低于标准的章节（不带章号与分数，如「重写所有未达标的章节」）",
+    "score_all_unscored": "给所有未评分/未打分的章节评分（如「给所有未评分的章节进行评分」）",
     "pause_writing":     "暂停写作",
     "query_status":      "查询进度 / 看看写到哪了",
     "set_title":         "修改标题或书名",
@@ -85,6 +87,22 @@ _PAT_START = re.compile(
     r"生成.*?(正文|内容)|写.*?正文|动手.*?写|"
     r"(剧本|诗词|散文|小说|诗歌).{0,6}(创作|来一部|来一个)|"
     r"写.{0,4}(正文|内容)",
+    re.I,
+)
+
+# rewrite_all_below: 重写所有未达标章节——「重写/改写」+「所有/全部」+「未达标/不达标/低于标准」，无具体章号与分数
+# score_all_unscored: 给所有未评分章节评分——「评分/打分」+「所有/全部/未评分的章节」
+# rewrite_all_below: 重写所有未达标章节（无章号/分数——「重写所有未达标的章节」）
+_PAT_RW_ALL = re.compile(
+    r"(重写|改写|换新|重做)[^。]{0,14}(所有|全部|每一个)[^。]{0,10}(未达标|不达标|低于标准|低于验收|未达到标准|不合格|低于要求)"
+    r"|(所有|全部)[^。]{0,10}(未达标|不达标|低于标准|未达到标准|不合格|低于要求)[^。]{0,12}(章节|内容)?[^。]{0,8}(重写|改写|换新|重做)",
+    re.I,
+)
+
+# score_all_unscored: 给所有未评分章节评分
+_PAT_SCORE_ALL = re.compile(
+    r"(给|把|对)[^。]{0,6}(所有|全部)[^。]{0,8}(未评分|未打分|没有评分|没有打分)[^。]{0,10}(评分|打分)"
+    r"|(评分|打分)[^。]{0,10}(所有|全部)[^。]{0,8}(未评分|未打分)",
     re.I,
 )
 
@@ -226,6 +244,12 @@ def _rule_parse(text):
         if nums:
             ch_no = _cn_to_int(nums[0])
         return "rewrite_chapter", {"chapter_number": ch_no}, 0.85
+
+    # v4.21.9：rewrite_all_below / score_all_unscored——无章号与分数的「全部重写未达标」「全部评分」诉求
+    if _PAT_RW_ALL.search(t):
+        return "rewrite_all_below", {}, 0.86
+    if _PAT_SCORE_ALL.search(t):
+        return "score_all_unscored", {}, 0.86
 
     # rewrite_low_score: 按分数阈值改写低分章（规则兜底，LLM 优先）
     m = _PAT_RW_LOW.search(t)
@@ -437,6 +461,14 @@ def parse_intent(text, project_status=None):
                 return {"intent": "rewrite_low_score",
                         "params": {"below": _below, "target": _target},
                         "confidence": max(conf, 0.85), "source": "rule", "raw": text}
+        # v4.21.9：高精度规则覆盖——「重写所有未达标」「全部评分」这类固定句式，
+        # 规则比 LLM 可靠（LLM 连续误判为 rewrite_chapter / creative_hint），命中即覆盖。
+        if _PAT_RW_ALL.search(text or ""):
+            return {"intent": "rewrite_all_below", "params": {}, "confidence": 0.9,
+                    "source": "rule", "raw": text}
+        if _PAT_SCORE_ALL.search(text or ""):
+            return {"intent": "score_all_unscored", "params": {}, "confidence": 0.9,
+                    "source": "rule", "raw": text}
         return {"intent": intent, "confidence": conf, "params": params, "source": "llm", "raw": text}
 
     # 降级规则

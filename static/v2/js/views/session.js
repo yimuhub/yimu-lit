@@ -150,6 +150,30 @@ export function renderSession(container, ctx = {}) {
           if (cs.streaming) return cs;
           // v4.21.6：按时间正序重排（历史章节卡回填的时间戳可能乱序）
           res.items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+          /* v4.21.9 章节卡归位与去重：
+             ① 先从全部记录算出每章「首次完成时刻」（同章多记录 ts 最小值，重写不改变它）；
+             ② 同章只保留 ts 最大的一条（最新正文/评分/token）；
+             ③ 章节卡排序用首次完成时刻 → 重写后永远归位在原序列。 */
+          const _chFirst = new Map();
+          for (const it of res.items) {
+            if (it.type === 'chapter' && it.no != null) {
+              const prev = _chFirst.has(it.no) ? _chFirst.get(it.no) : Infinity;
+              _chFirst.set(it.no, Math.min(prev, it.ts || 0));
+            }
+          }
+          const _chLatest = new Map();
+          res.items = res.items.filter((it) => {
+            if (it.type !== 'chapter' || it.no == null) return true;
+            const cur = _chLatest.get(it.no);
+            if (!cur || (it.ts || 0) > (cur.ts || 0)) _chLatest.set(it.no, it);
+            return false;   // 章节记录全部移出，最新一条稍后放回
+          });
+          for (const it of _chLatest.values()) res.items.push(it);
+          const _sortKey = (it) => {
+            if (it.type === 'chapter' && it.no != null && _chFirst.has(it.no)) return _chFirst.get(it.no);
+            return it.ts || 0;
+          };
+          res.items.sort((a, b) => _sortKey(a) - _sortKey(b));
           const msgs = res.items.map((item, i) => {
             const base = {
               id: `hist_${i}_${item.ts || 0}`,
