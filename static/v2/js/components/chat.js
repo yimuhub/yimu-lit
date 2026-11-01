@@ -322,11 +322,9 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
     composer.setStreaming((chat.messages || []).some((m) => m.streaming));
   }
 
-  function scheduleFrame() {
-    if (pendingFrame) return;
-    pendingFrame = requestAnimationFrame(() => {
-      pendingFrame = 0;
-      if (disposed) return;
+  function runFrame() {
+    pendingFrame = 0;
+    if (disposed) return;
       const state = store.get();
       const chat = state.chat;
       const sig = messageSignature(chat);
@@ -347,7 +345,14 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
       renderExtras();
       updateComposerStreaming(chat);
       if (lastStreaming || wasNear) scrollToBottom(false);
-    });
+  }
+
+  function scheduleFrame() {
+    if (pendingFrame) return;
+    pendingFrame = requestAnimationFrame(() => runFrame());
+    /* v4.21.8：遮挡/后台标签页的 rAF 可能长期不触发——setTimeout 兜底，
+       保证对话渲染永不卡死（谁先到谁执行，runFrame 自身幂等）。 */
+    setTimeout(runFrame, 400);
   }
 
   let lastExtrasKey = '';

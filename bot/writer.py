@@ -2015,6 +2015,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
         _save_chat_msg(proj, "assistant", _clean_chapter_text(open(fp, encoding="utf-8").read()),
                        {"type": "chapter", "no": no, "title": ch.get("title") or f"第{no}章",
                         "words": words, "quality": _final_score,
+                        "tokens": llm.book_chapter_tokens(_bk, no),
                         "completedAt": _ch_started_at if _soft_ok else ""})
     except Exception:
         pass

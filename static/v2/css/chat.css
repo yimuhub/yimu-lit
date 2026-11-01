@@ -1430,3 +1430,17 @@
 .cc-process .arch-row { font-size: 12px; padding: 5px 2px; }
 .cc-process .arch-detail { margin: 0 0 6px 4px; }
 .cc-process-loading { padding: 8px 2px; }
+
+/* v4.21.8 章节卡：重写本章按钮（质量分 < 90 时显示） */
+.cc-rewrite-btn {
+  background: transparent;
+  border: 0;
+  color: var(--danger, #d8433b);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 2px;
+}
+
+.cc-rewrite-btn:hover { text-decoration: underline; }
+.cc-rewrite-btn:disabled { opacity: 0.5; cursor: default; }

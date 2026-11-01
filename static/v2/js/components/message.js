@@ -191,15 +191,41 @@ function renderChapterCard(msg, handlers = {}) {
   card.append(procBody);
 
   const chips = h('div', { class: 'cc-meta' });
+  /* v4.21.8：四维度同时显示（完成时间/字数/消耗 tokens/质量分）——
+     消耗 = 该章全过程所有 Agent 的 token 总和（usage by_chapter）；
+     质量分 < 90 时显示「重写本章」按钮（≥90 隐藏），未评分不显示。 */
   const items = [];
   if (meta.ts) items.push(['完成于', String(meta.ts).replace('T', ' ').slice(5, 16)]);
-  if (meta.words) items.push(['字数', fmtNum(meta.words)]);
-  if (meta.tokens) items.push(['消耗', `${fmtNum(meta.tokens)} tokens`]);
-  if (meta.quality != null && meta.quality !== '') items.push(['质量', `${meta.quality} 分`]);
+  items.push(['字数', fmtNum(Number(meta.words) || 0)]);
+  items.push(['消耗', `${fmtNum(Number(meta.tokens) || 0)} tokens`]);
+  items.push(['质量', meta.quality != null && meta.quality !== '' ? `${meta.quality} 分` : '未评分']);
   for (const [k, v] of items) {
     chips.append(h('span', { class: 'cc-chip' },
       h('span', { class: 'cc-k', text: k }),
       h('span', { class: 'cc-v', text: String(v) })));
+  }
+  const _q = Number(meta.quality);
+  if (meta.quality != null && meta.quality !== '' && !Number.isNaN(_q) && _q < 90) {
+    chips.append(h('button', {
+      class: 'cc-rewrite-btn', type: 'button',
+      title: '审查后定向重写本章（约 2-5 分钟）',
+      text: '重写本章',
+      on: { click: async (event) => {
+        const btn = event.currentTarget;
+        const key = handlers.workKey || store.get().currentKey;
+        if (!key) return;
+        btn.disabled = true;
+        btn.textContent = '重写中…';
+        try {
+          const res = await api.rewriteChapter(key, meta.no);
+          toast((res && res.msg) || '重写已启动：审查后定向重写该章', { tone: 'success', duration: 5000 });
+        } catch (err) {
+          toast(errorText(err, '重写启动失败'), { tone: 'danger' });
+          btn.disabled = false;
+          btn.textContent = '重写本章';
+        }
+      } }
+    }));
   }
   card.append(chips);
 
