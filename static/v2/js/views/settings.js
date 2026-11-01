@@ -32,7 +32,7 @@ const GROUPS = [
   { key: 'chat', label: '对话与上下文', icon: 'message', desc: '会话留档与压缩' },
   { key: 'skills', label: '技能与数据', icon: 'sparkles', desc: '进化与本地数据' },
   { key: 'pennames', label: '作者笔名', icon: 'user', desc: '全局默认 · 多笔名 · 按文体默认' },
-  { key: 'syslog', label: '系统日志', icon: 'terminal', desc: '创作日志 · 卡住诊断 · 一键导出' },
+  { key: 'syslog', label: '系统日志', icon: 'terminal', desc: '系统操作 · 会话状态 · 一键导出' },
   { key: 'advanced', label: '高级', icon: 'sliders', desc: '经典版等' }
 ];
 
@@ -135,6 +135,7 @@ export function renderSettings(container, ctx) {
     for (const [k, btn] of Object.entries(navBtns)) {
       btn.setAttribute('aria-current', k === key ? 'true' : 'false');
     }
+    if (key === 'syslog') loadSyslog();   // 每次进入日志分组都刷新，保证看到最新动作
     patchUi({ settingsTab: key });
   }
 
@@ -578,6 +579,9 @@ export function renderSettings(container, ctx) {
     }
   }
 
+  /* v4.19.0：供应商编辑重构——填完地址与密钥一键拉取全部模型，复选框勾选，
+     取代旧的「下拉逐个追加」。勾选顺序即优先级，第一个为默认模型；
+     /models 拉不到时保留手动输入兜底。 */
   function providerDialog(existing) {
     const name = h('input', { class: 'input', value: existing ? existing.name : '', placeholder: '例如 DeepSeek', 'aria-label': '名称' });
     const baseUrl = h('input', {
@@ -594,61 +598,149 @@ export function renderSettings(container, ctx) {
       'aria-label': 'API 密钥',
       autocomplete: 'off'
     });
-    const models = h('textarea', {
-      class: 'textarea',
-      rows: 3,
-      placeholder: '每行一个模型名，例如\ndeepseek-chat\ndeepseek-reasoner',
-      'aria-label': '模型列表'
-    });
-    models.value = existing ? (existing.models || []).join('\n') : '';
 
-    /* v4.15.15：一键拉取模型列表——填完地址与密钥后从 {base_url}/models 拉取，
-       成功后以下拉箭头选择模型，追加进列表（可多选）。 */
-    const modelSelect = h('select', { class: 'input', 'aria-label': '从拉取列表选择模型',
-                                      style: 'display:none;margin-top:8px' });
+    /* ---------------- 模型选择器状态 ---------------- */
+    let selected = ((existing && existing.models) || []).map((m) => String(m).trim()).filter(Boolean); // 顺序即优先级
+    let fetched = [];        // 拉取到的全部模型 id
+    let fetching = false;
+
     const fetchBtn = h('button', {
-      class: 'btn btn-sm',
+      class: 'btn btn-primary btn-sm',
       type: 'button',
-      text: '⟳ 拉取模型列表',
-      on: {
-        click: async () => {
-          if (!baseUrl.value.trim()) { toast('请先填写接口地址', { tone: 'danger' }); return; }
-          fetchBtn.disabled = true; fetchBtn.textContent = '拉取中…';
-          try {
-            const res = await api.fetchModels({ base_url: baseUrl.value.trim(), api_key: apiKey.value.trim() });
-            const list = (res && res.models) || [];
-            if (!list.length) { toast('接口返回空列表，请手填', { tone: 'warn', duration: 4000 }); return; }
-            modelSelect.innerHTML = '';
-            modelSelect.append(h('option', { value: '', text: `— 从 ${list.length} 个可用模型中选择 —` }));
-            for (const id of list) modelSelect.append(h('option', { value: id, text: id }));
-            modelSelect.style.display = '';
-            toast(`拉取成功：${list.length} 个模型`, { tone: 'success', duration: 2500 });
-          } catch (err) {
-            toast(errorText(err, '拉取失败'), { tone: 'danger', duration: 5000 });
-          } finally {
-            fetchBtn.disabled = false; fetchBtn.textContent = '⟳ 拉取模型列表';
-          }
-        }
+      text: '⟳ 拉取模型列表'
+    });
+    const fetchState = h('span', { class: 'pe-fetch-state', text: '填好接口地址（密钥选填）后点左侧按钮，自动获取全部可用模型' });
+    const searchIn = h('input', { class: 'input mp-search', type: 'search', placeholder: '搜索模型名…', 'aria-label': '搜索模型' });
+    const listEl = h('div', { class: 'mp-list', role: 'group', 'aria-label': '候选模型' });
+    const pickedCount = h('span', { class: 'mp-count' });
+    const chipsEl = h('div', { class: 'mp-chips' });
+    const pickerEl = h('div', { class: 'mp-picker', style: 'display:none' },
+      h('div', { class: 'mp-head' },
+        searchIn,
+        h('button', { class: 'btn btn-sm mp-act', type: 'button', text: '全选', title: '勾选当前搜索结果里的全部模型', on: { click: () => { for (const id of visibleIds()) toggleModel(id, true); } } }),
+        h('button', { class: 'btn btn-sm mp-act', type: 'button', text: '清空', title: '取消全部勾选', on: { click: () => { selected = []; paintAll(); } } })
+      ),
+      listEl
+    );
+    const manualIn = h('input', { class: 'input mono mp-manual', placeholder: '列表拉不到？手动输入模型名后点「添加」', 'aria-label': '手动添加模型' });
+
+    function visibleIds() {
+      const q = searchIn.value.trim().toLowerCase();
+      return fetched.filter((id) => !q || String(id).toLowerCase().includes(q));
+    }
+
+    function toggleModel(id, on) {
+      const i = selected.indexOf(id);
+      if (on && i < 0) selected.push(id);
+      if (!on && i >= 0) selected.splice(i, 1);
+      paintList();
+      paintChips();
+    }
+
+    function paintList() {
+      listEl.textContent = '';
+      const ids = visibleIds();
+      if (!ids.length) {
+        listEl.append(h('div', { class: 'mp-empty', text: fetched.length ? '没有匹配的模型' : '尚未拉取模型列表' }));
+        return;
       }
-    });
-    modelSelect.addEventListener('change', () => {
-      const id = modelSelect.value;
-      if (!id) return;
-      const cur = models.value.split('\n').map((m) => m.trim()).filter(Boolean);
-      if (!cur.includes(id)) cur.push(id);
-      models.value = cur.join('\n');   // 追加到列表（第一行为默认模型），可继续多选
-      modelSelect.value = '';
-    });
+      for (const id of ids) {
+        const on = selected.includes(id);
+        const cb = h('input', { type: 'checkbox', checked: on, 'aria-label': `选择模型 ${id}` });
+        cb.addEventListener('change', () => toggleModel(id, cb.checked));
+        listEl.append(h('label', { class: 'mp-item', dataset: { on: on ? 'true' : 'false' } }, cb, h('span', { class: 'mono', text: id })));
+      }
+    }
+
+    function paintChips() {
+      chipsEl.textContent = '';
+      pickedCount.textContent = selected.length ? `已选 ${selected.length} 个` : '未选择';
+      if (!selected.length) {
+        chipsEl.append(h('span', { class: 'hint-text', text: '勾选上方列表或手动添加；第一个勾选的模型将作为默认模型。' }));
+        return;
+      }
+      selected.forEach((id, i) => {
+        chipsEl.append(h('span', { class: 'mp-chip', dataset: { default: i === 0 ? 'true' : 'false' } },
+          i === 0 ? h('span', { class: 'mp-chip-badge', text: '默认' }) : null,
+          h('span', { class: 'mp-chip-name mono', text: id, title: id }),
+          i !== 0 ? h('button', { class: 'mp-chip-btn', type: 'button', text: '★', title: '设为默认模型', on: { click: () => { selected.splice(i, 1); selected.unshift(id); paintChips(); } } }) : null,
+          h('button', { class: 'mp-chip-btn', type: 'button', text: '×', title: '移除', 'aria-label': `移除模型 ${id}`, on: { click: () => toggleModel(id, false) } })
+        ));
+      });
+    }
+
+    function paintAll() { paintList(); paintChips(); }
+
+    async function doFetch() {
+      if (fetching) return;
+      if (!baseUrl.value.trim()) { toast('请先填写接口地址', { tone: 'danger' }); baseUrl.focus(); return; }
+      fetching = true;
+      fetchBtn.disabled = true; fetchBtn.textContent = '拉取中…';
+      fetchState.textContent = '正在从接口拉取模型列表…';
+      fetchState.dataset.tone = '';
+      try {
+        const res = await api.fetchModels({ base_url: baseUrl.value.trim(), api_key: apiKey.value.trim() });
+        const list = (res && res.models) || [];
+        if (!list.length) {
+          fetchState.textContent = '接口返回了空列表，请在下方手动输入模型名';
+          fetchState.dataset.tone = 'warn';
+          toast('接口返回空列表，请手填', { tone: 'warn', duration: 4000 });
+          return;
+        }
+        fetched = list;
+        pickerEl.style.display = '';
+        paintAll();
+        fetchState.textContent = `拉取成功：接口下共 ${list.length} 个模型，勾选需要的即可`;
+        fetchState.dataset.tone = 'success';
+        toast(`拉取成功：${list.length} 个模型`, { tone: 'success', duration: 2500 });
+      } catch (err) {
+        fetchState.textContent = '拉取失败：请检查地址与密钥，或在下方手动输入模型名';
+        fetchState.dataset.tone = 'danger';
+        toast(errorText(err, '拉取失败'), { tone: 'danger', duration: 5000 });
+      } finally {
+        fetching = false;
+        fetchBtn.disabled = false; fetchBtn.textContent = '⟳ 拉取模型列表';
+      }
+    }
+    fetchBtn.addEventListener('click', doFetch);
+
+    function addManual() {
+      const id = manualIn.value.trim();
+      if (!id) { toast('请输入模型名', { tone: 'danger' }); return; }
+      if (!fetched.includes(id)) fetched.push(id);   // 手填的也进候选列表，便于统一勾选管理
+      pickerEl.style.display = '';
+      searchIn.value = '';
+      if (!selected.includes(id)) selected.push(id);
+      manualIn.value = '';
+      paintAll();
+      toast(`已添加模型 ${id}`, { tone: 'success', duration: 1600 });
+    }
+    manualIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addManual(); } });
+    searchIn.addEventListener('input', paintList);
 
     const body = h(
       'div',
-      { class: 'wiz-grid' },
-      fieldRow('名称', name),
-      fieldRow('接口地址（OpenAI 兼容）', baseUrl, 'span-2'),
-      fieldRow('API 密钥', apiKey, 'span-2', existing && existing.has_key ? '已保存的密钥不会回显；留空表示不修改。' : ''),
-      fieldRow('模型列表', h('div', {}, models,
-        h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:8px' }, fetchBtn, modelSelect)),
-        'span-2', '第一行会成为默认模型；也可一键拉取后从下拉里追加。')
+      { class: 'prov-editor' },
+      h('div', { class: 'pe-section' },
+        h('div', { class: 'pe-sec-title', text: '基础信息' }),
+        h('div', { class: 'wiz-grid' },
+          fieldRow('名称', name),
+          fieldRow('接口地址（OpenAI 兼容）', baseUrl, 'span-2'),
+          fieldRow('API 密钥', apiKey, 'span-2', existing && existing.has_key ? '已保存的密钥不会回显；留空表示不修改。' : '')
+        )
+      ),
+      h('div', { class: 'pe-section' },
+        h('div', { class: 'pe-sec-title', text: '模型选择' }),
+        h('div', { class: 'pe-sec-hint', text: '第 ① 步填好地址与密钥 → 第 ② 步一键拉取 → 第 ③ 步勾选需要的模型。勾选顺序即优先级，第一个为默认模型。' }),
+        h('div', { class: 'pe-fetch-row' }, fetchBtn, fetchState),
+        h('div', { class: 'mp-picked' },
+          h('div', { class: 'mp-picked-head' }, h('span', { class: 'mp-picked-title', text: '已选模型' }), pickedCount),
+          chipsEl
+        ),
+        pickerEl,
+        h('div', { class: 'pe-manual-row' }, manualIn,
+          h('button', { class: 'btn btn-sm', type: 'button', text: '添加', on: { click: addManual } }))
+      )
     );
 
     const footer = h(
@@ -664,10 +756,14 @@ export function renderSettings(container, ctx) {
             const payload = {
               name: name.value.trim(),
               base_url: baseUrl.value.trim(),
-              models: models.value.split('\n').map((m) => m.trim()).filter(Boolean)
+              models: selected.slice()
             };
             if (!payload.name) {
               toast('请填写供应商名称', { tone: 'danger' });
+              return;
+            }
+            if (!payload.models.length) {
+              toast('请至少选择 1 个模型（拉取或手动添加）', { tone: 'danger' });
               return;
             }
             if (apiKey.value.trim()) payload.api_key = apiKey.value.trim();
@@ -684,7 +780,7 @@ export function renderSettings(container, ctx) {
         }
       })
     );
-    const modal = openModal({ title: existing ? `编辑 ${existing.name}` : '添加模型供应商', body, footer, size: 'md' });
+    const modal = openModal({ title: existing ? `编辑 ${existing.name}` : '添加模型供应商', body, footer, size: 'lg' });
   }
 
   function fieldRow(label, control, extra = '', hint = '') {
@@ -1186,9 +1282,125 @@ export function renderSettings(container, ctx) {
   /* ----------------------------------------------------------- 高级 */
 
   /* ----------------------------------------------------------- 系统日志 */
+  /* v4.19.0：分两层——系统级操作日志（设置/供应商/技能/岗位/服务启停等系统侧
+     动作流水，支持按类别过滤与关键词搜索）在前；会话级创作状态与服务端日志在后。 */
 
+  const OPS_KINDS = [
+    { key: '', label: '全部' },
+    { key: 'system', label: '系统' },
+    { key: 'settings', label: '设置' },
+    { key: 'provider', label: '供应商' },
+    { key: 'skill', label: '技能' },
+    { key: 'agent', label: '岗位' },
+    { key: 'penname', label: '笔名' }
+  ];
+  const OPS_KIND_LABEL = Object.fromEntries(OPS_KINDS.map((k) => [k.key, k.label]));
+
+  const opsBody = h('div', {});
   const logBody = h('div', {});
-  panes.syslog.append(logBody);
+  panes.syslog.append(opsBody, logBody);
+
+  let opsKind = '';
+  let opsQ = '';
+  let opsData = null;   // {items, total}
+
+  function opsRow(e) {
+    const wrap = h('div', { class: 'ops-entry' });
+    const row = h('div', { class: 'ops-row' },
+      h('span', { class: 'ops-time mono', text: String(e.time || '').slice(5, 19) || '—' }),
+      h('span', { class: 'ops-badge', dataset: { kind: e.kind || 'system' }, text: OPS_KIND_LABEL[e.kind] || e.kind || '系统' }),
+      h('span', { class: 'ops-summary', text: e.summary || e.action || '' })
+    );
+    let detail = null;
+    const hasDetail = e.detail != null && (typeof e.detail !== 'object' || Object.keys(e.detail).length > 0);
+    if (hasDetail) {
+      detail = h('pre', { class: 'ops-detail', style: 'display:none', text: JSON.stringify(e.detail, null, 2) });
+      row.classList.add('ops-expandable');
+      row.title = '点击展开/收起详情';
+      row.addEventListener('click', () => {
+        const show = detail.style.display === 'none';
+        detail.style.display = show ? '' : 'none';
+      });
+    }
+    wrap.append(row);
+    if (detail) wrap.append(detail);
+    return wrap;
+  }
+
+  function paintOps() {
+    opsBody.textContent = '';
+    opsBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '系统操作日志' }),
+          h('div', { class: 'set-row-desc', text: '系统侧全部动作的流水：服务启停、设置变更、供应商增删改、技能添加/删除、岗位调整、笔名管理。点击条目可展开详情。' })
+        ),
+        h('div', { class: 'set-control' },
+          h('button', { class: 'btn btn-sm', type: 'button', text: '清空', on: { click: clearOps } }),
+          h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => loadOps() } })
+        )
+      ),
+      h('div', { class: 'ops-chips' },
+        OPS_KINDS.map((k) => h('button', {
+          class: 'ops-chip', type: 'button',
+          'aria-pressed': opsKind === k.key ? 'true' : 'false',
+          text: k.label,
+          on: { click: () => { opsKind = k.key; loadOps(); } }
+        }))
+      )
+    );
+    const search = h('input', {
+      class: 'input ops-search', type: 'search',
+      placeholder: '搜索日志内容，例如：供应商、质量门禁、技能…',
+      value: opsQ, 'aria-label': '搜索系统日志'
+    });
+    let deb;
+    search.addEventListener('input', () => {
+      clearTimeout(deb);
+      deb = setTimeout(() => { opsQ = search.value.trim(); loadOps(); }, 350);
+    });
+    opsBody.append(search);
+
+    const list = h('div', { class: 'set-list ops-list' });
+    if (!opsData) {
+      list.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-60' })));
+    } else if (!opsData.items.length) {
+      list.append(h('div', { class: 'hint-text ops-empty', text: '暂无记录。系统侧的动作（改设置、配模型、加技能…）都会自动记录在这里。' }));
+    } else {
+      for (const e of opsData.items) list.append(opsRow(e));
+      if (opsData.total > opsData.items.length) {
+        list.append(h('div', { class: 'hint-text ops-more', text: `仅显示最近 ${opsData.items.length} 条（共 ${opsData.total} 条）` }));
+      }
+    }
+    opsBody.append(list);
+  }
+
+  async function loadOps() {
+    try {
+      opsData = await api.syslog({ kind: opsKind, q: opsQ, limit: 200 });
+    } catch {
+      opsData = { items: [], total: 0 };
+    }
+    if (view.isConnected) paintOps();
+  }
+
+  async function clearOps() {
+    const ok = await confirmDialog({
+      title: '清空系统操作日志？',
+      message: '将删除全部系统级操作记录（会话级创作日志不受影响），此操作不可恢复。',
+      confirmText: '清空',
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await api.syslogClear();
+      opsQ = ''; opsKind = '';
+      await loadOps();
+      toast('已清空', { duration: 1600 });
+    } catch (err) {
+      toast(errorText(err, '清空失败'), { tone: 'danger' });
+    }
+  }
 
   function paintSyslog(data) {
     logBody.textContent = '';
@@ -1221,7 +1433,7 @@ export function renderSettings(container, ctx) {
 
     // 各书状态列表（卡住的置顶标红）
     const books = [...(data.books || [])].sort((a, b) => (b.stalled_seconds || 0) - (a.stalled_seconds || 0));
-    logBody.append(h('div', { class: 'set-group-subhead', text: '作品创作状态（卡住的排最前）' }));
+    logBody.append(h('div', { class: 'set-group-subhead', text: '会话级 · 作品创作状态（卡住的排最前）' }));
     const wrap = h('div', { class: 'set-list' });
     for (const b of books) {
       const stalled = b.stalled_seconds ? `  ⚠️ 疑似卡住 ${Math.round(b.stalled_seconds / 60)} 分钟` : '';
@@ -1255,6 +1467,7 @@ export function renderSettings(container, ctx) {
   }
 
   async function loadSyslog() {
+    loadOps();   // v4.19.0：系统级日志与会话级诊断一并刷新
     logBody.textContent = '';
     logBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-40' })));
     try {

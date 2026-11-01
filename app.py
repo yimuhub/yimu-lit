@@ -12,6 +12,7 @@ from bot import prose_writer, slop_checker, security, jobs, versions, platforms
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
+from bot import syslog as syslog_mod
 from bot import export as export_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -35,6 +36,8 @@ _GREETING_REPLY = (
 
 @asynccontextmanager
 async def _lifespan(_app):
+    syslog_mod.log_event("system", "服务启动", {"version": version.current(), "platform": f"{os.name}/{sys.platform}"},
+                         f"服务启动（v{version.current()}）")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     # v3.1.0：启动时后台恢复「校验中/放行中但线程已死」的书（服务重启遗留卡死）
     def _recover():
@@ -995,6 +998,8 @@ def api_provider_fetch_models(pid: str):
         got = providers.fetch_models(pid)
         if got:
             providers.update_provider(pid, {"models": got})
+            syslog_mod.log_event("provider", "刷新模型清单", {"id": pid, "count": len(got)},
+                                 f"从接口刷新供应商「{pid}」模型清单（{len(got)} 个）")
             return {"ok": True, "models": got, "from_api": True}
         return {"ok": False, "models": providers.get_models(pid), "from_api": False,
                 "msg": "该供应商未开放 /models，请手动填写模型清单"}
@@ -1011,6 +1016,9 @@ def api_model_options():
 def api_provider_add(payload: dict):
     try:
         p = providers.add_provider(payload)
+        syslog_mod.log_event("provider", "添加供应商",
+                             {"id": p.get("id"), "base_url": p.get("base_url"), "models": (p.get("models") or [])[:8]},
+                             f"添加供应商「{p.get('name') or p.get('id')}」（{len(p.get('models') or [])} 个模型）")
         return {"ok": True, "provider": p}
     except providers.ProviderError as e:
         return _prov_err(e)
@@ -1019,6 +1027,11 @@ def api_provider_add(payload: dict):
 def api_provider_update(pid: str, payload: dict):
     try:
         p = providers.update_provider(pid, payload)
+        fields = [k for k in payload if k != "api_key"]
+        syslog_mod.log_event("provider", "修改供应商",
+                             {"id": pid, "fields": fields},
+                             f"修改供应商「{p.get('name') or pid}」：{'、'.join(fields) or '无字段变更'}"
+                             + ("（密钥已更新）" if payload.get("api_key") else ""))
         return {"ok": True, "provider": p}
     except providers.ProviderError as e:
         return _prov_err(e)
@@ -1026,14 +1039,18 @@ def api_provider_update(pid: str, payload: dict):
 @app.delete("/api/providers/{pid}")
 def api_provider_delete(pid: str):
     try:
-        return {"ok": True, **providers.remove_provider(pid)}
+        r = providers.remove_provider(pid)
+        syslog_mod.log_event("provider", "删除供应商", {"id": pid}, f"删除供应商「{pid}」")
+        return {"ok": True, **r}
     except providers.ProviderError as e:
         return _prov_err(e)
 
 @app.post("/api/providers/{pid}/default")
 def api_provider_set_default(pid: str):
     try:
-        return {"ok": True, "default_provider": providers.set_default(pid)}
+        r = providers.set_default(pid)
+        syslog_mod.log_event("provider", "设为默认", {"id": pid}, f"把「{pid}」设为默认供应商")
+        return {"ok": True, "default_provider": r}
     except providers.ProviderError as e:
         return _prov_err(e)
 
@@ -1041,6 +1058,9 @@ def api_provider_set_default(pid: str):
 def api_provider_set_active(pid: str, payload: dict):
     try:
         p = providers.set_active(pid, payload.get("active", True))
+        on = payload.get("active", True)
+        syslog_mod.log_event("provider", "启用/停用", {"id": pid, "active": bool(on)},
+                             f"{'启用' if on else '停用'}供应商「{p.get('name') or pid}」")
         return {"ok": True, "provider": p}
     except providers.ProviderError as e:
         return _prov_err(e)
@@ -1048,7 +1068,11 @@ def api_provider_set_active(pid: str, payload: dict):
 @app.post("/api/providers/{pid}/test")
 def api_provider_test(pid: str, payload: dict = None):
     try:
-        return providers.test_provider(pid, probe_chat=(payload or {}).get("probe_chat", True))
+        r = providers.test_provider(pid, probe_chat=(payload or {}).get("probe_chat", True))
+        syslog_mod.log_event("provider", "测试连接",
+                             {"id": pid, "ok": bool(r.get("ok", True)), "detail": str(r.get("detail") or "")[:120]},
+                             f"测试供应商「{pid}」连接{'成功' if r.get('ok', True) else '失败'}：{str(r.get('detail') or '')[:80]}")
+        return r
     except providers.ProviderError as e:
         return _prov_err(e)
 
@@ -1932,6 +1956,7 @@ def api_restart(request: Request):
     """重启服务（自更新后调用）。v4.15.18：-m uvicorn 方式（脚本路径方式会遮蔽标准库）+ 端口取自当前请求。"""
     import sys as _sys, subprocess as _sp
     _port = request.url.port or int(os.environ.get("NOVEL_BOT_PORT") or 46821)
+    syslog_mod.log_event("system", "重启服务", {"port": _port}, "手动重启服务")
     _uv = [ _sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(_port) ]
     # v4.15.18：新进程延迟 2.5 秒再绑定端口——旧进程 timer 0.6s 后退出，避免 address in use 竞争
     if _sys.platform == "win32":
@@ -2031,6 +2056,24 @@ def api_diagnostics():
             "books": books, "server_tail": server_tail, "llm_state": llm_state,
             "providers": prov_summary, "llm_errors": llm_errors}
 
+
+# ---------- v4.19.0：系统级操作日志（设置/供应商/技能/岗位/启停等系统侧流水） ----------
+
+@app.get("/api/syslog")
+def api_syslog(kind: str = "", q: str = "", limit: int = 300):
+    """系统级操作日志：最新在前。kind 过滤一类；q 关键词过滤。"""
+    return {"ok": True, "total": syslog_mod.count(), "items": syslog_mod.tail(limit=limit, kind=kind, q=q)}
+
+
+@app.post("/api/syslog/clear")
+def api_syslog_clear():
+    # 先删文件、再重新落一条「清空」留痕（先记会被 clear 一起删掉）
+    syslog_mod.clear()
+    syslog_mod.log_event("system", "清空日志", None, "清空系统操作日志")
+    return {"ok": True}
+
+
+# ---------- v4.19.0：会话级创作日志（原有 运行日志.txt / chat_log.jsonl）的统一说明见 /api/diagnostics ----------
 
 _PARA_RW_RUNNING: dict = {}
 
@@ -2668,6 +2711,7 @@ def api_settings():
 def api_settings_save(payload: dict):
     """收口关键开关：审稿强度、token 预算、Lorebook 检索、调用日志、对话压缩。"""
     cf = os.path.join(ROOT, "config.json")
+    before = api_settings()   # v4.19.0：留存旧值，保存后对比差异写系统日志
     try:
         cfg = json.load(open(cf, encoding="utf-8")) if os.path.exists(cf) else {}
     except Exception:
@@ -2702,6 +2746,12 @@ def api_settings_save(payload: dict):
     if "score_model" in payload:
         d["score_model"] = str(payload.get("score_model") or "").strip()[:80]
     atomic_write_json(cf, cfg)
+    after = api_settings()
+    changed = {k: {"旧值": before.get(k), "新值": after.get(k)}
+               for k in payload if k in before and before.get(k) != after.get(k)}
+    if changed:
+        syslog_mod.log_event("settings", "修改设置", changed,
+                             "修改设置：" + "、".join(changed.keys()))
     return api_settings()
 
 
@@ -2731,6 +2781,9 @@ def _save_pennames(pennames: dict) -> dict:
         cfg = {}
     cfg.setdefault(_PENNAME_CFG_KEY, {}).update(pennames or {})
     atomic_write_json(cf, cfg)
+    syslog_mod.log_event("penname", "保存笔名",
+                         {"count": len(pennames.get("list") or []), "default": pennames.get("default") or ""},
+                         f"保存笔名配置（{len(pennames.get('list') or [])} 个笔名）")
     return _load_pennames()
 
 
@@ -2781,6 +2834,7 @@ def api_pennames_delete(payload: dict):
     if saved.get("default") == name:
         saved["default"] = saved["list"][0]["name"] if saved["list"] else ""
     _save_pennames(saved)
+    syslog_mod.log_event("penname", "删除笔名", {"name": name}, f"删除笔名「{name}」")
     return {"ok": True, **saved}
 
 @app.get("/api/titles")
@@ -3504,6 +3558,9 @@ def api_agents_add(payload: dict):
                 label = desc[:8]
                 stage = "writing"
         result = _ag.add_agent(name, desc, stage=stage, skills=skills, label=label)
+        syslog_mod.log_event("agent", "添加岗位",
+                             {"name": name, "label": label or name, "stage": stage},
+                             f"添加自定义岗位「{label or name}」")
         return {"ok": True, "agent": result, "name": name}
     except Exception as e:
         return JSONResponse({"error": f"添加 Agent 失败：{e}"}, status_code=500)
@@ -3513,6 +3570,11 @@ def api_agents_add(payload: dict):
 def api_agents_set(payload: dict):
     """v0.5 M4：给某子 Agent 单独配 provider/model（留空=回落 stage/默认）。"""
     am = agents.set_binding(payload.get("agent"), payload.get("provider_id"), payload.get("model"))
+    _m = str(payload.get("model") or "").strip()
+    _p = str(payload.get("provider_id") or "").strip()
+    syslog_mod.log_event("agent", "岗位改模型",
+                         {"agent": payload.get("agent"), "provider_id": _p, "model": _m},
+                         f"岗位「{payload.get('agent')}」模型改为 {_m or _p or '阶段/默认'}")
     return {"ok": True, "agent_models": am}
 
 @app.post("/api/agents-skills")
@@ -3523,12 +3585,19 @@ def api_agents_skills(payload: dict):
         agents.set_skills(payload.get("agent"), payload.get("skills"))
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    _n = len(payload.get("skills") or [])
+    syslog_mod.log_event("agent", "岗位绑技能",
+                         {"agent": payload.get("agent"), "count": _n, "skills": list(payload.get("skills") or [])[:10]},
+                         f"岗位「{payload.get('agent')}」绑定 {_n} 个技能")
     return {"ok": True, "agent": payload.get("agent"), "skills": agents.skills_for(payload.get("agent"))}
 
 @app.post("/api/agents-maxglobal")
 def api_agents_maxglobal(payload: dict):
     """v0.5 M4：设全局并发上限（多 Agent/多书同时创作时的在飞上限）。"""
-    return {"ok": True, "max_global_agents": agents.set_max_global(int(payload.get("n", 4)))}
+    _n = int(payload.get("n", 4))
+    _v = agents.set_max_global(_n)
+    syslog_mod.log_event("agent", "改并发上限", {"max_global_agents": _v}, f"全局并发上限改为 {_v}")
+    return {"ok": True, "max_global_agents": _v}
 
 @app.post("/api/agents-dispatch")
 def api_agents_dispatch(payload: dict):
@@ -4041,6 +4110,9 @@ async def api_skillkit_add(payload: dict):
     with open(fpath, "w", encoding="utf-8") as f:
         f.write("\n".join(fm) + "\n" + content + "\n")
     skillkit.reload()
+    syslog_mod.log_event("skill", "添加技能",
+                         {"name": f"custom-{name}", "file": os.path.relpath(fpath, ROOT), "medium": media, "stages": stages},
+                         f"添加自定义技能「{title}」")
     return {"ok": True, "path": os.path.relpath(fpath, ROOT), "name": f"custom-{name}"}
 
 
@@ -4053,6 +4125,7 @@ async def api_skillkit_del(name: str):
         return JSONResponse({"error": "自定义技能不存在"}, status_code=404)
     os.remove(fpath)
     skillkit.reload()
+    syslog_mod.log_event("skill", "删除技能", {"name": f"custom-{safe}"}, f"删除自定义技能「{safe}」")
     return {"ok": True}
 
 

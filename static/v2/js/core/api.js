@@ -411,6 +411,8 @@ export const api = {
   fixConsistencyAll: (key) => request('/api/fix-consistency-all', jsonBody({ key })),
   fetchModels: (payload) => request('/api/providers/fetch-models', jsonBody(payload)),
   diagnostics: () => request('/api/diagnostics'),
+  syslog: (params = {}) => request('/api/syslog', { query: params }),
+  syslogClear: () => request('/api/syslog/clear', jsonBody({})),
   bookAgents: (key) => request('/api/book-agents', { query: { key } }),
   setBookAgents: (payload) => request('/api/book-agents', jsonBody(payload)),
   selfUpdate: () => request('/api/self-update', jsonBody({}), { timeout: 180000 }),

@@ -1243,3 +1243,309 @@
 .wiz-field-ai-row { display: flex; gap: 6px; align-items: flex-start; }
 .wiz-field-ai-row > .input, .wiz-field-ai-row > .textarea { flex: 1; min-width: 0; }
 .wiz-field-ai-row > .btn { flex: none; margin-top: 2px; white-space: nowrap; }
+
+/* ================= v4.19.0 供应商编辑：分区表单 + 模型复选选择器 ================= */
+
+.prov-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.pe-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pe-sec-title {
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.pe-sec-hint {
+  color: var(--ink-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pe-fetch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pe-fetch-state {
+  color: var(--ink-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+  min-width: 0;
+}
+
+.pe-fetch-state[data-tone="success"] { color: var(--success); }
+.pe-fetch-state[data-tone="warn"] { color: var(--warn-label); }
+.pe-fetch-state[data-tone="danger"] { color: var(--danger); }
+
+/* 已选模型 chips */
+.mp-picked {
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  padding: 9px 11px;
+  background: var(--bg-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.mp-picked-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mp-picked-title {
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mp-count {
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mp-chip {
+  align-items: center;
+  background: var(--bg-chip);
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  color: var(--ink-primary);
+  display: inline-flex;
+  font-size: 11.5px;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 5px 2px 9px;
+}
+
+.mp-chip[data-default="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.mp-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mp-chip-badge {
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  color: var(--accent-contrast);
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.mp-chip-btn {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: inherit;
+  cursor: pointer;
+  flex: none;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.65;
+  padding: 2px 4px;
+}
+
+.mp-chip-btn:hover { opacity: 1; }
+
+/* 候选模型列表（复选框勾选） */
+.mp-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mp-search { flex: 1; min-width: 0; }
+
+.mp-act { flex: none; }
+
+.mp-list {
+  background: var(--bg-sunken);
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.mp-item {
+  align-items: center;
+  border-bottom: 0.5px solid var(--line-1);
+  color: var(--ink-primary);
+  cursor: pointer;
+  display: flex;
+  font-size: 12.5px;
+  gap: 9px;
+  padding: 6px 11px;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.mp-item:last-child { border-bottom: 0; }
+
+.mp-item:hover { background: var(--hover); }
+
+.mp-item[data-on="true"] { background: var(--accent-soft); }
+
+.mp-item input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: none;
+  height: 14px;
+  margin: 0;
+  width: 14px;
+}
+
+.mp-item .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mp-empty {
+  color: var(--ink-tertiary);
+  font-size: 12px;
+  padding: 16px 11px;
+  text-align: center;
+}
+
+.pe-manual-row {
+  display: flex;
+  gap: 8px;
+}
+
+.pe-manual-row .mp-manual { flex: 1; min-width: 0; }
+
+/* ================= v4.19.0 系统日志：系统级操作流水 ================= */
+
+.ops-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ops-chip {
+  background: var(--bg-chip);
+  border: 0.5px solid transparent;
+  border-radius: var(--radius-pill);
+  color: var(--ink-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 12px;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.ops-chip:hover { background: var(--hover); color: var(--ink-primary); }
+
+.ops-chip[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.ops-search { margin-top: 8px; }
+
+.ops-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ops-entry {
+  border-bottom: 0.5px solid var(--line-1);
+}
+
+.ops-entry:last-child { border-bottom: 0; }
+
+.ops-row {
+  align-items: center;
+  display: flex;
+  font-size: 12.5px;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 4px;
+}
+
+.ops-row.ops-expandable { cursor: pointer; }
+.ops-row.ops-expandable:hover .ops-summary { color: var(--ink-primary); }
+
+.ops-time {
+  color: var(--ink-caption);
+  flex: none;
+  font-size: 11px;
+}
+
+.ops-badge {
+  border-radius: var(--radius-xs);
+  flex: none;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 6px;
+}
+
+.ops-badge[data-kind="system"] { background: var(--bg-chip); color: var(--ink-secondary); }
+.ops-badge[data-kind="settings"] { background: var(--accent-soft); color: var(--accent-ink); }
+.ops-badge[data-kind="provider"] { background: var(--info-soft); color: var(--accent-ink); }
+.ops-badge[data-kind="skill"] { background: var(--success-soft); color: var(--success); }
+.ops-badge[data-kind="agent"] { background: var(--warn-soft); color: var(--warn-label); }
+.ops-badge[data-kind="penname"] { background: var(--bg-chip); color: var(--ink-secondary); }
+
+.ops-summary {
+  color: var(--ink-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-detail {
+  background: var(--code-fill);
+  border: 0.5px solid var(--line-1);
+  border-radius: var(--radius-sm);
+  color: var(--ink-secondary);
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 0 0 8px 4px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 9px 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ops-empty { padding: 12px 4px; }
+.ops-more { padding: 6px 4px; }
