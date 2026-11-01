@@ -148,6 +148,8 @@ export function renderSession(container, ctx = {}) {
         patchChat((cs) => {
           // 正在流式输出的对话不覆盖；其余情况以落盘记录为准全量替换
           if (cs.streaming) return cs;
+          // v4.21.6：按时间正序重排（历史章节卡回填的时间戳可能乱序）
+          res.items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
           const msgs = res.items.map((item, i) => {
             const base = {
               id: `hist_${i}_${item.ts || 0}`,

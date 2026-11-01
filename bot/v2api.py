@@ -114,6 +114,65 @@ def _load_chat_log(proj, limit: int = 500) -> list:
     """读取项目的聊天历史。"""
     return _read_jsonl(_chat_log_path(proj), limit=limit)
 
+def _backfill_chapter_records(proj):
+    """v4.21.6：补齐缺失的章节完成卡记录（type=chapter）。
+    活动流改版前/旧版本完成的章节没有留档，导致对话里看不到章节卡；
+    加载历史时幂等回填（已有记录的章号跳过），一次性补齐历史章节。"""
+    try:
+        # 注意：_clean_chapter_text 定义在 bot.writer（v2api 内只有别的函数的懒导入，
+        # 模块命名空间里没有）——必须显式导入，否则 NameError 被吞、回填静默失败。
+        from bot.writer import _clean_chapter_text
+        plan = proj.plan() or {}
+        chs = [c for c in (plan.get("chapters") or []) if c.get("status") == "completed"]
+        if not chs:
+            return
+        existing = set()
+        for rec in _load_chat_log(proj, limit=5000):
+            if isinstance(rec, dict) and rec.get("type") == "chapter" and rec.get("no") is not None:
+                try:
+                    existing.add(int(rec["no"]))
+                except (TypeError, ValueError):
+                    pass
+        meta_scores = (plan.get("meta") or {}).get("chapter_scores") or {}
+        added = 0
+        for c in sorted(chs, key=lambda x: x.get("chapterNumber") or 0):
+            no = c.get("chapterNumber")
+            try:
+                no = int(no)
+            except (TypeError, ValueError):
+                continue
+            if no in existing:
+                continue
+            fp = os.path.join(proj.path, c.get("filePath") or "")
+            if not os.path.isfile(fp):
+                continue
+            try:
+                raw = open(fp, encoding="utf-8", errors="replace").read()
+            except Exception:
+                continue
+            body = _clean_chapter_text(raw)
+            if len(body.strip()) < 200:   # 空章不生成卡
+                continue
+            sc = (meta_scores.get(str(no)) or {}).get("score")
+            # ts 用章节真实完成时间（回放排序需要时间正序；解析失败用当前时间）
+            try:
+                import datetime as _dt
+                _ts = int(_dt.datetime.fromisoformat(c.get("completedAt")).timestamp()) if c.get("completedAt") else int(_dt.datetime.now().timestamp())
+            except Exception:
+                _ts = int(_dt.datetime.now().timestamp()) if True else 0
+            _save_chat_msg(proj, "assistant", body, {"type": "chapter", "no": no,
+                "title": c.get("title") or f"第{no}章", "words": c.get("wordCount"),
+                "tokens": c.get("tokens"), "quality": sc, "ts": _ts,
+                "completedAt": c.get("completedAt") or ""})
+            added += 1
+        if added:
+            try:
+                proj.log(f"📚 已回填 {added} 张章节完成卡到对话流（历史章节补档）")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 def _project(get_project, key):
     """定位项目；返回 (proj, None) 或 (None, 响应)。"""
@@ -1564,6 +1623,7 @@ def register_v2_routes(app, get_project, chat_func=None):
         proj, err = _project(get_project, key)
         if err:
             return err
+        _backfill_chapter_records(proj)   # v4.21.6：历史章节卡补档（幂等）
         items = _load_chat_log(proj, limit=5000)
         return {"ok": True, "items": items}
 
