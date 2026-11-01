@@ -1698,9 +1698,11 @@ async function openParallelRewrite(key, ctx) {
       h('span', { class: 'field-label', text: '并行岗位数（1-8）' }), numInput));
   let modal;   // v4.17.4：此前 footer 里引用未定义的 modal → 取消/启动点击即 ReferenceError
   const footer = h('div', { class: 'set-actions' },
-    h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => {
+    h('button', { class: 'btn', type: 'button', text: '取消', on: { click: (ev) => {
       try { modal.close(); } catch {}
-      document.querySelector('.rp-modal-overlay')?.remove();   // 兜底：确保总能关掉
+      // v4.17.5：精确移除自身所在 overlay（querySelector 取第一个可能移错层）
+      const self = ev.currentTarget ? ev.currentTarget.closest('.rp-modal-overlay') : null;
+      (self || ev.target.closest('.rp-modal-overlay'))?.remove();
     } } }),
     h('button', { class: 'btn btn-primary', type: 'button', text: '⚡ 开始并行改写', on: {
       click: async () => {
