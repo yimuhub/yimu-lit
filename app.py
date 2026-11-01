@@ -709,7 +709,7 @@ def _chat_group_llm(s, context, question, at_names, name):
             resp = llm.chat([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question}
-            ], cfg=plan.get("config") or {})
+            ], cfg={})   # v4.17.4 修复：_chat_group_llm 无 plan 上下文，此前引用未定义的 plan → @Agent 群聊偶发 NameError
             text = resp.strip() if isinstance(resp, str) else str(resp).strip()
             if text:
                 replies.append(f"【{label}】{text}")
@@ -1786,12 +1786,12 @@ _FIXABLE_REWRITE_RE = re.compile(r"第(\d+)章")
 def _consistency_fix_one(key: str, issue: str) -> dict:
     """单个体检问题的修复：先确定性修复（continuity.fix），改稿类自动升级 LLM 定向重写。"""
     from bot import continuity as _cont
-    res = _cont.fix(_project_dir(key), issue)
+    res = _cont.fix(writer._project_dir(key), issue)   # v4.17.4：此前引用未定义的 _project_dir → 一键修复 NameError
     actions = list(res.get("actions") or [])
     if not res.get("fixed"):
         # 改稿类：定位章号（无章号则取最近完成章），启动定向重写（后台，状态进 _REWRITING）
         m = _FIXABLE_REWRITE_RE.search(issue)
-        plan = writer.Project(_project_dir(key), key).plan() or {}
+        plan = writer.Project(writer._project_dir(key), key).plan() or {}
         no = int(m.group(1)) if m else max(
             [c.get("chapterNumber") or 0 for c in (plan.get("chapters") or [])
              if c.get("status") == "completed"] or [0])
@@ -2080,9 +2080,9 @@ def api_chapter_scores(key: str):
 
 
 @app.get("/api/book-agents")
-def api_book_agents(key: str):
+def api_book_agents(key: str = ""):
     """本书绑定的创作岗位（plan.config.agents）。"""
-    proj = _get_project(key)
+    proj = _get_project(key) if key else None
     if not proj:
         return JSONResponse({"error": "作品不存在"}, status_code=404)
     plan = proj.plan() or {}
@@ -2205,9 +2205,10 @@ def api_check_update():
 def api_fix_consistency_all(payload: dict):
     """全部一键修复：确定性修复批量执行；改稿类合并为一次定向重写（后台）。"""
     key = str(payload.get("key") or "")
-    proj = _get_project(key) if key else _current_proj()
+    # v4.17.4：修复引用未定义的 _current_proj（缺 key 明确报错）
+    proj = _get_project(key) if key else None
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "作品不存在或缺少 key"}, status_code=404)
     key = os.path.basename(proj.path)
     fp = os.path.join(proj.path, "22-规划体检.json")
     issues: list[str] = []
@@ -3483,7 +3484,7 @@ def api_agents_add(payload: dict):
 描述：{desc}
 返回格式：{{"name": "english_key", "label": "中文名称", "stage": "planning|writing|review", "skills": []}}
 注意：name 用英文下划线格式，label 用中文，stage 选最匹配的阶段。"""
-                res = _llm.chat_json([{"role": "user", "content": prompt}], cfg=_cfg())
+                res = _llm.chat_json([{"role": "user", "content": prompt}], cfg=None)   # v4.17.4：此前引用未定义的 _cfg() → 自然语言建 Agent 必失败
                 if isinstance(res, dict):
                     name = res.get("name", "")
                     label = res.get("label", desc[:8])

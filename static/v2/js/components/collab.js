@@ -507,7 +507,8 @@ export function createCollabPanel(ctx) {
         } }))
     ));
     sec.append(bookAgentsBody);
-    const paintBookAgents = (bookAgents) => {
+    const paintBookAgents = (bookAgents, bookKey) => {
+      const key = bookKey || store.get().currentKey;   // v4.17.4：此前引用未定义的 key → 移除按钮静默失败
       bookAgentsBody.textContent = '';
       if (!bookAgents.length) {
         bookAgentsBody.append(h('div', { class: 'hint-text',
@@ -530,13 +531,14 @@ export function createCollabPanel(ctx) {
         ));
       }
     };
-    // 拉取本书绑定并渲染（与岗位列表并行）
+    // 拉取本书绑定并渲染（与岗位列表并行）；v4.17.4 修复：此前 paintBookAgents/IIFE 引用未定义的 key → 移除按钮静默失败
+    const bookKey = store.get().currentKey;
     (async () => {
       try {
-        const ba = await api.bookAgents(key);
-        paintBookAgents((ba && ba.agents) || []);
+        const ba = await api.bookAgents(bookKey);
+        paintBookAgents((ba && ba.agents) || [], bookKey);
       } catch {
-        paintBookAgents([]);
+        paintBookAgents([], bookKey);
       }
     })();
     async function openBookAgentDialog() {

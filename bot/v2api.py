@@ -1277,11 +1277,7 @@ def register_v2_routes(app, get_project, chat_func=None):
     def api_fix_consistency(payload: dict):
         key = str(payload.get("key") or payload.get("id") or "")
         if not key:
-            proj = _current_proj()
-            if proj:
-                key = proj.key
-        if not key:
-            return _bad("缺少 key")
+            return _bad("缺少 key")   # v4.17.4：修复引用未定义的 _current_proj
         proj = get_project(key)
         if not proj:
             return _bad("作品不存在", 404)
@@ -1313,10 +1309,6 @@ def register_v2_routes(app, get_project, chat_func=None):
         """v4.17.1 重构：强制重新评分（不再被旧报告挡住）+ 异步进度上报。
         评分走 validate_project 全流程（L1 → 分层采样评审 → 双轨合成 → 质量报告）。"""
         key = str(payload.get("key") or "")
-        if not key:
-            proj = _current_proj()
-            if proj:
-                key = proj.key
         if not key:
             return _bad("缺少 key")
         proj = get_project(key)

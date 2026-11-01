@@ -305,7 +305,7 @@ function showQualityDetail(ctx, work) {
                 const q = pr.score;
                 const rwBtn = h('button', { class: 'btn btn-primary btn-sm', type: 'button',
                   style: 'margin-top:12px', text: '⚡ 多岗位并行改写低分章', on: {
-                  click: () => openParallelRewrite(key) } });
+                  click: () => openParallelRewrite(key, ctx) } });
                 resultBox.append(h('div', { style: 'text-align:center;padding:14px 0' },
                   h('div', { style: 'font-size:34px;font-weight:700;color:var(--accent,#C73A32)',
                              text: q != null ? `${q} 分` : '完成' }),
@@ -334,7 +334,7 @@ function showQualityDetail(ctx, work) {
     ));
     body.append(h('div', { class: 'rp-modal-foot', style: 'margin-top:12px' },
       h('button', { class: 'btn btn-primary btn-sm', type: 'button', text: '⚡ 查看章节评分 / 改写低分章', on: {
-        click: () => openParallelRewrite(store.get().currentKey) } })));
+        click: () => openParallelRewrite(store.get().currentKey, ctx) } })));
   }
   _modalBox('质量评分详情', body);
 }
@@ -1637,7 +1637,7 @@ function auditSection(ctx, payload) {
 }
 
 /* v4.17.2：多岗位并行改写弹窗——低分章清单 + 岗位数选择 + 启动与进度 */
-async function openParallelRewrite(key) {
+async function openParallelRewrite(key, ctx) {
   try {
     const prog = await api.rewriteParallelProgress(key);
     if (prog.rw_running) { toast('该书已有改写任务在跑，请稍候', { tone: 'warn' }); return; }
@@ -1670,6 +1670,7 @@ async function openParallelRewrite(key) {
     listWrap,
     h('div', { class: 'field', style: 'margin-top:10px' },
       h('span', { class: 'field-label', text: '并行岗位数（1-8）' }), numInput));
+  let modal;   // v4.17.4：此前 footer 里引用未定义的 modal → 取消/启动点击即 ReferenceError
   const footer = h('div', { class: 'set-actions' },
     h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
     h('button', { class: 'btn btn-primary', type: 'button', text: '⚡ 开始并行改写', on: {
@@ -1706,7 +1707,8 @@ async function openParallelRewrite(key) {
                               content: `⚡ 并行改写完成：${results.filter((r) => r.kept).length}/${results.length} 章提分。\n${lines.join('\n')}\n\n未提分的章节已回滚原稿（质量只进不退）。可再次评分查看总分变化。` });
                   return { ...st, chat: { ...(st.chat || {}), messages: msgs } };
                 });
-                ctx.refreshState?.(); ctx.refreshLibrary?.();
+                if (ctx && ctx.refreshState) try { ctx.refreshState(); } catch {}
+                if (ctx && ctx.refreshLibrary) try { ctx.refreshLibrary(); } catch {}
               }
             } catch { /* 轮询失败下次再试 */ }
           }, 4000);
@@ -1716,7 +1718,7 @@ async function openParallelRewrite(key) {
       }
     } })
   );
-  _modalBox('多岗位并行改写', body, { footer });
+  modal = _modalBox('多岗位并行改写', body, { footer });
 }
 
 function statePane(ctx) {
