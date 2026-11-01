@@ -872,7 +872,12 @@ export function renderSession(container, ctx = {}) {
     }
     const fresh = items.filter((it) => {
       const no = Number(it && it.no) || 0;
-      return it && no > lastStepNo && !seen.has(no);
+      if (!it || no <= lastStepNo || seen.has(no)) return false;
+      /* v4.21.6：作家「（正文全文）」事件不再回放为朴素卡——其内容由章节完成卡承载 */
+      if (it.agent === 'writer' && /（正文全文）$/.test(String(it.title || '')) && Number(it.chapter) > 0) {
+        return false;
+      }
+      return true;
     });
     if (!fresh.length) return;
     lastStepNo = maxStepNo(items);
@@ -981,6 +986,31 @@ export function renderSession(container, ctx = {}) {
       const msg = state.chat.messages.find((m) => m.id === streamMsgId);
       if (msg && msg.step && msg.step.streaming) {
         const durationMs = Math.max(0, Date.now() - (Number(msg.step.ts) || 0) * 1000);
+        /* v4.21.6：作家正文流完成 → 直接转回「原版章节完成卡」（renderChapterCard 渲染链：
+           默认收缩显示摘录 + 完成时间/字数，展开看全文，复制本章/从此章分支/章节工作台）。
+           评分在卡生成之后进行，刷新后由落盘记录补上分数。 */
+        if (st.agent === 'writer' && Number(st.chapter) > 0) {
+          const _no = Number(st.chapter);
+          updateMessage(streamMsgId, (m) => ({
+            ...m,
+            kind: undefined,
+            stream: false,
+            chapter: _no,
+            tag: `第${_no}章`,
+            collapsed: true,
+            chapterMeta: {
+              no: _no,
+              title: String(st.title || `第${_no}章`).replace(/^写第\d+章$/, `第${_no}章`),
+              words: Array.from(m.content || '').filter((c) => /[\u4e00-\u9fff]/.test(c)).length,
+              tokens: null,
+              quality: null,
+              ts: String(Math.floor(Date.now() / 1000))
+            }
+          }));
+          streamMsgId = '';
+          scrollIfNear();
+          return;
+        }
         updateMessage(streamMsgId, (m) => ({
           ...m,
           content: st.text || '',

@@ -2008,7 +2008,9 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # 刷新后历史原样重放为章节卡（预览/展开全文/复制全文/从此章分支创作/章节工作台）。
     # v4.21.0 活动流改版后旧 SSE 追章链路停走，此记录无人再写、章节卡一度消失，此处恢复。
     try:
-        from bot.v2api import _save_chat_msg, _clean_chapter_text
+        # 注意：只导入 _save_chat_msg——_clean_chapter_text 用本模块的同名函数，
+        # 在函数内 import 同名会遮蔽模块级定义，导致前文反撞车检查报 free variable 错。
+        from bot.v2api import _save_chat_msg
         _final_score = ((proj.plan().get("meta") or {}).get("chapter_scores") or {}).get(str(no), {}).get("score")
         _save_chat_msg(proj, "assistant", _clean_chapter_text(open(fp, encoding="utf-8").read()),
                        {"type": "chapter", "no": no, "title": ch.get("title") or f"第{no}章",
