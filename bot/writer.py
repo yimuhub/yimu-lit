@@ -1900,8 +1900,23 @@ def _run_layered(proj, mode, max_rounds):
     book_text = _book()
     l1 = continuity.run_project(pdir, min_words=min_words)
     pass_line = int((_cfg_defaults().get("validation") or {}).get("pass_line", workflow.PASS_LINE))
-    review = workflow.five_role_review(book_text, cfg, l1["findings"]) or {}
+    # v4.17.0：超长篇走分层采样评审——此前只读前 3 万字就给全书打分，几百万字的书
+    # 评审只见到开头 3%，必然评出假低分。双轨合成：段评均分×0.6 + 逐章分均分×0.4。
+    _book_cn = len(re.findall(r"[\u4e00-\u9fff]", book_text))
+    if _book_cn > 60000 and _cfg_defaults().get("layered_book_review", True):
+        proj.log(f"📖 超长篇（约 {_book_cn // 10000} 万字）→ 分层采样评审（8 段并行 + 逐章分合成）…")
+        _pcs = [p.get("score") for p in per_chapter_scores(proj) if isinstance(p.get("score"), (int, float))]
+        _ch_avg = (sum(_pcs) / len(_pcs)) if _pcs else None
+        review = workflow.longform_book_review(book_text, cfg, l1["findings"], chapter_avg=_ch_avg) or {}
+        proj.log(f"📊 分层评审完成：段评/逐章合成总分待计（段数 {len((review.get('_meta') or {}).get('slices', []))}）")
+    else:
+        review = workflow.five_role_review(book_text, cfg, l1["findings"]) or {}
     total = workflow.score_dimensions(review.get("scores"))
+    if isinstance((review.get("_meta") or {}).get("blended_total"), (int, float)):
+        # 双轨合成总分作为最终总分（段评均分×0.6 + 逐章分均分×0.4）
+        _blend = review["_meta"]["blended_total"]
+        proj.log(f"📊 双轨合成：段评均分与逐章分加权 → {total} → 最终 {_blend}")
+        total = int(round(_blend))
     fixed = 0
     if mode == "autofix" and total < pass_line:
         for act in (review.get("fix_actions") or [])[:max_rounds]:

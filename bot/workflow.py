@@ -457,6 +457,99 @@ def deslop_chapter(ch_body, ctx, max_findings=15):
 SCORE_WEIGHTS = {"结构": 20, "因果可信": 20, "人物": 15, "连续性": 20, "语言": 15, "读者体验": 10}
 PASS_LINE = 90  # 百分制达标线
 
+def _slice_book(book_md: str, max_chars: int = 26000, max_slices: int = 8):
+    """长篇分段：按「## 」章节边界切块，每块 ≤max_chars；块数超限均匀采样。"""
+    import re as _re
+    parts, cur = [], []
+    cur_len = 0
+    for line in book_md.split("\n"):
+        if _re.match(r"^#{1,2}\s", line) and cur_len > max_chars * 0.5:
+            parts.append("\n".join(cur))
+            cur, cur_len = [line], len(line)
+        else:
+            cur.append(line)
+            cur_len += len(line)
+    if cur:
+        parts.append("\n".join(cur))
+    if len(parts) <= max_slices:
+        return [(i + 1, len(parts), t) for i, t in enumerate(parts)]
+    step = len(parts) / max_slices
+    picked = []
+    for i in range(max_slices):
+        j = min(len(parts) - 1, int(i * step))
+        picked.append((j + 1, len(parts), parts[j]))
+    # 保底：确保结尾段入选（结局质量必须被评到）
+    if picked and picked[-1][0] != len(parts):
+        picked[-1] = (len(parts), len(parts), parts[-1])
+    return picked
+
+
+def longform_book_review(book_md: str, cfg, l1_findings=None, chapter_avg: float | None = None):
+    """v4.17.0：超长篇分层评审——此前 five_role_review 只读前 3 万字就给全书打分，
+    几百万字的书评审只见到开头 3%，必然评出「结构混乱/人物失忆」式的假低分。
+
+    做法：
+    1. 按章边界切块，均匀采样 ≤8 段（开头/中段/结尾都覆盖）；
+    2. 每段独立跑五角色评审（带段位说明，防误扣整书结构分），3 线程并行；
+    3. 双轨合成：段评均分 × 60% + 逐章分均分 × 40%（逐章分有完整单章上下文，更可靠）。
+    返回与 five_role_review 同构的 {scores, findings, fix_actions}。"""
+    import threading as _th
+    slices = _slice_book(book_md)
+    if len(slices) <= 1:
+        return five_role_review(book_md, cfg, l1_findings)
+    results, lock = [None] * len(slices), _th.Lock()
+    l1_txt = "\n".join(f"- [{f.get('severity')}] {f.get('check')}：{f.get('detail')}"
+                        for f in (l1_findings or []))[:1500]
+
+    def _one(idx, pos, text):
+        note = (f"【评审范围说明】本书为超长篇，你评审的是全书均匀采样的第 {pos} 段（共采 {len(slices)} 段）。"
+                f"请只对该段自身的质量与段内连续性打分，不要因为「看不到全书开头/结局」而扣结构分——"
+                f"全书结构由其他段位的评审覆盖。")
+        try:
+            results[idx] = five_role_review(text, cfg, l1_findings=l1_findings or [], position_note=note)
+        except Exception:
+            results[idx] = None
+
+    threads = [_th.Thread(target=_one, args=(i, pos, t), daemon=True) for i, (pos, _n, t) in enumerate(slices)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    dims = ["结构", "因果可信", "人物", "连续性", "语言", "读者体验"]
+    agg = {k: [] for k in dims}
+    all_findings, all_fix = [], []
+    for r in results:
+        if not r:
+            continue
+        sc = r.get("scores") or {}
+        for k in dims:
+            if isinstance(sc.get(k), (int, float)):
+                agg[k].append(float(sc[k]))
+        all_findings.extend(r.get("findings") or [])
+        all_fix.extend(r.get("fix_actions") or [])
+    if not any(agg[k] for k in dims):
+        return five_role_review(book_md[:30000], cfg, l1_findings)
+    scores = {k: round(sum(v) / len(v), 1) for k, v in agg.items() if v}
+    # 高危 findings 合并去重（按 evidence 前 40 字），severity=high 优先，fix_actions cap 6
+    seen, uniq = set(), []
+    for f in sorted(all_findings, key=lambda x: 0 if x.get("severity") == "high" else 1):
+        key = (f.get("evidence") or "")[:40]
+        if key and key in seen:
+            continue
+        seen.add(key)
+        uniq.append(f)
+    fix = [a for a in all_fix if isinstance(a.get("chapter"), int)][:6]
+    # 双轨合成：段评均分 × 0.6 + 逐章均分 × 0.4
+    blended = None
+    if chapter_avg:
+        block_avg = sum(sum(v) / len(v) for v in agg.values() if v) / max(1, sum(1 for v in agg.values() if v))
+        blended = round(block_avg * 6 * 0.6 + chapter_avg * 0.4, 1)
+    return {"scores": scores, "findings": uniq[:40], "fix_actions": fix,
+            "_meta": {"slices": len(slices), "blended_total": blended,
+                      "chapter_avg": chapter_avg}}
+
+
 def score_dimensions(scores):
     """各维 0-10 → 百分制加权总分。"""
     s = scores or {}
@@ -519,9 +612,11 @@ def chapter_review(ch_body, cfg, context=""):
     except Exception:
         return {}
 
-def five_role_review(book_md, cfg, l1_findings=None):
+def five_role_review(book_md, cfg, l1_findings=None, position_note=""):
     """五角色审校团（Architect/Scribe/Editor/Guardian/Curator）单次 LLM 覆盖，
-    吃 L1 确定性结果作为证据；返回 6 维(0-10)评分 + findings + fix_actions。"""
+    吃 L1 确定性结果作为证据；返回 6 维(0-10)评分 + findings + fix_actions。
+    v4.17.0：position_note——超长篇分段评审时告知「本段位置」，防评审因
+    「看不到结局/看不到开头」对整本书误扣结构/人物分。"""
     genre_txt = skill.genre(_craft_genre(cfg))
     sys_p = ("你是「一幕·一幕·YIMU 神笔」五角色审校团，对全书做分层编辑审稿并分工：\n"
              "Architect(结构/节拍/黄金三章)、Scribe(正文是否注水/推进)、"
@@ -539,7 +634,7 @@ def five_role_review(book_md, cfg, l1_findings=None):
              "\"severity\":\"high|mid|low\",\"evidence\":\"原句引用\",\"problem\":\"问题\",\"fix\":\"建议\"}],"
              "\"fix_actions\":[{\"chapter\":N,\"action\":\"具体可执行的局部重写指令\"}]}。"
              "fix_actions 只放 severity=high 且能定位到章节的（最多 6 条）。只输出 JSON。")
-    user_p = f"全书（节选）：\n{book_md[:30000]}"
+    user_p = (position_note + "\n" if position_note else "") + f"待评正文：\n{book_md[:30000]}"
     editor_skills = agent_skills_block("editor", cfg, "P4")
     if editor_skills:
         sys_p += "\n" + editor_skills
