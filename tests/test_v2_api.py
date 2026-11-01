@@ -118,15 +118,6 @@ def test_reference_upload_multipart_and_link(monkeypatch, tmp_path):
     references._clear_cache()
 
 
-def test_skills_endpoint(monkeypatch):
-    c = _client(monkeypatch)
-    r = c.get("/api/skills")
-    assert r.status_code == 200
-    d = r.json()
-    assert d["ok"] is True and isinstance(d["items"], list)
-    assert d["items"]
-
-
 def test_chat_stream_sse(monkeypatch):
     c = _client(monkeypatch)
     with c.stream("POST", "/api/chat/stream",

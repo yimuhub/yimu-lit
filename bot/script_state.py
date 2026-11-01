@@ -29,10 +29,6 @@ def _scene_body(pdir, sc):
     return _read(pdir, os.path.join("04-正文", fn))
 
 
-def _cn_name_re():
-    return re.compile(r"(?:人物|角色|出场)[:：]?\s*([^\n，,。;；]{1,30})")
-
-
 def build_state(pdir: str) -> dict:
     """登记人物表 / 场景表。人物来源优先级：场次表 cast 列 > 创作圣经。"""
     plan = {}
@@ -76,13 +72,6 @@ def build_state(pdir: str) -> dict:
     except Exception:
         pass
     return state
-
-
-def load_state(pdir: str) -> dict:
-    try:
-        return json.load(open(os.path.join(pdir, STATE_FILE), encoding="utf-8")) or {}
-    except Exception:
-        return {}
 
 
 def audit_script(pdir: str) -> dict:

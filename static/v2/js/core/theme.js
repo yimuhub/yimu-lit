@@ -43,10 +43,6 @@ export function setTheme(pref) {
   paint(next);
 }
 
-export function getTheme() {
-  return store.get().theme;
-}
-
 export function toggleTheme() {
   const order = ['light', 'dark', 'system'];
   const current = store.get().theme;

@@ -711,16 +711,6 @@
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.timeline-item .tl-at {
-  flex: none;
-  width: 52px;
-  color: var(--ink-caption);
-  font-family: var(--font-code);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.55;
-}
-
 .timeline-item .tl-main {
   min-width: 0;
   color: var(--ink-secondary);
@@ -1549,50 +1539,6 @@
   padding: 16px;
 }
 
-.bench-info {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  color: var(--ink-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.bench-info .info-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.bench-info .info-row span:last-child {
-  color: var(--ink-primary);
-  font-variant-numeric: tabular-nums;
-}
-
-.export-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.export-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 9px;
-  border: 0.5px solid var(--line-2);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  color: var(--ink-secondary);
-  font-size: 12px;
-}
-
-.export-btn:hover {
-  background: var(--hover);
-  color: var(--ink-primary);
-}
-
 .bench-version {
   display: flex;
   flex-direction: column;
@@ -1920,15 +1866,6 @@
   }
 }
 
-/* Library ---------------------------------------------------------------- */
-
-.lib-view {
-  width: 100%;
-  max-width: var(--page-max);
-  margin: 0 auto;
-  padding: 26px 32px 60px;
-}
-
 .lib-head {
   display: flex;
   align-items: flex-start;
@@ -1947,18 +1884,6 @@
   font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.35;
-}
-
-.lib-head .lib-sub {
-  margin-top: 3px;
-  color: var(--ink-tertiary);
-  font-size: var(--fs-ui);
-}
-
-.lib-head .lib-sub b {
-  color: var(--ink-secondary);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
 }
 
 .lib-stats {
@@ -2227,13 +2152,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.lib-side {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .lib-updated {
   flex: none;
   width: 76px;
@@ -2321,12 +2239,6 @@
 .lib-card:hover .row-actions,
 .lib-card:focus-within .row-actions {
   opacity: 1;
-}
-
-.lib-more {
-  display: flex;
-  justify-content: center;
-  padding: 16px 0 4px;
 }
 
 .lib-empty {
@@ -2421,12 +2333,6 @@
   margin-bottom: 18px;
 }
 
-.evo-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 12px;
-}
-
 .evo-card {
   display: flex;
   flex-direction: column;
@@ -2450,12 +2356,6 @@
   color: var(--ink-caption);
   font-size: 11px;
   font-weight: 400;
-}
-
-.evo-card .card-desc {
-  color: var(--ink-tertiary);
-  font-size: 12px;
-  line-height: 1.6;
 }
 
 /* 进化视图的轻量布局辅助：画像徽章行、题材键值、历史/反馈列表 */
@@ -2505,42 +2405,6 @@
 /* 区块内空态比全局 .empty-state 更紧凑 */
 .evo-view .empty-state {
   padding: 24px 16px;
-}
-
-.genre-row {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 7px 0;
-}
-
-.genre-row + .genre-row {
-  box-shadow: inset 0 0.5px 0 var(--line-1);
-}
-
-.genre-row .gr-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--ink-secondary);
-}
-
-/* 与 tokens.css 的 .progress-track 同款视觉：3px 圆角槽 + accent 填充 */
-.genre-row .gr-bar {
-  height: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--line-2);
-  overflow: hidden;
-}
-
-.genre-row .gr-bar > span {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  border-radius: inherit;
-  transition: width var(--dur-slow) var(--ease);
 }
 
 @media (max-width: 900px) {
@@ -2854,16 +2718,7 @@
   background: var(--hover, #f5f5f5);
   border-radius: 6px;
 }
-
-/* ------------------------------------------------------- v2.5.1 Agent 浮动对话窗 */
-
-/* v2.6.0 添加 Agent 对话框 */
-.add-agent-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 9200; display: flex; align-items: center; justify-content: center; }
-.add-agent-dialog { background: var(--surface, #1a1a2e); border: 1px solid var(--border, #2a2a4a); border-radius: 12px; padding: 24px; width: 460px; max-width: 90vw; box-shadow: 0 12px 40px rgba(0,0,0,.4); }
-.add-agent-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-.add-agent-title { font-size: 16px; font-weight: 600; color: var(--text, #e0e0e0); }
 .add-agent-desc { width: 100%; resize: vertical; min-height: 80px; font-size: 14px; }
-.add-agent-status { margin-top: 8px; font-size: 13px; color: var(--warn, #f0ad4e); min-height: 18px; }
 .collab-add-agent-bar { padding: 4px 0 8px; }
 .agent-chat-window {
   position: fixed;

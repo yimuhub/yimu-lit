@@ -14,14 +14,25 @@ import {
 } from '../core/dom.js';
 import { store, patch, patchUi, patchChat } from '../core/state.js';
 import { navigate, routePath } from '../core/router.js';
-import { isMediumBench, verdictLabel } from '../views/mediumbench.js';
-import { USAGE_MODES, usageLabel } from '../core/constants.js';
+import {
+  USAGE_MODES,
+  usageLabel,
+  /* v4.22.0：从 views/mediumbench.js 下沉到 constants——只为这两个函数不该整条
+     mediumbench → chatfloat → markdown 链都被拖进首屏。 */
+  isMediumBench,
+  verdictLabel
+} from '../core/constants.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
-import { createCollabPanel } from './collab.js';
-import { openDistillModal } from './distill.js';
-/* v4.20.0：创作控制三态按钮工厂（创作中→暂停 / 已暂停→继续），与目标条共用同一交互规范 */
+/* v4.22.0：collab（≈38K，含 skillCatalog）与 distill 都改为按需 import——
+   两者只在用户真正点开「协作」页签 / 「蒸馏风格」时才用得到，
+   静态 import 会把整条链拖进首屏闭包。 */
 import { createCreativeToggle } from './planbar.js';
+
+/* distill 模块懒加载：保留原函数名，两个调用点零改动。 */
+function openDistillModal(payload) {
+  import('./distill.js').then((m) => m.openDistillModal(payload));
+}
 
 const TABS = [
   { key: 'work', label: '作品', icon: 'book-open' },
@@ -38,6 +49,7 @@ let _archiveSeenTs = 0;
 
 /* 协作面板带轮询与订阅，跨 tab / 跨书必须显式销毁，否则 interval 会残留。 */
 let collabInst = null;
+let collabModPromise = null;
 
 function destroyCollab() {
   if (!collabInst) return;
@@ -49,12 +61,28 @@ function destroyCollab() {
   collabInst = null;
 }
 
+function collabLoadingPane() {
+  return h('div', { class: 'rp-section', style: { padding: '18px 4px', textAlign: 'center' } },
+    h('div', { class: 'spinner', style: { width: '18px', height: '18px', margin: '0 auto 8px', border: '2px solid var(--line-2)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' } }),
+    h('span', { class: 'hint-text', text: '协作面板加载中…' }));
+}
+
 function collabPane(ctx) {
   const key = store.get().currentKey || '';
   if (!collabInst || collabInst.key !== key) {
     destroyCollab();
-    collabInst = createCollabPanel(ctx);
-    collabInst.key = key;
+    /* 模块在途时先给占位；到位后若用户仍停在协作页签，再真正挂载并重渲染。 */
+    if (!collabModPromise) collabModPromise = import('./collab.js');
+    collabModPromise.then((m) => {
+      const cur = store.get().currentKey || '';
+      if (store.get().ui.rightTab !== 'collab') return;
+      if (collabInst && collabInst.key === cur) return;
+      destroyCollab();
+      collabInst = m.createCollabPanel(ctx);
+      collabInst.key = cur;
+      if (ctx.rerenderPanel) ctx.rerenderPanel();
+    });
+    return collabLoadingPane();
   }
   return collabInst.el;
 }

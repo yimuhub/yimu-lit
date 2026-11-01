@@ -164,13 +164,6 @@ def _write_cards(proj, cards: dict[int, dict]) -> None:
     atomic_write_text(os.path.join(_pdir(proj), CARD_FILE), "\n".join(lines) + ("\n" if lines else ""))
 
 
-def _write_one_card_on_disk(proj, card: dict) -> None:
-    """单章卡更新：内存有全部卡时整写；此函数仅作为兜底接口。"""
-    cards = _load_cards(proj)
-    cards[card["n"]] = _norm_card(card)
-    _write_cards(proj, cards)
-
-
 def _norm_status_card(v) -> str:
     s = _text(v, 20).lower()
     if s in ("completed", "done", "完成", "已写", "finished"):
@@ -289,15 +282,6 @@ def _cn_no(n: int) -> str:
             return head
         return head + ("零" if rest < 10 else "") + _cn_no(rest)
     return str(n)
-
-
-_VOL_WORDS = [
-    "起势", "入局", "暗涌", "裂变", "远征", "迷局", "争锋", "转折", "低谷", "反攻",
-    "登临", "风雷", "危局", "破晓", "归墟", "余烬", "新章", "长夜", "曙光", "潮涌",
-    "逆流", "孤城", "星火", "深渊", "彼岸", "天堑", "残局", "旧梦", "远山", "风起",
-    "云涌", "归途", "破阵", "重光", "无声", "惊雷", "落子", "终局", "余波", "回响",
-]
-_ARC_WORDS = ["破局", "试探", "交锋", "转机", "危机", "反击", "真相", "抉择", "收束", "余波", "暗线", "合流"]
 
 # v2.5.0: 多套题材化弧模板——每本书根据题材选择不同的弧名序列，不再千篇一律
 _ARC_TEMPLATES = {

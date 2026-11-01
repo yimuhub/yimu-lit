@@ -101,6 +101,7 @@ def _record_usage(book_key: str, stage: str, usage: dict):
         pass
 
 _CFG_CACHE = {"mtime": 0, "data": {}}
+_CFG_LOCK = threading.Lock()   # _CFG_CACHE 读改写串行化（同 _USAGE_LOCK/_CACHE_LOCK 模式）
 
 
 def _global_defaults() -> dict:
@@ -108,10 +109,11 @@ def _global_defaults() -> dict:
     fp = os.path.join(providers.ROOT, "config.json")
     try:
         mtime = os.path.getmtime(fp)
-        if _CFG_CACHE["mtime"] != mtime:
-            _CFG_CACHE["data"] = json.load(open(fp, encoding="utf-8")).get("defaults", {}) or {}
-            _CFG_CACHE["mtime"] = mtime
-        return _CFG_CACHE["data"]
+        with _CFG_LOCK:
+            if _CFG_CACHE["mtime"] != mtime:
+                _CFG_CACHE["data"] = json.load(open(fp, encoding="utf-8")).get("defaults", {}) or {}
+                _CFG_CACHE["mtime"] = mtime
+            return _CFG_CACHE["data"]
     except Exception:
         return {}
 

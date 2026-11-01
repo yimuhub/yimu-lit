@@ -292,13 +292,6 @@ def list_cases(medium: str = "") -> list[dict]:
     return out
 
 
-def _case_by_id(case_id: str) -> dict | None:
-    for case in CASES:
-        if case["id"] == case_id:
-            return case
-    return None
-
-
 def _messages(case: dict, skill_text: str = "") -> list[dict]:
     constraints = "\n".join(f"- {c}" for c in case.get("constraints") or [])
     system = (

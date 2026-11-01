@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from bot.safeio import atomic_write_text, atomic_write_json, safe_join
+from bot.safeio import atomic_write_text, safe_join
 
 from . import llm
 from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project

@@ -1,37 +1,4 @@
-/* 设置、新建作品向导、确认框 */
 
-/* Settings --------------------------------------------------------------- */
-
-.settings-body {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-
-.set-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.set-section-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 6px;
-}
-
-.set-section-head h3 {
-  flex: 1;
-  color: var(--ink-secondary);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
-}
-
-.set-section-head .hint-text {
-  font-size: 11px;
-}
 
 .set-row {
   display: flex;
@@ -82,14 +49,6 @@
   min-width: 116px;
   height: 30px;
   font-size: 12px;
-}
-
-.set-control .range-value {
-  min-width: 48px;
-  color: var(--ink-secondary);
-  font-size: 11px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 
 .theme-options {
@@ -191,30 +150,6 @@
 .key-state[data-ok="false"] {
   background: var(--warn-soft);
   color: var(--warn-label);
-}
-
-.settings-dirty {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--warn-label);
-  font-size: 11px;
-}
-
-.settings-dirty .dot {
-  background: var(--warn);
-}
-
-.settings-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
-  color: var(--ink-tertiary);
-  font-size: 11px;
-  line-height: 1.55;
 }
 
 /* 设置页统一原语：页面宽 / 动作行 / 加载态 / 空态 / 错误态 / 技能 chips */
@@ -461,46 +396,6 @@
   opacity: 1;
 }
 
-.choice-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-  gap: 6px;
-}
-
-.choice-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  padding: 8px 10px;
-  border: 0.5px solid var(--line-2);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  text-align: left;
-  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
-}
-
-.choice-card:hover {
-  border-color: var(--line-4);
-}
-
-.choice-card[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.choice-card .cc-name {
-  color: var(--ink-primary);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.choice-card .cc-sub {
-  color: var(--ink-caption);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
 .wiz-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -519,48 +414,6 @@
 
 .wiz-grid .textarea {
   min-height: 70px;
-}
-
-.scale-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.scale-presets {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-chip);
-}
-
-.scale-opt {
-  height: 24px;
-  padding: 0 9px;
-  border-radius: var(--radius-xs);
-  color: var(--ink-tertiary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.scale-opt[aria-pressed="true"] {
-  background: var(--bg-base);
-  color: var(--ink-primary);
-  box-shadow: 0 1px 2px rgba(15, 17, 21, 0.08);
-}
-
-.scale-input {
-  width: 84px;
-  height: 30px;
-  padding: 0 8px;
-  border: 0.5px solid var(--line-2);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
 }
 
 .scale-unit {
@@ -1233,9 +1086,6 @@
   color: var(--accent);
   background: var(--accent-soft);
 }
-
-/* v4.12.1：向导 AI 生成按钮 */
-.wiz-ai-row { display: flex; gap: 8px; margin-top: 8px; }
 .wiz-ai-btn { border: 1px dashed var(--accent); color: var(--accent); background: transparent; }
 .wiz-ai-btn:hover { background: var(--accent-soft); }
 

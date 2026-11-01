@@ -1,7 +1,7 @@
 """v0.7 R3 大厂工程化：后端回归测试（TestClient，不烧 LLM）。
 
 覆盖：路由注册、非 LLM 读端点结构（真实契约：/api/library、/api/quality、
-/api/rewrite-plan、/api/book-live、/api/studio-overview、/api/one-shot）、LLM 缓存原语。
+/api/book-live、/api/one-shot）、LLM 缓存原语。
 跑法：cd novel-bot && .venv/bin/python -m pytest tests/ -q
 """
 import os, sys
@@ -30,8 +30,7 @@ def test_version_v07():
 
 def test_v07_routes_registered():
     paths = {getattr(r, "path", "") for r in appmod.app.routes}
-    for p in ["/api/one-shot", "/api/studio-overview", "/api/book-live",
-              "/api/rewrite-progress", "/api/rewrite-cancel", "/api/blueprint",
+    for p in ["/api/one-shot", "/api/book-live",
               "/api/library", "/api/quality"]:
         assert p in paths, f"缺路由 {p}"
 
@@ -73,18 +72,6 @@ def test_quality_shape():
     assert d.get("key") == key and "text" in d
 
 
-def test_studio_overview_shape():
-    so = client.get("/api/studio-overview").json()
-    assert "books" in so and "active_count" in so
-    li = client.get("/api/library").json().get("items", [])
-    # 库含四种文体，工作室总览只挂小说的并行/重写/放行动作
-    novels = [i for i in li if (i.get("medium") or "novel") == "novel"]
-    assert len(so["books"]) == len(novels)
-    b0 = so["books"][0]
-    for f in ["key", "name", "state", "done", "total", "quality", "archived", "running"]:
-        assert f in b0, f"studio-overview book 缺字段 {f}"
-
-
 def test_book_live_shape():
     key = _first_key()
     d = client.get("/api/book-live", params={"key": key}).json()
@@ -93,20 +80,6 @@ def test_book_live_shape():
 
 def test_book_live_bad_key():
     assert client.get("/api/book-live", params={"key": "no-such-book-xyz"}).status_code == 404
-
-
-def test_rewrite_plan_shape():
-    key = _first_key()
-    d = client.post("/api/rewrite-plan", json={"key": key}).json()
-    for f in ["before_total", "pass_line", "pass", "weak_dims", "global_directions", "chapters"]:
-        assert f in d, f"rewrite-plan 缺字段 {f}"
-
-
-def test_rewrite_progress_shape():
-    key = _first_key()
-    d = client.get("/api/rewrite-progress", params={"key": key}).json()
-    for f in ["running", "total", "done", "cancelled", "per_chapter", "result"]:
-        assert f in d, f"rewrite-progress 缺字段 {f}"
 
 
 def test_one_shot_bad_key():

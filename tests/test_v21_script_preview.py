@@ -66,7 +66,7 @@ def test_script_scene_ghost_key_is_404(script_work):
     """ghost key 必须与 /api/script/scenes、/api/script/revisions 等同口径返回 404。"""
     r = client.get("/api/script/scene", params={"key": "ghost_key", "no": 9})
     assert r.status_code == 404
-    assert r.json() == {"error": "项目不存在"}
+    assert r.json() == {"error": "项目不存在或未加载，请刷新作品库"}
 
 
 def test_script_scene_returns_exact_body_text(script_work):
@@ -117,4 +117,4 @@ def test_script_preview_whole_script_in_reading_order(script_work):
 def test_script_preview_ghost_key_is_404(script_work):
     r = client.get("/api/script/preview", params={"key": "ghost_key"})
     assert r.status_code == 404
-    assert r.json() == {"error": "项目不存在"}
+    assert r.json() == {"error": "项目不存在或未加载，请刷新作品库"}

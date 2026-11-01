@@ -188,4 +188,4 @@ export function openDistillModal({ medium = '', genre = '', onDone } = {}) {
   return modal;
 }
 
-export { MEDIUMS as DISTILL_MEDIUMS, mediumLabel as distillMediumLabel };
+export { mediumLabel as distillMediumLabel };

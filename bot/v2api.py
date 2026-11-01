@@ -1061,28 +1061,7 @@ def register_v2_routes(app, get_project, chat_func=None):
         except Exception as e:
             return _bad(f"读取反馈失败：{e}", 500)
 
-    @app.get("/api/feedback/summary")
-    def api_feedback_summary():
-        fb, err = _mod("feedback")
-        if err:
-            return err
-        try:
-            summary = fb.aggregate()
-            _persist_learning(summary)
-            return {"ok": True, "summary": summary}
-        except Exception as e:
-            return _bad(f"汇总反馈失败：{e}", 500)
-
     # ------------------------------------------------------------ 技能与进化
-    @app.get("/api/skills")
-    def api_skills(medium: str = "", stage: str = ""):
-        try:
-            from bot import skillkit
-            return {"ok": True, "items": skillkit.list_skills(medium, stage),
-                    "stats": skillkit.stats()}
-        except Exception as e:
-            return _bad(f"读取技能库失败：{e}", 500)
-
     @app.get("/api/skills/tree")
     def api_skills_tree(medium: str = ""):
         """技能库导航树：文体 → 题材分组（前端 #/skills 左栏）。"""
@@ -1146,15 +1125,6 @@ def register_v2_routes(app, get_project, chat_func=None):
                     "stage": st, "items": items, "injected_preview": preview}
         except Exception as e:
             return _bad(f"读取本书技能失败：{e}", 500)
-
-    @app.get("/api/skills/validate")
-    def api_skills_validate():
-        try:
-            from bot import skillkit
-            fn = getattr(skillkit, "validate_all", None)
-            return {"ok": True, "result": fn() if fn else {"note": "当前版本无全库校验"}}
-        except Exception as e:
-            return _bad(f"校验技能库失败：{e}", 500)
 
     @app.get("/api/skills/evolution")
     def api_skills_evolution(status: str = ""):
@@ -1358,42 +1328,6 @@ def register_v2_routes(app, get_project, chat_func=None):
 
         _th.Thread(target=_bg_score, daemon=True).start()
         return {"ok": True, "started": True, "msg": "评分已启动（过程可视化，请看弹窗进度）"}
-    # ------------------------------------------------------------ 固定评测
-    @app.get("/api/eval/cases")
-    def api_eval_cases(medium: str = ""):
-        ev, err = _mod("eval")
-        if err:
-            return err
-        try:
-            return {"ok": True, "items": ev.list_cases(medium)}
-        except Exception as e:
-            return _bad(f"读取评测集失败：{e}", 500)
-
-    @app.get("/api/eval/runs")
-    def api_eval_runs(limit: int = 20):
-        ev, err = _mod("eval")
-        if err:
-            return err
-        try:
-            return {"ok": True, "items": ev.list_runs(min(max(limit, 1), 100))}
-        except Exception as e:
-            return _bad(f"读取评测记录失败：{e}", 500)
-
-    @app.post("/api/eval/compare")
-    def api_eval_compare(payload: dict):
-        ev, err = _mod("eval")
-        if err:
-            return err
-        try:
-            res = ev.compare(str(payload.get("baseline") or ""),
-                             str(payload.get("candidate") or ""),
-                             payload.get("case_ids"), cfg=_cfg())
-            if isinstance(res, dict) and res.get("ok") is False:
-                return _bad(str(res.get("error") or "评测失败"))
-            return {"ok": True, "result": res}
-        except Exception as e:
-            return _bad(f"评测失败：{e}", 500)
-
     # ------------------------------------------------------------ 会话流式
     @app.post("/api/chat/stream")
     async def api_chat_stream(request: Request):

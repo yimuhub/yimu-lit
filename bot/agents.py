@@ -369,10 +369,6 @@ def is_known_agent(name):
     return n in AGENTS or n in _load_custom_agents()
 
 
-def _custom_agents_path():
-    import os
-    return os.path.join(providers.ROOT, "config.json")
-
 def _load_custom_agents():
     """从 config.json defaults.custom_agents 读取自定义 Agent 列表。"""
     import json

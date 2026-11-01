@@ -194,7 +194,6 @@ def chat(session_id, message, key=None, digest=None):
                 # 不 return，让下面的新作品提取逻辑接管
             else:
                 # 非创作意图（如查询、修改），仍走提示引导
-                from bot import prose_writer as _pw, poetry_writer as _pyw, script_writer as _sw
                 hint = {
                     "poetry": "🎵 识别为诗词创作。请告诉我具体需求，例如「诗词 七绝 写秋夜」，我直接用诗词流水线处理。",
                     "prose": "✒️ 识别为散文创作。请告诉我具体需求，例如「散文 写一段关于母亲的回忆」，我直接用散文流水线处理。",
@@ -428,7 +427,7 @@ def _apply_title(key, title):
         return {"ok": False, "error": "书名不能为空"}
     proj = _get_project(key)
     if not proj:
-        return {"ok": False, "error": "项目不存在"}
+        return {"ok": False, "error": "项目不存在或未加载，请刷新作品库"}
     if not os.path.isdir(proj.path):
         return {"ok": False, "error": "作品目录不存在"}
     base = os.path.basename(proj.path)
@@ -759,7 +758,7 @@ def _chat_attached(s, proj, msg):
 
     # ── v2.4.0：NLU 自然语言意图理解（替换原步骤 2-6 的硬编码正则）──
     # 任意自然语言均可被解析为结构化意图，再路由到对应操作
-    from bot.nlu import parse_intent, format_intent_result
+    from bot.nlu import parse_intent
     _nlu_status = {"state": st.get("state", "unknown")}
     _nlu = parse_intent(msg, project_status=_nlu_status)
     _intent = _nlu["intent"]
@@ -1076,11 +1075,6 @@ def api_provider_test(pid: str, payload: dict = None):
         return r
     except providers.ProviderError as e:
         return _prov_err(e)
-
-@app.get("/api/debug_sessions")
-def api_debug_sessions():
-    return {k: {kk: vv for kk, vv in v.items() if kk != "cfg"} | {"cfg_keys": list((v.get("cfg") or {}).keys())}
-            for k, v in SESSIONS.items()}
 
 @app.get("/api/projects")
 def api_projects():
@@ -1642,7 +1636,7 @@ def api_lib_item(key: str):
     """单作品元数据：前端冷启动只有 key，用它解析文体与进度。"""
     it = writer.library_item(key)
     if not it:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return it
 
 @app.post("/api/library/{key}/favorite")
@@ -1718,25 +1712,6 @@ def api_compare(keys: str):
     ks = [k for k in keys.split(",") if k][:4]
     return {"items": [writer.library_item(k) for k in ks]}
 
-@app.post("/api/rewrite-plan")
-def api_rewrite_plan(payload: dict):
-    key = payload.get("key")
-    proj = _get_project(key)
-    if not proj:
-        # 内存中未命中时尝试从磁盘加载
-        try:
-            pdir = writer._project_dir(key)
-            if os.path.isdir(pdir):
-                PROJECT_INDEX[key] = writer.Project(pdir, key)
-                proj = PROJECT_INDEX[key]
-        except ValueError:
-            pass
-    if not proj:
-        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    cfg = (proj.plan() or {}).get("config") or {}
-    brief = writer.rewrite_brief(proj, cfg)
-    return brief
-
 @app.post("/api/rewrite")
 def api_rewrite(payload: dict):
     key = payload.get("key")
@@ -1758,29 +1733,13 @@ def api_rewrite(payload: dict):
                    max_rounds=int(payload.get("max_rounds") or 6))
     return {"ok": True, "running": True, "msg": "🔁 审查后定向重写中…（约 2-5 分钟，把要求书逐条带进目标章）"}
 
-@app.get("/api/rewrite-progress")
-def api_rewrite_progress(key: str):
-    """v0.7 R2：重写 job 逐章实时进度（前端进度板轮询；无 job 时返回空结构）。"""
-    p = writer.rewrite_progress(key)
-    return p or {"running": False, "total": 0, "done": 0, "cancelled": False, "per_chapter": [], "result": None}
-
-@app.post("/api/rewrite-cancel")
-def api_rewrite_cancel(payload: dict):
-    """v0.7 R2：取消该书重写（下一检查点停，已写章保留）。"""
-    key = payload.get("key")
-    if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
-    writer.cancel_rewrite(key)
-    _REWRITING[key] = {"running": False, "result": {"cancelled": True}}
-    return {"ok": True, "msg": "已请求取消（下一检查点停，已写章保留）"}
-
 # ---------- v2.3.0：标题体系 + 一致性体检 ----------
 
 @app.post("/api/title/set")
 def api_title_set(payload: dict):
     key = str(payload.get("key") or "")
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     res = _apply_title(key, str(payload.get("title") or ""))
     if not res.get("ok"):
         return JSONResponse({"error": res.get("error") or "改名失败"}, status_code=400)
@@ -1790,7 +1749,7 @@ def api_title_set(payload: dict):
 def api_title_generate(payload: dict):
     key = str(payload.get("key") or "")
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         n = min(max(int(payload.get("n") or 5), 1), 10)
     except (TypeError, ValueError):
@@ -1801,33 +1760,12 @@ def api_title_generate(payload: dict):
 @app.get("/api/title/candidates")
 def api_title_candidates(key: str):
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"items": _read_title_items(key)}
 
-# ---------- v4.15.11：一致性一键修复（单个深度修复 + 全部一键修复） ----------
+# ---------- v4.15.11：一致性一键修复（全部一键修复） ----------
 
 _FIXABLE_REWRITE_RE = re.compile(r"第(\d+)章")
-
-
-def _consistency_fix_one(key: str, issue: str) -> dict:
-    """单个体检问题的修复：先确定性修复（continuity.fix），改稿类自动升级 LLM 定向重写。"""
-    from bot import continuity as _cont
-    res = _cont.fix(writer._project_dir(key), issue)   # v4.17.4：此前引用未定义的 _project_dir → 一键修复 NameError
-    actions = list(res.get("actions") or [])
-    if not res.get("fixed"):
-        # 改稿类：定位章号（无章号则取最近完成章），启动定向重写（后台，状态进 _REWRITING）
-        m = _FIXABLE_REWRITE_RE.search(issue)
-        plan = writer.Project(writer._project_dir(key), key).plan() or {}
-        no = int(m.group(1)) if m else max(
-            [c.get("chapterNumber") or 0 for c in (plan.get("chapters") or [])
-             if c.get("status") == "completed"] or [0])
-        if no:
-            ok = _start_rewrite(key, chapters=[no], dimensions=[issue], max_rounds=1)
-            actions.append(f"已启动第{no}章定向重写（LLM 修复后台进行）" if ok
-                           else "已有重写任务在跑，本章修复已排队语义跳过")
-        else:
-            actions.append("没有可定位的章节，仅标记已处理")
-    return {"issue": issue, "fixed": res.get("fixed"), "actions": actions}
 
 
 @app.post("/api/providers/fetch-models")
@@ -1884,7 +1822,7 @@ _UPDATE_SYNC = [
 @app.post("/api/self-update")
 def api_self_update():
     """一键自更新：下载 GitHub 最新 release 源码 → 白名单覆盖 → 返回需重启。"""
-    import urllib.request, zipfile, io, shutil, tempfile
+    import zipfile, io, shutil
     repo = "yimuhub/yimu-lit"
     token = None
     try:
@@ -2099,7 +2037,7 @@ def api_rewrite_parallel(payload: dict):
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     key = os.path.basename(proj.path)
     if _PARA_RW_RUNNING.get(key, {}).get("running"):
         return JSONResponse({"error": "该书已有改写任务在跑"}, status_code=409)
@@ -2132,7 +2070,7 @@ def api_chapter_scores(key: str):
     """逐章评分列表（多岗位并行改写弹窗数据源）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"ok": True, "key": key, "scores": writer.per_chapter_scores(proj),
             "pass_line": writer._pass_line()}
 
@@ -2142,7 +2080,7 @@ def api_book_agents(key: str = ""):
     """本书绑定的创作岗位（plan.config.agents）。"""
     proj = _get_project(key) if key else None
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     agents = (plan.get("config") or {}).get("agents") or []
     from bot import agents as _ag
@@ -2159,7 +2097,7 @@ def api_book_agents_set(payload: dict):
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import agents as _ag
     from bot import medium as _med_mod
     raw = payload.get("agents")
@@ -2409,7 +2347,7 @@ def api_book_live(key: str, request: Request):
     聚合 阶段/当前章/进度/实时日志，前端 1.5s 轮询原地刷新（Hermes 式 live 工具步骤）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     st = proj.status()
     if st.get("state") in ("missing", "", "unknown"):
         # v4.13.0：非小说文体没有 02-写作计划.json，Project.status 误报 → 回退 library_item
@@ -2486,7 +2424,7 @@ def api_chapter_steps(key: str, chapter: int = 0, limit: int = 400):
     """v4.21.0：本章创作档案——该章的全部创作事件（岗位/思考/产出，新→旧）。
     内存 ring + 历史 JSONL 去重合并，跨重启可查。"""
     if _get_project(key) is None:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"ok": True, "items": steps_mod.chapter_events(key, chapter, limit=limit)}
 
 @app.post("/api/cmd")
@@ -2518,7 +2456,7 @@ def api_rewrite_section(payload: dict):
     key = payload.get("key")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch_no = int(payload.get("chapter") or 0)
     match = (payload.get("match") or "").strip()
     para = int(payload.get("para") or 0)
@@ -2559,16 +2497,6 @@ def api_rewrite_section(payload: dict):
         atomic_write_text(fp, body.replace(target, new, 1))
         proj.log(f"✒️ 第{ch_no}章改写一段（{instr[:24]}…）")
     return {"ok": True, "chapter": ch_no, "orig": target, "new": new}
-
-@app.get("/api/rewrite-log")
-def api_rewrite_log(key: str):
-    try:
-        p = os.path.join(writer._project_dir(key), "16-重写记录.md")
-    except ValueError:
-        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
-    w = _REWRITING.get(key, {})
-    return {"running": bool(w.get("running")), "result": w.get("result"),
-            "text": open(p, encoding="utf-8").read() if os.path.exists(p) else ""}
 
 # ---------- v0.2.1：开书向导 / 书名选 / 放行门禁 ----------
 # v0.3 P2：题材×风格技能目录（16 题材 × 风格维度：金手指/基调/视角/节奏/语言/卷）
@@ -2656,7 +2584,7 @@ def api_style_get(key: str):
     """v0.3 P2：取某书的题材×风格技能（style.json）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     p = os.path.join(proj.path, "style.json")
     if os.path.exists(p):
         try:
@@ -2671,7 +2599,7 @@ def api_style_put(payload: dict):
     key = payload.get("key") or ""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     st = {"genre": _plan_genre(proj) or payload.get("genre") or "",
           "style": payload.get("style") or {}}
     atomic_write_json(os.path.join(proj.path, "style.json"), st)
@@ -2686,7 +2614,7 @@ def api_sched_list():
 def api_sched_set(payload: dict):
     key = payload.get("key") or ""
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     d = writer.load_schedules(); now = time.time()
     cur = d.get(key, {})
     enabled = bool(payload.get("enabled", cur.get("enabled", False)))
@@ -2776,7 +2704,7 @@ def api_usage(key: str = ""):
     if key:
         proj = _get_project(key)
         if not proj:
-            return JSONResponse({"error": "项目不存在"}, status_code=404)
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
         u = llm.read_usage(os.path.basename(proj.path))
         used, cap = int(u.get("total_tokens") or 0), llm.budget_tokens()
         return {"key": key, "usage": u, "global": g, "budget": cap,
@@ -2939,7 +2867,7 @@ def api_titles(key: str):
     """只读返回书名候选；候选项由 /api/create 的后台规划生成，避免轮询时反复触发 LLM。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     meta = plan.get("meta") or {}
     return {"key": key, "candidates": meta.get("title_candidates") or [],
@@ -2965,7 +2893,7 @@ def api_release(payload: dict):
     key = payload.get("key")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     # v4.7.1 修复 TOCTOU：原先「检查是否已在跑」和「置位 running」之间隔着 jobs.run()
     # （它立刻起后台线程），实测 8 个并发点击会全部通过检查、真的执行 8 次放行门禁
     # ——重复烧 token，且多个线程并发改写同一批章节文件。
@@ -3017,10 +2945,6 @@ def api_release_log(key: str):
         gate = t[i:] if i >= 0 else ""
     return {"running": running, "result": res, "gate": gate}
 
-@app.post("/api/release-cancel")
-def api_release_cancel(payload: dict):
-    return writer.cancel_release_gate(payload.get("key"))
-
 # ---------- v0.4：暂停 / 继续 / 读者即时指令（像 Agent 聊天一样随时控）----------
 def _nonnovel_set_paused(key, paused: bool) -> bool:
     """v4.20.0：非小说文体通用暂停位——直接写 plan.meta.paused，
@@ -3069,7 +2993,7 @@ def api_pause(payload: dict):
                 "paused": True, "state": "in_progress"}
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ok = writer.pause_book(key)
     st = proj.status()
     return {"ok": ok, "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停",
@@ -3083,7 +3007,7 @@ def api_resume(payload: dict):
         return api_continue({"key": key})
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ok = writer.resume_book(key)
     st = proj.status()
     return {"ok": ok, "msg": "▶ 继续写作中（接着写剩余章节）…" if ok else "无法继续",
@@ -3095,7 +3019,7 @@ def api_queue(payload: dict):
     text = (payload.get("text") or "").strip()
     immediate = bool(payload.get("immediate"))
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ok = writer.queue_msg(key, text, immediate)
     return {"ok": ok, "items": writer.pending_queue(key)}
 
@@ -3113,7 +3037,7 @@ def api_queue_action(payload: dict):
         index = 0
     action = payload.get("action", "")
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     items = writer.queue_action(key, index, action)
     return {"ok": True, "items": items, "msg": "已移除" if action == "remove" else "已标记立即生效"}
 
@@ -3148,7 +3072,7 @@ def api_bkchat_post(payload: dict):
     if not key or not text:
         return {"ok": False}
     if not _get_project(key):
-        return JSONResponse({"ok": False, "error": "项目不存在"}, status_code=404)
+        return JSONResponse({"ok": False, "error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     p = _bkchat_path(key)
     msgs = []
     if os.path.exists(p):
@@ -3245,38 +3169,6 @@ def api_bkchat_branch(key: str, payload: dict):
     return {"ok": True, "branch_id": branch_id, "messages": idx + 1}
 
 
-@app.get("/api/bkchat/{key}/branches")
-def api_bkchat_branches(key: str):
-    try:
-        pdir = writer._project_dir(key)
-    except ValueError:
-        return {"branches": []}
-    out = []
-    if os.path.isdir(pdir):
-        for f in sorted(os.listdir(pdir)):
-            if f.startswith("chat-b") and f.endswith(".json"):
-                bid = f[5:-5]
-                try:
-                    n = len(json.loads(open(os.path.join(pdir, f), encoding="utf-8").read()))
-                except Exception:
-                    n = 0
-                out.append({"branch_id": bid, "messages": n})
-    return {"branches": out}
-
-
-@app.get("/api/bkchat/{key}/branch/{bid}")
-def api_bkchat_branch_get(key: str, bid: str):
-    if not re.fullmatch(r"b\d{1,20}", bid or ""):
-        return JSONResponse({"error": "分支 id 非法"}, status_code=400)
-    try:
-        bp = os.path.join(writer._project_dir(key), f"chat-{bid}.json")
-    except ValueError:
-        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
-    if not os.path.isfile(bp):
-        return JSONResponse({"error": "分支不存在"}, status_code=404)
-    return {"branch_id": bid, "messages": json.loads(open(bp, encoding="utf-8").read())}
-
-
 @app.get("/api/feedback")
 def api_feedback_stats():
     """反馈总账（设置→学习报告用）。"""
@@ -3292,7 +3184,7 @@ def api_feedback_stats():
 def api_status(key: str):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     # v3.1.0：validating/releasing 且线程已死 → 立即恢复，前端不再永远转圈
     try:
         writer.recover_stale_book(key, live_proj=proj)
@@ -3397,7 +3289,7 @@ def api_branch(payload: dict):
         return JSONResponse({"error": "缺少 key 或章节号"}, status_code=400)
     src = _get_project(key)
     if not src:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = src.plan()
     if not plan:
         return JSONResponse({"error": "仅支持小说作品的分支"}, status_code=400)
@@ -3456,7 +3348,6 @@ def api_branch(payload: dict):
 
     # 状态库裁剪到第 ch 章（时间线/最近章回退），best-effort
     try:
-        from bot import state as _stmod
         stp = os.path.join(new_pdir, "18-状态库.json")
         if os.path.exists(stp):
             st = json.load(open(stp, encoding="utf-8")) or {}
@@ -3486,7 +3377,7 @@ def api_book_skills(key: str):
     """v3.0.0：某本书的按岗位技能绑定 + 全局绑定（前端合并展示来源徽标）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import agents as _ag
     return {"ok": True, "key": key,
             "book": _ag.book_skill_bindings(proj.path),
@@ -3500,7 +3391,7 @@ def api_book_skills_set(payload: dict):
     agent = str(payload.get("agent") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     if agent not in agents.AGENTS and agent not in (agents.get_skill_bindings() or {}):
         return JSONResponse({"error": f"未知岗位：{agent}"}, status_code=400)
     try:
@@ -3516,7 +3407,7 @@ def api_chapter_names_backfill(payload: dict):
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     import threading as _th
 
     def _run():
@@ -3547,7 +3438,7 @@ def api_live(key: str):
     """SSE：把写作/审稿/门禁的进程日志与状态变化实时推给前端（替代高频轮询）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
 
     def _active():
         for table in (_RELEASE_RUNNING, _ONESHOT_RUNNING, _PARALLEL_RUNNING, _REWRITING):
@@ -3592,7 +3483,7 @@ def api_live(key: str):
 def api_download(key: str):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     book = os.path.join(proj.path, f"成书-{plan.get('novelName','')}.md") if plan.get("novelName") else ""
     if not os.path.exists(book):
@@ -3618,7 +3509,7 @@ def api_export(key: str, fmt: str = "docx"):
     from urllib.parse import quote
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     fmt = (fmt or "docx").lower()
     novel = not os.path.exists(os.path.join(proj.path, script_writer.F_PLAN))
     plan = proj.plan() or {}
@@ -3801,28 +3692,6 @@ def api_global_model_set(payload: dict):
                          f"全局默认模型设为 {_g.get('provider_id') or '—'} · {_g.get('model') or '—'}")
     return {"ok": True, **_g}
 
-@app.post("/api/agents-dispatch")
-def api_agents_dispatch(payload: dict):
-    """v0.5 M4：批量并发创作多本书（每书一线程同步跑完，LLM 并发受 ConcurrencyGuard 限流排队）。"""
-    d = payload
-    keys = d.get("keys") or []
-    if not keys:
-        return JSONResponse({"ok": False, "error": "请至少选一本书"}, status_code=400)
-    def _get(k):
-        try:
-            p = writer.Project(writer._project_dir(k), k)
-        except Exception:
-            p = None
-        if not p or not p.plan():
-            raise Exception(f"《{k}》不存在或未创建")
-        return p
-    keys = [k for k in keys if isinstance(k, str) and k][:8]
-    job = jobs.run("dispatch", lambda: agents.dispatch_write(keys, _get, lambda p: writer._write_loop(p)),
-                   key=",".join(keys), title="批量并发创作", keys=keys)
-    # 兼容旧前端：立即返回已受理（不再同步等所有书跑完）
-    return {"ok": True, "async": True, "job_id": job["id"],
-            "results": {k: {"ok": True, "message": "已进入后台队列"} for k in keys}}
-
 # ---------- v0.6 B：并行章节创作（单本书内 N 个 Agent 分章齐写 + 总架构对齐） ----------
 _PARALLEL_RUNNING = {}
 
@@ -3915,54 +3784,13 @@ def api_one_shot(payload: dict):
     return {"ok": True, "running": True,
             "msg": "✨ 一键完稿启动：熔炼→写剩余→逐章评分→不达标自动重写→放行门禁（全程看对话区「本书在干什么」活动卡）"}
 
-@app.get("/api/studio-overview")
-def api_studio_overview():
-    """v0.7 R5 工作室总览（重度）：所有书 mini 进度 + 运行态（并行/重写/放行/一键），像任务看板。"""
-    items = []
-    for it in writer.library_all():
-        if it.get("medium") not in (None, "novel"):
-            continue   # 本看板只挂小说的并行/重写/放行动作，剧本等另走各自工作台
-        k = it.get("key")
-        items.append({
-            "key": k, "name": it.get("name"), "state": it.get("state"),
-            "done": it.get("done"), "total": it.get("total"), "quality": it.get("quality"),
-            "archived": it.get("archived"),
-            "running": bool(_PARALLEL_RUNNING.get(k, {}).get("running") or _REWRITING.get(k, {}).get("running")
-                          or _RELEASE_RUNNING.get(k, {}).get("running") or _ONESHOT_RUNNING.get(k, {}).get("running")),
-        })
-    active = [i for i in items if i["running"]]
-    return {"books": items, "active_count": len(active)}
-
-@app.get("/api/blueprint")
-def api_blueprint(key: str):
-    """v0.6 B：取某书『总架构』（02b-总架构）；未生成则给规则式即时预览（不落盘）。"""
-    proj = _get_project(key)
-    if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
-    jpath = os.path.join(proj.path, "02b-总架构.json")
-    mdpath = os.path.join(proj.path, "02b-总架构.md")
-    bp = None
-    if os.path.exists(jpath):
-        try:
-            bp = json.load(open(jpath, encoding="utf-8"))
-        except Exception:
-            bp = None
-    out = {"key": key, "exists": bool(bp), "blueprint": bp,
-           "md": open(mdpath, encoding="utf-8").read() if os.path.exists(mdpath) else ""}
-    if not bp:
-        try:
-            out["blueprint"] = writer._rule_blueprint(proj, proj.plan() or {})
-        except Exception:
-            out["blueprint"] = None
-    return out
-
 @app.get("/api/skeleton")
 def api_skeleton(key: str, regen: int = 0):
     """v0.9.0：该书『写作骨架』（17-写作骨架.md）——写到哪/多少/重点/为何/续写提示。
     纯文件聚合，不花 LLM；regen=1 立即重新生成（也可由写作/重写/放行自动刷新）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     if regen:
         try:
             skeleton.build(key)
@@ -3973,18 +3801,6 @@ def api_skeleton(key: str, regen: int = 0):
     return {"key": key, "exists": bool(md.strip()), "md": md,
             "updated": meta.get("skeleton") or (proj.plan() or {}).get("meta", {}).get("skeleton"),
             "skeleton_file": "17-写作骨架.md"}
-
-@app.post("/api/skeleton")
-def api_skeleton_regen(payload: dict):
-    """v0.9.0：手动刷新写作骨架。"""
-    key = payload.get("key")
-    if not key or not _get_project(key):
-        return JSONResponse({"ok": False, "error": "项目不存在"}, status_code=404)
-    try:
-        p = skeleton.build(key)
-        return {"ok": True, "key": key, "path": p, "md": skeleton.read(key, cap=8000) if p else ""}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 def _chapter_entry(proj, n):
     """按 1-based 章序取章节记录与最新计划；越界返回 (None, plan)。"""
@@ -4068,7 +3884,7 @@ def _apply_chapter_text(proj, n, text: str, label: str = "编辑前") -> int:
 def api_chapter(key: str, n: int):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch, _plan = _chapter_entry(proj, n)
     if ch is None:
         return JSONResponse({"error": "章节不存在"}, status_code=404)
@@ -4088,7 +3904,7 @@ def api_chapter_save(payload: dict):
     """手动编辑 / 自动保存：写正文 + 词数 + 重建成书 + 版本快照。"""
     proj = _get_project(payload.get("key"))
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     text = payload.get("text")
     if not isinstance(text, str):
         return JSONResponse({"error": "正文必须是字符串"}, status_code=400)
@@ -4106,7 +3922,7 @@ def api_chapter_save(payload: dict):
 def api_chapter_versions(key: str, n: int):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch, _ = _chapter_entry(proj, n)
     if ch is None:
         return JSONResponse({"error": "章节不存在"}, status_code=404)
@@ -4117,7 +3933,7 @@ def api_chapter_versions(key: str, n: int):
 def api_chapter_version(key: str, n: int, id: str):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         text = versions.read_version(proj.path, n, id)
     except ValueError as e:
@@ -4130,7 +3946,7 @@ def api_chapter_diff(key: str, n: int, id: str):
     """历史版本 → 当前正文 的 unified diff。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch, _ = _chapter_entry(proj, n)
     if ch is None:
         return JSONResponse({"error": "章节不存在"}, status_code=404)
@@ -4148,7 +3964,7 @@ def api_chapter_restore(payload: dict):
     """回滚到某个历史版本（当前内容会先自动存一份快照，可再滚回来）。"""
     proj = _get_project(payload.get("key"))
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     n = payload.get("n")
     try:
         text = versions.read_version(proj.path, n, payload.get("id"))
@@ -4171,7 +3987,7 @@ def api_preview(key: str):
     """预览：返回成书（或已写章节拼接）+ 章节清单 + 逐章评分。点开作品即可看内容。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     book_path = os.path.join(proj.path, f"成书-{plan.get('novelName', '')}.md")
     has_book = os.path.exists(book_path)
@@ -4235,7 +4051,7 @@ def api_review(key: str):
     """返回 13-修订记录.md（五角色审校产物）；无则空。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     fp = os.path.join(proj.path, "13-修订记录.md")
     return {"key": key, "text": open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""}
 
@@ -4244,7 +4060,7 @@ def api_quality(key: str):
     """返回 14-质量报告.md（确定性引擎 + 五角色 + 百分制达标判定）；无则空。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     fp = os.path.join(proj.path, "14-质量报告.md")
     return {"key": key, "text": open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""}
 
@@ -4258,13 +4074,6 @@ async def api_version():
 async def api_mediums():
     """四种文体的注册表：阶段表 / 评估维度 / 目录规范，前端据此渲染选择器。"""
     return {"mediums": medium_mod.registry()}
-
-
-@app.get("/api/medium/detect")
-async def api_medium_detect(text: str = ""):
-    """从一段文本判定文体（给对话入口用）。"""
-    m = medium_mod.detect(text)
-    return {"medium": m, "label": medium_mod.label(m) if m else "", "icon": medium_mod.icon(m) if m else ""}
 
 
 @app.get("/api/skillkit/stats")
@@ -4361,7 +4170,7 @@ async def api_script_create(payload: dict):
 async def api_script_status(key: str):
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -4369,7 +4178,7 @@ async def api_script_status(key: str):
 async def api_script_bible(key: str):
     """创作圣经（S0 引擎 + 圣经头）。"""
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "bible")}
 
 
@@ -4379,7 +4188,7 @@ def api_script_audit(payload: dict):
     key = str(payload.get("key") or "")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import script_state
     report = script_state.audit_script(proj.path)
     script_state.save_audit(proj.path, report)
@@ -4391,7 +4200,7 @@ def api_script_audit_get(key: str):
     """读取上次剧本体检结果（22-剧本体检.json）。"""
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import script_state
     report = script_state.load_audit(proj.path)
     return {"ok": True, "key": key, **report}
@@ -4400,14 +4209,14 @@ def api_script_audit_get(key: str):
 @app.get("/api/script/chars")
 async def api_script_chars(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "chars")}
 
 
 @app.get("/api/script/struct")
 async def api_script_struct(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "struct")}
 
 
@@ -4444,7 +4253,7 @@ async def api_script_scenes(key: str):
     """场次清单（表格 + 解析后的结构化场次）。"""
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     scenes = _script_scenes_or_reparse(proj, key)
     return {"key": key, "text": script_writer.read_file_part(key, "scenes"),
             "scenes": scenes}
@@ -4454,7 +4263,7 @@ async def api_script_scenes(key: str):
 async def api_script_scene(key: str, no: int):
     """单场正文。"""
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "no": no, "text": script_writer.read_scene(key, no)}
 
 
@@ -4467,7 +4276,7 @@ async def api_script_preview(key: str):
     """
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     scenes = []
     for sc in _script_scenes_or_reparse(proj, key):
@@ -4495,7 +4304,7 @@ async def api_script_check(payload: dict):
     """世界观一致性体检：按计划里的时代设定扫圣经/场次表/正文，列出违规词与位置。"""
     key = payload.get("key")
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import script_checker
     if not hasattr(script_checker, "check_project"):
         return JSONResponse({"error": "当前版本不支持剧本体检"}, status_code=501)
@@ -4513,7 +4322,7 @@ async def api_script_rewrite_scenes(payload: dict):
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         nos = sorted({int(n) for n in (payload.get("sceneNos") or [])})
     except (TypeError, ValueError):
@@ -4588,7 +4397,7 @@ async def _assist_stream_response(payload: dict):
     if not key or not message:
         return JSONResponse({"error": "缺少作品或消息"}, status_code=400)
     if not _assist_project(medium, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     sid = str(payload.get("session_id") or uuid.uuid4().hex)
     focus = payload.get("focus") or {}
     history = payload.get("history") or []
@@ -4679,7 +4488,7 @@ async def api_assist_apply(payload: dict):
     medium = _assist_medium(payload)
     key = str(payload.get("key") or "")
     if not _assist_project(medium, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         block = int(payload.get("block"))
     except (TypeError, ValueError):
@@ -4698,7 +4507,7 @@ async def api_assist_versions(key: str, medium: str = "script", doc: str = ""):
 
     med = medium if medium in ("script", "poetry", "prose") else "script"
     if not _assist_project(med, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return assist_mod.list_versions(key, med, doc)
 
 
@@ -4709,7 +4518,7 @@ async def api_assist_restore(payload: dict):
     medium = _assist_medium(payload)
     key = str(payload.get("key") or "")
     if not _assist_project(medium, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     res = assist_mod.restore_version(key, medium, payload.get("doc"),
                                       str(payload.get("version") or ""))
     if not res.get("ok"):
@@ -4724,7 +4533,7 @@ async def api_assist_history(key: str, medium: str = "script"):
 
     med = medium if medium in ("script", "poetry", "prose") else "script"
     if not _assist_project(med, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return assist_mod.history(key, med)
 
 
@@ -4760,7 +4569,7 @@ async def api_script_assist_versions(key: str, scene: int):
     from bot import assist as assist_mod
 
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     res = assist_mod.list_versions(key, "script", str(scene))
     if not res.get("ok"):
         return res
@@ -4784,7 +4593,7 @@ async def api_script_write(payload: dict):
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     only = payload.get("only")
     if not only and payload.get("sceneNo"):
         only = [int(payload["sceneNo"])]
@@ -4800,14 +4609,14 @@ async def api_script_write(payload: dict):
 @app.get("/api/script/revisions")
 async def api_script_revisions(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "revisions")}
 
 
 @app.get("/api/script/quality")
 async def api_script_quality(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "quality")}
 
 
@@ -4818,7 +4627,7 @@ async def api_script_revise(payload: dict):
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     def _bg():
         try:
             script_writer.run_revision(proj)
@@ -4833,7 +4642,7 @@ async def api_script_export(key: str):
     """S7 导出定稿全文（text/plain）。"""
     txt = script_writer.export_text(key)
     if not txt:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from urllib.parse import quote as _q
     return Response(txt, media_type="text/plain; charset=utf-8",
                     headers={"Content-Disposition":
@@ -4847,7 +4656,7 @@ def api_script_storyboard(payload: dict):
     key = str(payload.get("key") or "")
     scene_no = payload.get("sceneNo")
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     def _bg():
         try:
             script_writer.gen_storyboard(key, only_scene=int(scene_no) if scene_no else None)
@@ -4861,7 +4670,7 @@ def api_script_storyboard(payload: dict):
 async def api_script_storyboard_get(key: str):
     """v4.5.0：分镜表数据（结构化 JSON）。"""
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "storyboard"),
             **script_writer.storyboard_data(key)}
 
@@ -4991,7 +4800,7 @@ async def api_script_forms():
 async def api_thesis_status(key: str):
     proj = thesis_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -5000,7 +4809,7 @@ async def api_thesis_part(key: str, part: str = "final"):
     """论文文档：outline/refs/report/final 或 正文章（如 part=ch1）。"""
     proj = thesis_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     mapping = {"outline": thesis_writer.F_OUTLINE, "refs": thesis_writer.F_REFS,
                "report": thesis_writer.F_REPORT, "final": thesis_writer.F_FINAL}
     if part in mapping:
@@ -5148,7 +4957,7 @@ def api_plan_regen(payload: dict):
     mod = importlib.import_module(f"bot.{mod_name}")
     proj = mod.get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     # 清规划阶段（保留正文/定稿）
     plan = proj.plan() or {}
     cs = plan.get("chapterStatus") or {}
@@ -5178,7 +4987,7 @@ async def api_mini_status(key: str):
         proj = mod.get_project(key)
         if proj:
             return proj.status()
-    return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
 
 
 @app.get("/api/mini/part")
@@ -5203,16 +5012,24 @@ async def api_mini_part(key: str, part: str = "final"):
             if hasattr(cls, 'F_CHECK'):
                 mapping["check"] = cls.F_CHECK
             fp = None
-            if part in mapping:
+            known = part in mapping
+            if known:
                 fp = os.path.join(proj.path, mapping[part])
             elif part.endswith(".md"):
-                fp = os.path.join(proj.path, cls.BODY_DIR if hasattr(cls, 'BODY_DIR') else "", part)
-                if not os.path.exists(fp):
-                    fp = os.path.join(proj.path, part)
+                cand = os.path.join(proj.path, cls.BODY_DIR if hasattr(cls, 'BODY_DIR') else "", part)
+                if os.path.exists(cand):
+                    fp = cand
+                else:
+                    alt = os.path.join(proj.path, part)
+                    if os.path.exists(alt):
+                        fp = alt
+            if fp is None and not known:
+                # part 键名不存在（且也不是实际存在的 .md 文件）→ 404，与其他文体 part 端点口径一致
+                return JSONResponse({"error": "part 不存在"}, status_code=404)
             if fp and os.path.exists(fp):
                 return {"key": key, "part": part, "text": open(fp, encoding="utf-8").read()}
             return {"key": key, "part": part, "text": ""}
-    return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
 
 
 @app.post("/api/thesis/refs-check")
@@ -5221,7 +5038,7 @@ def api_thesis_refs_check(payload: dict):
     key = str(payload.get("key") or "")
     proj = thesis_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     issues = thesis_writer.check_citations(plan, proj.path)
     return {"ok": True, "key": key, "issues": issues,
@@ -5245,7 +5062,7 @@ async def api_poetry_create(payload: dict):
 async def api_poetry_status(key: str):
     proj = poetry_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -5253,7 +5070,7 @@ async def api_poetry_status(key: str):
 async def api_poetry_part(key: str, part: str = "final"):
     """读项目部分：note / imagery / draft / check / final"""
     if not poetry_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "part": part, "text": poetry_writer.read_part(key, part)}
 
 
@@ -5262,23 +5079,11 @@ async def api_poetry_recheck(payload: dict):
     """对当前草稿重新做格律校验。"""
     key = payload.get("key")
     if not poetry_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         return poetry_writer.recheck(key)
     except Exception as e:
         return JSONResponse({"error": f"校验失败：{e}"}, status_code=500)
-
-
-@app.get("/api/poetry/rhyme")
-async def api_poetry_rhyme(ch: str = ""):
-    """查字的平水韵（韵部 + 平仄）。"""
-    return poetry_writer.rhyme_info(ch)
-
-
-@app.get("/api/poetry/check")
-async def api_poetry_check(poem: str = "", form: str = ""):
-    """纯校验（不建项目）：给一段诗，返回格律报告。"""
-    return poetry_checker.validate(poem, form)
 
 
 @app.get("/api/poetry/forms")
@@ -5303,7 +5108,7 @@ async def api_prose_create(payload: dict):
 async def api_prose_status(key: str):
     proj = prose_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -5311,7 +5116,7 @@ async def api_prose_status(key: str):
 async def api_prose_part(key: str, part: str = "final"):
     """读项目部分：brief / material / draft / slop / final"""
     if not prose_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "part": part, "text": prose_writer.read_part(key, part)}
 
 

@@ -235,15 +235,11 @@ export function renderTopbar(container, ctx) {
   container.append(left, right);
 }
 
-export function defaultModel(state) {
+function defaultModel(state) {
   const options = state.models.options || [];
   const provider =
     options.find((o) => o.id === state.models.default_provider) || options[0] || null;
   return (provider && (provider.default_model || (provider.models || [])[0])) || '默认模型';
-}
-
-export function modelLabel(state) {
-  return state.ui.model || defaultModel(state);
 }
 
 /* v4.14.0：顶栏章节标签按文体定制，不用「第 N 章」糊弄所有体裁 */

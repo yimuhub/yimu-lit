@@ -52,7 +52,6 @@ _SECRET_RE = re.compile(
     re.I,
 )
 _HOME_RE = re.compile(r"(/Users/[^\s，。；、）】]+|[A-Za-z]:\\Users\\[^\s，。；、）】]+)")
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 _TAG_RULES: list[tuple[tuple[str, ...], str]] = [
     (("拖", "水", "节奏", "慢", "冗长"), "压缩过渡与解释段：一章只保留一个核心冲突，删掉不改变局面的对话。"),

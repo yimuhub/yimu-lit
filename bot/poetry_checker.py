@@ -253,11 +253,6 @@ def _tone_of(ch: str) -> tuple[str, str]:
     return "", "unknown"
 
 
-def _pattern_tone(tpl: str, i: int) -> str:
-    """取模板某位的要求：P / Z / N（可平可仄）。"""
-    return tpl[i] if i < len(tpl) else "N"
-
-
 def _line_tones(line: str) -> list[tuple[str, str]]:
     """逐字取 (声调, 状态)。状态 ∈ ok | poly | unknown"""
     return [_tone_of(ch) for ch in line]

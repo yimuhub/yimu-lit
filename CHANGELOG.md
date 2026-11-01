@@ -2,6 +2,34 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.21.1 — 深度体检：性能减半 + 死代码清零 + 后端 7 项修复
+
+**首屏性能（实测）**：JS 814KB/36 文件 → 387KB/23 文件（-52%）；CSS 200KB/8 → 134KB/5；
+请求总数 52 → 36；DOMContentLoaded 176ms → 95ms。
+- 路由级动态 import()（settings/wizard/mediumbench/skilllib/library/evolution/bench/command
+  按需加载，含 _renderSeq 并发守卫防慢加载竞态）；mock 65.8K 按需加载；
+  isMediumBench/verdictLabel 下沉 constants（rightpanel 不再拖入 mediumbench→chatfloat 链）；
+  settings/skills/chatfloat CSS 按需注入（新增 core/loadcss.js）；index.html 去重复 preload；
+  五份 refresh 样板收敛为 guardedRefresh。
+- 真 bug 修复：强制重渲染跳过 destroy 导致的视图订阅泄漏；深链首屏双重渲染竞态；
+  mock 模式粘性化（sessionStorage）——此前页面意外丢失 ?mock=1 时 mock 创建会穿透真实后端写真实磁盘。
+
+**死代码清零（逐项 grep 核实后删除）**：
+- 前端：32 个死 API 方法、14 个死导出（含 9 个转内部）、9 个死图标、62 个死 CSS 规则块（-10KB）。
+- 后端（约 -550 行）：A/B 级死端点 15 个（debug_sessions、bkchat branches GET×2、
+  release-cancel、eval×3、skills 列表版/validate、feedback/summary、重写工作台四件套、
+  blueprint、studio-overview、agents-dispatch、medium/detect、poetry check/rhyme、POST skeleton）
+  及对应测试同步；bot/ 死符号 25 个（AGENT_MODELS_FALLBACK、run_pipeline 未接线版等）；
+  未使用 import 15 处；children/news/copy 三模块阶段循环统一改调基类 run_pipeline（顺带补上暂停位检查）。
+
+**后端严重修复 7 项**：全书状态保存失败静默吞错（补日志）；改书名成书文件重命名失败静默
+（结果上报 renamed:false）；/api/mini/part 空文档与不存在统一 404 口径；_CFG_CACHE 并发读改写
+加锁；死函数 _consistency_fix_one/_custom_agents_path 删除；「项目不存在」三种 404 文案统一。
+
+**测试**：475 通过 / 7 失败全部为存量（agent_registry_sync、skill_evo、poetry×4 为缺数据文件；
+v230_chat_bound 为文件内顺序依赖，单跑通过、原始代码同样失败），零新增失败；
+static_check 双项 0；全部懒加载路由浏览器实测正常。
+
 ## v4.21.0 — Agent 对话式创作体验（活动流/流式思考/本章档案/输入框状态机）
 
 - **创作事件总线**（bot/steps.py）：引擎关键节点（规划师四步/作家写章·扩写·补足/审稿人评分/

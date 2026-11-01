@@ -53,11 +53,6 @@ def test_medium_detect():
         assert got == expect, f"「{text}」判成 {got}，应为 {expect}"
 
 
-def test_medium_detect_api():
-    d = client.get("/api/medium/detect", params={"text": "写一首七律"}).json()
-    assert d["medium"] == "poetry" and d["label"] == "诗词"
-
-
 def test_medium_normalize_alias():
     assert medium.normalize("剧本") == "script"
     assert medium.normalize("poetry") == "poetry"

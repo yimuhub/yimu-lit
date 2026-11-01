@@ -27,8 +27,6 @@ F_BODY_DIR = "02-正文"
 F_FINAL = "04-论文定稿.md"
 F_REPORT = "03-查重报告.md"
 
-STAGES = [("T1", "提纲"), ("T2", "撰写"), ("T3", "引用核查"), ("T4", "降味"), ("T5", "定稿")]
-
 
 class ThesisProject:
     def __init__(self, path: str, name: str):

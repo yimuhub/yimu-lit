@@ -7,10 +7,10 @@ import json
 import os
 import re
 
-from bot.safeio import atomic_write_text, atomic_write_json, safe_join
+from bot.safeio import atomic_write_text, safe_join
 
 from . import llm
-from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project
+from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project, run_pipeline
 
 F_PLAN = "文案计划.json"
 F_OUTLINE = "00-需求与钩子.md"
@@ -83,7 +83,6 @@ def resume_project(key: str):
 def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
-    meta = plan["meta"]
     ktype = KTYPES.get(cfg.get("ktype") or "voice", "口播稿")
     platform = PLATFORMS.get(cfg.get("platform") or "douyin", "抖音")
     tone = TONES.get(cfg.get("tone") or "energetic", "活力种草")
@@ -101,25 +100,7 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
         ("K4", "标题标签", lambda: _stage_titles(proj, pdir, cfg, plan, platform)),
         ("K5", "适配", lambda: _stage_adapt(proj, pdir, cfg, plan, platform)),
     ]
-    for code, label, fn in stages:
-        if (plan.get("chapterStatus") or {}).get(code) == "completed":
-            continue
-        proj.log(f"📋 {code} {label}…")
-        meta["stage"] = code
-        proj.save_plan(plan)
-        try:
-            fn()
-            plan.setdefault("chapterStatus", {})[code] = "completed"
-        except Exception as e:
-            proj.log(f"⚠️ {code} 失败：{e}")
-            plan.setdefault("chapterStatus", {})[code] = "failed"
-        meta["stage"] = code
-        plan["meta"] = meta
-        proj.save_plan(plan)
-    plan["status"] = "completed"
-    meta["stage"] = "F"
-    proj.save_plan(plan)
-    proj.log("✅ 文案定稿完成")
+    run_pipeline(proj, cfg, stages, plan=plan, done_msg="✅ 文案定稿完成")
 
 
 def _stage_brief(proj, pdir, cfg, plan, ktype, platform, tone):

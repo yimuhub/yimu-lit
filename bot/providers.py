@@ -399,10 +399,6 @@ def _dedupe(lst):
 
 # ---------- 探测 / 拉模型 ----------
 
-def _client_timeout(p):
-    return p.get("timeout", 900)
-
-
 def fetch_models(pid):
     """拉 GET /models。成功返回模型 id 列表；失败返回 None（不阻塞）。"""
     data = load_data()
@@ -531,7 +527,6 @@ def stage_resolve(cfg, stage):
     return resolve(cfg)
 
 # ---------- v0.5 M4：子 Agent 独立配模型 + 并发/限流守卫 ----------
-AGENT_MODELS_FALLBACK = {}   # 全局兜底 agent→{provider_id,model}（config.json defaults.agent_models 也可）
 
 def agent_resolve(cfg, agent=None, stage=None):
     """v0.5 M4：子 Agent 模型绑定优先级 —— agent_models[agent] > stage_models[stage] > 默认 resolve。

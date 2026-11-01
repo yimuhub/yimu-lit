@@ -15,7 +15,7 @@ import { toast } from '../core/ui.js';
    自然落到真实状态；失败 toast 并还原。 */
 
 /* 由 work 推导创作控制态：running=创作中 / pausing=暂停请求已发出 / resume=待继续 / idle=空闲或完成 */
-export function creativeToggleState(work) {
+function creativeToggleState(work) {
   const running = Boolean(work && work.running);
   const paused = Boolean(work && work.paused);
   const st = String((work && work.state) || '');

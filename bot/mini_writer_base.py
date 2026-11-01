@@ -8,9 +8,7 @@ import json
 import os
 import re
 
-from bot.safeio import atomic_write_text, atomic_write_json, safe_join
-
-from . import llm
+from bot.safeio import atomic_write_json, safe_join
 
 
 class MiniWriterProject:
@@ -90,20 +88,19 @@ def make_get_project(cls):
     return get_project
 
 
-def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None):
-    """线性执行阶段表 stages = [(code, label, fn(proj, pdir, cfg, plan, meta))...]。
-    每阶段完成后 save_plan（断点恢复时跳过已完成阶段）。"""
+def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
+                 done_msg: str = "✅ 全部阶段完成"):
+    """线性执行阶段表 stages = [(code, label, fn)…]（fn 为零参闭包，捕获各自的阶段上下文）。
+    每阶段完成后 save_plan（断点恢复时跳过已完成阶段，失败不阻断后续）。
+    阶段间检查暂停位——用户点「暂停」后跑完当前阶段即停（v4.20.0：儿童/新闻/文案共用）。"""
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
     meta = plan["meta"]
     plan["config"] = {k: v for k, v in cfg.items() if k != "api_key"}
     plan.setdefault("chapterStatus", {})
-    done_set = {k for k, v in (plan.get("chapterStatus") or {}).items() if v == "completed"}
-    pdir = proj.path
-    for i, (code, label, fn) in enumerate(stages):
-        if code in done_set and i < len(stages) - 1:
+    for code, label, fn in stages:
+        if (plan.get("chapterStatus") or {}).get(code) == "completed":
             continue
-        # v4.20.0：阶段间检查暂停位——用户点「暂停」后跑完当前阶段即停（儿童/新闻/文案/其他共用）
         if (plan.get("meta") or {}).get("paused"):
             plan["status"] = "paused"
             proj.save_plan(plan)
@@ -113,7 +110,7 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None):
         meta["stage"] = code
         proj.save_plan(plan)
         try:
-            fn(proj, pdir, cfg, plan, meta)
+            fn()
             plan["chapterStatus"][code] = "completed"
         except NotImplementedError:
             plan["chapterStatus"][code] = "skipped"
@@ -126,4 +123,4 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None):
     plan["status"] = "completed"
     meta["stage"] = "F"
     proj.save_plan(plan)
-    proj.log("✅ 全部阶段完成")
+    proj.log(done_msg)

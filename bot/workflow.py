@@ -570,10 +570,6 @@ def gen_timeline(cfg, outline_md):
 
 # ---------- 阶段4.5：分层编辑审稿（「一幕·一幕·YIMU 神笔」五角色 + 百分制） ----------
 
-def layered_review(book_md, cfg, l1_findings=None):
-    """[兼容别名] 现为五角色审校 + 百分制（见 five_role_review / score_dimensions）。"""
-    return five_role_review(book_md, cfg, l1_findings)
-
 def _agent_disabled(agent):
     """v4.20：岗位停用检查（容错：agents 不可用/读取失败一律视为启用）。"""
     try:

@@ -85,11 +85,6 @@ def _save_toggles(toggles: dict) -> None:
     atomic_write_text(_TOGGLES_PATH, json.dumps(toggles, ensure_ascii=False, indent=2))
 
 
-def is_disabled(skill_name: str) -> bool:
-    """检查某技能是否被手动禁用"""
-    return not _load_toggles().get(skill_name, True)
-
-
 def toggle(skill_name: str, enabled: bool) -> dict:
     """启用/禁用一个技能。禁用后的技能不会被 stage_inject 注入 prompt。
 

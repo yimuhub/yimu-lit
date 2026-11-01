@@ -581,11 +581,8 @@
   margin-top: 5px;
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
-}
-
-.msg-assistant:hover .msg-actions,
-.msg-assistant:focus-within .msg-actions,
-.msg-actions.is-pinned {
+}.msg-assistant:hover .msg-actions,
+.msg-assistant:focus-within .msg-actions {
   opacity: 1;
 }
 
@@ -719,25 +716,6 @@
   font-size: 11.5px;
   line-height: 1.65;
   color: var(--ink-tertiary);
-}
-
-.pc-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 2px 0;
-}
-
-.pc-row .pc-k {
-  flex: none;
-  width: 62px;
-  color: var(--ink-caption);
-}
-
-.pc-row .pc-v {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--ink-secondary);
 }
 
 .pc-steps {
@@ -1013,85 +991,6 @@
   padding: 9px 20px;
   box-shadow: inset 0 -0.5px 0 var(--line-1);
   background: var(--bg-base);
-}
-
-.ws-main {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.ws-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.ws-title {
-  overflow: hidden;
-  color: var(--ink-primary);
-  font-size: var(--fs-ui);
-  font-weight: 500;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.ws-phase {
-  color: var(--ink-caption);
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-
-.ws-bottom {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  color: var(--ink-caption);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.ws-bottom .ws-bar {
-  width: 148px;
-}
-
-.ws-bottom .ws-sep {
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
-  background: var(--ink-dimmed);
-}
-
-.ws-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: none;
-}
-
-.ws-log {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 300px;
-  min-width: 0;
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-sunken);
-  color: var(--ink-tertiary);
-  font-size: 11px;
-  font-family: var(--font-code);
-}
-
-.ws-log .log-text {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 @media (max-width: 900px) {

@@ -275,13 +275,6 @@ def stage_names(medium: str) -> dict[str, str]:
     return {c: n for c, n, _ in stages(medium)}
 
 
-def stage_desc(medium: str, code: str) -> str:
-    for c, _n, d in stages(medium):
-        if c == code:
-            return d
-    return ""
-
-
 def all_stage_codes(medium: str) -> list[str]:
     return [c for c, _n, _d in stages(medium)]
 
@@ -355,8 +348,6 @@ def _opts(pairs) -> list[dict]:
 
 
 # 小说：题材一律给出 skillkit 的 craft key（skillkit._genre_key 实测结果），避免静默回落 _index。
-_NOVEL_TONES = ["爽文", "虐", "轻松", "暗黑", "复仇", "燃"]
-_NOVEL_PERSPECTIVES = ["男主", "女主", "不限", "第一人称"]
 _NOVEL_MODES = (
     {"value": "rolling", "label": "滚动规划", "desc": "写一段、看反馈、再规划，适合连载。", "icon": "refresh"},
     {"value": "outline", "label": "大纲优先", "desc": "先定全书骨架，再逐章落地。", "icon": "list"},
@@ -756,11 +747,6 @@ def _copy_sections(medium: str) -> dict:
                                default="",
                                hint="从设置中的笔名列表选择，或留空用全局默认。"))
     return out
-
-
-def wizard_schema(medium: str) -> dict:
-    """某文体的三段向导字段（结构；options_from 指向的词表由调用方注入）。"""
-    return _copy_sections(medium)
 
 
 def novel_genre_options(vocab: dict | None = None) -> list[dict]:

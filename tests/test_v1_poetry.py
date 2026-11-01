@@ -215,8 +215,7 @@ def test_recheck_writes_report():
 def test_poetry_routes_registered():
     paths = {getattr(r, "path", "") for r in appmod.app.routes}
     for p in ["/api/poetry/projects", "/api/poetry/create", "/api/poetry/status",
-              "/api/poetry/part", "/api/poetry/recheck", "/api/poetry/rhyme",
-              "/api/poetry/check", "/api/poetry/forms"]:
+              "/api/poetry/part", "/api/poetry/recheck", "/api/poetry/forms"]:
         assert p in paths, f"缺路由 {p}"
 
 
@@ -224,19 +223,6 @@ def test_poetry_forms_api():
     d = client.get("/api/poetry/forms").json()
     labels = [f["label"] for f in d["forms"]]
     assert "七律" in labels and "词" in labels and "现代诗" in labels
-
-
-def test_poetry_check_api():
-    r = client.get("/api/poetry/check", params={
-        "poem": "白日依山尽，黄河入海流。\n欲穷千里目，更上一层楼。",
-        "form": "五绝"}).json()
-    assert r["verdict"] in ("pass", "unclear")
-    assert r["form_label"] == "五绝"
-
-
-def test_poetry_rhyme_api():
-    d = client.get("/api/poetry/rhyme", params={"ch": "楼"}).json()
-    assert d["rhyme"] == "下平十一尤"
 
 
 def test_poetry_create_api():

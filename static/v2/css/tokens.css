@@ -447,13 +447,6 @@ kbd {
   font-size: var(--fs-small);
 }
 
-.btn-lg {
-  height: 38px;
-  padding: 0 16px;
-  border-radius: var(--radius-md);
-  font-size: 14px;
-}
-
 .icon-btn {
   display: inline-grid;
   place-items: center;
@@ -541,10 +534,6 @@ kbd {
 
 .dot-warn {
   background: var(--warn);
-}
-
-.dot-danger {
-  background: var(--danger);
 }
 
 .status-chip {

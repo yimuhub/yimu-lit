@@ -46,14 +46,6 @@ def safe_join(root: str, name: str, *, label: str = "名称") -> str:
     return p
 
 
-def safe_existing(root: str, name: str, *, label: str = "名称") -> str | None:
-    try:
-        p = safe_join(root, name, label=label)
-    except UnsafePathError:
-        return None
-    return p if os.path.exists(p) else None
-
-
 def _read_umask() -> int:
     """读一次当前 umask；只在这里短暂地清零再还原，避免运行期反复改进程状态。"""
     current = os.umask(0o022)

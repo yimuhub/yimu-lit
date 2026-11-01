@@ -187,10 +187,6 @@ export function resetChat() {
   store.set((state) => ({ ...state, chat: initialChat() }));
 }
 
-export function setFeature(name, available) {
-  store.set((state) => ({ ...state, features: { ...state.features, [name]: available } }));
-}
-
 /* chat message helpers */
 
 export function addMessage(message) {
@@ -217,11 +213,3 @@ export function removeMessage(id) {
   patchChat((chat) => ({ messages: chat.messages.filter((m) => m.id !== id) }));
 }
 
-export function setMessages(messages) {
-  patchChat({ messages });
-}
-
-export const selectors = {
-  activeWork: (s) => (s.currentKey ? s.library.items.find((i) => i.key === s.currentKey) || null : null),
-  isWide: () => typeof window !== 'undefined' && window.innerWidth >= 1200
-};

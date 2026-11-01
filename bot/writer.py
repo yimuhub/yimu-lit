@@ -1,7 +1,7 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
 import json, os, re, datetime, threading, queue, time
-from . import workflow, skill, continuity, llm, providers, versions, steps
+from . import workflow, skill, continuity, llm, versions, steps
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -357,7 +357,6 @@ def create_project(cfg, titles, pdir=None, name=None):
          output=f"文风基准 {len(style or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
 
     # v0.3 P2：题材×风格技能（金手指/基调/视角/节奏/语言/卷）→ style.json，供 craft 注入
-    import json as _json
     _sk = {"genre": cfg.get("genre", ""), "tone": cfg.get("tone", ""),
            "perspective": cfg.get("perspective", ""), "style": cfg.get("style") or {},
            "platform": cfg.get("platform", ""), "platform_note": cfg.get("platform_note", ""),
@@ -2654,12 +2653,17 @@ def rename_book(key, new_name):
     plan[nk] = new_name
     plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
     atomic_write_json(pj, plan)
+    result = {"ok": True, "key": key, "name": new_name}
     if old and old != new_name:
         oldf, newf = os.path.join(pdir, f"成书-{old}.md"), os.path.join(pdir, f"成书-{new_name}.md")
         if os.path.exists(oldf) and not os.path.exists(newf):
-            try: os.rename(oldf, newf)
-            except Exception: pass
-    return {"ok": True, "key": key, "name": new_name}
+            try:
+                os.rename(oldf, newf)
+            except Exception as e:
+                print(f"[writer] 成书文件重命名失败: {e} ({oldf} -> {newf})")
+                result["renamed"] = False
+                result["warn"] = "成书文件重命名失败（旧文件保留）"
+    return result
 
 def delete_book(key, hard=False):
     """v0.3.3：删除。soft（默认）=归档进回收站可恢复；hard=彻底删除（删目录+清 schedules，不可逆）。"""
@@ -2718,15 +2722,6 @@ _ONESHOT_DRIVING = set()
 
 def one_shot_driving(key):
     return key in _ONESHOT_DRIVING
-
-@contextlib.contextmanager
-def one_shot_scope(key):
-    """一键完稿全程占用该书的『驱动』标记：期间 成书 不再自动触发放行门禁（由一键⑤统一门控）。"""
-    _ONESHOT_DRIVING.add(key)
-    try:
-        yield
-    finally:
-        _ONESHOT_DRIVING.discard(key)
 
 def one_shot_begin(key):
     _ONESHOT_DRIVING.add(key)
@@ -3072,11 +3067,6 @@ def run_release_gate(key, cfg_over=None):
     _skeleton_refresh(key)   # v0.9.0：放行门禁结束 → 刷新写作骨架
     return {"before": before, "after": final, "released": meta["released"], "cancelled": cancelled,
             "pass_line": pl, "rounds": len(gate_results), "gate_results": gate_results}
-
-def cancel_release_gate(key):
-    """请求取消某项目的放行门禁（下一轮检查点生效）。"""
-    _GATE_CANCEL.add(key)
-    return {"ok": True, "key": key, "msg": "已请求取消（下一检查点生效）"}
 
 def pick_title(key, title):
     """选定书名：改名（同步 02.meta.name + 成书文件名）并开写。用于 awaiting_title 项目。"""

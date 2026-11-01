@@ -343,7 +343,7 @@ export function renderAssistantMessage(msg, handlers = {}) {
   return assistant;
 }
 
-export function renderErrorBanner(error, { onRetry, onDismiss } = {}) {
+function renderErrorBanner(error, { onRetry, onDismiss } = {}) {
   const wrap = h('div', { class: 'msg-error', role: 'alert' });
   wrap.append(h('span', { html: icon('alert', 15) }));
   const main = h('div', { class: 'err-main' });

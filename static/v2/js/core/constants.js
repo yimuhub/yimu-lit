@@ -53,3 +53,23 @@ export function mediumIcon(medium) {
 }
 
 export const FEEDBACK_TAGS = ['剧情拖沓', '人物失真', '文风不对', '信息错误', '没按规划', '太像 AI'];
+
+/* ---- 非小说工作台的共享枚举 ----
+   从 views/mediumbench.js 下沉到这里：右侧面板（rightpanel.js）只需要这两个
+   判定/标签函数，原先却要为此静态加载整条 mediumbench → chatfloat → markdown 链。 */
+
+/* 有专属工作台的非小说文体（与 views/mediumbench.js 的 BENCH 配置一一对应）。 */
+export const MEDIUM_BENCHES = ['script', 'thesis', 'other', 'children', 'news', 'copy', 'poetry', 'prose'];
+
+export function isMediumBench(medium) {
+  return MEDIUM_BENCHES.includes(medium);
+}
+
+/* status 里的 operation/verdict 是引擎内部的码（写/审的码、pass|fail|unclear），
+   直接上屏等于把流水线术语丢给用户；这里只留各自的短标签。 */
+export const OPERATION_LABELS = { write: '写', review: '审', refactor: '改', recreate: '重写' };
+export const VERDICT_LABELS = { pass: '通过', fail: '未过', unclear: '存疑' };
+
+export function verdictLabel(verdict) {
+  return VERDICT_LABELS[verdict] || verdict || '';
+}
