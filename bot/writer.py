@@ -477,13 +477,16 @@ def _ensure_writable_plan(proj) -> Optional[dict]:
     return plan
 
 
-def start_writing(proj: Project, batch_size=None):
+def start_writing(proj: Project, batch_size=None) -> bool:
+    """启动写作线程。返回 True=已启动；False=被防重入拦截（已有线程在写）。
+    v4.20.1：此前被拦时静默返回 None，调用方无法区分「已启动」和「已在写」。"""
     _bk = os.path.basename(proj.path)
     if proj.running or _book_running(_bk):
-        return   # v4.12.16：双重防重入（实例 + 共享注册表）
+        return False   # v4.12.16：双重防重入（实例 + 共享注册表）
     _set_book_running(_bk, True)
     proj.running = True
     threading.Thread(target=_write_loop, args=(proj, batch_size), daemon=True).start()
+    return True
 
 # ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
 
@@ -529,11 +532,17 @@ def pause_book(key):
     p.log("⏸ 已请求暂停（在下一检查点停，停在当前进度，可点「▶继续」恢复）")
     return True
 
-def resume_book(key, batch_size=None):
-    """清暂停位 + 续写剩余章节。batch_size 从 plan.config 取（未传参时）。"""
+def resume_book(key, batch_size=None) -> bool:
+    """清暂停位 + 续写剩余章节。batch_size 从 plan.config 取（未传参时）。
+    返回 True=已启动新写作线程；False=无法启动（无计划/已完成/已有线程在写）。
+    v4.20.1：此前被防重入拦截时也写「▶ 继续写作」日志并返回 True，
+    前端据此误报成功——现在只有真正启动才记日志、才算成功。"""
     p = Project(_project_dir(key), key)
     plan = p.plan()
     if not plan:
+        return False
+    if plan.get("status") == "completed":
+        p.log("ℹ️ 该作品已完成，无需继续（想加章请用「续写」）")
         return False
     plan.setdefault("meta", {})["paused"] = False
     plan["status"] = "in_progress"
@@ -542,8 +551,10 @@ def resume_book(key, batch_size=None):
     if batch_size is None:
         cfg = plan.get("config") or {}
         batch_size = cfg.get("batch_size", "1")
+    if not start_writing(p, batch_size=batch_size):
+        p.log("ℹ️ 收到「继续」请求，但该作品已在创作中，无需重复启动")
+        return False
     p.log("▶ 继续写作（从上次进度接着写剩余章节）")
-    start_writing(p, batch_size=batch_size)
     return True
 
 # ---------- v3.1.0：陈旧状态恢复（服务重启/线程死亡后的 validating 卡死） ----------

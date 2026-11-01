@@ -170,6 +170,16 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
       }, 20000);
       try {
         const res = await api.pause(key);
+        /* v4.20.1：后端明确拒绝（ok:false）时不再装成功——按返回体落真实态并提示原因 */
+        if (res && res.ok === false) {
+          optimistic = null;
+          if (optimisticTimer) clearTimeout(optimisticTimer);
+          mergeWorkLive(key, res, true);
+          paint(creativeToggleState(currentWork()));
+          toast((res && res.msg) || '暂停请求未生效', { tone: 'warn' });
+          if (ctx && ctx.refreshWork) ctx.refreshWork();
+          return;
+        }
         mergeWorkLive(key, res, true);
         if (ctx && ctx.refreshWork) ctx.refreshWork();
       } catch (err) {
@@ -191,6 +201,17 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
       }, 20000);
       try {
         const res = await api.resume(key);
+        /* v4.20.1：后端明确拒绝（ok:false，如已在创作中/已完成）——按返回体落真实态：
+           running=true 会自然收敛成「创作中」，completed 则按钮隐藏；提示用后端原话。 */
+        if (res && res.ok === false) {
+          optimistic = null;
+          if (optimisticTimer) clearTimeout(optimisticTimer);
+          mergeWorkLive(key, res, false);
+          paint(creativeToggleState(currentWork()));
+          toast((res && res.msg) || '暂时无法继续', { tone: 'warn' });
+          if (ctx && ctx.refreshWork) ctx.refreshWork();
+          return;
+        }
         mergeWorkLive(key, res, false);
         toast('已继续创作', { tone: 'success' });
         if (ctx && ctx.refreshWork) ctx.refreshWork();
