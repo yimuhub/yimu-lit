@@ -161,9 +161,13 @@ def _stage_body(proj, pdir, cfg, plan, ktype, platform, tone):
 
 def _stage_titles(proj, pdir, cfg, plan, platform):
     final = _read(os.path.join(pdir, F_FINAL))
+    if not final.strip():
+        return          # v4.23.2：没有正文就不出标题（此前会拿空输入让模型瞎编）
     out = llm.chat([{"role": "user", "content":
         f"为以下{PLATFORMS.get(platform, '')}文案出 5 个标题候选 + 5-10 个话题标签。\n"
-        "标题要求：每个角度不同（悬念/数字/痛点/直给/情绪）。输出 markdown。"}],
+        "标题要求：每个角度不同（悬念/数字/痛点/直给/情绪）。输出 markdown。\n\n"
+        # v4.23.2 修真 bug：此前只读了正文却没拼进 prompt，模型看不到文案，标题全是凭空编的
+        f"【文案正文】\n{final[:4000]}"}],
         cfg=cfg, stage="review")
     atomic_write_text(os.path.join(pdir, F_TITLE_TAGS), (out or "（生成失败）").strip())
 

@@ -152,12 +152,16 @@ def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
 
 def _stage_check(proj, pdir, cfg, plan):
     final = _read(os.path.join(pdir, F_FINAL))
+    if not final.strip():
+        return          # v4.23.2：没有正文不核查（此前会拿空文本让模型凭空"核查"）
     w = plan.get("five_w1h") or {}
     report = llm.chat([{"role": "user", "content":
         f"对以下新闻稿做事实核查。原始 5W1H：{json.dumps(w, ensure_ascii=False)}\n"
         "逐项检查：1) 时间是否一致 2) 数字是否前后一致 3) 人名/机构名是否一致 "
         "4) 引语是否标注了说话者 5) 是否有形容词堆砌或主观判断（应客观）。\n"
-        "输出 markdown：## 核查结果（逐项 ✓/⚠️）+ ## 修正建议。"}],
+        "输出 markdown：## 核查结果（逐项 ✓/⚠️）+ ## 修正建议。\n\n"
+        # v4.23.2 修真 bug：此前只读了正文没拼进来，核查报告是对着空中做的（必然全 ✓）
+        f"【待核查稿件】\n{final[:6000]}"}],
         cfg=cfg, stage="review")
     atomic_write_text(os.path.join(pdir, F_CHECK), (report or "（核查失败）").strip())
 
@@ -181,8 +185,6 @@ def _stage_versions(proj, pdir, cfg, plan):
 def _stage_final(proj, pdir, cfg, plan):
     final = _read(os.path.join(pdir, F_FINAL))
     check = _read(os.path.join(pdir, F_CHECK))
-    versions_fp = os.path.join(pdir, F_FINAL.replace(".md", "-多版本.md"))
-    versions = _read(versions_fp)
     meta = plan.setdefault("meta", {})
     meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", final))
     if check.strip() and "⚠️" in check:

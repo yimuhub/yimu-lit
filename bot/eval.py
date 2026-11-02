@@ -17,8 +17,8 @@ import json
 import os
 import re
 import secrets
-from datetime import datetime, timezone
-UTC = timezone.utc  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；与 timezone.utc 等价）
+from datetime import datetime, UTC
+UTC = UTC  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；与 timezone.utc 等价）
 
 from . import llm
 from . import medium as medium_mod

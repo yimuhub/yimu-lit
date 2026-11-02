@@ -12,12 +12,14 @@ secrets/
 *.key
 
 # —— 运行时学习数据 / 用户作品（本地生成） ——
-data/
-projects/
-skills/
-styles/
+# 注意：必须锚定根目录（前导 /）。不锚定会连带吞掉 skillkit/*/data、
+# skillkit/*/references 这类「仓库内的技能素材」，导致新增技能文件静默不入库。
+/data/
+/projects/
+/skills/
+/styles/
 # 参考资料库：用户上传的原文/节选只存本地，不随仓库分发
-references/
+/references/
 
 # —— 备份（铁律：大改前备份，但备份不进 git；含嵌套 git 子仓库） ——
 backup_*/
@@ -54,8 +56,9 @@ llm_calls.jsonl.*
 .shenbi_token
 bot/.nlu_probe
 
-# pytest 临时测试目录（各次运行的 fixtures）
+# pytest 临时测试目录（tools/test.sh 用 --basetemp=.pytest-tmp 生成）
 pytest-of-*/
+.pytest-tmp*/
 
 # —— 开发过程文件（只留本地，不入库）——
 问题修复记录.md
@@ -66,4 +69,3 @@ dist/
 
 # —— 工具/助手的本地工作目录（记忆、草稿、会话快照，含个人路径）——
 .workbuddy/
-.pytest-tmp/

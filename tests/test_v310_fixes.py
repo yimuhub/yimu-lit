@@ -49,7 +49,14 @@ def test_clean_chapter_text_summary_only():
 
 def _mk_book(tmp_path, status="validating", chapters=None):
     pdir = tmp_path / KEY
-    pdir.mkdir(exist_ok=True)
+    # v4.23.2：本函数会被同一用例重复调用（改 status 再建一次）。沙箱把 mkdir 代理给
+    # 宿主进程执行时，EEXIST 会直接抛成 FileExistsError、绕过 exist_ok 语义，
+    # 于是第二次调用直接炸。这里按「已存在且是目录」视为成功，语义与 exist_ok 一致。
+    try:
+        pdir.mkdir(exist_ok=True)
+    except FileExistsError:
+        if not pdir.is_dir():
+            raise
     chs = chapters if chapters is not None else [
         {"chapterNumber": i, "title": f"第{i}章", "filePath": f"第{i:02d}章.md",
          "status": "completed" if i < 3 else "in_progress", "wordCount": 3000}
@@ -123,7 +130,7 @@ def test_script_scenes_reparse_fallback(tmp_path, monkeypatch):
     _mk_book(tmp_path)
     client = TestClient(appmod.app)
     monkeypatch.setattr(appmod.script_writer, "get_project", lambda key: appmod._get_project(KEY))
-    proj = appmod._get_project(KEY)
+    appmod._get_project(KEY)   # 触发项目加载（副作用：读到 app 的项目表）
     # 把小说项目伪装成剧本：给 read_file_part 打桩返回场次表
     monkeypatch.setattr(appmod.script_writer, "read_file_part",
                         lambda key, part: "| 场次 | 内/外 | 地点 |\n| :--- | :--- | :--- |\n| 第1场 | 内 | 室内 |"

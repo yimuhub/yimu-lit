@@ -3239,7 +3239,13 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     proj = Project(_project_dir(key), key)
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
     _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
-    plan = proj.plan()
+    plan = proj.plan() or {}
+    # v4.23.2：plan 可能不存在（目录在但计划文件缺失/损坏/刚创建还没规划）。
+    # 此前直接 plan.get() 会在后台线程抛 AttributeError，用户只看到「没反应」，
+    # 堆栈只落在 stderr。这里直接给出可读的失败原因，不空转。
+    if not plan.get("chapters"):
+        proj.log("⚠️ 定向重写跳过：写作计划缺失或没有章节（请先打开该书确认计划正常）")
+        return {"ok": False, "msg": "写作计划缺失或没有章节，无法定向重写"}
     cfg = dict((plan.get("config") or {}))
     cfg.update(cfg_over or {})
     _book_skills_into(cfg, plan)   # v3.0.0：本书绑定

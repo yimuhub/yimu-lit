@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """v4.19.0：系统级操作日志（bot/syslog.py）回归。
 
 覆盖：追加写入 / 敏感字段脱敏 / kind 过滤与关键词检索 / 裁剪 / 清空。
@@ -63,7 +62,7 @@ def test_clear_and_missing_file(tmp_path, monkeypatch):
 
 
 def test_trim_keeps_latest(tmp_path, monkeypatch):
-    fp = _use_tmp_log(tmp_path, monkeypatch)
+    _use_tmp_log(tmp_path, monkeypatch)
     monkeypatch.setattr(syslog, "MAX_BYTES", 10)   # 强制每次写都触发裁剪
     monkeypatch.setattr(syslog, "KEEP", 3)
     for i in range(6):

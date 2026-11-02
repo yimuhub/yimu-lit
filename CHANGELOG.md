@@ -2,6 +2,120 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.23.2 — 把「体检结论」变成门禁：lint 归零、红测试清零、3 处真 bug
+
+这一版没有新功能。它处理的是 v4.23.1 交付后遗留的**四类欠账**：lint 告警、
+没人调的接口、红了很久的测试、没有样式的类名。原则是——能改代码的不加
+`noqa`，能补数据的不编数据，能写理由的不含糊留着。
+
+### 一、ruff 44 条 → 0，其中 3 条是**真 bug** 不是风格问题
+
+自动修 19 条（import 排序、`dict()` 字面量、f-string 无占位符等），
+剩下 25 条逐条按语义判断，挑出来的真问题：
+
+1. **`script_writer.write_scenes` 白读三份大文件。** 它把「读配置→读圣经/人物/
+   结构→算时代」整套做了一遍，8 个变量一个都没用——真正实现在 `_write_scenes_inner`
+   里又原样做了一遍。每次开写都多读三份大文件。改为只做前置校验 + 状态标志。
+2. **`copy_writer._stage_titles` 拿空输入让模型编标题。** 它 `_read` 了正文却
+   没拼进 prompt，模型看不到文案，「为以下文案出标题」实际是对着空气出的。
+   `news_writer._stage_check` 同款：事实核查对着空文本做，结论必然全 ✓。
+   两处都补上正文，并在正文为空时直接跳过（不产出假报告）。
+3. **`v2api._bg_score` 把全书一致性扫描跑了两遍、扔一遍。** 单独调
+   `continuity.run_project` 的返回值从未使用，紧接着 `validate_project` 内部
+   会以同样参数再跑一次。删掉前一次，进度文案保留。
+
+其余按语义归类：`raise ... from None`（B904）、`zip(..., strict=False)`（B905）、
+`open()` 去掉冗余 `"r"`（UP015）、`asyncio.TimeoutError` 并入内置 `TimeoutError`
+（UP041，本仓库下限 py3.13）、`children_writer._stage_final` 用落盘命名规则
+直接拼路径，不再内层遍历 1..N 猜序号。`pyproject.toml` 删掉已从 ruff 移除的
+`UP038` ignore（它让每次运行都报一条 warning）。
+
+### 二、8 个红测试全部转绿，根因各不相同
+
+| 用例 | 真因 |
+|---|---|
+| `test_agent_registry_sync` / `test_skill_evo`（poetry、novel/P2） | 技能文档**从未写出来**：`novel-volume-arc-planning`、`novel-multithread-pov` 在 git 全历史里都搜不到，而 `DEFAULT_AGENT_SKILLS` 已按这两个名字绑定 |
+| `test_v1_poetry` ×4 | `skillkit/poetry/data/pingshui.json` 不存在，`_rhyme_index()` 返回 0 条 |
+| `test_v1_script::test_script_create_api` | 断言假定同步创建，实际是后台线程规划——只有线程恰好先跑完才过 |
+| `test_v230_chat_bound` | `writer._RUNNING_BOOKS` 是模块级 set（按 basename），前一个用例的 running 串到后一个 |
+| `test_v310_fixes` | 沙箱里 `Path.mkdir(exist_ok=True)` 的 EEXIST 会被直抛，绕过 exist_ok 语义 |
+
+补齐方式：两份技能文档按既有规格（frontmatter 8 字段、stages、weight）新写；
+平水韵表**不自己编**，从两个 MIT 许可公开数据源合并——`charlesix59/chinese_word_rhyme`
+的 `Pingshui_Rhyme.json`（105 韵，缺上声三讲）+ pypi `pingshui_rhyme` 的
+`organized_ping_ze_rhyme_dict.json`（补三讲），交叉核对后 **106 韵齐、8240 字**，
+抽查「东→上平一东」「楼→下平十一尤」「雪/一→仄」。
+
+### 三、接线体检：从「一堆警告」变成三态结论
+
+v4.23.1 建的 `tools/audit_wiring.py` 当时报「75 个接口前端零引用」。逐个核实
+发现其中大半是**扫描器自己的误报**：
+
+- `PATH_RE` 字符类缺 `(` `)`，`/api/library/${enc(key)}/trash` 在 `(` 处截断，
+  25 个真在用的 REST 路由被判死；
+- 只扫 `static/v2/js`，漏了仍挂在 `/classic` 的 `static/index.html`；
+- 前端拼接写法 `"/api/live/"+key` 抓到的是 `/api/live/`，归一后对不上
+  `/api/live/{key}`——补 `**` 跨段通配；
+- 有些模块不直接写 `api.xxx()`，而是走 `collabCall('agentsSet', …)` /
+  `callApi('bookSkills', …)` 这类薄包装，内部 `api[name]` 动态取用。
+  本轮一度把这 **10 个在用方法**报成「定义了没人调」，已加动态派发识别
+  （含 `api['xxx']` 字面量下标），并且**动态派发出的名字同样核对存在性**——
+  名字打错一样是运行时才炸。
+
+收敛后：前端 158 个 `/api` 路径全部有路由；后端剩余 27 个接口属「能力有、
+界面有意不接」，逐条写进 `API_ONLY` 并注明理由（不写成纯白名单，带「过期告警」；
+某个接口后来被 UI 接上时会提示收缩）。**134 个客户端方法全部有真实调用，0 处悬空。**
+
+### 四、新增 `tools/audit_css.py`：类名有没有样式，现在可守门
+
+v2 前端不写 `class="..."`，而是 `h('div', { class: 'x' })`，按 HTML 字符串扫描
+一个都抓不到，于是「类名没样式」长期没人核对。本轮核实出 21 个，**结论是只有 3 个
+是真缺口**：
+
+- `.rp-section .section-head`（右栏小节标题裸 div）、`.set-group-subhead`
+  （设置页小标题）、`.wiz-ai-inline`（向导 AI 按钮）——补**纯排版语义**。
+
+其余 18 个要么是 JS 查询钩子，要么布局/间距已由父级或兄弟规则提供。后者尤其
+不能乱补：`.rp-section` 本身是 `flex column + gap:8px`，再加 `margin` 会把 8px
+变成 18px；`.set-row + .set-row` 靠 0.5px 分隔线成列，加 `gap` 会顶开分隔线；
+`.mb-prev` 的父级 `.modal-body` 已有 padding 与滚动，再补 padding 就是二次内缩。
+这些全部写进 `shell.css` 末尾的清单与 `NO_STYLE` 白名单，逐条带判定依据。
+白名单同样有「过期告警」：某个类后来真的被删了会提示清理。
+
+### 五、门禁与 CI
+
+- **CI 恢复 `push` / `pull_request` 触发**（此前只留 `workflow_dispatch`）。
+  当时不挂 push 的理由是「ruff 一挂就 skip 测试，20 秒一个红叉」——现在 lint
+  归零、测试全绿，红叉重新代表真回归。公开仓库标准 runner 分钟数免费不限量；
+  另加 `concurrency` 取消同分支的排队运行。
+- 新增 `tools/test.sh`：统一 pytest 入口。沙箱环境里 teardown 一次删 >50 个路径
+  会触发删除守卫直接 `SystemExit(1)`，表现为 fixture setup 阶段几十个 ERROR；
+  脚本里摘掉这两个环境变量后归零。
+- `tools/commit.sh` 增加样式体检步骤（原先只有接线体检）。
+- `app._spawn_project` 在**当前线程**预建项目目录：原先目录要等后台线程真正开始
+  跑才创建，而各引擎 `get_project` 都是「目录不存在 → None」，前端拿到 key 立刻
+  轮询 status 会吃 404（提示「项目不存在或未加载，请刷新作品库」），网速快就必现。
+- 后台线程异常改为打印完整堆栈（原先只有 `str(e)`，排查不到落点）。
+- `bot/safeio.py` 加 `_ensure_dir`：某些环境 `os.makedirs` 返回时目录尚未落盘，
+  紧接 `mkstemp` 会 ENOENT，报「No such file or directory: .tmp-xxx.part」，
+  从堆栈完全看不出是目录问题。
+- `writer.run_guided_rewrite` 在缺少写作计划时给出可读失败原因（原先 `plan` 为
+  `None` 时 `.get` 抛 `AttributeError` 落在后台线程，用户只看到「没反应」）。
+
+### 六、`.gitignore` 的一处静默陷阱
+
+`data/`、`references/`、`skills/`、`styles/`、`projects/` 原本没锚定根目录，
+会匹配**任意层级**的同名目录——`skillkit/novel/references/` 与
+`skillkit/poetry/data/` 全被吞掉。本轮新写的 3 个技能文件差点因此不入库，
+CI 上必然红（本地因为文件在磁盘上而全绿）。已改为 `/data/`、`/references/` 等
+根锚定写法，并把 `.pytest-tmp*/` 一并纳入忽略。
+
+### 七、验证
+
+`ruff check` → All checks passed；`bash tools/test.sh` → **622 passed**；
+`audit_wiring.py --strict` / `audit_css.py --strict` → 退出码 0；
+v2 首页与设置页在 1440×1000 下实机截图核对，无错位/裁切/重叠。
+
 ## v4.23.1 — 新建作品弹窗空白：把「前端调用 ←→ 后端接口」变成门禁
 
 ### 一、现象

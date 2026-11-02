@@ -36,9 +36,14 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(security, "AUTH_ENABLED", False)
     appmod.SESSIONS.clear()
     appmod.PROJECT_INDEX.clear()
+    # v4.23.2：running 注册表是模块级全局，key 又是 basename，本文件所有用例共用同一个
+    # 「20260101-000000-旧书名」目录名，前一个用例留下的 running 会串到后一个用例，
+    # 导致「继续」被误判成「正在创作中」而返回（test_attached_continue_resumes 因此随机红）。
+    writer._RUNNING_BOOKS.clear()
     yield
     appmod.SESSIONS.clear()
     appmod.PROJECT_INDEX.clear()
+    writer._RUNNING_BOOKS.clear()
 
 
 @pytest.fixture

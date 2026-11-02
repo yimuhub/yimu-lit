@@ -1,24 +1,38 @@
 name: CI
 
-# 手动触发。**刻意不挂 push。**
+# push / PR 自动跑，也可手动触发。
 #
-# 为什么不挂 push：
-#   ① 迭代期每次提交都跑，lint 一挂就直接 skip 掉测试，20 秒给一个红叉，
-#      既没有有效信号又打断提交节奏——本仓库历史 104 次运行、最近十次全红，
-#      原因就是 ruff 先挂、测试根本没跑起来。
-#   ② 提交规范是「改完就推」，一天可能推十几次，排队反而不如本地跑。
+# 历史：v4.21 ~ v4.23.1 期间这里**只留 workflow_dispatch**，原因是当时 ruff
+# 有 44 条告警、8 个测试红，每次 push 都先挂 lint、pytest 直接 skip，20 秒
+# 给一个红叉——既没有有效信号，又把「最近十次全红」变成了常态。
+#
+# v4.23.2 把 ruff 归零、8 个红测试全部转绿、接线与样式体检接成可守门脚本，
+# 前提已满足，于是把 push 触发装回来：现在红叉代表真回归，而不是历史欠账。
 #
 # 关于费用（免得每次都要重新确认）：
 #   本仓库是公开仓库（yimuhub/yimu-lit），标准 runner（ubuntu-latest）的
-#   Actions 分钟数**免费且不限量**，手动触发也不花钱；改回 push 触发同样不花钱，
-#   只是噪音大。真正会计费的是 larger runners 和私有仓库的额度。
+#   Actions 分钟数**免费且不限量**。真正会计费的是 larger runners 和私有仓库。
 #
-# 本地体检等价于下面三步，秒级、不排队：
+# 本地等价于下面四步，秒级、不排队：
 #   bash tools/static_check.sh
 #   ruff check app.py bot tests run.py tools build.py
-#   python -m pytest -q && python tools/check_frontend_js.py
+#   bash tools/test.sh
+#   python tools/check_frontend_js.py && python tools/audit_css.py --strict
+#   python tools/audit_wiring.py --strict
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "交付截图/**"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  # 同一分支连续推多次时，取消上一轮未完成的运行，避免排队浪费
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -44,6 +58,12 @@ jobs:
           node-version: "22"
       - name: Frontend inline JS syntax
         run: python tools/check_frontend_js.py
+      # 接线体检要 import app 并问 node 要 api.js 的真实 key，所以放在 node
+      # 之后；没有 node 时会退回正则，结论会偏宽松，不能当门禁用。
+      - name: Wiring audit (api keys ↔ routes)
+        run: python tools/audit_wiring.py --strict
+      - name: CSS audit (JS classes ↔ stylesheet)
+        run: python tools/audit_css.py --strict
 
   audit:
     runs-on: ubuntu-latest

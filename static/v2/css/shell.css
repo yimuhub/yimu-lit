@@ -1227,3 +1227,31 @@
     border-radius: 0;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────
+   v4.23.2：以下类名刻意**不定义样式**，它们要么是 JS 查询钩子，
+   要么已经由同级类 / 后代选择器 / 内联样式覆盖。列在这里是为了让
+   「类名没样式」这件事有据可查，不再被反复当成 bug 排查：
+
+     .collab-live     与 .live-log 并列；JS 用 querySelector 定位日志容器
+     .msg-phase       与 .msg-tag  并列；chat.js 用 querySelector 更新阶段文案
+     .msg-status      与 .hint-text 并列，样式由 .hint-text 提供
+     .mb-view         与 .bench-view 并列，样式由 .bench-view 提供
+     .cf-tab-text     位于 .cf-tab 内，继承其排版
+     .bench-input     textarea，样式由 .bench-editor textarea 提供
+     .palette-backdrop 与 .modal-backdrop 并列，样式由后者提供
+     .progress-bar    创建时带完整内联 style，类名仅作标识
+     .set-check       label，创建时带完整内联 style
+     .suggest-list / .suggestion  创建时带完整内联 style（网格 + 按钮）
+
+   下面 6 个是「容器 / 行」类，父级或兄弟规则已经提供了布局与间距，
+   再写一条反而会叠加。判定依据写在每行后面，改动前请先核对：
+
+     .chat-extras     在 .chat-column（flex column）里，子项自带 margin
+     .cf-rec-list     在 .cf-records（已 padding + overflow-y:auto）里
+     .cf-rec-sec-body 子项 .cf-rec-item 已有 `+ .cf-rec-item{margin-top:6px}`
+     .set-list        行是 `.set-row + .set-row` 的 0.5px 分隔线，加 gap 会顶开
+     .collab-agent-actions  父级 .collab-card 已 gap:6px，且整行只有一个按钮
+     .mb-prev         modal body 是 .modal-body（已 padding + overflow-y:auto），
+                      不是 flex 容器，flex:1 无效；再加 padding 会二次内缩
+   ────────────────────────────────────────────────────────────── */

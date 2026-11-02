@@ -439,7 +439,7 @@ def _medium_state_payload(proj, key: str, q: str = "") -> dict:
     """v4.6.2：非小说的状态 pane 数据（剧本用剧本状态库；诗词/散文/论文给阶段/产物映射）。"""
     if str(key).startswith("s_"):
         return _script_state_payload(proj, key, q)
-    from bot import writer as _wr, medium as _medium_mod
+    from bot import writer as _wr
     med = {"p_": "poetry", "e_": "prose", "t_": "thesis",
            "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(str(key)[:2], "prose")
     it = _wr.library_item(key) or {}
@@ -450,7 +450,6 @@ def _medium_state_payload(proj, key: str, q: str = "") -> dict:
         from bot import thesis_writer
         tp = thesis_writer.get_project(key)
         plan = (tp.plan() if tp else None) or {}
-        status_map = plan.get("chapterStatus") or {}
         for ch in (plan.get("outline") or {}).get("chapters") or []:
             no = int(ch.get("no") or 0)
             timeline.append({"chapter": no, "time": "", "event": ch.get("title") or f"第{no}章",
@@ -1359,9 +1358,11 @@ def register_v2_routes(app, get_project, chat_func=None):
 
         def _bg_score():
             try:
-                from bot import continuity as _cont
+                # v4.23.2：删掉这里原先单独跑的一次 continuity.run_project——
+                # 它的返回值从来没被使用，而紧接着的 validate_project → _run_layered
+                # 内部会以同样的参数再跑一遍并把 findings 交给评审。等于全书扫描做了两次、
+                # 扔一次。进度文案保留，实际 L1 在 validate_project 里跑。
                 _prog.update({"stage": "一致性体检（L1）", "pct": 8, "detail": "扫描人物/伏笔/设定冲突"})
-                l1 = _cont.run_project(pdir)
                 _prog.update({"stage": "分层采样评审", "pct": 20, "detail": "五角色审校团分段并行评审"})
                 # 走 validate_project（内部自动选分层评审/单次评审 + 双轨合成 + 写 14/13 报告）
                 def _review_cb(total, done=None):
@@ -1478,7 +1479,7 @@ def register_v2_routes(app, get_project, chat_func=None):
             while not ready.is_set():
                 try:
                     await asyncio.wait_for(ready.wait(), timeout=_HEARTBEAT_SECS)
-                except (TimeoutError, asyncio.TimeoutError):  # v4.7.1 Python<3.11 时 asyncio.TimeoutError 不是内置 TimeoutError 子类
+                except TimeoutError:  # Python 3.11+ 起 asyncio.TimeoutError 即内置 TimeoutError（本仓库下限 3.13）
                     pushed_line = ""
                     if _log_file and os.path.exists(_log_file):
                         try:
@@ -1673,7 +1674,7 @@ def register_v2_routes(app, get_project, chat_func=None):
             gitcfg = os.path.join(ROOT, ".git", "config")
             if os.path.exists(gitcfg):
                 try:
-                    for line in open(gitcfg, "r", errors="ignore"):
+                    for line in open(gitcfg, errors="ignore"):
                         line = line.strip()
                         if "github.com:" in line and ".git" in line:
                             # git@github.com:user/repo.git

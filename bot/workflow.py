@@ -717,9 +717,8 @@ def longform_book_review(book_md: str, cfg, l1_findings=None, chapter_avg: float
     slices = _slice_book(book_md)
     if len(slices) <= 1:
         return five_role_review(book_md, cfg, l1_findings)
-    results, lock = [None] * len(slices), _th.Lock()
-    l1_txt = "\n".join(f"- [{f.get('severity')}] {f.get('check')}：{f.get('detail')}"
-                        for f in (l1_findings or []))[:1500]
+    # results 按索引独立写入，CPython 下 list 索引赋值原子，不需要额外锁
+    results = [None] * len(slices)
 
     def _one(idx, pos, text):
         note = (f"【评审范围说明】本书为超长篇，你评审的是全书均匀采样的第 {pos} 段（共采 {len(slices)} 段）。"

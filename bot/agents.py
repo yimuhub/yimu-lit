@@ -81,6 +81,10 @@ def set_binding(agent, provider_id=None, model=None):
 # v3.0.0：内置默认技能包。岗位从未配置过技能时首次读取自动填入并落盘
 # （用户显式绑定过——包括清空为空列表——则完全尊重用户配置）。
 DEFAULT_AGENT_SKILLS = {
+    # v4.23.2：planner 原绑的这两个技能名此前在 skillkit 里没有对应文件（git 全历史也搜不到），
+    # 注入时静默失效，等于规划岗没有专属技能。已补齐真实文件：
+    #   skillkit/novel/references/guides/卷弧结构与滚动规划.md
+    #   skillkit/novel/references/guides/多线叙事与视角调度.md
     "planner":   ["novel-volume-arc-planning", "novel-multithread-pov", "core-longform-continuity"],
     "writer":    ["novel-references-guides-golden3", "novel-references-guides-dialogue-writing",
                   "novel-hangup-curve", "core-anti-slop"],
@@ -155,7 +159,7 @@ def set_book_skills(pdir, agent, names):
     try:
         plan = json.load(open(fp, encoding="utf-8"))
     except Exception:
-        raise ValueError("作品计划缺失或不可读（仅支持小说作品的按作品绑定）")
+        raise ValueError("作品计划缺失或不可读（仅支持小说作品的按作品绑定）") from None
     meta = plan.setdefault("meta", {})
     binds = meta.get("agent_skills")
     if not isinstance(binds, dict):

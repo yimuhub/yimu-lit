@@ -372,7 +372,8 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                     r = fut.result(timeout=timeout + 60)
                 except FuturesTimeoutError:
                     fut.cancel()
-                    raise LLMError(f"LLM 调用总时长超过 {timeout + 60}s（wall-clock 守卫强制中断，防代理挂起）")
+                    # 原始超时异常无附加信息，消息本身已说明原因，不链式挂到外层
+                    raise LLMError(f"LLM 调用总时长超过 {timeout + 60}s（wall-clock 守卫强制中断，防代理挂起）") from None
             if r.status_code == 429:
                 time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值（在 guard 外 sleep，不占名额）
                 last_err = LLMError(f"429 限流: {r.text[:200]}")
@@ -525,7 +526,8 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_th
                             try:
                                 ev = json.loads(payload)
                             except Exception:
-                                raise LLMError(f"SSE 帧解析失败: {payload[:120]}")
+                                # JSONDecodeError 信息量有限，原始帧内容已在消息里，不链接
+                                raise LLMError(f"SSE 帧解析失败: {payload[:120]}") from None
                             usage = ev.get("usage") or usage
                             chs = ev.get("choices") or []
                             if not chs:

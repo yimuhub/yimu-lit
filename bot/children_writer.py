@@ -190,7 +190,6 @@ def _stage_illustration(proj, pdir, cfg, plan):
     if cfg.get("with_illustration") is False:
         return
     outline = plan.get("outline") or {}
-    sections = outline.get("sections") or []
     out = llm.chat([{"role": "user", "content":
         f"为以下儿童故事的每个单元出 2-4 张插画提示词（中文描述画面/构图/色调/角色表情，"
         "可直接转 AI 绘图）。故事提纲：" + (outline.get("outline") or "")[:1500] +
@@ -205,13 +204,12 @@ def _stage_final(proj, pdir, cfg, plan):
     sections = outline.get("sections") or []
     body_dir = os.path.join(pdir, F_BODY_DIR)
     parts = [f"# {plan.get('bookName')}\n"]
-    for sec in sections:
-        fp = os.path.join(body_dir, f"{_safe(sec)}.md")
-        for attempt in [(f"{i:02d}-{_safe(sec)}.md") for i in range(1, len(sections) + 1)]:
-            alt = os.path.join(body_dir, attempt)
-            if os.path.exists(alt):
-                parts.append("\n\n---\n\n" + _read(alt))
-                break
+    # v4.23.2：_stage_write 的落盘名就是「序号-单元名.md」，这里直接用同一套规则拼，
+    # 不再先算一个永远不存在的 `{单元名}.md` 再内层遍历 1..N 猜序号（原来每条都白读一次路径）。
+    for i, sec in enumerate(sections, 1):
+        fp = os.path.join(body_dir, f"{i:02d}-{_safe(sec)}.md")
+        if os.path.exists(fp):
+            parts.append("\n\n---\n\n" + _read(fp))
     interactive = _read(os.path.join(pdir, F_INTERACTIVE.split(".md")[0] + ".md"))
     if interactive.strip():
         parts.append("\n\n---\n\n" + interactive)

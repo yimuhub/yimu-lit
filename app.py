@@ -1,5 +1,5 @@
 """一幕·YIMU 神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
-import json, os, re, shutil, threading, uuid, time, secrets
+import json, os, re, shutil, threading, traceback, uuid, time, secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
@@ -1284,13 +1284,24 @@ def _refs_into(cfg: dict, payload: dict, query_keys: tuple) -> list:
 
 def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: str,
                    cfg: dict, ref_ids: list) -> dict:
-    """占位 key 立即返回，规划放后台线程（引擎里是多次 LLM 调用，同步跑会卡死事件循环）。"""
+    """占位 key 立即返回，规划放后台线程（引擎里是多次 LLM 调用，同步跑会卡死事件循环）。
+
+    v4.23.2：先在**当前线程**把项目目录建出来，再启动后台规划。
+    此前目录要等后台线程真正开始跑才 makedirs，而各引擎的 get_project 都是
+    「目录不存在 → 返回 None」，于是前端拿到 key 立刻轮询 /api/*/status 会吃 404
+    （提示「项目不存在或未加载，请刷新作品库」），网速快一点就必现。
+    引擎 create_project 内部都是 os.makedirs(exist_ok=True)，预建目录不影响它。
+    """
     import threading as _th
     from datetime import datetime as _dt
     display = (cfg.get("title") or cfg.get("idea") or default_name or "").strip()
     display = (display.splitlines()[0] if display else default_name)[:40] or default_name
     _name = safe_fn(cfg.get("title") or cfg.get("idea") or default_name)
     base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
+    try:
+        os.makedirs(os.path.join(writer.PROJECTS_DIR, base), exist_ok=True)
+    except Exception as e:
+        print(f"[spawn] 预建目录失败（{base}）：{e}", flush=True)
 
     def _bg():
         writer.mark_pipeline(base, True)   # v3.1.0：规划+写作全程「创作中」可见
@@ -1298,7 +1309,10 @@ def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: s
             create_fn(cfg, base_key=base)
             _link_references(base, ref_ids)
         except Exception as e:
-            print(f"[bg] {medium}创作失败: {e}", flush=True)
+            # v4.23.2：只打 str(e) 时排查不到落点（曾见「No such file or directory: .tmp-xxx.part」
+            # 完全看不出是哪一步），补完整堆栈。
+            _tb = traceback.format_exc()
+            print(f"[bg] {medium}创作失败: {e}\n{_tb}", flush=True)
         finally:
             writer.mark_pipeline(base, False)
 
@@ -4627,7 +4641,7 @@ async def _assist_stream_response(payload: dict):
         while not ready.is_set():
             try:
                 await asyncio.wait_for(ready.wait(), timeout=2.0)
-            except (TimeoutError, asyncio.TimeoutError):  # v4.7.1 Python<3.11 捕不到会让改稿流报错
+            except TimeoutError:  # v4.7.1 Python<3.11 捕不到会让改稿流报错
                 yield _sse("status", {"stage": "thinking", "text": "仍在推敲改法…"})
 
         ok, value = box[0] if box else (False, RuntimeError("改稿未返回结果"))

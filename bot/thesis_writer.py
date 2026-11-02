@@ -288,7 +288,7 @@ def resume_project(key: str) -> Optional["ThesisProject"]:
     return proj
 
 
-def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = None):
+def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = None):
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
     meta = plan["meta"]
@@ -419,7 +419,6 @@ def discover_projects() -> list[dict]:
             plan = json.load(open(os.path.join(pdir, F_PLAN), encoding="utf-8"))
         except Exception:
             pass
-        meta = plan.get("meta") or {}
         out.append({"key": d, "name": plan.get("thesisName", d), "medium": "thesis",
                     "form": plan.get("degreeLabel", ""),
                     "total": plan.get("totalChapters", 0),

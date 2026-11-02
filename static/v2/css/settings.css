@@ -1465,3 +1465,23 @@
   font-size: 11px;
   line-height: 1.5;
 }
+
+/* ──────────────────────────────────────────────────────────────
+   v4.23.2：补齐设置页在用的无样式类。
+   只补排版语义，不补间距——外层 .set-group 已是 flex column + gap:6px，
+   行间还有 `.set-row + .set-row` 的 0.5px 分隔线，加 margin/gap 会顶开分隔线。
+   ────────────────────────────────────────────────────────────── */
+
+/* 组内小标题（「服务端日志」「笔名列表」这类），比 set-group-head 低一级 */
+.set-group-subhead {
+  color: var(--ink-caption, #a9aeb6);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 向导里的内联 AI 按钮：与 .btn.btn-sm 搭配，只做「不被压扁、不换行」的约束 */
+.wiz-ai-inline {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}

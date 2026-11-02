@@ -66,9 +66,27 @@ def _target_mode(path: str) -> int:
         return _DEFAULT_FILE_MODE
 
 
+def _ensure_dir(d: str) -> None:
+    """确保目录真的可用再返回。
+
+    v4.23.2：某些运行环境（沙箱把 mkdir 代理给宿主进程执行）里 `os.makedirs`
+    返回时目录尚未真正落盘，紧接着 `mkstemp(dir=d)` 会 ENOENT，报出
+    「No such file or directory: .../.tmp-xxxx.part」，从堆栈完全看不出是目录问题。
+    这里建完确认一次，未就绪则短暂等待；正常本机环境一次就过，无额外开销。
+    """
+    os.makedirs(d, exist_ok=True)
+    if os.path.isdir(d):
+        return
+    for _ in range(25):          # 最多等约 1s
+        time.sleep(0.04)
+        if os.path.isdir(d):
+            return
+    raise FileNotFoundError(f"目标目录不可用（mkdir 未生效）：{d}")
+
+
 def atomic_write_text(path: str, text: str) -> None:
     d = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(d, exist_ok=True)
+    _ensure_dir(d)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".part")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

@@ -3258,3 +3258,19 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ──────────────────────────────────────────────────────────────
+   v4.23.2：补齐前端在用、但此前没有样式定义的类（右栏）。
+   只补「缺失的排版语义」，不补间距——.rp-section 已经是 flex column + gap:8px，
+   再给子项加 margin 会与 gap 叠加，把 8px 变成 18px。
+   ────────────────────────────────────────────────────────────── */
+
+/* 右栏小节标题（rightpanel.js 里 7 处直接写 text 的裸 div）。
+   视觉对齐带 h3 的那套 .rp-section-head h3，避免同一栏出现两种标题字号。 */
+.rp-section .section-head {
+  color: var(--ink-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  line-height: 1.4;
+}

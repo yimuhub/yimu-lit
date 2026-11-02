@@ -13,8 +13,9 @@
 # 版本号以 VERSION 为准；说明里必须带 v版本号，CHANGELOG 里必须有这一版条目，
 # 否则直接拒绝提交——宁可现在拦一下，也不要事后翻提交历史找「哪版改的」。
 #
-# 这个脚本**不跑 CI**：体检在本地做（静态检查 + 需要时手动跑 pytest），
-# 推上去就是纯代码，不触发任何 Actions 分钟数。
+# 这个脚本只做本地体检（静态检查 + 接线/样式体检），不跑 pytest——
+# 测试比较慢，按需手动 `bash tools/test.sh`。推上去会触发 GitHub Actions，
+# 但本仓库是公开仓库，标准 runner 分钟数免费不限量（见 .github/workflows/ci.yml）。
 #
 # 顺带发版：推送后比较 VERSION 与最新 tag，领先就自动
 #   git tag → 推 tag → 建 GitHub Release（正文取 CHANGELOG 该版一节）。
@@ -66,6 +67,16 @@ if ! SHENBI_AUTH=0 "$PY" tools/audit_wiring.py --strict > /tmp/audit_wiring.txt 
     exit 1
 fi
 grep -E "^✅" /tmp/audit_wiring.txt || true
+
+# 样式体检：前端 h('div', {class:'x'}) 用到的类名，样式表里必须有定义或明确加白。
+# v4.23.2 之前有 21 个类名在 CSS 里根本不存在，一直没人核对（eslint 与 pytest 都不看）。
+echo "▸ 样式体检（JS 类名 ←→ CSS 定义）"
+if ! "$PY" tools/audit_css.py --strict > /tmp/audit_css.txt 2>&1; then
+    cat /tmp/audit_css.txt >&2
+    echo "❌ 样式体检未通过，已中止提交" >&2
+    exit 1
+fi
+grep -E "^✅" /tmp/audit_css.txt || true
 
 echo "▸ 暂存改动"
 git add -A

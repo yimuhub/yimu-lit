@@ -6,6 +6,7 @@
 import os
 import shutil
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -176,8 +177,18 @@ def test_script_create_api():
     key = r["key"]
     try:
         assert r["medium"] == "script"
+        # v4.23.2：创建是**异步**的（_spawn_project 立即返回 key，规划在后台线程跑）。
+        # 原先这里建完就同步断言 bible，只有后台线程恰好先跑完才过——随机红。
+        # 按真实前端的方式轮询等待（前端也是拿 key 反复查 status 直到非 planning）。
         assert client.get("/api/script/status", params={"key": key}).status_code == 200
-        assert client.get("/api/script/bible", params={"key": key}).json()["text"]
+        deadline = time.time() + 15
+        text = ""
+        while time.time() < deadline:
+            text = client.get("/api/script/bible", params={"key": key}).json().get("text") or ""
+            if text.strip():
+                break
+            time.sleep(0.05)
+        assert text.strip(), "后台规划 15s 内没有产出创作圣经"
         items = client.get("/api/script/projects").json()["items"]
         assert any(i["key"] == key for i in items)
     finally:
