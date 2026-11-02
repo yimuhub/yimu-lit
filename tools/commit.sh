@@ -22,6 +22,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# 解释器优先级：$SHENBI_PY → 仓库 .venv → 系统 python3
+# 接线体检要 import app.py，所以必须是装了依赖的那个解释器。
+if [ -n "${SHENBI_PY:-}" ]; then
+    PY="$SHENBI_PY"
+elif [ -x .venv/bin/python ]; then
+    PY=".venv/bin/python"
+else
+    PY="$(command -v python3 || true)"
+fi
+if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+    echo "❌ 找不到 Python（可用 SHENBI_PY 指定）" >&2
+    exit 1
+fi
+
 MSG="${1:-}"
 if [ -z "$MSG" ]; then
     echo "用法: ./tools/commit.sh \"新增: v4.23.0 说明\"" >&2
@@ -41,6 +55,17 @@ fi
 
 echo "▸ 本地体检（不联网、不进 CI）"
 bash tools/static_check.sh
+
+# 接线体检：前端 api.xxx 必须真实存在，前端 /api 路径必须有后端路由。
+# 加这一步是因为 v4.21.1 删掉 api.onboarding 后，新建作品弹窗空白了好几个版本，
+# 期间 eslint 和 pytest 全绿——没有任何检查看这两者的对应关系。
+echo "▸ 接线体检（api.* ←→ api.js、前端路径 ←→ 后端路由）"
+if ! SHENBI_AUTH=0 "$PY" tools/audit_wiring.py --strict > /tmp/audit_wiring.txt 2>&1; then
+    cat /tmp/audit_wiring.txt >&2
+    echo "❌ 接线体检未通过，已中止提交" >&2
+    exit 1
+fi
+grep -E "^✅" /tmp/audit_wiring.txt || true
 
 echo "▸ 暂存改动"
 git add -A
@@ -66,8 +91,6 @@ echo "✅ 已推送 origin/main ← $(git rev-parse --short HEAD)"
 # 为什么放这里：版本号、tag、Release 三样东西最容易脱节——代码推上去了，
 # 忘了打 tag，过两天想回看「4.24 到底发了什么」就只剩一堆提交记录。
 # 既然 VERSION 已经是唯一真源，就让它自己决定要不要发版。
-PY="python3"
-[ -x .venv/bin/python ] && PY=".venv/bin/python"
 
 LATEST="$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)"
 CUR="v$VER"

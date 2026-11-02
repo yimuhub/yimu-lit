@@ -158,6 +158,11 @@ const ctx = {
      await 之后再查一次 wizardModal，双击/连点不会开出两个。 */
   async openWizard(preset = {}) {
     if (wizardModal) return wizardModal;
+    /* v4.23.1：向导样式（.wiz-* / .genre-card / .wizard .modal-header）全在
+       settings.css 里，而 settings.css 是按路由加载的——从作品库或首页点
+       「新建作品」时它根本没被加载过，弹窗会裸奔：没有 .wiz-body 的
+       min-height，也没有卡片的边框与间距。这里补一次，loadCss 自身幂等。 */
+    loadCss(`/v2/css/settings.css?v=${CSS_V}`);
     const mod = await import('./views/wizard.js');
     if (wizardModal) return wizardModal;
     wizardModal = mod.openWizard(ctx, preset);

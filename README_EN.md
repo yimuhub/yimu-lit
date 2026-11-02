@@ -4,8 +4,8 @@
 
 **A nine-genre full-cycle AI writing workbench for novelists, screenwriters and literary creators — from a one-line premise to a finished, exportable book**
 
-[![Version](https://img.shields.io/badge/version-4.23.0-orange.svg?style=flat-square)](CHANGELOG.md)
-[![Release](https://img.shields.io/badge/release-v4.23.0-blueviolet.svg?style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
+[![Version](https://img.shields.io/badge/version-4.23.1-orange.svg?style=flat-square)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v4.23.1-blueviolet.svg?style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg?style=flat-square)](LICENSE)
 [![Licensor](https://img.shields.io/badge/Licensor-yimu.hyipf.com-0284c7.svg?style=flat-square)](https://yimu.hyipf.com)
 [![Copyright](https://img.shields.io/badge/Copyright-%C2%A9%202026%20yimu.hyipf.com-orange.svg?style=flat-square)](https://yimu.hyipf.com)

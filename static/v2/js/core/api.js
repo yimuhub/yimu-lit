@@ -300,6 +300,10 @@ export const api = {
      三套引擎各有接口面：剧本按文档名分路由，诗词/散文用 part 参数。 */
   scriptStatus: (key) => request('/api/script/status', { query: { key } }),
   scriptDoc: (tab, key) => request(`/api/script/${tab}`, { query: { key } }),
+  /* 整剧预览：一次取回全部场次（未写的场 text 为空串）。
+     mediumbench.js 一直在调 api.scriptPreview，但 api.js 里从来没定义过——
+     和 onboarding 同一类问题：懒加载视图里的调用没人核对，点了就 TypeError。 */
+  scriptPreview: (key) => request('/api/script/preview', { query: { key }, timeout: 60000 }),
   scriptWrite: (key, sceneNo = 0) => request('/api/script/write', jsonBody(sceneNo ? { key, sceneNo } : { key })),
   /* 单场正文与整本预览：预览一次取回全部场次（未写完的场 text 为空串）。 */
   scriptScene: (key, no) => request('/api/script/scene', { query: { key, no } }),
@@ -362,6 +366,12 @@ export const api = {
   modelOptions: () => request('/api/model_options'),
 
   mediums: () => request('/api/mediums'),
+  /* 向导词表：题材/基调/视角/卖点/风格预设 + 平台 + 引擎词表。
+     后端 /api/onboarding 一直存在；v4.21.1 清「死 API」时把它从客户端删了，
+     而唯一调用方 views/wizard.js 是 `await import()` 懒加载的，静态扫描扫不到，
+     于是被判成无用——新建作品弹窗当场 TypeError、正文全空（v4.23.1 修回）。
+     结论：**懒加载模块里的调用，不能只靠首屏闭包扫描来判死**。 */
+  onboarding: () => request('/api/onboarding'),
   learn: () => request('/api/learn'),
   styles: () => request('/api/styles'),
   distill: (payload) => request('/api/distill', jsonBody(payload), { timeout: 180000 }),

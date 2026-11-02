@@ -4,8 +4,8 @@
 
 **面向小说作者、编剧与文学创作者的九文体全流程 AI 创作台——从一句话简介到成书导出**
 
-[![Version](https://img.shields.io/badge/version-4.23.0-orange.svg?style=flat-square)](CHANGELOG.md)
-[![Release](https://img.shields.io/badge/release-v4.23.0-blueviolet.svg?style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
+[![Version](https://img.shields.io/badge/version-4.23.1-orange.svg?style=flat-square)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v4.23.1-blueviolet.svg?style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg?style=flat-square)](LICENSE)
 [![Licensor](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E6%96%B9-yimu.hyipf.com-0284c7.svg?style=flat-square)](https://yimu.hyipf.com)
 [![Copyright](https://img.shields.io/badge/%E7%89%88%E6%9D%83%E5%BD%92%E5%B1%9E-%C2%A9%202026%20yimu.hyipf.com-orange.svg?style=flat-square)](https://yimu.hyipf.com)

@@ -2,6 +2,49 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.23.1 — 新建作品弹窗空白：把「前端调用 ←→ 后端接口」变成门禁
+
+### 一、现象
+点「新建作品」，弹窗只剩标题和副标题，正文与按钮全空。向导代码本身
+**自 v4.15.6 起一行没动**——坏它的是 v4.21.1 那次「深度体检」。
+
+### 二、根因（两处，同一次提交埋下）
+v4.21.1（`213c9e4`，59 文件 / −1532 行）做了两件事，各自都合理，合起来致命：
+
+1. **清「死 API」时删掉了 `api.onboarding`。** 唯一调用方 `views/wizard.js`
+   是 `await import()` 懒加载的，扫描只覆盖首屏闭包 → 判成死代码。
+   于是 `openWizard` 建完弹窗、还没走到 `render()` 就抛
+   `TypeError: api.onboarding is not a function`，弹窗定格成空壳。
+   后端 `/api/onboarding` 一直好着。
+2. **`settings.css` 从「常驻」改成「进设置页才加载」。** 向导样式
+   （`.wiz-*` / `.genre-card` / `.wizard .modal-header`）全在这个文件里，
+   而向导可以从首页、作品库随时打开——样式根本不在场。
+
+### 三、同类第二处：剧本「整本预览」
+`mediumbench.js` 一直调 `api.scriptPreview(key)`，但 `api.js` 里**从来没有这个方法**。
+点「预览剧本」必炸。后端 `GET /api/script/preview` 一直是好的，补上客户端方法即可。
+两个 bug 存活多个版本而无人发现，原因是检查全都不看这一层：
+`eslint no-undef` 认为 `api.onboarding` 是合法属性访问；`pytest` 只测后端；
+手工点不全 9 种文体的每个按钮。
+
+### 四、修法
+- `api.js` 补回 `onboarding` / `scriptPreview`，并注明「懒加载模块里的调用
+  不能只靠首屏闭包判死」。
+- `app.openWizard()` 打开前 `loadCss(settings.css)`（`loadCss` 本身幂等）。
+- **新增 `tools/audit_wiring.py`**：用 node 直接读出 api 对象真实方法表，
+  整文件扫描 `api.xxx`（能识别 `api\n  .onboarding()` 这种换行写法），
+  再与 `app.py` 真实路由双向比对。`--strict` 有悬空即退出码 1。
+- **新增 `tests/test_v4231_wiring.py`**（5 例）：悬空调用、404 路径、
+  向导样式在位、`openWizard` 先加载 CSS、`onboarding` 专项。
+  已做反向验证：把 `onboarding:` 改名，两条测试立刻变红。
+- `commit.sh` 提交前跑接线体检，不通过直接中止。
+
+### 五、顺带修掉的假绿
+`tools/static_check.sh` 的 Python 门禁一直空转：本工作树没有 `.venv`、
+主工作树的 `.venv` 里也没装 pyflakes，命令直接失败、`grep` 抓不到东西，
+却照样打印「✅ undefined name: 0」。现在工具缺失即失败，并回显所用解释器；
+`requirements-dev.txt` 补上一直没声明的 `pyflakes`。
+
 ## v4.23.0 — 「继续」升级为通用任务续跑 + 提交规范
 
 「继续」的语义是固定的：**接着没做完的那件事往下做**。难点不在语义，在「认任务」。
