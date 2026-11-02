@@ -72,6 +72,8 @@ git add -A
 
 if git diff --cached --quiet; then
     echo "✅ 工作区干净，没有需要提交的改动"
+    # 只改了 VERSION 却没别的改动时，这里仍应把 tag/Release 补上
+    bash tools/release.sh
     exit 0
 fi
 
@@ -87,28 +89,6 @@ git push origin HEAD:main
 
 echo "✅ 已推送 origin/main ← $(git rev-parse --short HEAD)"
 
-# ── 发版：VERSION 比最新 tag 新就自动打 tag + 发 Release ──
-# 为什么放这里：版本号、tag、Release 三样东西最容易脱节——代码推上去了，
-# 忘了打 tag，过两天想回看「4.24 到底发了什么」就只剩一堆提交记录。
-# 既然 VERSION 已经是唯一真源，就让它自己决定要不要发版。
-
-LATEST="$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)"
-CUR="v$VER"
-if [ "$LATEST" = "$CUR" ]; then
-    echo "✅ 版本 $CUR 的 tag 已存在，无需再发"
-    exit 0
-fi
-
-NEWEST="$(printf '%s\n%s\n' "$LATEST" "$CUR" | sort -V | tail -1)"
-if [ "$NEWEST" != "$CUR" ]; then
-    echo "⚠️  VERSION=$VER 比最新 tag $LATEST 还旧，不打 tag 也不发 Release" >&2
-    echo "   要补发旧版本：$PY tools/make_releases.py --apply $CUR" >&2
-    exit 0
-fi
-
-echo "▸ 发版 $CUR（上一个 tag：${LATEST:-无}）"
-git tag "$CUR" HEAD
-git push origin "$CUR"
-$PY tools/make_releases.py --apply "$CUR"
-
-echo "✅ 发版完成：https://github.com/yimuhub/yimu-lit/releases/tag/$CUR"
+# 发版交给 tools/release.sh（幂等）：VERSION 比最新 tag 新就打 tag + 建 Release。
+# 单独成脚本是因为「没有改动可提交」时也要能发版，见下面那个提前退出的分支。
+bash tools/release.sh
