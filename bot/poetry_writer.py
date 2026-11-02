@@ -164,6 +164,17 @@ def _gen(stage_label: str, task: str, ctx: str, cfg: dict,
              f"4. 交付形态：Markdown，可直接作为工作稿。\n")
     msgs = [{"role": "system", "content": sys_p + ("\n\n" + ctx if ctx else "")},
             {"role": "user", "content": f"请产出：{task}"}]
+    # v4.24.10：流式 + 活动流接线
+    try:
+        from . import steps as _steps
+        _bk = llm.current_book()
+        if _bk:
+            out = llm.chat_stream(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens,
+                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", 0, chunk, title=stage_label))
+            _steps.emit_delta(_bk, "writer", 0, "", done=True, title=stage_label)
+            return out
+    except Exception:
+        pass
     try:
         return llm.chat(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens)
     except Exception:
@@ -466,6 +477,7 @@ def resume_project(key: str) -> PoetryProject | None:
     name = plan.get("poemName") or key
     proj = PoetryProject(pdir, name)
     proj.running = True   # v3.1.0
+    llm.book(key, "writing")
     plan.setdefault("meta", {})
     if plan.get("status") == "completed":
         proj.log("✅ 该作品已定稿，无需恢复")

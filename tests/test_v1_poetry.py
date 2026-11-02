@@ -42,6 +42,16 @@ def _mock_llm(monkeypatch):
     monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {
         "dims": {"意象": 8, "章法": 8, "声律": 9, "情感": 7},
         "total": 80, "verdict": "尚可"}, raising=False)
+
+    def _chat_stream_stub(messages, *a, **k):
+        kw = {x: v for x, v in k.items() if x != "on_delta"}
+        text = llm.chat(messages, *a, **kw)
+        cb = k.get("on_delta")
+        if callable(cb) and text:
+            cb(text)
+        return text
+
+    monkeypatch.setattr(llm, "chat_stream", _chat_stream_stub, raising=False)
     yield
 
 

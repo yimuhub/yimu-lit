@@ -1552,3 +1552,13 @@
   font-size: 11.5px;
   line-height: 1.6;
 }
+
+/* v4.24.10 质量弹窗 / token 弹窗：内容容器（子项 tok-row、cc-q-ev-* 各自带样式） */
+.cc-tok-body,
+.cc-quality-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 60vh;
+  overflow-y: auto;
+}

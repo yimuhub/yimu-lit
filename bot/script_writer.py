@@ -264,6 +264,17 @@ def _gen(stage: str, task: str, ctx: str, cfg: dict, stage_code: str = "planning
              f"4. 交付形态：Markdown，可直接作为工作稿使用。\n")
     msgs = [{"role": "system", "content": sys_p + ("\n\n" + ctx if ctx else "")},
             {"role": "user", "content": f"请产出：{task}"}]
+    # v4.24.10：流式 + 活动流接线——该引擎全部生成调用自动获得过程可视化
+    try:
+        from . import steps as _steps
+        _bk = llm.current_book()
+        if _bk:
+            out = llm.chat_stream(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens,
+                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", 0, chunk, title=stage))
+            _steps.emit_delta(_bk, "writer", 0, "", done=True, title=stage)
+            return out
+    except Exception:
+        pass
     try:
         return llm.chat(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens)
     except Exception:
@@ -1030,6 +1041,14 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
         if sc.get("status") == "completed":
             continue
         proj.log(f"✍️ 写第 {no} 场…")
+        # v4.24.10：场次级埋点（chapter=场号，本章过程可见）
+        try:
+            from . import steps as _steps
+            _steps.emit(os.path.basename(proj.path), "writer", "start",
+                        title=f"写第 {no} 场「{sc.get('slug') or sc.get('title') or ''}」", chapter=int(no) if isinstance(no, int) else 0,
+                        thinking="按场次表与时代纪律写本场，对白驱动、结尾留钩")
+        except Exception:
+            pass
         extra = (f"【创作圣经·全文（节选）】\n{bible[:6000]}\n\n"
                  f"【人物小传】\n{chars[:2500]}\n\n"
                  f"【结构大纲】\n{struct_md[:2500]}\n\n"

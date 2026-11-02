@@ -95,7 +95,19 @@ DEGREES = {"undergrad": "本科毕业论文", "master": "硕士论文", "journal
 
 
 def _gen(stage: str, task: str, cfg: dict, stage_code: str = "planning", max_tokens: int = 6000) -> str:
-    """v4.12.16：加超时保护——LLM 挂死时不再无限等待。"""
+    """v4.12.16：加超时保护——LLM 挂死时不再无限等待。
+    v4.24.10：流式 + 活动流接线（线程书标记存在时走 chat_stream，失败回退 chat）。"""
+    try:
+        from . import steps as _steps
+        _bk = llm.current_book()
+        if _bk:
+            out = llm.chat_stream([{"role": "user", "content": task}], cfg=cfg, stage=stage_code,
+                                  max_tokens=max_tokens,
+                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", 0, chunk, title=stage))
+            _steps.emit_delta(_bk, "writer", 0, "", done=True, title=stage)
+            return out
+    except Exception:
+        pass
     import threading as _th
     result = [""]
     def _call():

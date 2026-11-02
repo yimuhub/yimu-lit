@@ -2,6 +2,26 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.24.10 — 非小说创作过程对话框完整显示 + 规划器分发修复（v4.22.0 遗留真 bug）
+
+用户反馈：诗词/剧本/散文等非小说文体的创作过程在对话框里一个都没有显示。本轮四引擎全面接线 + 顺手揪出并修掉两个更深的问题：
+
+- **四引擎流式接线**（script/poetry/prose/thesis）：`_gen` 全部改走 `llm.chat_stream`，
+  正文+思考双流经 emit_delta 实时进对话框活动流（失败自动回退 chat）；剧本每场开写
+  埋「写第 N 场…」步骤事件（chapter=场号）；散文/诗词/论文补线程书标记（llm.book），
+  token 归账不漏。
+- **修复测试烧真网**：test_v1_poetry/prose/script 三文件自定义 `_mock_llm` fixture
+  遮蔽 conftest 同名 autouse fixture，v4.24.10 起 _gen 走 chat_stream 后这些模块
+  拦不住直连真 LLM（全量测试从 19 秒挂到 5 分钟+）。三个模块 fixture 补 chat_stream
+  stub（委托各自 chat mock，绝不连网），另修 prose_writer 一处 NameError。
+- **修复规划器分发失效（v4.22.0 遗留）**：app.py 补丁叠加导致规划器分发块（63 行）
+  被误缩进进 `_run` 函数体、三个意图分支（补评分/批量写/继续创作，79 行）又被误缩进
+  进 consistency_audit 分支——attached 会话下所有自然语言指令全部漏到「并入创作要求」
+  兜底，规划器形同虚设（test_v230_chat_bound 7 个用例红）。两层反缩进归位后，
+  「继续」「进度」「第12章重写」在 LLM 不可用时也能正确回退到传统意图理解并执行。
+- 全量 pytest 通过（exit=0，0 FAILED）。
+
+
 ## v4.24.3 — 质量弹窗补全：六维分数 + 格式化问题证据
 
 用户反馈：质量弹窗里「问题证据」没有任何内容（原因为两层：评分引擎存的六维明细 dims
