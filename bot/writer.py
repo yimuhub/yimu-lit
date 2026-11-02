@@ -1981,6 +1981,14 @@ def _write_chapter(proj, ch, min_words, max_retries):
             ctx["drift_guidance"] = _dg
     except Exception:
         pass
+    # v4.24.4：一致性巡检的修复计划（待填坑）——随写作提示置顶注入
+    try:
+        _fp = ((proj.plan() or {}).get("meta") or {}).get("fill_plan") or []
+        _fp_live = [f for f in _fp if isinstance(f, dict) and f.get("pit") and not f.get("filled_in")]
+        if _fp_live:
+            ctx["fill_plan"] = _fp_live[:6]
+    except Exception:
+        pass
     # v4.7.0（借鉴 reveric 手法账本）：把最近几章的断章钩子/情绪/紧张度注入写作上下文，
     # 防止连续多章用同款钩子、同款情绪（模式收敛）。
     try:
@@ -2162,6 +2170,23 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # v3.1.0：默认章名 → 用本章摘要起真名（写完即定名，不额外读全文）
     if summary:
         _name_chapter(proj, no, summary)
+    # v4.24.4：修复计划验证——本章摘要若回收了巡检登记的坑则标记（防重复注入，闭环可追溯）
+    try:
+        _fp_all = ((proj.plan() or {}).get("meta") or {}).get("fill_plan") or []
+        if _fp_all and summary:
+            _changed = False
+            for f in _fp_all:
+                if isinstance(f, dict) and f.get("pit") and not f.get("filled_in") and str(f["pit"]) in summary:
+                    f["filled_in"] = no
+                    _changed = True
+                    proj.log(f"✅ 修复计划验证：「{f['pit']}」已在第{no}章回收")
+            if _changed:
+                with proj.lock:
+                    _pl2 = proj.plan() or {}
+                    _pl2.setdefault("meta", {})["fill_plan"] = _fp_all
+                    proj.save_plan(_pl2)
+    except Exception:
+        pass
     # 第1章：文风校准回填（极速模式跳过——这是一次纯质量相关的 LLM 调用）
     if no == 1 and not _expr:
         try:
@@ -2239,6 +2264,12 @@ def _write_chapter(proj, ch, min_words, max_retries):
             except Exception as e:
                 proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
     _index_chapter_continuity(proj, ch, ctx.get("cfg"))   # 极速模式保留：一致性靠它，不靠评分
+    # v4.24.4：一致性巡检——每 audit_every 章（默认10）自动跑一次（异步不阻塞写作）
+    try:
+        from bot import audit as _audit
+        _audit.maybe_auto(_bk, no)
+    except Exception:
+        pass
     if not _expr:
         _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
     # v4.21.5：章节完成卡永久写入对话流（type=chapter，含最终评分）——

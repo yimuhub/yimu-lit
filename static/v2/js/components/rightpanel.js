@@ -1004,6 +1004,49 @@ function workPane(ctx) {
     h('button', {
       class: 'btn btn-sm',
       type: 'button',
+      title: '一致性巡检：扫描全书矛盾、盘点超期未收的坑，产出修复计划',
+      html: `${icon('search', 13)}<span>巡检</span>`,
+      on: { click: async (event) => {
+        const btn = event.currentTarget;
+        const key = store.get().currentKey;
+        if (!key) return;
+        btn.disabled = true;
+        btn.textContent = '巡检中…';
+        try {
+          const res = await api.consistencyAuditRun(key);
+          const r = (res && res.report) || {};
+          const s = r.stats || {};
+          toast(`巡检完成：硬矛盾 ${s.must_fix || 0} 项 · 待填坑 ${s.fill_plan || 0} 个 · 超期伏笔 ${(s.pits || {}).overdue || 0} 个`,
+                { tone: 'info', duration: 6000 });
+          if (ctx && ctx.refreshState) ctx.refreshState();
+        } catch (err) {
+          toast(errorText(err, '巡检失败'), { tone: 'danger' });
+        }
+        btn.disabled = false;
+        btn.innerHTML = `${icon('search', 13)}<span>巡检</span>`;
+      } }
+    }),
+        on: { click: async (event) => {
+          const btn = event.currentTarget;
+          const key = store.get().currentKey;
+          if (!key) return;
+          btn.disabled = true;
+          try {
+            const res = await api.expressToggle(key, !on);
+            toast((res && res.msg) || (res && res.express ? '极速模式已开启' : '已关闭极速模式'),
+                  { tone: res && res.express ? 'success' : 'info', duration: 4200 });
+            if (ctx && ctx.refreshState) ctx.refreshState();
+            if (ctx && ctx.refreshPlan) ctx.refreshPlan();
+          } catch (err) {
+            toast(errorText(err, '切换失败'), { tone: 'danger' });
+            btn.disabled = false;
+          }
+        } }
+      });
+    })(),
+    h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
       html: `${icon('film', 13)}<span>转短剧</span>`,
       title: '把已完成的章节一键改编成 AI 短剧分集剧本并自动分镜',
       on: {

@@ -16,6 +16,7 @@ from bot import syslog as syslog_mod
 from bot import steps as steps_mod
 from bot import export as export_mod
 from bot import purity, journal, express
+from bot import audit as audit_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -884,7 +885,19 @@ def _chat_attached(s, proj, msg):
                     f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章，均低于达标线 {_pass} 分），"
                     f"3 个岗位并行定向重写——每章最多 2 轮，改写分必须高于原分否则回滚原稿。完成后逐章汇报。")
 
-        # v4.21.9：score_all_unscored——「给所有未评分的章节进行评分」
+        # v4.24.4：consistency_audit——「检查一致性」「盘点一下坑」（巡检异步，报告写活动流与右栏）
+    if intent == "consistency_audit":
+        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+            return "⚠️ 一致性巡检暂支持小说。"
+        def _audit_job():
+            try:
+                audit_mod.run_audit(key, "manual")
+            except Exception as e:
+                proj.log(f"⚠️ 巡检异常：{e}")
+        threading.Thread(target=_audit_job, daemon=True).start()
+        return "🔍 已启动一致性巡检：扫描全书矛盾 + 盘点超期未收的伏笔坑，审稿人仲裁后给出修复计划——完成后活动流会汇报，报告可在右栏查看。"
+
+    # v4.21.9：score_all_unscored——「给所有未评分的章节进行评分」
         if intent == "score_all_unscored":
             _meta_sc = (proj.plan().get("meta") or {}).get("chapter_scores") or {}
             _unsc = [c["chapterNumber"] for c in (proj.plan().get("chapters") or [])
@@ -2629,6 +2642,25 @@ def api_express_toggle(payload: dict):
     return {"ok": True, "express": on,
             "msg": ("⚡ 极速模式已开启：后续章节不评分、不重写、字数验收降至 60%，一口气写完" if on
                     else "已关闭极速模式：恢复正常验收标准（评分 + 90% 字数线）")}
+
+
+@app.get("/api/consistency-audit")
+def api_consistency_audit(key: str):
+    """v4.24.4：读取最新一致性巡检报告（22-巡检报告.json）。"""
+    return {"ok": True, "report": audit_mod.read_report(key)}
+
+
+@app.post("/api/consistency-audit/run")
+def api_consistency_audit_run(payload: dict):
+    """v4.24.4：手动触发一致性巡检（异步线程，防重入）。"""
+    key = str((payload or {}).get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    r = audit_mod.run_audit(key, "manual")
+    if r is None:
+        return {"ok": True, "running": True, "msg": "巡检已在进行中，请稍候"}
+    return {"ok": True, "report": r}
 
 
 @app.get("/api/chapter-tokens")

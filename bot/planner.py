@@ -32,6 +32,7 @@ ACTIONS = {
                            "params": {"below": "整数分数阈值", "target": "目标分（可选）"}},
     "rewrite_all_below":  {"desc": "重写所有未达标的章节（没给具体分数时，按系统达标线）", "params": {}},
     "score_all_unscored": {"desc": "给所有还没有评分的章节评分/打分", "params": {}},
+    "consistency_audit":  {"desc": "一致性巡检：扫描全书矛盾、盘点超期未收的坑，产出修复计划", "params": {}},
     "query_status":       {"desc": "汇报进度/字数/状态", "params": {}},
     "query_outline":      {"desc": "展示大纲/目录/章节列表", "params": {}},
     "set_title":          {"desc": "改书名/标题", "params": {"title": "新书名"}},

@@ -334,6 +334,12 @@ def write_chapter(ctx, book_key="", chapter_no=0):
     # v0.4：读者即时修正指令（运行中随时插一条，标 immediate 立即生效 / 否则下一条生效）
     qnote = (ctx.get("queue_note") or "").strip()
     qblock = ("\n【读者即时指令（本章必须优先满足，不破坏既有剧情设定）】\n" + qnote) if qnote else ""
+    # v4.24.4：一致性巡检的待填坑（置顶注入——「第X章埋的坑，本章必须开始回收」）
+    fp = ctx.get("fill_plan") or []
+    fblock = ""
+    if fp:
+        _fl = "\n".join(f"- 「{f.get('pit')}」（第{f.get('fill_by') or '?'}章前回收）：{f.get('hint') or ''}" for f in fp)
+        fblock = "\n【一致性修复计划（巡检发现本章应回收的坑，必须落实，不得敷衍）】\n" + _fl
     # v0.6 B：总架构蓝图（并行写作时写任何一章前必读，放最前对齐全局）
     bp = (ctx.get("blueprint") or "").strip()
     bblock = (bp + "\n") if bp else ""
@@ -364,7 +370,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
             f"{banblock}{hookblock}"
             f"{cont}\n"
             f"{p5}\n"
-            f"{qblock}\n"
+            f"{qblock}{fblock}\n"
             f"现在续写第 {ctx['chapter_no']} 章。这是承接前文的续写章：请严格消化上一章结尾的语态与悬念，"
             f"自然推进剧情，可引入新的转折/冲突/角色（须符合人物性格与既定设定），严禁重复已写情节；"
             f"严守人物性格一致性，结尾必留钩子。输出章节文件内容。"
@@ -381,7 +387,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
         f"{banblock}{hookblock}"
         f"{cont}\n"
         f"{p5}\n"
-        f"{qblock}\n"
+        f"{qblock}{fblock}\n"
         f"现在写第 {ctx['chapter_no']} 章「{ctx['chapter_title']}」。严格按该章在大纲中的规划（核心事件/承接/钩子/出场人物/场景）创作。"
         f"输出章节文件内容。"
     )
