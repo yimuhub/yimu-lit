@@ -4449,11 +4449,18 @@ def _script_scenes_or_reparse(proj, key=""):
             sc.setdefault("fileName", f"第{sc['no']:03d}场.md")
             sc.setdefault("wordCount", None)
         plan["scenes"] = parsed
+        # v4.23.2：这里原先是 `try: save_plan(...); log(...) except Exception: pass`。
+        # 两个问题：① 写盘失败完全无声，用户下次打开又要重解析一遍，日志里却什么都没留；
+        # ② log 也在 try 里，写盘没成功也会记一条「已回填」——日志说做了，磁盘上没做。
+        # 现在写盘失败打一条带异常类型的 stderr（接口仍返回解析结果，用户至少能看场次），
+        # 只有真的落盘成功才记「已回填」。CI 上 test_script_scenes_reparse_fallback
+        # 偶发「接口对、磁盘没有」，就是被这个 pass 盖住的。
         try:
             proj.save_plan(plan)
+        except Exception as e:
+            print(f"[script] 场次回填写盘失败（{key}）：{e.__class__.__name__}: {e}", flush=True)
+        else:
             proj.log(f"🧭 场次清单重新解析成功：{len(parsed)} 场（原计划里缺失，已回填）")
-        except Exception:
-            pass
         return parsed
     return []
 

@@ -109,6 +109,13 @@ v2 前端不写 `class="..."`，而是 `h('div', { class: 'x' })`，按 HTML 字
   从堆栈完全看不出是目录问题。
 - `writer.run_guided_rewrite` 在缺少写作计划时给出可读失败原因（原先 `plan` 为
   `None` 时 `.get` 抛 `AttributeError` 落在后台线程，用户只看到「没反应」）。
+- `app._script_scenes_or_reparse` 的 `except Exception: pass` 改为打印失败原因。
+  **原先这里有两个问题**：写盘失败完全无声（用户下次打开又要重解析一遍，日志里却
+  什么都没留）；而且 `proj.log` 写在同一个 `try` 里——磁盘没写成也会记一条
+  「已回填」，日志说做了、磁盘上没做。CI 在 3.14 上让
+  `test_script_scenes_reparse_fallback` 偶发红过一次（接口返回了场次、计划文件里
+  没有 scenes），本地连续 60 次未复现；现在至少这类失败会带异常类型打到 stderr，
+  测试断言也会列出 plan 的键，下次一眼能定位。
 
 ### 六、`.gitignore` 的一处静默陷阱
 

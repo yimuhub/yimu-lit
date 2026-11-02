@@ -141,6 +141,12 @@ def test_script_scenes_reparse_fallback(tmp_path, monkeypatch):
     assert len(scenes) == 1 and scenes[0]["place"] == "室内"
     # 已回填进计划
     plan = json.loads((tmp_path / KEY / "02-写作计划.json").read_text(encoding="utf-8"))
+    # 断言信息带上 plan 的键与条数：这条以前只在 3.14 的 CI 上偶发红过一次，
+    # 当时拿到的是光秃秃的 KeyError: 'scenes'，完全看不出是没写盘还是写到别处去了。
+    assert "scenes" in plan, (
+        f"场次回填没落盘：接口返回了 {len(scenes)} 场，但计划文件里没有 scenes。"
+        f"若写盘失败，stderr 会有 `[script] 场次回填写盘失败`；plan keys={sorted(plan)}"
+    )
     assert plan["scenes"][0]["no"] == 1
 
 
