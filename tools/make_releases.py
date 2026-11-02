@@ -11,9 +11,17 @@
     python tools/make_releases.py                # 只打印计划（默认 dry-run）
     python tools/make_releases.py --apply        # 真发布
     python tools/make_releases.py --apply v4.24.0 v4.24.1   # 只发指定版本
+    python tools/make_releases.py --apply --force v4.23.2   # 已存在也按 CHANGELOG 覆盖正文
 
 幂等：已存在同名 Release 直接跳过，可重复运行。按版本升序创建，
 所以 Releases 页的时间倒序恰好就是版本倒序，不会乱。
+
+## --force 为什么必须有
+`tools/release.sh --force` 的注释写着「tag 已存在也重建 Release（补正文用）」，
+但本脚本以前只会 POST 新 Release、遇到同名直接算「跳过」——于是那条 --force
+一路传到底却什么都没做，典型的「看起来能用其实没生效」。
+v4.23.2 补 CHANGELOG 时踩到：Release 正文停在旧版本，脚本却打印「跳过已存在」。
+现在 --force 走 PATCH /releases/{id}，按当前 CHANGELOG 覆盖正文与标题。
 """
 import json
 import re
@@ -99,6 +107,7 @@ def body_for(v: str, prev: str, sec: dict) -> str:
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     apply_ = "--apply" in sys.argv
+    force_ = "--force" in sys.argv
     tok = token()
     sec = changelog()
     order = tags()
@@ -108,11 +117,12 @@ def main():
             raise SystemExit(f"没有匹配的 tag：{args}")
 
     status, rels = api(f"/repos/{REPO}/releases?per_page=100", tok)
-    have = {r["tag_name"] for r in rels} if status == 200 else set()
-    print(f"本地 tag {len(tags())} 个 | 已有 Release {len(have)} 个 | 本次候选 {len(order)} 个\n")
+    have = {r["tag_name"]: r for r in rels} if status == 200 else {}
+    print(f"本地 tag {len(tags())} 个 | 已有 Release {len(have)} 个 | 本次候选 {len(order)} 个"
+          + ("（--force：已存在的按 CHANGELOG 覆盖正文）" if force_ else "") + "\n")
 
     all_tags = tags()
-    created, skipped, failed = [], 0, []
+    created, updated, skipped, failed = [], [], 0, []
     for v in order:
         i = all_tags.index(v)
         prev = all_tags[i - 1] if i > 0 else ""
@@ -121,7 +131,21 @@ def main():
         kind = "CHANGELOG" if v in sec else "提交说明"
 
         if v in have:
-            skipped += 1
+            if not force_:
+                skipped += 1
+                continue
+            if not apply_:
+                print(f"[DRY] {v:<9} 覆盖正文 body={len(text):>4} 字  prev={prev or '-'}")
+                continue
+            code, res = api(f"/repos/{REPO}/releases/{have[v]['id']}", tok, "PATCH", {
+                "name": name, "body": text, "prerelease": False,
+            })
+            if code in (200, 201):
+                updated.append(v)
+                print(f"↻ {v:<9} [{kind}] {res.get('html_url')}")
+            else:
+                failed.append(v)
+                print(f"✗ {v:<9} HTTP {code}: {res.get('message')} {res.get('errors')}")
             continue
         if not apply_:
             print(f"[DRY] {v:<9} {kind:<5} body={len(text):>4} 字  prev={prev or '-'}")
@@ -139,7 +163,8 @@ def main():
             print(f"✗ {v:<9} HTTP {code}: {res.get('message')} {res.get('errors')}")
 
     if apply_:
-        print(f"\n发布 {len(created)} 个 | 跳过已存在 {skipped} 个 | 失败 {len(failed)} 个")
+        extra = f" | 覆盖正文 {len(updated)} 个" if updated else ""
+        print(f"\n发布 {len(created)} 个{extra} | 跳过已存在 {skipped} 个 | 失败 {len(failed)} 个")
         if failed:
             raise SystemExit(1)
 

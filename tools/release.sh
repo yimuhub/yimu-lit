@@ -91,7 +91,14 @@ PYEOF
     fi
 else
     echo "▸ 建 Release（正文取 CHANGELOG 该版一节）"
-    "${PY}" tools/make_releases.py --apply "${CUR}"
+    if [ "${FORCE}" = 1 ]; then
+        # --force 的语义：Release 已存在也按当前 CHANGELOG 覆盖正文。
+        # 必须把 --force 传给 make_releases.py，否则它会把「已存在」当跳过，
+        # 一路打印「跳过已存在」却什么都没做（v4.23.2 踩过）。
+        "${PY}" tools/make_releases.py --apply --force "${CUR}"
+    else
+        "${PY}" tools/make_releases.py --apply "${CUR}"
+    fi
 fi
 
 echo "✅ 发版完成：https://github.com/yimuhub/yimu-lit/releases/tag/${CUR}"
