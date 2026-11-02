@@ -1043,6 +1043,13 @@ export function renderSession(container, ctx = {}) {
           }));
           streamMsgId = '';
           scrollIfNear();
+          /* v4.22.1：写完一章自动刷新——章节记录落盘后重新拉对话历史，
+             章节完成卡（预览/字数/tokens/评分）无需手动刷新即可出现在对话流。 */
+          setTimeout(() => {
+            if (disposed) return;
+            try { loadChatHistory(); } catch { /* ignore */ }
+            try { ctx.refreshWork && ctx.refreshWork(); } catch { /* ignore */ }
+          }, 6000);
           return;
         }
         updateMessage(streamMsgId, (m) => ({

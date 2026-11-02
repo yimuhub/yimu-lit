@@ -2606,6 +2606,22 @@ def api_chat_note(payload: dict):
     return {"ok": True}
 
 
+@app.get("/api/chapter-tokens")
+def api_chapter_tokens(key: str, no: int):
+    """v4.22.1：本章 token 消耗明细（按阶段细分：正文/评分/去味/重写等）。
+    数据源 usage.json by_chapter[no]（llm.set_chapter 归账）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    try:
+        u = llm.read_usage(key)
+    except Exception:
+        u = {}
+    cb = ((u.get("by_chapter") or {}).get(str(no)) or {})
+    return {"ok": True, "no": no, "total": int(cb.get("total") or 0),
+            "calls": int(cb.get("calls") or 0), "by_stage": cb.get("by_stage") or {}}
+
+
 @app.get("/api/chapter-steps")
 def api_chapter_steps(key: str, chapter: int = 0, limit: int = 400):
     """v4.21.0：本章创作档案——该章的全部创作事件（岗位/思考/产出，新→旧）。

@@ -5,7 +5,7 @@ import { renderMarkdownInto } from '../core/markdown.js';
 import { store, updateMessage, patchUi } from '../core/state.js';
 import { navigate } from '../core/router.js';
 import { usageLabel } from '../core/constants.js';
-import { toast, openFeedback } from '../core/ui.js';
+import { toast, openFeedback, openModal } from '../core/ui.js';
 import { api, errorText } from '../core/api.js';
 import { cleanChapterText } from '../core/purity.js';
 
@@ -117,6 +117,97 @@ function chapterExcerpt(text, chars = 260) {
   return `${Array.from(t).slice(0, chars).join('')}…`;
 }
 
+/* v4.22.1：token 消耗明细弹窗（按阶段细分：正文/评分/去味/重写…） */
+function openTokensModal(key, no, totalTokens) {
+  if (!key) return;
+  const bodyEl = h('div', { class: 'cc-tok-body' },
+    h('div', { class: 'hint-text', text: '加载中…' }));
+  const modal = openModal({ title: `第${no}章 · token 消耗明细`, body: bodyEl, size: 'sm' });
+  fetch(`/api/chapter-tokens?key=${encodeURIComponent(key)}&no=${no}`, { credentials: 'include' })
+    .then((r) => r.json())
+    .then((data) => {
+      bodyEl.textContent = '';
+      const byStage = (data && data.by_stage) || {};
+      const names = { planning: '规划', writing: '正文写作', review: '评分与审校', rewrite: '定向重写', naming: '拟名' };
+      const rows = Object.entries(byStage).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
+      const total = Number(data.total) || 0;
+      bodyEl.append(h('div', { class: 'tok-total' },
+        h('span', { class: 'tok-k', text: '本章合计' }),
+        h('span', { class: 'tok-v', text: `${fmtNum(total)} tokens · ${data.calls || 0} 次调用` })));
+      if (!rows.length) {
+        bodyEl.append(h('div', { class: 'hint-text', text: '该章暂无分段消耗记录（早于账本细分功能或重写前创建）。' }));
+        return;
+      }
+      for (const [stage, v] of rows) {
+        const nm = names[stage] || stage;
+        const pct = total ? Math.round((v.total || 0) / total * 100) : 0;
+        bodyEl.append(h('div', { class: 'tok-row' },
+          h('span', { class: 'tok-k', text: nm }),
+          h('div', { class: 'tok-bar' }, h('span', { style: { width: `${Math.max(3, pct)}%` } })),
+          h('span', { class: 'tok-v', text: `${fmtNum(v.total || 0)} · ${pct}% · ${v.calls || 0} 次` })));
+      }
+    })
+    .catch(() => {
+      bodyEl.textContent = '';
+      bodyEl.append(h('div', { class: 'hint-text', text: '明细加载失败，请重试。' }));
+    });
+}
+
+/* v4.22.1：质量评分详情弹窗（六维评分/弱项/评语证据——哪些地方没写好） */
+function openQualityModal(key, meta) {
+  const no = Number(meta.no) || 0;
+  const bodyEl = h('div', { class: 'cc-quality-body' },
+    h('div', { class: 'hint-text', text: '加载评分详情…' }));
+  const modal = openModal({ title: `第${no}章 · 质量评分详情`, body: bodyEl, size: 'sm' });
+  const finish = (detail) => {
+    bodyEl.textContent = '';
+    if (!detail) {
+      bodyEl.append(h('div', { class: 'hint-text', text: '这一章还没有评分记录。写完并评分后，这里会显示六维评分与薄弱点。' }));
+      return;
+    }
+    if (meta.quality != null && meta.quality !== '') {
+      bodyEl.append(h('div', { class: 'tok-total' },
+        h('span', { class: 'tok-k', text: '本章总分' }),
+        h('span', { class: 'tok-v', text: `${meta.quality} 分（达标线 80 分）` })));
+    }
+    const dims = detail.scores && typeof detail.scores === 'object' ? Object.entries(detail.scores) : [];
+    if (dims.length) {
+      const sec = h('div', { class: 'cc-q-dims' });
+      for (const [dim, sc] of dims.sort((a, b) => (Number(a[1]) || 0) - (Number(b[1]) || 0))) {
+        sec.append(h('div', { class: 'tok-row' },
+          h('span', { class: 'tok-k', text: dim }),
+          h('div', { class: 'tok-bar' }, h('span', { style: { width: `${Math.min(100, Math.round((Number(sc) || 0) * 10))}%` } })),
+          h('span', { class: 'tok-v', text: `${sc}` })));
+      }
+      bodyEl.append(h('div', { class: 'hint-text', style: { margin: '8px 0 2px' }, text: '六维评分（低分排前，可据此修改）：' }));
+      bodyEl.append(sec);
+    }
+    if (detail.weak && detail.weak.length) {
+      bodyEl.append(h('div', { class: 'hint-text', style: { marginTop: '8px' },
+        text: `薄弱维度：${detail.weak.join('、')}——这几处是失分主因。` }));
+    }
+    if (detail.verdict) {
+      bodyEl.append(h('div', { class: 'tok-verdict', text: `审稿评语：${detail.verdict}` }));
+    }
+    const evs = (detail.evidence || []).filter(Boolean);
+    if (evs.length) {
+      bodyEl.append(h('div', { class: 'hint-text', style: { margin: '6px 0 2px' }, text: '问题证据：' }));
+      const ul = h('ul', { class: 'cc-q-ev' });
+      for (const ev of evs.slice(0, 6)) ul.append(h('li', { text: String(ev).slice(0, 160) }));
+      bodyEl.append(ul);
+    }
+  };
+  api.chapterScores(key)
+    .then((d) => {
+      const all = (d && d.scores) || d || [];
+      const one = Array.isArray(all) ? all.find((x) => (x.ch || x.no) === no) : null;
+      if (!one) { finish(null); return; }
+      finish({ scores: one.scores || one.dim_scores || null, weak: one.weak || [],
+               verdict: one.verdict || '', evidence: one.evidence || [] });
+    })
+    .catch(() => finish(null));
+}
+
 function renderChapterCard(msg, handlers = {}) {
   const meta = msg.chapterMeta || {};
   const expanded = !msg.collapsed;
@@ -198,12 +289,20 @@ function renderChapterCard(msg, handlers = {}) {
   const items = [];
   if (meta.ts) items.push(['完成于', String(meta.ts).replace('T', ' ').slice(5, 16)]);
   items.push(['字数', fmtNum(Number(meta.words) || 0)]);
-  items.push(['消耗', `${fmtNum(Number(meta.tokens) || 0)} tokens`]);
-  items.push(['质量', meta.quality != null && meta.quality !== '' ? `${meta.quality} 分` : '未评分']);
-  for (const [k, v] of items) {
-    chips.append(h('span', { class: 'cc-chip' },
+  items.push(['消耗', `${fmtNum(Number(meta.tokens) || 0)} tokens`, 'tokens']);
+  items.push(['质量', meta.quality != null && meta.quality !== '' ? `${meta.quality} 分` : '未评分', 'quality']);
+  for (const [k, v, clickable] of items) {
+    const chip = h('span', { class: 'cc-chip' + (clickable ? ' cc-chip-btn' : ''),
+                             title: clickable ? '点击查看明细' : '',
+                             role: clickable ? 'button' : null, tabindex: clickable ? '0' : null },
       h('span', { class: 'cc-k', text: k }),
-      h('span', { class: 'cc-v', text: String(v) })));
+      h('span', { class: 'cc-v', text: String(v) }));
+    if (clickable === 'tokens') {
+      chip.addEventListener('click', () => openTokensModal(handlers.workKey || store.get().currentKey, meta.no, Number(meta.tokens) || 0));
+    } else if (clickable === 'quality') {
+      chip.addEventListener('click', () => openQualityModal(handlers.workKey || store.get().currentKey, meta));
+    }
+    chips.append(chip);
   }
   const _q = Number(meta.quality);
   if (meta.quality != null && meta.quality !== '' && !Number.isNaN(_q) && _q < 90) {

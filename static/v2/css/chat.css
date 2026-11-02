@@ -1444,3 +1444,77 @@
 
 .cc-rewrite-btn:hover { text-decoration: underline; }
 .cc-rewrite-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* v4.22.1 章节卡：token 明细 / 质量评分弹窗 + 可点击 chips */
+.cc-chip-btn {
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.cc-chip-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+}
+
+.cc-chip-btn:hover .cc-v { color: var(--accent-ink); }
+
+.tok-total {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  color: var(--accent-ink);
+  display: flex;
+  font-size: 13px;
+  font-weight: 600;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+}
+
+.tok-k { color: var(--ink-secondary); flex: none; font-size: 12px; width: 88px; }
+.tok-v { color: var(--ink-primary); flex: none; font-variant-numeric: tabular-nums; }
+
+.tok-row {
+  align-items: center;
+  border-bottom: 0.5px solid var(--line-1);
+  display: flex;
+  font-size: 12.5px;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.tok-row:last-child { border-bottom: 0; }
+
+.tok-bar {
+  background: var(--bg-chip);
+  border-radius: var(--radius-pill);
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+}
+
+.tok-bar > span {
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  display: block;
+  height: 100%;
+}
+
+.tok-verdict {
+  background: var(--bg-sunken);
+  border-left: 2px solid var(--accent);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  margin-top: 8px;
+  padding: 8px 10px;
+}
+
+.cc-q-dims .tok-bar > span { background: var(--success); }
+.cc-q-ev {
+  color: var(--ink-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 4px 0 0;
+  padding-left: 18px;
+}

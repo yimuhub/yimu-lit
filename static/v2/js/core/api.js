@@ -411,6 +411,7 @@ export const api = {
   syslog: (params = {}) => request('/api/syslog', { query: params }),
   syslogClear: () => request('/api/syslog/clear', jsonBody({})),
   chatNote: (key, text, note) => request('/api/chat/note', jsonBody({ key, text, note })),
+  chapterTokens: (key, no) => request('/api/chapter-tokens', { query: { key, no } }),
   rewriteChapter: (key, no) => request('/api/rewrite', jsonBody({ key, chapters: [no] }), { timeout: 30000 }),
   bookAgents: (key) => request('/api/book-agents', { query: { key } }),
   setBookAgents: (payload) => request('/api/book-agents', jsonBody(payload)),
