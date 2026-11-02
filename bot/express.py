@@ -1,0 +1,62 @@
+"""极速模式（Express）：只求写完、不求写好的执行规格（v4.24.0）。
+
+为什么单独一个模块：本项目的质量环节散落在 9 个写作引擎里，且大多读全局
+`config.json`。极速模式要的是**每本书**的开关——开一本书不该把整台机器都变快。
+更重要的是「跳哪些环节」必须有唯一解释器：否则以后新增一个质量环节，就得在
+9 个地方各补一次判断，漏一处就变成「极速模式里偷偷还在评分」。
+
+约定：所有 writer 只问 `on()` / `skip_stage()`，不自己拼 `cfg.get(...)` 条件。
+
+保留原则（这是本模块最要紧的边界）：
+  跳过的只有「评估 / 修订 / 打磨 / 去味 / 多版本」这类**不产出新内容**的环节；
+  「章卡规划、章节摘要、连续性索引、格律校验、时代校验、场次结构」一律保留——
+  它们产出的是**一致性与结构**，砍掉就不是快，而是写出一本前后矛盾的书。
+"""
+from __future__ import annotations
+
+#: 极速模式对长篇分章的字数规则。
+#: 目标字数照给（少给会让章卡的目标/冲突/转折/兑现装不下，连续性从第 3 章就崩），
+#: 但验收线从标准的 90% 降到 60%，且不足时只补写一次（标准是 3 轮）。
+WORD_FLOOR_RATIO = 0.60
+
+#: 各文体要跳过的阶段码。只列「评审/打磨」阶段，创作与交付阶段一个不跳。
+#: novel 不在此表：它走 writer.py 的逐章分支，不按阶段码调度。
+_SKIP_STAGES: dict[str, frozenset[str]] = {
+    "novel": frozenset(),
+    "script": frozenset(),          # 时代校验是确定性一致性检查（零 LLM 成本），保留
+    "poetry": frozenset({"R"}),     # 只跳 R 评改；K 格律校验是纯 CPU 的，必须留着
+    "prose": frozenset({"A"}),      # 跳 A 去味；P 精修只是拼接定稿，保留
+    "thesis": frozenset({"T4"}),    # 跳降 AIGC 润色
+    "children": frozenset(),        # C1-C5 都是创作/交付内容，没有评审阶段可跳
+    "news": frozenset({"N3", "N4"}),  # 跳事实核查与多版本
+    "copy": frozenset(),            # 全部是创作内容
+    "other": frozenset({"O3"}),     # 跳打磨
+}
+
+
+def _truthy(v) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on", "express")
+    return bool(v)
+
+
+def on(cfg) -> bool:
+    """这本书是不是极速模式。
+
+    两种写法等价：`{"express": true}`（界面开关）与 `{"mode": "express"}`（创作模式卡片）。
+    兼容字符串是因为向导的 cards 字段提交的是 `"express"` / `"standard"` 而不是布尔。
+    """
+    c = cfg if isinstance(cfg, dict) else {}
+    if c.get("express") not in (None, ""):
+        return _truthy(c["express"])
+    return str(c.get("mode") or "").strip().lower() == "express"
+
+
+def skip_stage(medium: str, code: str) -> bool:
+    """该文体的这个阶段在极速模式下是否跳过。未知文体一律不跳（宁可慢，不可残缺）。"""
+    return str(code or "") in _SKIP_STAGES.get(str(medium or ""), frozenset())
+
+
+def stages(medium: str) -> frozenset[str]:
+    """给 UI/日志用：该文体在极速模式下会跳过哪些阶段码。"""
+    return _SKIP_STAGES.get(str(medium or ""), frozenset())

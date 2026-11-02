@@ -30,6 +30,7 @@ ALLOWED_KEYS = {
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "script": {
         # script_writer.create_project 读 form/entryPath/idea/notes/scenes/pages/episodes/title
@@ -42,6 +43,7 @@ ALLOWED_KEYS = {
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "poetry": {
         # poetry_writer 读 form/title/idea/maxRounds/cipai/metrical_check/with_notes/with_translation；
@@ -50,6 +52,7 @@ ALLOWED_KEYS = {
         "metrical_check", "with_notes", "with_translation", "style_id",
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "prose": {
         # prose_writer 读 genre/operation/sourceText/title/idea + audience/purpose/tone/
@@ -58,6 +61,7 @@ ALLOWED_KEYS = {
         "tone", "words", "target_words", "slop_depth", "fact_check", "style_id",
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "thesis": {
         # v4.6.0：thesis_writer 读 degree/field/title/idea/target_words/cite_style/humanize
@@ -66,6 +70,7 @@ ALLOWED_KEYS = {
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "children": {
         # v4.10.0：children_writer 读 ctype/age/title/idea/target_words/values_note/with_interactive/with_illustration
@@ -75,6 +80,7 @@ ALLOWED_KEYS = {
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "news": {
         # v4.11.0：news_writer 读 ntype/org/title/idea/cite_style/with_versions
@@ -82,6 +88,7 @@ ALLOWED_KEYS = {
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "copy": {
         # v4.12.0：copy_writer 读 ktype/platform/title/idea/duration_secs/tone/with_hooks
@@ -90,6 +97,7 @@ ALLOWED_KEYS = {
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
     "other": {
         # v4.13.0：other_writer 读 template/audience/title/idea/target_words/tone
@@ -98,6 +106,7 @@ ALLOWED_KEYS = {
         "agents",   # v4.13.0：向导选择的专属 Agent（写入 config.agents）
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
+        "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
     },
 }
 
@@ -152,7 +161,11 @@ def test_conditional_fields_point_at_real_keys():
             if not when:
                 continue
             assert when["field"] in keys, f"{med}.{f['key']} 的 when 指向不存在的 {when['field']}"
-            assert when.get("in"), f"{med}.{f['key']} 的 when 缺 in"
+            # v4.24.0：when 支持正向 in 与反向 not_in（极速模式收起可选项用后者），
+            # 两者互斥且必居其一——都没有就等于这条规则永远不生效，是笔误。
+            has_in, has_not_in = bool(when.get("in")), bool(when.get("not_in"))
+            assert has_in != has_not_in, (
+                f"{med}.{f['key']} 的 when 必须二选一：in 或 not_in（现在是 {when}）")
 
 
 def test_scale_fields_never_collide_with_their_number_key():

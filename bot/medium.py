@@ -352,6 +352,15 @@ _NOVEL_MODES = (
     {"value": "rolling", "label": "滚动规划", "desc": "写一段、看反馈、再规划，适合连载。", "icon": "refresh"},
     {"value": "outline", "label": "大纲优先", "desc": "先定全书骨架，再逐章落地。", "icon": "list"},
     {"value": "one_shot", "label": "一次成稿", "desc": "适合短篇，一次生成再统一打磨。", "icon": "zap"},
+    # v4.24.0：极速模式。这是三个老选项之外**第一个真正驱动流程**的模式——
+    # 老的三张卡片只被写进 plan.mode，没有任何代码读它（长期是假选项）。
+    {"value": "express", "label": "极速模式", "desc": "不评分、不重写，一口气写完；产出初稿。", "icon": "zap"},
+)
+# v4.24.0：非小说文体的「创作节奏」两选一。它们没有「创作模式」这个概念，
+# 单独一张卡片比塞进「一次成稿」更准确。
+_EXPRESS_MODES = (
+    {"value": "standard", "label": "标准", "desc": "逐阶段审校与打磨，慢但成品度高。", "icon": "check"},
+    {"value": "express", "label": "极速", "desc": "不评分、不重写，一口气写完；产出初稿。", "icon": "zap"},
 )
 # 规模快捷项：fill = 该档的章数目标（与前端 DEFAULT_CHAPTERS、longform.resolve_scale 一致）
 _NOVEL_SCALE = (
@@ -365,23 +374,30 @@ _NOVEL_SECTIONS = {
     "style_title": "卖点与风格预设",
     "brief": [
         _f("platform", "发布平台", "chips", options_from="platforms", default="", effect="platform",
+           when={"field": "mode", "not_in": ["express"]},
            hint="选平台带入该站的分类习惯与更新节奏，创作不受限制。"),
         _f("genre", "题材", "select", options_from="genres", default="悬疑/刑侦", required=True,
            hint="题材决定注入哪套题材 craft（悬疑/言情/恐怖/玄幻…），之后仍可微调。"),
         _f("tone", "基调", "select", options_from="tones", default="",
+           when={"field": "mode", "not_in": ["express"]},
            hint="留空表示不限。基调与题材共同决定文风预设。"),
-        _f("perspective", "叙事视角", "select", options_from="perspectives", default=""),
-        _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True),
+        _f("perspective", "叙事视角", "select", options_from="perspectives", default="",
+           when={"field": "mode", "not_in": ["express"]}),
+        _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True,
+           effect="express"),
     ],
     "basic": [
         _f("agents", "专属 Agent", "chips", options_from="agents_novel", multi=True,
+           when={"field": "mode", "not_in": ["express"]},
            hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
 
         _f("title", "书名", "text", max_length=40,
+           when={"field": "mode", "not_in": ["express"]},
            hint="留空则由系统生成 8 个候选，创建后可随时换。"),
         _f("idea", "一句话简介", "textarea", rows=4, max_length=2000, required=True,
            hint="写清「谁 / 想要什么 / 被什么挡住」最容易得到可用的规划。"),
         _f("sells", "核心卖点", "chips", options_from="sells", multi=True,
+           when={"field": "mode", "not_in": ["express"]},
            hint="决定正文爽点节拍（写进风格技能）；选 1-3 个最贴的。"),
         _f("scale", "规模", "scale", options=_NOVEL_SCALE, default="1m", required=True,
            custom_key="total_chapters", min=1, max=2000, unit="章",
@@ -395,6 +411,8 @@ _NOVEL_SECTIONS = {
              {"value": "50", "label": "50 章一批"},
              {"value": "all", "label": "全部写完"},
            ], default="1", required=True,
+           # v4.24.0：极速模式不隐藏本项，而是自动选中「全部写完」（见 wizard 的 express 效果）。
+           # 它是必填项，而「必填项不被隐藏」是短表单的硬规则；把「一口气写完」亮出来也更自解释。
            hint="选择每批写的章数。逐章写最灵活，批量写适合快速产出。"),
         _f("min_words_per_chapter", "每章字数", "number", default=3000, min=500, max=10000, unit="字",
            hint="单章目标字数（写入 minWordsPerChapter）；网文通常 2000-4000。"),
@@ -733,6 +751,14 @@ _WIZARD: dict[str, dict[str, list[dict]]] = {
 }
 
 
+#: v4.24.0 极速模式下收起的可选项（**只收可选，绝不收必填**）。
+#: 这些字段要么影响打磨/排版，要么是可留空的风格偏好，不影响「写什么」。
+_EXPR_HIDE = frozenset({
+    "agents", "title", "notes", "setting_world", "emotion",
+    "audience", "purpose", "tone", "with_notes", "with_translation",
+})
+
+
 def _copy_sections(medium: str) -> dict:
     """深拷贝三段字段，避免调用方改写模块常量。"""
     _extra = {"thesis": _THESIS_WIZARD, "children": _CHILDREN_WIZARD,
@@ -746,6 +772,22 @@ def _copy_sections(medium: str) -> dict:
     out["basic"].insert(0, _f("penname", "作者笔名", "select", options_from="pennames",
                                default="",
                                hint="从设置中的笔名列表选择，或留空用全局默认。"))
+    # v4.24.0：非小说文体加「创作节奏」两选一（小说用「创作模式」卡片，已含极速项）。
+    # 放在 brief 首位——它是第一步就该定的事，不该埋在风格页里。
+    if medium != "novel":
+        out["brief"].insert(0, _f("express", "创作节奏", "cards", options=_EXPRESS_MODES,
+                                  default="standard", required=True, effect="express",
+                                  hint="极速 = 不评分、不重写，一口气写完；产出初稿，可随时切回标准补审校。"))
+    # v4.24.0：极速模式收成短表单——风格页整页收起（它全是打磨/排版设置），
+    # 其余可选项也收起。必填项一律保留，「简单设定」不等于「不给输入」。
+    for f in out["style"]:
+        if f.get("type") not in ("note", "preview"):
+            f.setdefault("when", {"field": "mode" if medium == "novel" else "express",
+                                  "not_in": ["express"]})
+    for f in out["brief"] + out["basic"]:
+        if not f.get("required") and f.get("key") in _EXPR_HIDE:
+            f.setdefault("when", {"field": "mode" if medium == "novel" else "express",
+                                  "not_in": ["express"]})
     return out
 
 

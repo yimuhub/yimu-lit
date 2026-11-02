@@ -26,7 +26,7 @@ import os
 import re
 import threading
 
-from . import llm, medium, script_checker, skillkit
+from . import llm, medium, script_checker, skillkit, express
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -1000,8 +1000,9 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
     proj.save_plan(plan)
 
     # v4.15.0：batch_size 解析（"all"=全部写完；int=写N场后停在当前进度）
+    # v4.24.0：极速模式忽略 batch_size——「一口气写完」是它的定义，不能被旧配置卡在半路
     _limit = None
-    if batch_size is not None:
+    if batch_size is not None and not express.on(cfg):
         if str(batch_size).lower() in ("all", "0"):
             _limit = None
         else:

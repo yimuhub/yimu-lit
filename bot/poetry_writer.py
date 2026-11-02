@@ -18,7 +18,7 @@ import os
 import re
 import threading
 
-from . import llm, poetry_checker, skillkit
+from . import llm, poetry_checker, skillkit, express
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -362,6 +362,12 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
     pdir = proj.path
     name = plan.get("poemName") or proj.name
     max_rounds = int(cfg.get("maxRounds", plan.get("maxRounds", 3)))
+    # v4.24.0：极速模式——K 格律校验是纯 CPU 的确定性检查，必须保留（格律错就是废稿）；
+    # 砍掉的是 R 评改（LLM 改稿）和 F 里的审美评分。
+    _expr = express.on(cfg)
+    if _expr:
+        max_rounds = 1
+        proj.log("⚡ 极速模式：保留格律校验，跳过 R 评改与审美评分")
 
     # ---- K → R 循环 ----
     report: dict = {}
@@ -388,6 +394,9 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
             break
         if form in ("modern", "free"):
             break
+        if _expr:
+            proj.log("⚡ 极速模式：格律报告已出，不做改稿（R 评改阶段跳过）")
+            break
         proj.log(f"🔁 阶段 R：按报告改稿（第 {rnd} 轮）…")
         revised = gen_revise(text, report, cfg)
         if not revised.strip() or revised.strip() == text.strip():
@@ -400,7 +409,8 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
 
     # ---- F 定稿 ----
     proj.log("📋 阶段 F：审校与定稿…")
-    crit = gen_critique(text, cfg)
+    # 极速模式不出审美评分：评分不改变任何一个字，只多一次 LLM 往返
+    crit = {} if _expr else gen_critique(text, cfg)
     header = f"# {name}\n\n"
     if crit:
         dims = crit.get("dims") or {}

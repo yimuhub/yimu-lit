@@ -15,7 +15,7 @@ from bot import chatsum
 from bot import syslog as syslog_mod
 from bot import steps as steps_mod
 from bot import export as export_mod
-from bot import purity, journal
+from bot import purity, journal, express
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1267,6 +1267,17 @@ def _provider_into(cfg: dict, payload: dict) -> dict:
     return cfg
 
 
+def _express_into(cfg: dict, payload: dict) -> dict:
+    """v4.24.0：把「极速模式」折成 cfg.express。
+
+    两条界面入口等价：小说的「创作模式」卡片传 mode=express，其余文体传 express=express。
+    只在为真时写键——老项目没有这个字段，统一写 False 只会让 02-写作计划.json 变脏。
+    """
+    if express.on({"express": payload.get("express"), "mode": payload.get("mode")}):
+        cfg["express"] = True
+    return cfg
+
+
 def _style_prompt_of(style_id) -> str:
     """蒸馏风格卡的技法文本。剧本/诗词/散文没有 style_ref.json 注入点，折进素材说明里交给提示词。"""
     card = distill.get_style((style_id or "").strip())
@@ -1333,6 +1344,7 @@ def _create_script_project(payload: dict) -> dict:
     if payload.get("agents"):
         cfg["agents"] = payload["agents"] if isinstance(payload["agents"], list) else [payload["agents"]]
     cfg.setdefault("form", "film")
+    _express_into(cfg, payload)
     # 「跟随素材」不写具体时代，交给引擎从题材/标题/素材里推断，避免默认值压过用户意图。
     if str(cfg.get("setting_era") or "") in ("", "auto"):
         cfg.pop("setting_era", None)
@@ -1361,6 +1373,7 @@ def _create_poetry_project(payload: dict) -> dict:
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("form", "modern")
+    _express_into(cfg, payload)
     try:
         rounds = int(payload.get("maxRounds") or payload.get("rounds") or 3)
     except (TypeError, ValueError):
@@ -1390,6 +1403,7 @@ def _create_prose_project(payload: dict) -> dict:
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("operation", "write")
+    _express_into(cfg, payload)
     sp = _style_prompt_of(payload.get("style_id"))
     if sp:
         cfg["idea"] = "\n".join(x for x in ((cfg.get("idea") or "").strip(), "目标文风：" + sp) if x)
@@ -1442,6 +1456,7 @@ def _create_thesis_project(payload: dict) -> dict:
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     _provider_into(cfg, payload)
+    _express_into(cfg, payload)
     return _spawn_project("thesis", "t_", thesis_writer.create_project,
                           thesis_writer._safe, "未命名论文", cfg, [])
 
@@ -1522,6 +1537,9 @@ def api_create(payload: dict):
     for k in ("scale", "writing_mode", "mode", "medium"):
         if payload.get(k):
             cfg[k if k != "writing_mode" else "mode"] = payload[k]
+    # v4.24.0：极速模式。界面上有两条入口——小说的「创作模式」卡片（mode=express）
+    # 与其余文体的「创作节奏」开关（express=express）。两者等价，统一折成 cfg.express。
+    _express_into(cfg, payload)
     if isinstance(cfg.get("scale"), str):
         try:
             from bot import longform as _lf

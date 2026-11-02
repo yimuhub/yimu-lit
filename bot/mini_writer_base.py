@@ -99,9 +99,19 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
     plan["config"] = {k: v for k, v in cfg.items() if k != "api_key"}
     plan.setdefault("chapterStatus", {})
     from . import steps as _steps
+    from . import express as _express
     import time as _time
     _bk = os.path.basename(proj.path)
+    # v4.24.0：极速模式——按文体跳过评审/打磨阶段（express._SKIP_STAGES 是唯一口径）
+    _expr = _express.on(cfg)
+    _medium = str(getattr(proj, "MEDIUM", "") or "")
     for code, label, fn in stages:
+        if _expr and _express.skip_stage(_medium, code):
+            plan["chapterStatus"][code] = "skipped"
+            proj.log(f"⚡ 极速模式：跳过 {code} {label}")
+            _steps.emit(_bk, "system", "info", title=f"极速模式跳过 {code} {label}",
+                        output="该阶段只做评审/打磨，不产出新内容")
+            continue
         if (plan.get("chapterStatus") or {}).get(code) == "completed":
             continue
         if (plan.get("meta") or {}).get("paused"):

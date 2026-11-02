@@ -239,7 +239,8 @@ export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
   const pct = total ? Math.round((done / total) * 100) : 0;
   const planData = (plan && plan.plan) || {};
   const scale = planData.scale_label || (planData.target_words ? fmtWords(planData.target_words) : '');
-  const mode = planData.mode || '滚动规划';
+  /* v4.24.0：极速模式要一眼可辨——产出是初稿，不标出来会让人误以为已经过审校。 */
+  const mode = planData.express ? '⚡ 极速模式 · 初稿' : (planData.mode || '滚动规划');
   /* v4.14.0：章节标签按文体定制（小说用「章」、剧本用「场」、诗词用「首」…） */
   const MEDIUM_UNITS = {
     novel: '章', script: '场', poetry: '首', prose: '阶段',

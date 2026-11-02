@@ -1228,7 +1228,11 @@ function planPane(ctx) {
     { class: 'plan-head' },
     h('span', { class: 'plan-scale', text: `v${plan.version || 1}` }),
     h('span', { class: 'plan-scale', text: plan.scale_label || (plan.target_words ? fmtWords(plan.target_words) : '未设规模') }),
-    h('span', { class: 'chip chip-muted', text: plan.mode || '滚动规划' }),
+    /* v4.24.0：极速模式用强调色标出——产出是初稿，未跑评分/去味/审校 */
+    h('span', {
+      class: plan.express ? 'chip chip-accent' : 'chip chip-muted',
+      text: plan.express ? '⚡ 极速模式 · 初稿' : (plan.mode || '滚动规划')
+    }),
     h('span', { class: 'rp-spring' }),
     /* v4.12.13：全部文体都有重规划（非小说走各自引擎的规划重跑） */
     h('button', {

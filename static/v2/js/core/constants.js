@@ -29,7 +29,9 @@ export function scaleLabel(value) {
 export const WRITING_MODES = [
   { value: 'rolling', label: '滚动规划', desc: '写一段、看反馈、再规划，适合连载。', icon: 'refresh' },
   { value: 'outline', label: '大纲优先', desc: '先定全书骨架，再逐章落地。', icon: 'list' },
-  { value: 'one_shot', label: '一次成稿', desc: '适合短篇，一次生成再统一打磨。', icon: 'zap' }
+  { value: 'one_shot', label: '一次成稿', desc: '适合短篇，一次生成再统一打磨。', icon: 'zap' },
+  /* v4.24.0：极速模式——三个老选项只影响规划节奏，这一个真正驱动流程（跳过评分/去味/重写） */
+  { value: 'express', label: '极速模式', desc: '不评分、不重写，一口气写完；产出初稿。', icon: 'zap' }
 ];
 
 export const MEDIUM_FALLBACK = [

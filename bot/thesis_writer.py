@@ -17,7 +17,7 @@ import re
 
 from bot.safeio import atomic_write_text, atomic_write_json, safe_join
 
-from . import llm
+from . import llm, express
 from .llm import book as llm_book
 
 F_PLAN = "论文计划.json"
@@ -360,9 +360,19 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
     proj.save_plan(plan)
 
     # ---- T4 降 AIGC 润色 ----
+    # v4.24.0：极速模式跳过 T4（逐章拟人化改写），字数统计走 else 分支照常做
     total_words = 0
     report_lines = ["# 降 AIGC 润色报告\n"]
-    if cfg.get("humanize", True) is not False:
+    _expr = express.on(cfg)
+    if _expr:
+        proj.log("⚡ 极速模式：跳过 T4 降 AIGC 润色（保留引用核查结果）")
+        for ch in chapters:
+            no = int(ch.get("no") or 0)
+            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            if os.path.exists(fp):
+                total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
+        report_lines.append("- 极速模式：本阶段已跳过，正文为 T2 原始产出\n")
+    elif cfg.get("humanize", True) is not False:
         for ch in chapters:
             no = int(ch.get("no") or 0)
             fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")

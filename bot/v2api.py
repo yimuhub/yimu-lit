@@ -371,6 +371,15 @@ def _plan_view(proj, plan: dict) -> dict:
         plan["scale_label"] = (f"{words / 10000:g} 万字 · {chs} 章" if words >= 10000 and chs
                                else (f"{words} 字 · {chs} 章" if words and chs
                                      else (sc.get("label") or "")))
+    # v4.24.0：显式告诉前端这本书是不是极速模式。判据取「写作计划里的 config」——
+    # 02c 总规划的 mode 存的是原始 token（rolling/…），且非小说走 _medium_plan_view
+    # 时 mode 被换成了文体标签，不能拿来判断。
+    try:
+        from . import express as _express
+        _cfg_src = (disk_plan.get("config") if isinstance(disk_plan, dict) else None) or {}
+        plan["express"] = bool(_express.on(_cfg_src) or str(plan.get("mode") or "") == "express")
+    except Exception:
+        plan["express"] = False
     volumes = plan.get("volumes")
     if not isinstance(volumes, list):
         return plan
@@ -545,7 +554,7 @@ def _medium_stage_pairs(med: str) -> list[tuple[str, str]]:
 def _medium_plan_view(proj, key: str, med: str) -> dict:
     """v4.12.5：非小说计划 → 规划树。每文体有自己的阶段名与完成状态。"""
     from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
-                     children_writer, news_writer, copy_writer)
+                     children_writer, news_writer, copy_writer, express)
     def _chapter(no, title, status, words, extra=""):
         return {"n": no, "title": title or f"第{no}步", "status": status,
                 "word_count": words, "goal": extra}
@@ -607,7 +616,9 @@ def _medium_plan_view(proj, key: str, med: str) -> dict:
            "chapters": [c["n"] for c in chapters],
            "chapter_cards": chapters}
     return {"version": 1, "mode": mode, "scale_label": f"{len(chapters)} 步",
-            "premise": "", "volumes": [{"no": 1, "title": vol_title, "arcs": [arc]}]}
+            "premise": "", "volumes": [{"no": 1, "title": vol_title, "arcs": [arc]}],
+            # v4.24.0：极速模式标识（判据是 plan.config，与 novel 的 _plan_view 一致）
+            "express": bool(express.on((plan or {}).get("config") or {}))}
 
 
 _NAME_KEYS = {"children": "bookName", "news": "newsName", "copy": "copyName",

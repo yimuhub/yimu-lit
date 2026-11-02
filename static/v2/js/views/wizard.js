@@ -122,7 +122,11 @@ function humanValue(field, token) {
 function isVisible(field, values) {
   const rule = field.when;
   if (!rule) return true;
-  return (rule.in || []).some((x) => sameToken(values[rule.field], x));
+  /* v4.24.0：支持反向条件 not_in——「极速模式下不显示」这类规则用它表达。
+     in 与 not_in 二选一；两者都写时以 in 为准（正向条件更具体）。 */
+  if (rule.in) return rule.in.some((x) => sameToken(values[rule.field], x));
+  if (rule.not_in) return !rule.not_in.some((x) => sameToken(values[rule.field], x));
+  return true;
 }
 
 function stepsBar(step) {
@@ -294,6 +298,16 @@ export function openWizard(ctx, preset = {}) {
   const EFFECTS = {
     platform: (token) => {
       applyPlatform(platformOf(token));
+      render();
+    },
+    /* v4.24.0：创作节奏/创作模式切到「极速」时，批量写作自动拉满——
+       「一口气写完」是极速模式的定义，不该再让人挑每批几章。切回标准时不动，
+       以免覆盖用户先前选过的值。 */
+    express: (token) => {
+      if (sameToken(token, 'express')) {
+        const v = values();
+        if ('batch_size' in v) v.batch_size = 'all';
+      }
       render();
     }
   };

@@ -21,7 +21,7 @@ import os
 import re
 import threading
 
-from . import llm, skillkit
+from . import llm, skillkit, express
 from . import slop_checker
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
@@ -441,14 +441,20 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
         proj.log("✅ 审稿完成（未改动原文）")
         return proj
 
-    proj.log("🔍 阶段 A：去味与精修…")
-    polished = gen_polish(draft, cfg)
-    if not polished.strip():
-        polished = draft
-    polished, slop_rep = slop_pass(polished, cfg)
-    if slop_rep:
-        proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
-                 f"{slop_rep.get('summary', '')}")
+    # v4.24.0：极速模式——A 段（去味 + 反 AI 腔扫描）全是打磨，不改内容结构，直接跳过。
+    # F 定稿照常拼接，产物文件名与 meta 字段保持不变（下游按 03-去味报告.md 取文的地方不会断）。
+    if express.on(cfg):
+        proj.log("⚡ 极速模式：跳过 A 去味与精修（初稿即定稿）")
+        polished, slop_rep = draft, {}
+    else:
+        proj.log("🔍 阶段 A：去味与精修…")
+        polished = gen_polish(draft, cfg)
+        if not polished.strip():
+            polished = draft
+        polished, slop_rep = slop_pass(polished, cfg)
+        if slop_rep:
+            proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
+                     f"{slop_rep.get('summary', '')}")
     _write(os.path.join(pdir, F_SLOP), polished.strip() + "\n")
     plan["meta"]["stage"] = "P"
     plan["meta"]["stageIdx"] = 4

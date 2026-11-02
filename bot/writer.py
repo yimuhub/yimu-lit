@@ -1,7 +1,7 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
 import json, os, re, datetime, threading, queue, time
-from . import workflow, skill, continuity, llm, versions, steps, purity, journal
+from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1970,6 +1970,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
         if plan0:
             proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
+    # v4.24.0：极速模式是**本书级**开关。只问 express.on()，不在这里拼 cfg 条件。
+    _expr = express.on(ctx.get("cfg") or {})
     # v4.20 C3：规划师纠偏指引（每批收尾时规划师校准写入 plan.meta.drift_guidance，随写作提示注入）
     try:
         _dg = str(((proj.plan() or {}).get("meta") or {}).get("drift_guidance") or "").strip()
@@ -1997,7 +1999,9 @@ def _write_chapter(proj, ch, min_words, max_retries):
         ctx["recent_hooks"] = hooks[-5:]
     except Exception:
         pass
-    ctx["min_words_target"] = int(min_words * 1.1)   # v4.16.2：写作提示带 110% 硬下限，验收仍按 min_words
+    # v4.16.2：写作提示带 110% 硬下限，验收仍按 min_words
+    # v4.24.0：极速模式仍给目标字数（少给会让章卡的目标/冲突/兑现装不下），但不额外加 10% 加压
+    ctx["min_words_target"] = int(min_words * (1.0 if _expr else 1.1))
     qn = _pop_queue_note(proj, no)
     if qn:
         ctx["queue_note"] = qn
@@ -2041,17 +2045,25 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 break
         return opens
     recent_opens = _recent_opens()
-    if (not _from_draft) and recent_opens and _jaccard(_trigrams(body), _trigrams("".join(recent_opens))) > 0.5:
-        proj.log(f"🚨 第{no}章与近期章节内容高度相似，自动重写（禁抄开头）…")
-        ctx2 = dict(ctx)
-        ctx2["ban_openings"] = recent_opens
-        body2 = purity.sanitize_chapter(_strip_chatter(workflow.write_chapter(ctx2)))
-        body2 = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body2.lstrip(), count=1) \
-            if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body2.lstrip()) else body2
-        if _jaccard(_trigrams(body2), _trigrams("".join(recent_opens))) <= 0.5:
-            body = body2
+    _sim = _jaccard(_trigrams(body), _trigrams("".join(recent_opens))) if recent_opens else 0.0
+    if (not _from_draft) and recent_opens and _sim > 0.5:
+        if _expr:
+            # 极速模式不重写（那是一次整章长调用），但「撞车」必须留痕：
+            # 事后人工核对的成本远低于让用户以为两章不一样。
+            proj.log(f"⚠️ 第{no}章与近期章节相似度 {_sim:.2f}（>0.5）；极速模式不重写，已记录供事后核对")
+            _evt(_bk, "writer", phase="warn", title="与前章相似度偏高（极速模式不重写）",
+                 output=f"Jaccard {_sim:.2f}", chapter=no)
         else:
-            proj.log(f"⚠️ 第{no}章重写后仍与近期章节相似，已保留第二次结果并标记人工复核")
+            proj.log(f"🚨 第{no}章与近期章节内容高度相似，自动重写（禁抄开头）…")
+            ctx2 = dict(ctx)
+            ctx2["ban_openings"] = recent_opens
+            body2 = purity.sanitize_chapter(_strip_chatter(workflow.write_chapter(ctx2)))
+            body2 = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body2.lstrip(), count=1) \
+                if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body2.lstrip()) else body2
+            if _jaccard(_trigrams(body2), _trigrams("".join(recent_opens))) <= 0.5:
+                body = body2
+            else:
+                proj.log(f"⚠️ 第{no}章重写后仍与近期章节相似，已保留第二次结果并标记人工复核")
     # v4.16.2：字数保障体系——
     #   首写目标 = min_words × 1.1（写作提示带硬下限）；
     #   扩充结果有采纳门禁（比当前短 = LLM 抽风，丢弃防「2858→458」倒退）；
@@ -2061,10 +2073,12 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # v4.21.2 字数新标准（用户定稿）：验收线 = 标准字数的 90%，达到 70% 只做一次
     # 末尾轻量续写补足（不再整章反复扩写——无效编写极耗 token）；评分 ≥ pass_line
     # （80）的章不做整章重写，与字数解耦。
-    word_floor = int(min_words * 0.9)
-    soft_floor = int(min_words * 0.7)
+    # v4.24.0：极速模式验收线降到 60%、只补一轮。目标字数照给，砍的是「为凑字数反复扩写」。
+    word_floor = int(min_words * (express.WORD_FLOOR_RATIO if _expr else 0.9))
+    soft_floor = word_floor if _expr else int(min_words * 0.7)
+    _rounds = 0 if _expr else max_retries
     words, ok, i = 0, False, 0
-    for i in range(max_retries + 1):
+    for i in range(_rounds + 1):
         atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
         ok, words = skill.check_words(fp, word_floor)
         if ok:
@@ -2101,6 +2115,11 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 proj.log(f"➕ 续写拼接 {cont_len} 字（拼接后约 {prev_len + cont_len} 字）")
             else:
                 proj.log(f"⚠️ 续写返回 {cont_len} 字（过短），保留原稿交由验收阶段处理")
+            if _expr:
+                # 极速模式只有这一轮：标准模式靠下一轮循环重新验收，这里没有下一轮，
+                # 不重新落盘 + 复检的话 words 会停在续写前的旧值，本章白白判失败。
+                atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
+                ok, words = skill.check_words(fp, word_floor)
             continue
         proj.log(f"⚠️ 第{no}章仅 {words} 字（不足标准的 70%），按 content-expansion.md 扩写（第{i+1}轮）")
         _evt(_bk, "writer", phase="warn", title=f"字数不足标准的70%，扩写第{i+1}轮",
@@ -2141,8 +2160,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # v3.1.0：默认章名 → 用本章摘要起真名（写完即定名，不额外读全文）
     if summary:
         _name_chapter(proj, no, summary)
-    # 第1章：文风校准回填
-    if no == 1:
+    # 第1章：文风校准回填（极速模式跳过——这是一次纯质量相关的 LLM 调用）
+    if no == 1 and not _expr:
         try:
             cal = workflow.style_calibrate(open(fp, encoding="utf-8").read(), cfg=ctx.get("cfg"))
             sp = os.path.join(proj.path, "03-文风基准.md")
@@ -2154,7 +2173,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
         plan = proj.plan()
         # v1.2.2：扩写 3 轮仍不足 min_words，但有实质内容（≥60% 目标）→ 视为完成（soft pass），
         # 不再把整章标 failed（真实 LLM 常给 2600-2900 字；标 failed 会误导用户以为没写出来）
-        soft_ok = ok or words >= int(min_words * 0.6)
+        # v4.24.0：极速模式「不追求字数」——只要写得出正文就算完成，字数是否达标只记在 wordCountPass
+        soft_ok = (words > 0) if _expr else (ok or words >= int(min_words * 0.6))
         for c in plan["chapters"]:
             if c["chapterNumber"] == no:
                 c["status"] = "completed" if soft_ok else "failed"
@@ -2169,7 +2189,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
                     except Exception:
                         c["tokens"] = None
         proj.save_plan(plan)
-    _soft_ok = ok or words >= int(min_words * 0.6)
+    _soft_ok = (words > 0) if _expr else (ok or words >= int(min_words * 0.6))
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
              if _soft_ok else f"❌ 第{no}章未达标（{words}字）")
     # v4.21.0：创作事件——本章完成（output=字数；未达标标 warn）
@@ -2179,7 +2199,12 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # v0.5 M1：逐章评分 + 低于 90 自动局部重写（可配关，失败不阻断主流程）
     # v4.20 C4：去味师是必经环节——正文定稿（字数达标）后总是先跑 deslop，与质量门禁开关解耦
     #（deslopper 被停用时 deslop_chapter 内部自动跳过原样返回；LLM 失败保留原文，绝不阻断）。
-    if ok:
+    # v4.24.0：极速模式整块跳过——去味与评分/重写都不产出新剧情，却是每章最贵的两次长调用。
+    if _expr:
+        proj.log(f"⚡ 极速模式：第{no}章跳过去味与逐章评分（只保留摘要与连续性索引）")
+        _evt(_bk, "writer", phase="done", title=f"第{no}章完成（极速模式：不评分、不重写）",
+             output=f"{words} 字", chapter=no)
+    elif ok:
         try:
             _cfg_now = (proj.plan() or {}).get("config") or {}
             _body_now = open(fp, encoding="utf-8").read()
@@ -2211,8 +2236,9 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 proj.log(f"📊 第{no}章 {fin if fin is not None else '?'} 分（{_st}）")
             except Exception as e:
                 proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
-    _index_chapter_continuity(proj, ch, ctx.get("cfg"))
-    _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
+    _index_chapter_continuity(proj, ch, ctx.get("cfg"))   # 极速模式保留：一致性靠它，不靠评分
+    if not _expr:
+        _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
     # v4.21.5：章节完成卡永久写入对话流（type=chapter，含最终评分）——
     # 刷新后历史原样重放为章节卡（预览/展开全文/复制全文/从此章分支创作/章节工作台）。
     # v4.21.0 活动流改版后旧 SSE 追章链路停走，此记录无人再写、章节卡一度消失，此处恢复。
@@ -2243,24 +2269,30 @@ def _validate_and_finish(proj):
     proj.save_plan(plan)
     min_words = plan.get("minWordsPerChapter", 3000)
     soft_floor = int(min_words * 0.6)
-    for round_no in range(3):
-        # v3.1.0：只重写「真失败」的章。旧逻辑把 soft-pass（完成但未达标，wcp=False）
-        # 也当失败整章重写，几百章的书等效无限循环、服务一重启就永远卡在「校验中」。
-        failed = [c for c in plan["chapters"]
-                  if c.get("status") == "failed"
-                  or (c.get("status") == "completed" and (c.get("wordCount") or 0) < soft_floor)]
-        if not failed:
-            break
-        capped, overflow = failed[:10], failed[10:]
-        proj.log(f"🔁 校验第{round_no+1}轮：{len(failed)}章真失败，本轮重写 {len(capped)} 章"
-                 + (f"（其余 {len(overflow)} 章下轮继续）" if overflow else ""))
-        for ch in capped:
-            ch["status"] = "failed"
-            _write_chapter(proj, ch, min_words, 3)
-        plan = proj.plan()
+    _expr = express.on(plan.get("config") or {})
+    if _expr:
+        # 极速模式：不重写失败章、不跑五角色审校、不触发放行门禁。
+        # 成书编译照常——用户要的就是「最短时间内拿到一本完整的书」。
+        proj.log("⚡ 极速模式：跳过失败章重写与全书审校，直接成书（初稿）")
+    else:
+        for round_no in range(3):
+            # v3.1.0：只重写「真失败」的章。旧逻辑把 soft-pass（完成但未达标，wcp=False）
+            # 也当失败整章重写，几百章的书等效无限循环、服务一重启就永远卡在「校验中」。
+            failed = [c for c in plan["chapters"]
+                      if c.get("status") == "failed"
+                      or (c.get("status") == "completed" and (c.get("wordCount") or 0) < soft_floor)]
+            if not failed:
+                break
+            capped, overflow = failed[:10], failed[10:]
+            proj.log(f"🔁 校验第{round_no+1}轮：{len(failed)}章真失败，本轮重写 {len(capped)} 章"
+                     + (f"（其余 {len(overflow)} 章下轮继续）" if overflow else ""))
+            for ch in capped:
+                ch["status"] = "failed"
+                _write_chapter(proj, ch, min_words, 3)
+            plan = proj.plan()
     # 分层编辑审稿（可配关；report=出修订记录，autofix=有界重写 high 项）
     val = _cfg_defaults().get("validation") or {}
-    if val.get("enabled", True):
+    if val.get("enabled", True) and not _expr:
         try:
             res = _run_layered(proj, val.get("mode", "report"), int(val.get("max_fix_rounds", 2)))
             proj.log(f"📝 五角色审校 + 确定性引擎：百分制 {res.get('total')}（达标 {'是' if res.get('pass') else '否'}），"
@@ -2289,7 +2321,9 @@ def _validate_and_finish(proj):
     proj.log(f"📚 《{plan['novelName']}》成书完成：{total} 字，文件：成书-{plan['novelName']}.md")
     # 放行门禁：成书后自动（后台线程）带要求重写到 ≥达标线，不阻断成书；已放行则跳过
     # v0.7：一键完稿驱动时由 ⑤ 统一门控，此处不再二次触发（避免同书 6 轮冗余 LLM）
-    if _cfg_defaults().get("release_gate", True) and not ((plan.get("meta") or {}).get("released")) \
+    # v4.24.0：极速模式不触发放行门禁——它本质是「全书重写到 90 分」，与极速模式互相矛盾
+    if _cfg_defaults().get("release_gate", True) and not _expr \
+            and not ((plan.get("meta") or {}).get("released")) \
             and not one_shot_driving(os.path.basename(proj.path)):
         _gkey = os.path.basename(proj.path)
         threading.Thread(target=lambda: run_release_gate(_gkey), daemon=True).start()
@@ -2469,6 +2503,10 @@ def _write_loop(proj: Project, batch_size=None):
         plan["status"] = "in_progress"
         proj.save_plan(plan)
         _ensure_layered_plan(proj)
+        # v4.24.0：极速模式——不评分、不重写、不按批停，一口气写完
+        _expr = express.on(plan.get("config") or {})
+        if _expr:
+            proj.log("⚡ 极速模式：不评分、不重写，一口气写完全部章节（保留章卡与前情摘要，连续性不打折）")
 
         # v4.22.2：登记任务档案——「继续」据此知道上次在做什么、做到第几章
         _pdir = proj.path
@@ -2488,7 +2526,7 @@ def _write_loop(proj: Project, batch_size=None):
         wrote = 0
         _plan_blocked = False
         batch_limit = None
-        if batch_size is not None:
+        if batch_size is not None and not _expr:
             if str(batch_size).lower() in ("all", "0"):
                 batch_limit = None  # 全部写完
             else:
@@ -2558,10 +2596,12 @@ def _write_loop(proj: Project, batch_size=None):
             _skeleton_refresh(os.path.basename(proj.path))
             return
         # v4.20 C3：完结收尾前最后一轮规划师校准（纠偏指引会注入校验轮里失败章的重写；失败不阻断完结）
-        try:
-            workflow.plan_drift_check(proj, (proj.plan() or {}).get("config") or {}, wrote)
-        except Exception:
-            pass
+        # v4.24.0：极速模式跳过——纠偏指引只服务于「校验轮里失败章的重写」，而极速不跑校验轮
+        if not _expr:
+            try:
+                workflow.plan_drift_check(proj, (proj.plan() or {}).get("config") or {}, wrote)
+            except Exception:
+                pass
         _validate_and_finish(proj)
         journal.finish(_pdir, "done", note="全书完成")
         journal.remember(_pdir, "system", "全书写作完成")
