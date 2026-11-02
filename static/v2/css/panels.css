@@ -3274,3 +3274,29 @@
   letter-spacing: 0.03em;
   line-height: 1.4;
 }
+
+/* v4.24.11 作品面板：绑定岗位徽章行（开书引导「专属 Agent」在书页的可见落点） */
+.rp-agents-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.rp-agents-label {
+  color: var(--ink-caption);
+  font-size: 11.5px;
+  flex: none;
+}
+
+.rp-agents-chip {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border: 0;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  cursor: pointer;
+}

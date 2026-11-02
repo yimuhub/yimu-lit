@@ -742,6 +742,7 @@ function mediumWorkPane(work, ctx) {
     h('div', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` })
   );
   pane.append(summary);
+  pane.append(agentsRow(work));   // v4.24.11：绑定岗位一眼可见（非小说同款）
 
   const kv = h('div', { class: 'kv-grid' });
   const cells = [
@@ -888,6 +889,30 @@ function scriptAuditSection(work, ctx) {
   return sec;
 }
 
+/* v4.24.11：绑定岗位徽章行——开书引导「专属 Agent」绑定的岗位在作品面板一眼可见。
+   未绑定不占位；点徽章跳协作页签（那里可增删/绑技能）。 */
+function agentsRow(work) {
+  const row = h('div', { class: 'rp-agents-row', hidden: true });
+  const key = (work && work.key) || store.get().currentKey;   // v4.24.11：非小说 store.work 无 key，回落当前书
+  if (!key) return row;
+  api.bookAgents(key).then((res) => {
+    const list = (res && res.agents) || [];
+    if (!list.length) return;
+    row.hidden = false;
+    row.textContent = '';
+    row.append(h('span', { class: 'rp-agents-label', text: '创作岗位' }));
+    for (const a of list) {
+      row.append(h('button', {
+        class: 'rp-agents-chip', type: 'button',
+        title: `${a.label || a.agent}${a.stage ? ' · ' + a.stage : ''}——开书引导绑定，点这里到「协作」页签可调整`,
+        text: a.label || a.agent,
+        on: { click: () => patchUi({ rightOpen: true, rightTab: 'collab' }) }
+      }));
+    }
+  }).catch(() => {});
+  return row;
+}
+
 function workPane(ctx) {
   const state = store.get();
   const work = state.work || state.library.items.find((i) => i.key === state.currentKey);
@@ -944,6 +969,7 @@ function workPane(ctx) {
     h('div', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` })
   );
   pane.append(summary);
+  pane.append(agentsRow(work));   // v4.24.11：绑定岗位一眼可见
   pane.append(titleCandsSection(ctx));
 
   const kv = h('div', { class: 'kv-grid' });

@@ -2258,13 +2258,53 @@ def api_chapter_scores(key: str):
             "pass_line": writer._pass_line()}
 
 
+# v4.24.11：key 前缀 → 各文体计划文件名（绑定岗位/技能这类「本书配置」必须读写
+# 各自文体的计划，而不是往剧本目录里塞一份 02-写作计划.json）
+_BOOK_PLAN_BY_PREFIX = {
+    "s_": "剧本计划.json", "p_": "诗词计划.json", "e_": "散文计划.json",
+    "t_": "论文计划.json", "c_": "儿童文学计划.json", "n_": "新闻稿计划.json",
+    "k_": "文案计划.json", "o_": "其他创作计划.json",
+}
+
+
+def _read_book_plan(key: str) -> dict:
+    """按 key 前缀读对应文体的计划文件；缺失/损坏返回 {}。"""
+    import json as _json
+    try:
+        fp = os.path.join(writer._project_dir(key),
+                          _BOOK_PLAN_BY_PREFIX.get(str(key)[:2], "02-写作计划.json"))
+        with open(fp, encoding="utf-8") as f:
+            d = _json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_book_plan(key: str, plan: dict) -> bool:
+    """按 key 前缀写回对应文体的计划文件（原子写）。"""
+    from bot.safeio import atomic_write_json as _aw
+    try:
+        fp = os.path.join(writer._project_dir(key),
+                          _BOOK_PLAN_BY_PREFIX.get(str(key)[:2], "02-写作计划.json"))
+        _aw(fp, plan)
+        return True
+    except Exception:
+        return False
+
+
+def _book_plan_exists(key: str) -> bool:
+    try:
+        return bool(key) and os.path.isdir(writer._project_dir(key))
+    except Exception:
+        return False
+
+
 @app.get("/api/book-agents")
 def api_book_agents(key: str = ""):
-    """本书绑定的创作岗位（plan.config.agents）。"""
-    proj = _get_project(key) if key else None
-    if not proj:
+    """本书绑定的创作岗位（plan.config.agents）。v4.24.11：全文体通用——按前缀读各自计划文件。"""
+    if not _book_plan_exists(key):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    plan = proj.plan() or {}
+    plan = _read_book_plan(key)
     agents = (plan.get("config") or {}).get("agents") or []
     from bot import agents as _ag
     _merged = _ag._all_agents()   # v4.20：内置 + 自定义岗位都能正确显示 label/stage/desc
@@ -2276,13 +2316,12 @@ def api_book_agents(key: str = ""):
 
 @app.post("/api/book-agents")
 def api_book_agents_set(payload: dict):
-    """设置本书创作岗位（真正参与创作：并行领章署名、写作日志展示）。"""
+    """设置本书创作岗位（真正参与创作：并行领章署名、写作日志展示）。
+    v4.24.11：全文体通用——非小说写各自计划文件，不再误建 02-写作计划.json。"""
     key = str(payload.get("key") or "")
-    proj = _get_project(key)
-    if not proj:
+    if not _book_plan_exists(key):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import agents as _ag
-    from bot import medium as _med_mod
     raw = payload.get("agents")
     if not isinstance(raw, list):
         return JSONResponse({"error": "agents 必须是数组"}, status_code=400)
@@ -2292,9 +2331,10 @@ def api_book_agents_set(payload: dict):
         # v4.20：is_known_agent 覆盖内置 + 自定义岗位（此前自定义岗位加不进本书名单）
         if a and (_ag.is_known_agent(a) or str(key)[:2] == "s_"):
             cleaned.append(a)
-    plan = proj.plan() or {}
+    plan = _read_book_plan(key)
     plan.setdefault("config", {})["agents"] = cleaned
-    proj.save_plan(plan)
+    if not _write_book_plan(key, plan):
+        return JSONResponse({"error": "计划文件写入失败"}, status_code=500)
     return {"ok": True, "key": key, "agents": cleaned}
 
 
