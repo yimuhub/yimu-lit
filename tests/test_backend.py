@@ -7,6 +7,7 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
 from fastapi.testclient import TestClient
 from bot import llm, version
 
@@ -18,6 +19,20 @@ def _first_key():
     d = client.get("/api/library").json()
     items = d.get("items") or []
     return items[0]["key"] if items else None
+
+
+def _require_book():
+    """取一本真实作品；取不到就 skip。
+
+    v4.23.2：`projects/` 是运行态目录（.gitignore 里被忽略），CI 干净检出时一定是空的。
+    此前 test_quality_shape / test_book_live_shape 直接 `assert key, "无书可测"`，
+    于是这两个用例**只在本机有作品时才过**——本地全绿、CI 必红，属于环境依赖型假绿。
+    依赖真实作品的用例统一走这里：无书时显式 skip（报告里看得见），而不是静默 return。
+    """
+    key = _first_key()
+    if not key:
+        pytest.skip("projects/ 为空（干净检出或 CI 无本地作品），跳过依赖真实作品的读端点")
+    return key
 
 
 # ---------- 路由 / 版本 ----------
@@ -48,9 +63,7 @@ def test_skeleton_route_and_shape():
     # v0.9.0：写作骨架端点（纯文件聚合，不花 LLM）——路由注册 + 返回结构
     paths = {getattr(r, "path", "") for r in appmod.app.routes}
     assert "/api/skeleton" in paths, "缺路由 /api/skeleton"
-    k = _first_key()
-    if not k:
-        return
+    k = _require_book()
     d = client.get("/api/skeleton", params={"key": k}).json()
     assert "md" in d and "exists" in d and d.get("skeleton_file") == "17-写作骨架.md"
 
@@ -66,14 +79,13 @@ def test_library_shape():
 
 
 def test_quality_shape():
-    key = _first_key()
-    assert key, "无书可测"
+    key = _require_book()
     d = client.get("/api/quality", params={"key": key}).json()
     assert d.get("key") == key and "text" in d
 
 
 def test_book_live_shape():
-    key = _first_key()
+    key = _require_book()
     d = client.get("/api/book-live", params={"key": key}).json()
     assert d.get("key") == key and "phase" in d and "progress" in d and "live_log" in d
 

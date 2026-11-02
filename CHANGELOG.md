@@ -46,6 +46,14 @@
 `organized_ping_ze_rhyme_dict.json`（补三讲），交叉核对后 **106 韵齐、8240 字**，
 抽查「东→上平一东」「楼→下平十一尤」「雪/一→仄」。
 
+**CI 第一次真正跑起来，就抓到 2 个「本地全绿、CI 必红」的假绿：**
+`test_quality_shape` / `test_book_live_shape` 直接 `assert key, "无书可测"`，
+而 `projects/` 是 `.gitignore` 里的运行态目录，干净检出必然为空——它们只在
+「本机恰好有作品」时通过。改为统一的 `_require_book()`：无书时显式
+`pytest.skip`（报告里看得见原因），不再静默 `return`；同文件里原本静默 return 的
+`test_skeleton_route_and_shape` 一并对齐。这类用例以前一直被前序失败挡住，
+从没真正执行到。
+
 ### 三、接线体检：从「一堆警告」变成三态结论
 
 v4.23.1 建的 `tools/audit_wiring.py` 当时报「75 个接口前端零引用」。逐个核实
