@@ -170,16 +170,18 @@ function openQualityModal(key, meta) {
         h('span', { class: 'tok-k', text: '本章总分' }),
         h('span', { class: 'tok-v', text: `${meta.quality} 分（达标线 80 分）` })));
     }
-    const dims = detail.scores && typeof detail.scores === 'object' ? Object.entries(detail.scores) : [];
+    const dims = detail.dims && typeof detail.dims === 'object' ? Object.entries(detail.dims)
+               : detail.scores && typeof detail.scores === 'object' ? Object.entries(detail.scores) : [];
     if (dims.length) {
+      bodyEl.append(h('div', { class: 'hint-text', style: { margin: '8px 0 2px' },
+        text: '六维评分（每维满分 10 分，低分排前）：' }));
       const sec = h('div', { class: 'cc-q-dims' });
       for (const [dim, sc] of dims.sort((a, b) => (Number(a[1]) || 0) - (Number(b[1]) || 0))) {
         sec.append(h('div', { class: 'tok-row' },
           h('span', { class: 'tok-k', text: dim }),
           h('div', { class: 'tok-bar' }, h('span', { style: { width: `${Math.min(100, Math.round((Number(sc) || 0) * 10))}%` } })),
-          h('span', { class: 'tok-v', text: `${sc}` })));
+          h('span', { class: 'tok-v', text: `${sc}/10` })));
       }
-      bodyEl.append(h('div', { class: 'hint-text', style: { margin: '8px 0 2px' }, text: '六维评分（低分排前，可据此修改）：' }));
       bodyEl.append(sec);
     }
     if (detail.weak && detail.weak.length) {
@@ -191,10 +193,17 @@ function openQualityModal(key, meta) {
     }
     const evs = (detail.evidence || []).filter(Boolean);
     if (evs.length) {
-      bodyEl.append(h('div', { class: 'hint-text', style: { margin: '6px 0 2px' }, text: '问题证据：' }));
-      const ul = h('ul', { class: 'cc-q-ev' });
-      for (const ev of evs.slice(0, 6)) ul.append(h('li', { text: String(ev).slice(0, 160) }));
-      bodyEl.append(ul);
+      bodyEl.append(h('div', { class: 'hint-text', style: { margin: '10px 0 4px' }, text: `问题证据（${evs.length} 条，点击展开）：` }));
+      const list = h('div', { class: 'cc-q-ev-list' });
+      for (const ev of evs.slice(0, 6)) {
+        const o = typeof ev === 'object' && ev ? ev : { quote: String(ev) };
+        const item = h('div', { class: 'cc-q-ev-item' },
+          h('div', { class: 'cc-q-ev-dim', text: o.dimension || '问题' }),
+          o.quote ? h('div', { class: 'cc-q-ev-quote', text: `“${String(o.quote).slice(0, 80)}”` }) : null,
+          o.why ? h('div', { class: 'cc-q-ev-why', text: o.why }) : null);
+        list.append(item);
+      }
+      bodyEl.append(list);
     }
   };
   api.chapterScores(key)
@@ -202,8 +211,9 @@ function openQualityModal(key, meta) {
       const all = (d && d.scores) || d || [];
       const one = Array.isArray(all) ? all.find((x) => (x.ch || x.no) === no) : null;
       if (!one) { finish(null); return; }
-      finish({ scores: one.scores || one.dim_scores || null, weak: one.weak || [],
-               verdict: one.verdict || '', evidence: one.evidence || [] });
+      finish({ dims: one.dims || one.scores || null, scores: one.dims || null,
+               weak: one.weak || [], verdict: one.verdict || '',
+               evidence: one.evidence || [] });
     })
     .catch(() => finish(null));
 }

@@ -1518,3 +1518,37 @@
   margin: 4px 0 0;
   padding-left: 18px;
 }
+
+/* v4.22.2 质量弹窗：问题证据条目（维度/原文/扣分原因） */
+.cc-q-ev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-q-ev-item {
+  background: var(--bg-sunken);
+  border: 0.5px solid var(--line-1);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.cc-q-ev-dim {
+  color: var(--warn-label);
+  font-size: 11.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.cc-q-ev-quote {
+  color: var(--ink-primary);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 3px;
+}
+
+.cc-q-ev-why {
+  color: var(--ink-secondary);
+  font-size: 11.5px;
+  line-height: 1.6;
+}

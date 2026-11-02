@@ -1935,13 +1935,15 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
     return final
 
 def per_chapter_scores(proj):
-    """[{ch, score, weak, status, verdict}]（来自 meta.chapter_scores，按章号排序）。"""
+    """[{ch, score, dims, weak, status, verdict, evidence}]（meta.chapter_scores，按章号排序）。
+    v4.22.2：补回 dims（六维明细）与 evidence——质量弹窗的数据源。"""
     cs = (proj.plan().get("meta") or {}).get("chapter_scores", {}) or {}
     out = []
     for k in sorted(cs, key=lambda x: int(x) if str(x).isdigit() else 9999):
         v = cs[k]
         out.append({"ch": int(k) if str(k).isdigit() else k, "score": v.get("score"),
-                    "weak": v.get("weak", []), "status": v.get("status", "unscored"),
+                    "dims": v.get("dims") or {}, "weak": v.get("weak", []),
+                    "status": v.get("status", "unscored"),
                     "verdict": v.get("verdict", ""), "evidence": v.get("evidence") or []})
     return out
 
