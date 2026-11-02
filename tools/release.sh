@@ -43,10 +43,11 @@ LATEST="$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)"
 
 # 注意：中文全角标点会被 bash 当成变量名的一部分（`$CUR（` 会变成变量 CUR（），
 # 所以变量一律写成 ${CUR}。这个坑让 v4.23.1 第一次发版直接中断。
-if [ "${LATEST}" = "${CUR}" ] && [ "${FORCE}" = 0 ] && [ -z "${BODY}" ]; then
-    echo "✅ tag ${CUR} 已存在，无需再发"
-    exit 0
-fi
+#
+# v4.24.0：这里原先有一句「tag 已存在就 exit 0，无需再发」。它把 tag 存在当成
+# 已发版，于是手动打过 tag（为了等 CI 绿再发）之后跑本脚本，会打印「无需再发」
+# 而 Release 根本没建。幂等该由 make_releases.py 判定（它会查已有 Release 并跳过），
+# 下面的打 tag / 推 tag 也各有守卫，本脚本整体可重复执行，不需要这个快路径。
 
 NEWEST="$(printf '%s\n%s\n' "${LATEST}" "${CUR}" | sort -V | tail -1)"
 if [ "${NEWEST}" != "${CUR}" ] && [ "${FORCE}" = 0 ]; then
