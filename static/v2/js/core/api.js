@@ -413,6 +413,7 @@ export const api = {
   chatNote: (key, text, note) => request('/api/chat/note', jsonBody({ key, text, note })),
   chapterTokens: (key, no) => request('/api/chapter-tokens', { query: { key, no } }),
   rewriteChapter: (key, no) => request('/api/rewrite', jsonBody({ key, chapters: [no] }), { timeout: 30000 }),
+  expressToggle: (key, on) => request('/api/express-toggle', jsonBody({ key, on })),
   bookAgents: (key) => request('/api/book-agents', { query: { key } }),
   setBookAgents: (payload) => request('/api/book-agents', jsonBody(payload)),
   selfUpdate: () => request('/api/self-update', jsonBody({}), { timeout: 180000 }),

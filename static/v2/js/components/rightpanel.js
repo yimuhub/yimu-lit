@@ -974,6 +974,33 @@ function workPane(ctx) {
       html: `${icon('edit', 13)}<span>章节工作台</span>`,
       on: { click: () => ctx.openBench(Math.min(work.done + 1, work.total || 1)) }
     }),
+    /* v4.22.2：极速模式开关——已存在的书随时切换；打开后未完成章节不评分不重写 */
+    (() => {
+      const planNow = store.get().plan ? (store.get().plan.plan || {}) : {};
+      const on = Boolean(planNow.express || planNow.config && planNow.config.express);
+      return h('button', {
+        class: 'btn btn-sm' + (on ? ' btn-accent' : ''),
+        type: 'button',
+        title: on ? '极速模式已开启（不评分不重写）——点击关闭' : '开启极速模式：剩余章节不评分、不重写，一口气写完',
+        html: `${icon('zap', 13)}<span>极速${on ? ' · 开' : ''}</span>`,
+        on: { click: async (event) => {
+          const btn = event.currentTarget;
+          const key = store.get().currentKey;
+          if (!key) return;
+          btn.disabled = true;
+          try {
+            const res = await api.expressToggle(key, !on);
+            toast((res && res.msg) || (res && res.express ? '极速模式已开启' : '已关闭极速模式'),
+                  { tone: res && res.express ? 'success' : 'info', duration: 4200 });
+            if (ctx && ctx.refreshState) ctx.refreshState();
+            if (ctx && ctx.refreshPlan) ctx.refreshPlan();
+          } catch (err) {
+            toast(errorText(err, '切换失败'), { tone: 'danger' });
+            btn.disabled = false;
+          }
+        } }
+      });
+    })(),
     h('button', {
       class: 'btn btn-sm',
       type: 'button',

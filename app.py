@@ -2606,6 +2606,31 @@ def api_chat_note(payload: dict):
     return {"ok": True}
 
 
+@app.post("/api/express-toggle")
+def api_express_toggle(payload: dict):
+    """v4.22.2：已有书的极速模式开关（向导只在开书时能选，此端点让任何书随时切换）。
+    payload: {key, on}。同时写 config.express（执行器读这里）与顶层 express（UI 读这里），
+    写作线程在下一章开写前读 plan.config，因此开关对未完成章节即时生效。"""
+    key = str(payload.get("key") or "")
+    on = bool(payload.get("on"))
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    with proj.lock:
+        plan = proj.plan() or {}
+        plan.setdefault("config", {})["express"] = on
+        plan["express"] = on
+        proj.save_plan(plan)
+    writer._evt(key, "system", "done" if on else "warn",
+                title="⚡ 极速模式" + ("开启" if on else "关闭"),
+                output="后续章节不评分、不重写、字数验收降至60%" if on else "恢复正常验收标准")
+    syslog_mod.log_event("system", "极速模式", {"key": key, "on": on},
+                         f"{'开启' if on else '关闭'}极速模式（{key[:24]}）")
+    return {"ok": True, "express": on,
+            "msg": ("⚡ 极速模式已开启：后续章节不评分、不重写、字数验收降至 60%，一口气写完" if on
+                    else "已关闭极速模式：恢复正常验收标准（评分 + 90% 字数线）")}
+
+
 @app.get("/api/chapter-tokens")
 def api_chapter_tokens(key: str, no: int):
     """v4.22.1：本章 token 消耗明细（按阶段细分：正文/评分/去味/重写等）。
