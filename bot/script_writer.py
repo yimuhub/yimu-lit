@@ -1017,6 +1017,13 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
             proj.log(f"⏸ 本批已写 {done} 场（batch={_limit}），停在当前进度。说「再写N场」或「写完全部」继续。")
             plan = proj.plan(); plan["status"] = "paused"; plan["meta"] = meta; proj.save_plan(plan)
             return {"ok": True, "written": done, "total": len(scenes), "batch_stopped": True}
+        # v4.24.7：暂停检查点——每场开写前检查暂停位（此前缺失：极速/批量模式下
+        # 点「暂停」后仍一口气写完所有场次，「暂停」形同虚设）
+        if (proj.plan() or {}).get("meta", {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log(f"⏸ 已暂停（写完 {done} 场），点「继续」可恢复")
+            return {"ok": True, "written": done, "total": len(scenes), "paused_by_user": True}
         no = sc.get("no")
         if only and no not in only:
             continue
