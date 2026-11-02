@@ -863,6 +863,11 @@ export function renderSettings(container, ctx) {
       })
     );
     const modal = openModal({ title: existing ? `编辑 ${existing.name}` : '添加模型供应商', body, footer, size: 'lg' });
+    /* v4.22.2：编辑已有供应商时自动拉取模型列表（用已存密钥）——
+       已选模型立即勾选呈现，不再需要手动点「拉取」才能看到清单。 */
+    if (existing) {
+      setTimeout(() => { try { doFetch(); } catch { /* ignore */ } }, 150);
+    }
   }
 
   function fieldRow(label, control, extra = '', hint = '') {

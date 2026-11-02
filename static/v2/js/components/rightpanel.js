@@ -1026,24 +1026,6 @@ function workPane(ctx) {
         btn.innerHTML = `${icon('search', 13)}<span>巡检</span>`;
       } }
     }),
-        on: { click: async (event) => {
-          const btn = event.currentTarget;
-          const key = store.get().currentKey;
-          if (!key) return;
-          btn.disabled = true;
-          try {
-            const res = await api.expressToggle(key, !on);
-            toast((res && res.msg) || (res && res.express ? '极速模式已开启' : '已关闭极速模式'),
-                  { tone: res && res.express ? 'success' : 'info', duration: 4200 });
-            if (ctx && ctx.refreshState) ctx.refreshState();
-            if (ctx && ctx.refreshPlan) ctx.refreshPlan();
-          } catch (err) {
-            toast(errorText(err, '切换失败'), { tone: 'danger' });
-            btn.disabled = false;
-          }
-        } }
-      });
-    })(),
     h('button', {
       class: 'btn btn-sm',
       type: 'button',

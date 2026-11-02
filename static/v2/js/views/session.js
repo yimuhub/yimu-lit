@@ -916,13 +916,26 @@ export function renderSession(container, ctx = {}) {
     replayBatch = false;   // 首批之后都是实时增量（逐步展示）
     lastStepNo = maxStepNo(items);
     const addedIds = [];
+    let writerDoneCh = 0;
     for (const item of fresh) {
       const no = Number(item.no) || 0;
       seen.add(no);
       const added = addMessage({ kind: 'step', role: 'assistant', step: { ...item }, content: '' });
       addedIds.push(added.id);
+      /* v4.22.2：作家完成事件（含极速模式）→ 3 秒后重载对话历史，
+         章节完成卡（含 tokens/评分）无需手动刷新即出现。 */
+      if (item.agent === 'writer' && item.phase === 'done' && Number(item.chapter || 0) > 0) {
+        writerDoneCh = Number(item.chapter);
+      }
     }
     scrollIfNear();
+    if (writerDoneCh) {
+      setTimeout(() => {
+        if (disposed || store.get().currentKey !== mountKey) return;
+        try { loadChatHistory(); } catch { /* ignore */ }
+        try { ctx.refreshWork && ctx.refreshWork(); } catch { /* ignore */ }
+      }, 3000);
+    }
     /* v4.21.1 渲染看门狗：消息已进 store 但 1.2s 后仍未出现在消息流 DOM
        （极端场景下 chat 视图签名失步）→ 强制整流重渲染一次，保证收敛。 */
     const lastId = addedIds[addedIds.length - 1];

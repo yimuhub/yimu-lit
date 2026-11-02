@@ -885,163 +885,163 @@ def _chat_attached(s, proj, msg):
                     f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章，均低于达标线 {_pass} 分），"
                     f"3 个岗位并行定向重写——每章最多 2 轮，改写分必须高于原分否则回滚原稿。完成后逐章汇报。")
 
-        # v4.24.4：consistency_audit——「检查一致性」「盘点一下坑」（巡检异步，报告写活动流与右栏）
-    if intent == "consistency_audit":
-        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
-            return "⚠️ 一致性巡检暂支持小说。"
-        def _audit_job():
-            try:
-                audit_mod.run_audit(key, "manual")
-            except Exception as e:
-                proj.log(f"⚠️ 巡检异常：{e}")
-        threading.Thread(target=_audit_job, daemon=True).start()
-        return "🔍 已启动一致性巡检：扫描全书矛盾 + 盘点超期未收的伏笔坑，审稿人仲裁后给出修复计划——完成后活动流会汇报，报告可在右栏查看。"
-
-    # v4.21.9：score_all_unscored——「给所有未评分的章节进行评分」
-        if intent == "score_all_unscored":
-            _meta_sc = (proj.plan().get("meta") or {}).get("chapter_scores") or {}
-            _unsc = [c["chapterNumber"] for c in (proj.plan().get("chapters") or [])
-                     if c.get("status") == "completed" and not _meta_sc.get(str(c.get("chapterNumber")))]
-            if not _unsc:
-                return "✅ 所有章节都已有评分，无需补评。"
-            # v4.23.0：统一入口——补评分跑到一半被打断，「继续」会接着评剩下的
-            writer.start_task(
-                key, "score", f"给《{name}》补评分", sorted(_unsc),
-                per_chapter=lambda n, i: writer.score_chapter(proj, n))
-            _head = _unsc[:8]
-            return (f"📚 已开始为 {len(_unsc)} 个未评分章节评分"
-                    f"（第 {_head}{'…' if len(_unsc) > 8 else ''} 章），完成后章节卡会自动显示质量分。")
-
-        # v4.15.0：batch_writing 意图识别「再写N章 / 写完全部」——统一并入写作分支
-        if intent == "batch_writing":
-            _batch_param = params.get("batch_size") or "1"
-            # 非小说：走各自引擎的断点恢复（带 batch_size）
+            # v4.24.4：consistency_audit——「检查一致性」「盘点一下坑」（巡检异步，报告写活动流与右栏）
+        if intent == "consistency_audit":
             if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
-                if writer.pipeline_running(key):
-                    return f"📖 《{name}》正在创作中：说「继续」可随时查看进度。"
-                import threading as _th
-                from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
-                                 children_writer, news_writer, copy_writer, other_writer)
-                _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
-                        "t_": thesis_writer, "c_": children_writer,
-                        "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
+                return "⚠️ 一致性巡检暂支持小说。"
+            def _audit_job():
+                try:
+                    audit_mod.run_audit(key, "manual")
+                except Exception as e:
+                    proj.log(f"⚠️ 巡检异常：{e}")
+            threading.Thread(target=_audit_job, daemon=True).start()
+            return "🔍 已启动一致性巡检：扫描全书矛盾 + 盘点超期未收的伏笔坑，审稿人仲裁后给出修复计划——完成后活动流会汇报，报告可在右栏查看。"
+
+        # v4.21.9：score_all_unscored——「给所有未评分的章节进行评分」
+            if intent == "score_all_unscored":
+                _meta_sc = (proj.plan().get("meta") or {}).get("chapter_scores") or {}
+                _unsc = [c["chapterNumber"] for c in (proj.plan().get("chapters") or [])
+                         if c.get("status") == "completed" and not _meta_sc.get(str(c.get("chapterNumber")))]
+                if not _unsc:
+                    return "✅ 所有章节都已有评分，无需补评。"
+                # v4.23.0：统一入口——补评分跑到一半被打断，「继续」会接着评剩下的
+                writer.start_task(
+                    key, "score", f"给《{name}》补评分", sorted(_unsc),
+                    per_chapter=lambda n, i: writer.score_chapter(proj, n))
+                _head = _unsc[:8]
+                return (f"📚 已开始为 {len(_unsc)} 个未评分章节评分"
+                        f"（第 {_head}{'…' if len(_unsc) > 8 else ''} 章），完成后章节卡会自动显示质量分。")
+
+            # v4.15.0：batch_writing 意图识别「再写N章 / 写完全部」——统一并入写作分支
+            if intent == "batch_writing":
+                _batch_param = params.get("batch_size") or "1"
+                # 非小说：走各自引擎的断点恢复（带 batch_size）
+                if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                    if writer.pipeline_running(key):
+                        return f"📖 《{name}》正在创作中：说「继续」可随时查看进度。"
+                    import threading as _th
+                    from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
+                                     children_writer, news_writer, copy_writer, other_writer)
+                    _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
+                            "t_": thesis_writer, "c_": children_writer,
+                            "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
+                    _bs = str(_batch_param)
+                    _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
+                    try:
+                        if hasattr(_mod, "resume_project"):
+                            _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
+                        else:
+                            _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
+                        return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
+                    except Exception as e:
+                        return f"⚠️ 无法批量写《{name}》：{e}"
+                # 小说
+                if not running and not writer.resume_book(key, batch_size=_batch_param):
+                    return f"⚠️ 无法批量写《{name}》：写作计划缺失或已完本。"
+                if not writer.pipeline_running(key):
+                    writer.resume_book(key, batch_size=_batch_param)
                 _bs = str(_batch_param)
                 _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
-                try:
-                    if hasattr(_mod, "resume_project"):
-                        _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
+                return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
+
+            if intent in ("start_writing_all", "start_writing", "resume_writing"):
+                if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                    # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
+                    if writer.pipeline_running(key):
+                        return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
+                    import threading as _th
+                    from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
+                                     children_writer, news_writer, copy_writer, other_writer)
+                    _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
+                            "t_": thesis_writer, "c_": children_writer,
+                            "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
+                    # v4.15.7：start_writing_all（用户明确说全部写完）→ 全写，不落 config 默认逐章
+                    _bs = "all" if intent == "start_writing_all" else None
+                    _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
+                    return f"▶ 恢复《{name}》的创作，工作台可见进度…"
+                if running:
+                    st2 = proj.status()
+                    return (f"📖 《{name}》正在创作中：第 {st2['done']}/{st2['total']} 章，"
+                            f"说「进度」随时可查。")
+                if writer.resume_book(key):
+                    st2 = proj.status()
+                    if intent != "start_writing_all":
+                        _bs = str((proj.plan().get("config") or {}).get("batch_size") or "1")
+                        if _bs.lower() not in ("all", "0"):
+                            _extra = f"（本批写 {_bs} 章后暂停；说「写完全部」或「一直写下去」可连续创作）"
+                        else:
+                            _extra = "（连续模式）"
                     else:
-                        _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
-                    return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
-                except Exception as e:
-                    return f"⚠️ 无法批量写《{name}》：{e}"
-            # 小说
-            if not running and not writer.resume_book(key, batch_size=_batch_param):
-                return f"⚠️ 无法批量写《{name}》：写作计划缺失或已完本。"
-            if not writer.pipeline_running(key):
-                writer.resume_book(key, batch_size=_batch_param)
-            _bs = str(_batch_param)
-            _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
-            return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
+                        _extra = "（全章批量模式）"
+                    return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
+                return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
 
-        if intent in ("start_writing_all", "start_writing", "resume_writing"):
-            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
-                # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
-                if writer.pipeline_running(key):
-                    return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
-                import threading as _th
-                from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
-                                 children_writer, news_writer, copy_writer, other_writer)
-                _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
-                        "t_": thesis_writer, "c_": children_writer,
-                        "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
-                # v4.15.7：start_writing_all（用户明确说全部写完）→ 全写，不落 config 默认逐章
-                _bs = "all" if intent == "start_writing_all" else None
-                _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
-                return f"▶ 恢复《{name}》的创作，工作台可见进度…"
-            if running:
-                st2 = proj.status()
-                return (f"📖 《{name}》正在创作中：第 {st2['done']}/{st2['total']} 章，"
-                        f"说「进度」随时可查。")
-            if writer.resume_book(key):
-                st2 = proj.status()
-                if intent != "start_writing_all":
-                    _bs = str((proj.plan().get("config") or {}).get("batch_size") or "1")
-                    if _bs.lower() not in ("all", "0"):
-                        _extra = f"（本批写 {_bs} 章后暂停；说「写完全部」或「一直写下去」可连续创作）"
-                    else:
-                        _extra = "（连续模式）"
-                else:
-                    _extra = "（全章批量模式）"
-                return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
-            return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
+            return None   # 未命中任何分支
 
-        return None   # 未命中任何分支
-
-    # ══════════ v4.22.0：Agent 规划器 —— 先理解自然语言，再自主执行 ══════════
-    # 不再依赖写死的句式规则：把「用户原话 + 真实项目状态」交给 LLM 规划器，
-    # 它先理解意图，再输出可执行的多步计划（action + params），这里逐步执行。
-    # 规划器不可用（无模型/断网/解析失败）时才回退到传统单意图理解（规则 + LLM 分类）。
-    from bot.planner import plan_actions, build_context, ACTIONS as _PLAN_ACTIONS
-    try:
-        _pctx = build_context(proj, st, key)
-    except Exception:
-        _pctx = {"state": st.get("state") or "", "done": st.get("done") or 0,
-                 "total": st.get("total") or 0, "pass_line": writer._pass_line()}
-    _planobj = None
-    try:
-        _planobj = plan_actions(msg, _pctx)
-    except Exception:
+        # ══════════ v4.22.0：Agent 规划器 —— 先理解自然语言，再自主执行 ══════════
+        # 不再依赖写死的句式规则：把「用户原话 + 真实项目状态」交给 LLM 规划器，
+        # 它先理解意图，再输出可执行的多步计划（action + params），这里逐步执行。
+        # 规划器不可用（无模型/断网/解析失败）时才回退到传统单意图理解（规则 + LLM 分类）。
+        from bot.planner import plan_actions, build_context, ACTIONS as _PLAN_ACTIONS
+        try:
+            _pctx = build_context(proj, st, key)
+        except Exception:
+            _pctx = {"state": st.get("state") or "", "done": st.get("done") or 0,
+                     "total": st.get("total") or 0, "pass_line": writer._pass_line()}
         _planobj = None
-    _steps = (_planobj or {}).get("steps") or []
-    _valid_steps = [stp for stp in _steps
-                    if isinstance(stp, dict) and stp.get("action") in _PLAN_ACTIONS]
-    if _valid_steps:
         try:
-            _trace("plan", sid=s.get("session", ""), steps=[x.get("action") for x in _valid_steps],
-                   understand=(_planobj or {}).get("understanding", "")[:80])
+            _planobj = plan_actions(msg, _pctx)
         except Exception:
-            pass
-        _outs = []
-        try:
-            from bot import steps as _steps_mod
-            if len(_valid_steps) > 1:
-                _steps_mod.emit(key, "planner", "start", title="理解并规划任务",
-                                thinking=(_planobj or {}).get("understanding", ""),
-                                output=f"{len(_valid_steps)} 步：" + " → ".join(x.get("title") or x["action"] for x in _valid_steps))
-        except Exception:
-            pass
-        for _i, _stp in enumerate(_valid_steps, 1):
-            _act = _stp.get("action")
-            _prm = _stp.get("params") if isinstance(_stp.get("params"), dict) else {}
+            _planobj = None
+        _steps = (_planobj or {}).get("steps") or []
+        _valid_steps = [stp for stp in _steps
+                        if isinstance(stp, dict) and stp.get("action") in _PLAN_ACTIONS]
+        if _valid_steps:
             try:
-                _r = _run(_act, _prm)
-            except Exception as _e:
-                _r = f"⚠️ 第{_i}步（{_act}）执行异常：{_e}"
-            if _r:
+                _trace("plan", sid=s.get("session", ""), steps=[x.get("action") for x in _valid_steps],
+                       understand=(_planobj or {}).get("understanding", "")[:80])
+            except Exception:
+                pass
+            _outs = []
+            try:
+                from bot import steps as _steps_mod
                 if len(_valid_steps) > 1:
-                    _outs.append(f"【第 {_i} 步 · {_stp.get('title') or _act}】{_r}")
-                else:
-                    _outs.append(_r)
-        if _outs:
-            _head = ""
-            if len(_valid_steps) > 1 and (_planobj or {}).get("understanding"):
-                _head = f"🧠 我的理解：{_planobj.get('understanding')}\n\n"
-            return _head + "\n\n".join(_outs)
-        # 全部步骤都返回 None（如纯创作建议）→ 落到 creative_hint 合并通道
-    else:
-        # ── 回退：传统单意图理解（规则 + LLM 分类）──
-        from bot.nlu import parse_intent
-        _nlu = parse_intent(msg, project_status={"state": st.get("state", "unknown")})
-        _intent = _nlu["intent"]
-        try:
-            _trace("nlu", sid=s.get("session", ""), intent=_intent,
-                   conf=_nlu["confidence"], src=_nlu["source"])
-        except Exception:
-            pass
-        _r = _run(_intent, _nlu.get("params") or {})
-        if _r is not None:
-            return _r
+                    _steps_mod.emit(key, "planner", "start", title="理解并规划任务",
+                                    thinking=(_planobj or {}).get("understanding", ""),
+                                    output=f"{len(_valid_steps)} 步：" + " → ".join(x.get("title") or x["action"] for x in _valid_steps))
+            except Exception:
+                pass
+            for _i, _stp in enumerate(_valid_steps, 1):
+                _act = _stp.get("action")
+                _prm = _stp.get("params") if isinstance(_stp.get("params"), dict) else {}
+                try:
+                    _r = _run(_act, _prm)
+                except Exception as _e:
+                    _r = f"⚠️ 第{_i}步（{_act}）执行异常：{_e}"
+                if _r:
+                    if len(_valid_steps) > 1:
+                        _outs.append(f"【第 {_i} 步 · {_stp.get('title') or _act}】{_r}")
+                    else:
+                        _outs.append(_r)
+            if _outs:
+                _head = ""
+                if len(_valid_steps) > 1 and (_planobj or {}).get("understanding"):
+                    _head = f"🧠 我的理解：{_planobj.get('understanding')}\n\n"
+                return _head + "\n\n".join(_outs)
+            # 全部步骤都返回 None（如纯创作建议）→ 落到 creative_hint 合并通道
+        else:
+            # ── 回退：传统单意图理解（规则 + LLM 分类）──
+            from bot.nlu import parse_intent
+            _nlu = parse_intent(msg, project_status={"state": st.get("state", "unknown")})
+            _intent = _nlu["intent"]
+            try:
+                _trace("nlu", sid=s.get("session", ""), intent=_intent,
+                       conf=_nlu["confidence"], src=_nlu["source"])
+            except Exception:
+                pass
+            _r = _run(_intent, _nlu.get("params") or {})
+            if _r is not None:
+                return _r
 
     # set_style / add_constraint / creative_hint → 并入创作
     # 读者即时指令：存入队列，由写作线程在后续章节消费
