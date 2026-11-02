@@ -1619,12 +1619,20 @@ def register_v2_routes(app, get_project, chat_func=None):
     def api_chat_history(key: str):
         """读取作品的全部聊天历史（JSONL 格式，按时间正序）。
         v2.8.0 修复：_project 返回 (proj, err) 元组，此前直接当 proj 用导致
-        AttributeError → /api/chat/history 恒 500，聊天记录永远读不出来。"""
+        AttributeError → /api/chat/history 恒 500，聊天记录永远读不出来。
+        v4.22.1：章节卡内容读时也过正文净化——旧版留档里混进去的
+        「本章概要/修改说明/评分表」不会再被前端「复制本章」带走。"""
         proj, err = _project(get_project, key)
         if err:
             return err
         _backfill_chapter_records(proj)   # v4.21.6：历史章节卡补档（幂等）
         items = _load_chat_log(proj, limit=5000)
+        for it in items:
+            if isinstance(it, dict) and it.get("type") == "chapter":
+                try:
+                    it["content"] = _clean_chapter_text(it.get("content") or "")
+                except Exception:
+                    pass
         return {"ok": True, "items": items}
 
     @app.post("/api/chat/clear")

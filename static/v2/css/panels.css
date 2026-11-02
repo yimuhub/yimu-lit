@@ -1407,6 +1407,40 @@
   white-space: nowrap;
 }
 
+/* v4.22.2：正文 / 工作文件 视图切换（正文=纯净可发布，工作文件=含概要备注供核对） */
+.bench-mode {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--fill-2, rgba(0, 0, 0, 0.05));
+}
+
+.bench-mode-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.bench-mode-btn:hover {
+  color: var(--ink-primary);
+}
+
+.bench-mode-btn.is-on {
+  background: var(--bg-elevated, #fff);
+  color: var(--ink-primary);
+  box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.12);
+}
+
 .bench-title .bt-name {
   overflow: hidden;
   color: var(--ink-primary);

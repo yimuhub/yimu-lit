@@ -7,6 +7,7 @@ import { navigate } from '../core/router.js';
 import { usageLabel } from '../core/constants.js';
 import { toast, openFeedback } from '../core/ui.js';
 import { api, errorText } from '../core/api.js';
+import { cleanChapterText } from '../core/purity.js';
 
 function thinkingDots() {
   return h('span', { class: 'thinking', 'aria-label': '正在思考' }, h('span', { class: 'tdot' }), h('span', { class: 'tdot' }), h('span', { class: 'tdot' }));
@@ -230,10 +231,12 @@ function renderChapterCard(msg, handlers = {}) {
   card.append(chips);
 
   const body = h('div', { class: 'cc-body md' });
+  /* v4.22.1：章节卡一律按正文纯净域渲染——旧留档里的概要/修改说明/评分表不再显示 */
+  const clean = cleanChapterText(msg.content || '') || String(msg.content || '');
   if (expanded) {
-    renderMarkdownInto(body, msg.content || '');
+    renderMarkdownInto(body, clean);
   } else {
-    body.append(h('div', { class: 'cc-preview', text: chapterExcerpt(msg.content) }));
+    body.append(h('div', { class: 'cc-preview', text: chapterExcerpt(clean) }));
   }
   card.append(body);
 
@@ -249,8 +252,9 @@ function renderChapterCard(msg, handlers = {}) {
     on: {
       click: async () => {
         try {
-          await navigator.clipboard.writeText(msg.content || '');
-          toast('本章全文已复制', { duration: 1600 });
+          /* v4.22.1：只复制正文（章题+引子+正文），元信息小节与前后的说明一律剥掉 */
+          await navigator.clipboard.writeText(clean);
+          toast('本章正文已复制（不含概要/备注/修改说明/评分）', { duration: 2000 });
         } catch {
           toast('复制失败，请手动选择文本', { tone: 'danger' });
         }
@@ -342,7 +346,8 @@ export function renderAssistantMessage(msg, handlers = {}) {
     );
     copyBtn.addEventListener('click', async () => {
       try {
-        await navigator.clipboard.writeText(msg.content || '');
+        /* v4.22.1：章节卡/作家正文卡的「复制」也走正文纯净域，不把元信息带进剪贴板 */
+        await navigator.clipboard.writeText(copyTextOf(msg));
         toast('已复制回复', { duration: 1400 });
       } catch {
         toast('复制失败，请手动选择文本', { tone: 'danger' });
@@ -579,6 +584,23 @@ function isThinkCard0(st) {
   return Boolean(st && (st.is_thinking || /（模型思考）$/.test(String(st.title || ''))));
 }
 
+/* v4.22.1：任意消息的「复制」口径——章节卡/作家正文卡给去噪正文，其余原样。 */
+function copyTextOf(msg) {
+  const raw = msg.content || '';
+  if (msg.chapterMeta) return cleanChapterText(raw) || raw;
+  if (msg.stream) return copyableStreamText(msg);
+  return raw;
+}
+
+/* v4.22.1：作家流式正文的「复制」必须给去噪后的正文（章题+引子+正文）；
+   规划师大纲卡、模型思考卡保持原文。 */
+function copyableStreamText(msg) {
+  const st = msg.step || {};
+  const raw = msg.content || '';
+  if (String(st.agent || '') !== 'writer' || isThinkCard0(st)) return raw;
+  return cleanChapterText(raw) || raw;
+}
+
 function stepChapterBtn(st) {
   if (!(Number(st.chapter) > 0)) return null;
   return h('button', {
@@ -698,7 +720,8 @@ export function renderStepMessage(msg) {
           html: `${icon('copy', 11)}<span>复制全文</span>`,
           on: { click: async () => {
             try {
-              await navigator.clipboard.writeText(msg.content || '');
+              /* v4.22.1：作家正文卡只复制去噪正文；其它岗位（规划师等）保持原文 */
+              await navigator.clipboard.writeText(copyableStreamText(msg));
               toast('全文已复制', { duration: 1400 });
             } catch {
               toast('复制失败', { tone: 'danger' });
@@ -729,7 +752,8 @@ export function renderStepMessage(msg) {
           html: `${icon('copy', 11)}<span>复制已出内容</span>`,
           on: { click: async () => {
             try {
-              await navigator.clipboard.writeText(msg.content || '');
+              /* v4.22.1：同上——作家正文按纯净域口径复制 */
+              await navigator.clipboard.writeText(copyableStreamText(msg));
               toast('已复制当前已流出的内容', { duration: 1400 });
             } catch {
               toast('复制失败', { tone: 'danger' });
@@ -785,7 +809,10 @@ export function renderStepMessage(msg) {
           html: `${icon('copy', 11)}<span>复制</span>`,
           on: { click: async () => {
             try {
-              await navigator.clipboard.writeText(fullText);
+              /* v4.22.1：正文全文卡（stream_text）同样是作家原稿——复制前先去噪 */
+              const text = (!isThinkCard && String(st.agent || '') === 'writer')
+                ? (cleanChapterText(fullText) || fullText) : fullText;
+              await navigator.clipboard.writeText(text);
               toast('全文已复制', { duration: 1400 });
             } catch {
               toast('复制失败，请手动选择文本', { tone: 'danger' });

@@ -15,6 +15,7 @@ from bot import chatsum
 from bot import syslog as syslog_mod
 from bot import steps as steps_mod
 from bot import export as export_mod
+from bot import purity, journal
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +49,14 @@ async def _lifespan(_app):
                 print(f"[recover] 已救回 {n} 本陈旧卡死状态的书", flush=True)
         except Exception as e:
             print(f"[recover] 陈旧状态恢复失败：{e}", flush=True)
+        # v4.23.0：任务档案启动对账——进程被上游断流/关机杀掉时来不及写「已暂停」，
+        # 档案会永远停在 running，「继续」因此不肯接手。启动一次，全部改标为可续跑。
+        try:
+            k = journal.reconcile_all(writer._project_dirs())
+            if k:
+                print(f"[recover] 已将 {k} 个中断任务标记为可继续", flush=True)
+        except Exception as e:
+            print(f"[recover] 任务档案对账失败：{e}", flush=True)
     threading.Thread(target=_recover, daemon=True).start()
     yield
 
@@ -812,6 +821,23 @@ def _chat_attached(s, proj, msg):
             return (f"当前对话已绑定《{name}》。要改这本书直接说（例如「第12章节奏再紧一点」"
                     f"「给女主加一场反击」）；要开新书请用左侧『新建作品』。")
 
+        # v4.22.2：resume_task ——「继续」的真正含义：接着上次没做完那件事，而不是重新开始
+        if intent == "resume_task":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                intent = "resume_writing"       # 非小说文体走各自引擎的断点恢复
+            else:
+                if running:
+                    return (f"📖 《{name}》正在创作中：{st['done']}/{st['total']} 章，"
+                            f"不用再点继续，说「进度」可随时查。")
+                try:
+                    r = writer.resume_task(key, batch_size=params.get("batch_size"))
+                except Exception as e:
+                    r = {"ok": False, "text": f"恢复失败：{e}"}
+                if not r.get("ok"):
+                    return (f"⚠️ 没能接着上次的任务继续（{r.get('text') or '无可用断点'}）。"
+                            f"可以说「写下一章」另起一个写作任务。")
+                return f"▶ {r.get('text')}。已恢复运行，工作台可见进度。"
+
         # start_writing_all / start_writing / resume_writing → 启动或继续写作
         # v4.17.3：rewrite_low_score——自然语言按分数阈值改写低分章（「低于65分的全部重写，目标80分」）
         if intent == "rewrite_low_score":
@@ -826,12 +852,12 @@ def _chat_attached(s, proj, msg):
             if _PARA_RW_RUNNING.get(key, {}).get("running"):
                 return "⚠️ 该书已有改写任务在跑，请稍候。"
             _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
-            def _rw_job():
-                try:
-                    writer.run_parallel_rewrite(key, chapters=_lows, workers=3, max_rounds=2, target=int(_tgt))
-                finally:
-                    _PARA_RW_RUNNING[key]["running"] = False
-            threading.Thread(target=_rw_job, daemon=True).start()
+            # v4.23.0：登记任务档案（以前这里漏登记 → 「继续」认不出这个任务，
+            # 会掉去 resume_book 开写新章，把正在改写的书打断）
+            writer.start_task(
+                key, "rewrite", f"重写《{name}》低于 {_below} 分的章节", _lows,
+                batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING, target=int(_tgt)),
+                params={"below": int(_below), "target": int(_tgt)})
             return (f"⚡ 已启动按分改写：{_lows.__len__()} 章低于 {_below} 分"
                     f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章），{3} 个岗位并行改写，"
                     f"目标 {int(_tgt)} 分——每章最多 2 轮，改写分必须高于原分否则回滚。完成后逐章汇报。")
@@ -848,12 +874,12 @@ def _chat_attached(s, proj, msg):
             if not _lows:
                 return f"✅ 所有章节都达到 {_pass} 分达标线，没有需要重写的章节。"
             _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
-            def _rw_all_job():
-                try:
-                    writer.run_parallel_rewrite(key, chapters=_lows, workers=3, max_rounds=2)
-                finally:
-                    _PARA_RW_RUNNING[key]["running"] = False
-            threading.Thread(target=_rw_all_job, daemon=True).start()
+            # v4.23.0：统一入口——登记 + 跑 + 逐章记进度 + 收尾，全部交给 start_task
+            writer.start_task(
+                key, "rewrite", f"重写《{name}》未达标章节", _lows,
+                batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING,
+                                             workers=3, max_rounds=2),
+                params={"workers": 3, "max_rounds": 2, "pass_line": _pass})
             return (f"⚡ 已启动重写全部未达标章节：共 {len(_lows)} 章"
                     f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章，均低于达标线 {_pass} 分），"
                     f"3 个岗位并行定向重写——每章最多 2 轮，改写分必须高于原分否则回滚原稿。完成后逐章汇报。")
@@ -865,17 +891,10 @@ def _chat_attached(s, proj, msg):
                      if c.get("status") == "completed" and not _meta_sc.get(str(c.get("chapterNumber")))]
             if not _unsc:
                 return "✅ 所有章节都已有评分，无需补评。"
-            def _score_all_job():
-                try:
-                    for _n in sorted(_unsc):
-                        try:
-                            writer.score_chapter(proj, _n)
-                        except Exception as e:
-                            proj.log(f"⚠️ 第{_n}章评分失败（继续下一章）：{e}")
-                    proj.log(f"📚 全部未评分章节评分完成（{len(_unsc)} 章）")
-                except Exception as e:
-                    proj.log(f"⚠️ 补评分异常：{e}")
-            threading.Thread(target=_score_all_job, daemon=True).start()
+            # v4.23.0：统一入口——补评分跑到一半被打断，「继续」会接着评剩下的
+            writer.start_task(
+                key, "score", f"给《{name}》补评分", sorted(_unsc),
+                per_chapter=lambda n, i: writer.score_chapter(proj, n))
             _head = _unsc[:8]
             return (f"📚 已开始为 {len(_unsc)} 个未评分章节评分"
                     f"（第 {_head}{'…' if len(_unsc) > 8 else ''} 章），完成后章节卡会自动显示质量分。")
@@ -2134,10 +2153,24 @@ def api_syslog_clear():
 
 _PARA_RW_RUNNING: dict = {}
 
+
+def _rw_batch(key, todo, running_map, target=None, workers=3, max_rounds=2):
+    """跑一批并行改写，并保证运行标志一定被清掉（异常时照样清，否则该书永远「在跑」）。"""
+    try:
+        res = writer.run_parallel_rewrite(key, chapters=todo, workers=workers,
+                                          max_rounds=max_rounds, target=target)
+        running_map[key] = {"running": False, "result": res}
+        return res
+    except Exception as e:
+        running_map[key] = {"running": False, "result": {"error": str(e)}}
+        raise
+
+
 @app.post("/api/rewrite-parallel")
 def api_rewrite_parallel(payload: dict):
     """v4.17.2：多岗位并行改写低分章——审稿问题一次性下发，每章独立改写，
-    分数必须高于原分（保留更好守护），每章 1 轮不烧 token。异步执行。"""
+    分数必须高于原分（保留更好守护），每章 1 轮不烧 token。异步执行。
+    v4.23.0：登记任务档案，中途被打断也能「继续」接着改剩下的。"""
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
@@ -2147,16 +2180,17 @@ def api_rewrite_parallel(payload: dict):
         return JSONResponse({"error": "该书已有改写任务在跑"}, status_code=409)
     chapters = payload.get("chapters")
     workers = max(1, min(8, int(payload.get("workers") or 3)))
-    _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
     _target = payload.get("target")
-    def _job():
-        try:
-            res = writer.run_parallel_rewrite(key, chapters=chapters, workers=workers, max_rounds=1,
-                                              target=_target)
-            _PARA_RW_RUNNING[key] = {"running": False, "result": res}
-        except Exception as e:
-            _PARA_RW_RUNNING[key] = {"running": False, "result": {"error": str(e)}}
-    threading.Thread(target=_job, daemon=True).start()
+    _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+    if not chapters:
+        chapters = [p["ch"] for p in writer.per_chapter_scores(proj)
+                    if isinstance(p.get("score"), (int, float)) and p["score"] < writer._pass_line()]
+    writer.start_task(
+        key, "rewrite", f"并行改写《{proj.name}》低分章", chapters or [],
+        batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING,
+                                     target=_target, workers=workers, max_rounds=1),
+        params={"workers": workers, "max_rounds": 1,
+                **({"target": _target} if _target else {})})
     return {"ok": True, "started": True, "workers": workers,
             "msg": f"⚡ 多岗位并行改写已启动（同时 {workers} 个岗位，改完自动停）"}
 
@@ -3129,9 +3163,16 @@ def api_resume(payload: dict):
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    ok = writer.resume_book(key)
+    # v4.22.2：「继续」按任务档案恢复上次那件事（写作/重写/补评分），而不是一律当写作
+    try:
+        r = writer.resume_task(key)
+    except Exception as e:
+        r = {"ok": False, "text": f"恢复失败：{e}"}
     st = proj.status()
-    return {"ok": ok, "msg": "▶ 继续写作中（接着写剩余章节）…" if ok else "无法继续",
+    ok = bool(r.get("ok"))
+    return {"ok": ok,
+            "msg": f"▶ {r.get('text')}…" if ok else f"无法继续（{r.get('text') or '无可用断点'}）",
+            "kind": r.get("kind") or "",
             "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")}
 
 @app.post("/api/queue")
@@ -3602,14 +3643,22 @@ def api_live(key: str):
 
 @app.get("/api/download")
 def api_download(key: str):
+    """下载整本（Markdown）：正文由章节文件现场拼装并逐章去噪。
+
+    v4.22.1：旧实现在没有「成书」时直接返回 `01-大纲.md`——用户点「下载全书」拿到的
+    是规划大纲，且成书可能是旧版清洗逻辑的产物（含概要/修改说明/评分表）。现在一律
+    以章节文件为准：章题 + 章首引子 + 正文，一本书里不出现任何非正文小节。
+    """
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
-    book = os.path.join(proj.path, f"成书-{plan.get('novelName','')}.md") if plan.get("novelName") else ""
-    if not os.path.exists(book):
-        book = os.path.join(proj.path, "01-大纲.md")
-    text = open(book, encoding="utf-8").read()
+    if not (plan.get("chapters") or []) and not export_mod.is_script(proj):
+        return JSONResponse({"error": "还没有可下载的正文"}, status_code=400)
+    name = plan.get("novelName") or plan.get("scriptName") or proj.name
+    text = export_mod.markdown(proj)
+    if not (text or "").strip():
+        return JSONResponse({"error": "还没有可下载的正文"}, status_code=400)
     meta = (plan.get("meta") or {})
     if "gate_rounds" in meta or meta.get("released") is not None:
         pl = int(((plan.get("config") or {}).get("defaults") or {}).get("validation", {}).get("pass_line", 90))
@@ -3619,8 +3668,7 @@ def api_download(key: str):
         else:
             text = f"> ⚠️ **beta·未放行**（质量 {fq}/{pl}，未达放行线，仅供内部阅读）\n\n" + text
     from urllib.parse import quote
-    fname = os.path.basename(book)
-    disp = f"attachment; filename=\"novel.md\"; filename*=UTF-8''{quote(fname)}"
+    disp = f"attachment; filename=\"novel.md\"; filename*=UTF-8''{quote(name + '.md')}"
     return Response(text.encode("utf-8"), media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": disp})
 
@@ -4014,7 +4062,9 @@ def api_chapter(key: str, n: int):
     return {"chapter": n, "title": ch.get("title") or "", "text": text,
             # v3.1.0：cleanText = 章题+引子+正文（剥本章概要/章节备注），复制与对外分享用；
             # text 保留原结构供编辑器与 PUT 回写
-            "cleanText": writer._clean_chapter_text(text),
+            "cleanText": writer._clean_chapter_text(text, fallback_title=ch.get("title") or ""),
+            # v4.22.2：rawText —— 工作文件原文（含概要/备注/可能的历史污染），仅供「工作文件」视图核对
+            "rawText": text,
             "words": ch.get("wordCount") or 0,
             "updatedAt": ch.get("editedAt") or "",
             "versions": len(versions.list_versions(proj.path, n))}
@@ -4031,6 +4081,29 @@ def api_chapter_save(payload: dict):
         return JSONResponse({"error": "正文必须是字符串"}, status_code=400)
     if len(text) > 2_000_000:
         return JSONResponse({"error": "单章超过 200 万字符，请分段保存"}, status_code=413)
+    # v4.22.2：编辑器默认只显示纯净正文（章题+引子+正文）。此时保存要把旧文件里的
+    # 「本章概要 / 章节备注」补回去，否则工作文件会丢规划元信息；旧文件里的修改说明/
+    # 评分等污染不会被回填。
+    if str(payload.get("mode") or "") == "prose":
+        try:
+            _old = ""
+            _ch0, _ = _chapter_entry(proj, payload.get("n"))
+            _fp0 = _chapter_path(proj, _ch0) if _ch0 else ""
+            if _fp0 and os.path.exists(_fp0):
+                _old = open(_fp0, encoding="utf-8").read()
+            if _old:
+                text = purity.merge_meta(text, _old)
+        except Exception:
+            pass
+    else:
+        # 未声明 mode（旧客户端/接口调用）→ 按整文件处理，但必须去污染。
+        # 本就干净的正文保持原样（不做无意义的尾换行改写，避免影响按字节比对的调用方）。
+        try:
+            _s = purity.sanitize_chapter(text)
+            if _s.strip() != text.strip():
+                text = _s
+        except Exception:
+            pass
     try:
         words = _apply_chapter_text(proj, payload.get("n"), text)
     except ValueError as e:
@@ -4105,36 +4178,38 @@ def _preview_pass_line(plan):
 
 @app.get("/api/preview")
 def api_preview(key: str):
-    """预览：返回成书（或已写章节拼接）+ 章节清单 + 逐章评分。点开作品即可看内容。"""
+    """预览：返回已写章节拼接（去噪后的正文）+ 章节清单 + 逐章评分。点开作品即可看内容。
+
+    v4.22.1：不再优先读「成书-*.md」——成书是构建产物，可能是旧版清洗逻辑生成的
+    （含本章概要/修改说明/评分表），也可能在重写后过期。预览一律以章节文件为准，
+    每章都过 writer._clean_chapter_text（正文纯净域）：章题 + 章首引子 + 正文。
+    """
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     book_path = os.path.join(proj.path, f"成书-{plan.get('novelName', '')}.md")
     has_book = os.path.exists(book_path)
-    if has_book:
-        text = open(book_path, encoding="utf-8").read()
-    else:
-        parts = []
-        for ch in plan.get("chapters", []):
-            fp = _chapter_path(proj, ch)
-            if os.path.exists(fp):
-                parts.append(open(fp, encoding="utf-8").read())
-        text = "\n\n---\n\n".join(parts)
+    parts, chapters_full = [], []
+    for ch in plan.get("chapters", []):
+        fp = _chapter_path(proj, ch)
+        if not fp or not os.path.exists(fp):
+            continue
+        try:
+            clean = writer._clean_chapter_text(open(fp, encoding="utf-8").read())
+        except OSError:
+            continue
+        if not clean.strip():
+            continue
+        parts.append(clean)
+        # 逐章原文（对话区「逐章直播打字机」一章一条气泡）：同样只给去噪正文
+        chapters_full.append({"n": ch.get("chapterNumber"), "title": ch.get("title"),
+                              "status": ch.get("status"), "text": clean})
+    text = "\n\n---\n\n".join(parts)
     chapters = [{"n": c.get("chapterNumber"), "title": c.get("title"),
                  "status": c.get("status"), "words": c.get("wordCount"),
                  "continuation": bool(c.get("continuation"))}
                 for c in plan.get("chapters", [])]
-    # v0.7.x：逐章原文（按章序，供对话区「逐章直播打字机」一章一条气泡）——纯读文件，不烧 LLM
-    chapters_full = []
-    for c in plan.get("chapters", []):
-        fp = _chapter_path(proj, c)
-        if fp and os.path.exists(fp):
-            try:
-                chapters_full.append({"n": c.get("chapterNumber"), "title": c.get("title"),
-                                      "status": c.get("status"), "text": open(fp, encoding="utf-8").read()})
-            except Exception:
-                pass
     # v0.5 M1：逐章评分（meta.chapter_scores）挂到每章 + 单独字段
     cs = (plan.get("meta") or {}).get("chapter_scores", {}) or {}
     pl = _preview_pass_line(plan)

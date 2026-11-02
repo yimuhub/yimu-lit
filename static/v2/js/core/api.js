@@ -440,7 +440,7 @@ export const api = {
   jobs: (key = '') => request('/api/jobs', { query: { key } }),
 
   chapter: (key, n) => request('/api/chapter', { query: { key, n } }),
-  saveChapter: (key, n, text) => request('/api/chapter', { method: 'PUT', body: { key, n, text }, timeout: 60000 }),
+  saveChapter: (key, n, text, mode) => request('/api/chapter', { method: 'PUT', body: { key, n, text, mode }, timeout: 60000 }),
   chapterVersions: (key, n) => request('/api/chapter/versions', { query: { key, n } }),
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
   restoreChapter: (key, n, id) => request('/api/chapter/restore', jsonBody({ key, n, id }), { timeout: 60000 }),

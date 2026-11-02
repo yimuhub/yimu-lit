@@ -20,6 +20,8 @@ import json
 
 # ── 动作注册表：名称与 app.py `_run(intent, params)` 的分支一一对应 ─────────────
 ACTIONS = {
+    "resume_task":        {"desc": "接着上次没做完的事继续（「继续」「接着写」「别停」「继续刚才那个」）",
+                           "params": {}},
     "start_writing":      {"desc": "开始写这本书（从第一章起）", "params": {}},
     "start_writing_all":  {"desc": "一口气把剩余章节全部写完，中途不停", "params": {}},
     "resume_writing":     {"desc": "按当前节奏继续推进（没指定数量时的「继续」）", "params": {}},
@@ -59,6 +61,12 @@ _SYSTEM_PROMPT = """你是「一幕·YIMU 神笔」创作台的**任务规划 Ag
 }}
 
 ## 判断原则（按优先级）
+0. **先读「项目记忆」再判断**。「继续 / 接着 / 别停 / 继续刚才那个 / 还没写完的那个呢」
+   一律是 **resume_task**——不是重新开始，也不是按字面理解成「写下一章」。
+   项目记忆里写了「进行中的任务」和「中断原因」：若上次是批量重写停在半路，就恢复重写；
+   若是补评分、补章卡，就恢复那一件；若上次是写作停在半路，就恢复写作。
+   **不要**因为用户只说了两个字就臆造新任务，也**不要**一律当成「写下一章」。
+   只有用户明确说「重新开始 / 从头写 / 重写这本书」时才用 new_project / start_writing。
 1. **先看用户到底要什么，别被字面词带偏**：说「重写」「改改」不等于「继续写」；
    提到「所有/全部/没达标的/低分的」= 批量处理，不是写新章。
 2. **可多步**：一句话里有多个诉求就拆成多步，按合理顺序排列。
@@ -123,6 +131,31 @@ def build_context(proj, st, key) -> dict:
                                     if c.get("status") != "completed"), 0)
     except Exception:
         pass
+    # v4.22.2：项目记忆（任务档案 + 章内草稿 + 最近事件）——「继续」全靠这一段才答得对
+    try:
+        pdir = proj.path if proj else ""
+        if pdir:
+            from bot import journal as _jn
+            ctx["memory"] = _jn.recall_text(pdir, n=6)
+            task = _jn.current_task(pdir) or {}
+            ctx["active_task"] = {
+                "kind": task.get("kind") or "",
+                "label": _jn.KIND_LABEL.get(task.get("kind") or "", task.get("kind") or ""),
+                "title": task.get("title") or "",
+                "current": task.get("current"),
+                "done": task.get("done"),
+                "total": task.get("total"),
+                "stage": task.get("stage"),
+                "note": task.get("note") or "",
+            } if task else None
+            _no = int(ctx.get("next_chapter") or 0)
+            if _no:
+                from bot import writer as _w2
+                _d = _w2.draft_info(proj, _no)
+                if _d.get("has"):
+                    ctx["draft"] = _d
+    except Exception:
+        pass
     return ctx
 
 
@@ -146,6 +179,14 @@ def _ctx_text(ctx: dict) -> str:
                      f"{('：第 ' + '、'.join(map(str, ctx.get('below_chapters') or [])) + ' 章') if ctx.get('below_chapters') else ''}")
     if ctx.get("batch_size"):
         lines.append(f"- 开书批量设置：{ctx['batch_size']}")
+    if ctx.get("draft"):
+        d = ctx["draft"]
+        lines.append(f"- 第 {d.get('chapter')} 章有中断前草稿 {d.get('words')} 字（继续=从草稿末尾续写，不要重写整章）")
+    # 项目记忆放最后：这是「上次在干什么」的权威答案，比一切推断都优先
+    if ctx.get("memory"):
+        lines.append("")
+        lines.append("## 项目记忆（上次在做什么 / 刚发生了什么）")
+        lines.append(str(ctx["memory"]))
     return "\n".join(lines)
 
 

@@ -2,7 +2,7 @@
 阶段0 偏好加载 / 阶段1 三层问答(快车道) / 阶段2 规划 / 阶段3 逐章创作 / 阶段4 校验
 """
 import json, os, re, datetime, time
-from . import llm, skill, steps
+from . import llm, skill, steps, purity
 from .safeio import atomic_write_json
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -230,8 +230,26 @@ def _writing_system(ctx):
         "【排版纪律】正文只用正常中文标点（，。！？；：""''——……、）；"
         "严禁在正文中出现 *、#、>、`、- 等任何 markdown/列表符号，不要加粗、斜体、列表、分隔线；"
         "小节标记只允许按输出格式使用 ##（本章概要/章首引子/正文/章节备注）。"
-        "输出格式：## 本章概要 / ## 章首引子 / ## 正文 / ## 章节备注。"
     ]
+    # v4.22.3：正文契约——用显式标记把「正文」框起来，复制/导出只认框内
+    parts.append(
+        "【正文契约（最高优先级，违反即视为交稿无效）】\n"
+        "你的产出被一刀切成「框内」和「框外」两类，判定只看下面两行标记：\n"
+        f"=== {purity.MARK_OPEN} ===\n"
+        "（框内：章首引子 + 正文，读者能看到的全部内容）\n"
+        f"=== {purity.MARK_CLOSE} ===\n"
+        "· 这两行必须**原样照抄**（一行一条，单独成行，前后不要加任何符号）。\n"
+        "· 只有「章首引子」和「正文」可以写在框内，框内不许出现任何说明性文字。\n"
+        "· 框外只允许两类内容：标记之前的 `## 本章概要`、标记之后的 `## 章节备注`。\n"
+        "· 严禁在框外写正文句子、修改说明、改写逻辑、自评、评分、字数统计、清单、待改进项。\n"
+        "· 你不需要在回答里解释自己做了什么；除了框内正文与上述两个小节，多写一个字都是错的。"
+    )
+    parts.append("输出格式（严格按此顺序）：\n"
+                 "## 本章概要\n（本章剧情概要）\n\n"
+                 f"=== {purity.MARK_OPEN} ===\n"
+                 "## 章首引子\n（引子）\n\n## 正文\n（正文）\n"
+                 f"=== {purity.MARK_CLOSE} ===\n\n"
+                 "## 章节备注\n（下章要接的线）")
     return "\n\n".join(parts)
 
 def _continuity_block(ctx):
@@ -419,7 +437,8 @@ def expand_chapter(body, ctx, min_words=3000, current_words=0):
     user_p = (f"{bblock}下面这章目前仅 {current_words} 字，未达到本章硬性下限 {min_words} 字。"
               f"请按 content-expansion.md 的扩充技巧（增加对话场景/人物内心/细节描写/环境氛围）"
               f"把正文扩写到不少于 {target} 字，保持情节走向、人物设定与断章钩子完全不变；"
-              f"严禁注水、严禁缩写、严禁输出任何说明性文字，直接输出扩充后的完整章节正文。\n\n{body}")
+              f"严禁注水、严禁缩写、严禁输出任何说明性文字，直接输出扩充后的完整章节正文"
+              f"（用正文契约标记框住，不要写本章概要与章节备注）。\n\n{body}")
     return llm.chat([{"role": "system", "content": _writing_system(ctx)},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
 
@@ -431,7 +450,8 @@ def continue_chapter(body, ctx, need_words=1000):
     tail = body[-600:]
     user_p = (f"{bblock}下面是本章已有正文的结尾。请从它的断点**无缝继续往下写**约 {need_words} 字，"
               f"自然延续当前场景与情节，保持同样的人物、文风与叙事节奏；"
-              f"不要重复已有内容、不要总结、不要输出说明文字，直接输出续写的正文。\n\n……{tail}")
+              f"不要重复已有内容、不要总结、不要输出说明文字，直接输出续写的正文"
+              f"（**不要**加正文契约标记、不要写任何小节标题）。\n\n……{tail}")
     cont = llm.chat([{"role": "system", "content": _writing_system(ctx)},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
     cont = (cont or "").strip()

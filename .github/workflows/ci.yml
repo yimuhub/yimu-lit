@@ -1,9 +1,24 @@
 name: CI
 
+# 手动触发。**刻意不挂 push。**
+#
+# 为什么不挂 push：
+#   ① 迭代期每次提交都跑，lint 一挂就直接 skip 掉测试，20 秒给一个红叉，
+#      既没有有效信号又打断提交节奏——本仓库历史 104 次运行、最近十次全红，
+#      原因就是 ruff 先挂、测试根本没跑起来。
+#   ② 提交规范是「改完就推」，一天可能推十几次，排队反而不如本地跑。
+#
+# 关于费用（免得每次都要重新确认）：
+#   本仓库是公开仓库（yimuhub/yimu-lit），标准 runner（ubuntu-latest）的
+#   Actions 分钟数**免费且不限量**，手动触发也不花钱；改回 push 触发同样不花钱，
+#   只是噪音大。真正会计费的是 larger runners 和私有仓库的额度。
+#
+# 本地体检等价于下面三步，秒级、不排队：
+#   bash tools/static_check.sh
+#   ruff check app.py bot tests run.py tools build.py
+#   python -m pytest -q && python tools/check_frontend_js.py
 on:
-  push:
-    branches: [main, master]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:

@@ -830,6 +830,96 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             "reason": reason, "cards": [cards[n]["title"] for n in range(s, e + 1) if n in cards]}
 
 
+# ---------- 章卡占位检测 + 临写补规划（v4.22.2 长篇统一性）----------
+# 病根：plan_window 在 LLM 返回空时会用 _default_goal() 兜一张「承接本弧…」的套话卡，
+# 这种卡没有任何本章目标与冲突，等于**无大纲写作**——模型自由发挥，几十章后必然跑偏
+# （《入赘三年》第41–50章 conflict 全空，写到90章已变成高维代码科幻）。所以：
+#   ① 认出占位卡；② 临写前针对该章补一张真卡；③ 补不出来就明确告警，不再静默糊过去。
+_PLACEHOLDER_MARKS = ("本章为弧内第", "本章推进本卷目标", "承接本弧", "承接「")
+
+
+def card_is_placeholder(card) -> bool:
+    """章卡是否为占位卡（只有弧目标套话，没有本章真实目标/冲突）。"""
+    if not isinstance(card, dict):
+        return True
+    goal = str(card.get("goal") or "").strip()
+    conflict = str(card.get("conflict") or "").strip()
+    if not goal:
+        return True
+    if any(m in goal for m in _PLACEHOLDER_MARKS):
+        return True
+    # 有目标但无冲突、且目标很短 = 基本没规划（真章卡至少写清对抗双方）
+    if not conflict and len(goal) < 100:
+        return True
+    return False
+
+
+def load_cards(proj) -> dict:
+    """公开别名：给 writer / 体检脚本读章卡。"""
+    return _load_cards(proj)
+
+
+def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
+    """临写前给第 n 章补一张真章卡（单章规划，带前情/弧目标/伏笔）。
+
+    plan_window 是按窗口批量规划，窗口一旦落空整段章节就没大纲。这里是「最后一道
+    规划闸门」：只针对正要写的那一章，上下文更聚焦，成功率也更高。
+    返回写好的卡（仍为占位则返回 {}）。
+    """
+    n = max(1, _int(n, 1))
+    cfg = cfg if isinstance(cfg, dict) else _flat_config(proj)
+    plan = _read_plan(proj)
+    cards = _load_cards(proj)
+    card = cards.get(n) or _empty_card(n)
+    if not card_is_placeholder(card):
+        return card
+    st = state_mod.load(_pdir(proj))
+    recent = _recent_summaries(proj, 4, before=n)
+    v, a = _find_arc(plan, n)
+    row = _outline_rows(proj).get(n) or {}
+    due = state_mod.foreshadow_due(st, n, lookahead=20)
+    due_lines = [f"[{x.get('id')}] {str(x.get('description') or '')[:70]}"
+                 for x in (due["overdue"] + due["due"])][:8]
+    total = max(1, _int((plan.get("scale") or {}).get("chapters"), n))
+    user = (
+        f"全书 {total} 章，现在只规划**第 {n} 章**这一张章卡（不要规划别的章）。\n"
+        f"卷目标：{_text((v or {}).get('goal'), 300) or '（无）'}\n"
+        f"弧目标：{_text((a or {}).get('goal'), 300) or '（无）'}\n"
+        f"大纲里本章标题：{_text(row.get('title') or card.get('title'), 60) or '（无）'}\n"
+        f"大纲里本章原意：{_text(row.get('goal'), 300) or '（无）'}\n"
+        f"最近四章摘要：\n" + ("\n".join(f"- 第{x}章：{t[:150]}" for x, t in recent) or "- （无）") + "\n"
+        f"待兑现伏笔：\n" + ("\n".join(f"- {x}" for x in due_lines) or "- 无") + "\n"
+        '只输出 JSON：{"title":"","goal":"本章主角要达成什么（具体、可验收）",'
+        '"conflict":"谁/什么在阻止他，代价是什么","turn":"本章转折",'
+        '"payoff":"兑现哪条旧伏笔","cliffhanger":"章末钩子"}\n'
+        "要求：必须紧扣卷/弧目标与本书题材，**不得引入世界观之外的新元素**"
+        "（例如古代权谋不得出现高维空间/代码/科幻设定）；goal 与 conflict 都必须写满，"
+        "不许写「承接本弧」这类套话。"
+    )
+    out = _llm_json("你是长篇网文的章卡细纲师，只输出严格 JSON。", user, cfg,
+                    "longform_chapter", 1200, agent="planner")
+    if not isinstance(out, dict) or not out:
+        return {}
+    for key in ("title", "goal", "conflict", "turn", "payoff", "cliffhanger"):
+        val = _text(out.get(key), 500)
+        if val:
+            card[key] = _clean_title(val, val) if key == "title" else val
+    if card_is_placeholder(card):
+        return {}
+    card["updated_at"] = _now()
+    card["planned_by"] = "on_demand"
+    cards[n] = card
+    _fill_card_positions(plan, cards)
+    _write_cards(proj, cards)
+    return card
+
+
+def placeholder_chapters(proj, limit: int = 200) -> list:
+    """体检用：列出所有还是占位卡的章号（按序）。"""
+    cards = _load_cards(proj)
+    return [n for n in sorted(cards) if card_is_placeholder(cards[n])][:limit]
+
+
 # ---------- 重规划提案 ----------
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
