@@ -213,3 +213,34 @@ def test_plan_view_exposes_express_flag(tmp_path, monkeypatch):
             return {"config": {"mode": "rolling"}, "chapters": []}
     out = v2api._plan_view(_ProjStd(), {"mode": "rolling", "volumes": []})
     assert out.get("express") is False
+
+
+# v4.24.14：02c 的 mode 是向导留下的只读记录，不能拿来判「现在是不是极速」。
+# 回归场景：书用极速开、后来切回标准 → 02c.mode 仍是 "express"，
+# 旧实现把开关显示成「开」，用户每次点击都发 on=false，再也切不回极速。
+
+def test_plan_view_ignores_stale_mode_token(tmp_path):
+    from bot import v2api
+
+    class _ProjStale:
+        path = str(tmp_path)
+        def plan(self):
+            # 写作计划已切回标准（express=False），但 config.mode 还剩 express
+            return {"config": {"express": False, "mode": "express"}, "chapters": []}
+
+    out = v2api._plan_view(_ProjStale(), {"mode": "express", "volumes": []})
+    assert out.get("express") is False, "config.express=False 被 02c 的历史 token 顶翻了"
+    assert out.get("mode") == "rolling", "关掉极速后不该把 express 原样吐给界面"
+
+
+def test_plan_view_falls_back_to_mode_for_legacy_plan(tmp_path):
+    """老计划 config 里一个开关字段都没有：只能靠 02c 的 mode 判。"""
+    from bot import v2api
+
+    class _ProjLegacy:
+        path = str(tmp_path)
+        def plan(self):
+            return {"config": {}, "chapters": []}
+
+    out = v2api._plan_view(_ProjLegacy(), {"mode": "express", "volumes": []})
+    assert out.get("express") is True

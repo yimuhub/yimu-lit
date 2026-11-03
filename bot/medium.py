@@ -373,6 +373,13 @@ _NOVEL_SCALE = (
 _NOVEL_SECTIONS = {
     "style_title": "卖点与风格预设",
     "brief": [
+        # v4.24.12：「创作模式」提到 brief 首位。
+        # 以前它排在第 5 位（题材/基调/视角之后），极速模式这张卡要滚过好几项才看得到，
+        # 实际使用中等于「没有入口」。非小说文体的「创作节奏」本来就在首位，
+        # 小说也得对齐——创作节奏是第一步就该定的事。
+        _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True,
+           effect="express",
+           hint="极速模式：不评分、不重写，一口气写完全部章节，产出初稿（保留章卡与前情摘要，一致性不打折）。"),
         _f("platform", "发布平台", "chips", options_from="platforms", default="", effect="platform",
            when={"field": "mode", "not_in": ["express"]},
            hint="选平台带入该站的分类习惯与更新节奏，创作不受限制。"),
@@ -383,8 +390,6 @@ _NOVEL_SECTIONS = {
            hint="留空表示不限。基调与题材共同决定文风预设。"),
         _f("perspective", "叙事视角", "select", options_from="perspectives", default="",
            when={"field": "mode", "not_in": ["express"]}),
-        _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True,
-           effect="express"),
     ],
     "basic": [
         _f("agents", "专属 Agent", "chips", options_from="agents_novel", multi=True,

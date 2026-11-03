@@ -2584,6 +2584,9 @@ def api_book_live(key: str, request: Request):
             st["total"] = it.get("total", 0)
             st["words"] = it.get("total_words", 0)
             st["running"] = bool(it.get("running"))
+            # v4.24.12：非小说回退分支漏传 paused —— 「暂停中…」永远不出现，
+            # 界面上就只剩「继续」，看不出线程其实还活着。
+            st["paused"] = bool(it.get("paused"))
     plan = proj.plan() or {}
     chs = plan.get("chapters") or []
     inprog = [c.get("chapterNumber") for c in chs if c.get("status") == "in_progress"]
@@ -2625,7 +2628,7 @@ def api_book_live(key: str, request: Request):
         "key": key, "name": st.get("name"), "phase": phase, "state": state,
         "current_chapter": cur_ch,
         "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0},
-        "running": bool(st.get("running") or par or rw or rel),
+        "running": bool(st.get("running") or par or rw or rel or osh),
         "paused": st.get("paused"), "parallel": bool(par), "rewriting": bool(rw), "releasing": bool(rel),
         "live_log": live,
         "updated_at": int(time.time()),
@@ -2661,27 +2664,80 @@ def api_chat_note(payload: dict):
 
 @app.post("/api/express-toggle")
 def api_express_toggle(payload: dict):
-    """v4.22.2：已有书的极速模式开关（向导只在开书时能选，此端点让任何书随时切换）。
-    payload: {key, on}。同时写 config.express（执行器读这里）与顶层 express（UI 读这里），
-    写作线程在下一章开写前读 plan.config，因此开关对未完成章节即时生效。"""
+    """v4.22.2：已有书的极速开关（向导只在开书时能选，此端点让任何书随时切换）。
+
+    v4.24.13：与「⚡ 极速续写」(POST /api/express-write) 合并成**同一个写入口**
+    `express.set_plan_flag`。此前开关写 `config.express` + 顶层 `plan["express"]`，
+    续写写 `config.express` + `config.mode`，两个入口各写一半，同一本书的字段会
+    互相矛盾（顶层说开、config 说关），界面标签和实际行为也会分叉。
+
+    **小说：运行中也能切，下一章生效。** 写作循环每章都重读 `config.express`
+    （`_write_loop._live_express()`），所以切档只影响还没写的章：一章写到一半
+    不会换档（换档会把同章的字数线与评分逻辑撕成两半）。开关是**动态**的——
+    用户随时可以开启或关闭，不需要先暂停。
+    非小说仍拒绝运行中切换：那 7 个引擎在启动时就把要跑的阶段算定了，
+    中途改只会「标签变了、阶段没变」，宁可说清楚。
+
+    非小说也支持：走各自引擎的 project（不能落到 `Project` 上——那会往
+    剧本/诗词目录里写一份 02-写作计划.json）。
+    """
     key = str(payload.get("key") or "")
     on = bool(payload.get("on"))
-    proj = _get_project(key)
-    if not proj:
-        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    with proj.lock:
+    running = False   # v4.24.15：回给前端，决定提示语是「立即」还是「下一章起」
+    paused = False
+    mod = _nonnovel_module(key)
+    if mod is not None:
+        try:
+            proj = mod.get_project(key)
+        except Exception:
+            proj = None
+        if not proj:
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
         plan = proj.plan() or {}
-        plan.setdefault("config", {})["express"] = on
-        plan["express"] = on
-        proj.save_plan(plan)
+        if not plan:
+            # 目录在、计划文件缺失（删过/损坏）：不能凭空 save 一份只有 express 的计划，
+            # 那会把这本书的状态彻底弄脏，且引擎读不到任何创作字段。
+            return JSONResponse({"error": "该作品的计划文件缺失，请先从作品库恢复"}, status_code=404)
+        running = bool(writer.pipeline_running(key))
+        if not running:
+            try:
+                st = proj.status() if callable(getattr(proj, "status", None)) else {}
+                running = bool((st or {}).get("running"))
+            except Exception:
+                running = False
+        if running:
+            return {"ok": False, "express": express.plan_flag(plan), "running": True,
+                    "msg": "该文体的写作按阶段一口气调度，运行中切换不会生效——先暂停再切。"}
+        express.set_plan_flag(plan, on, sync_mode=False)
+        try:
+            proj.save_plan(plan)
+        except Exception as e:
+            return JSONResponse({"error": f"写入极速开关失败：{e}"}, status_code=500)
+    else:
+        proj = _get_project(key)
+        if not proj:
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+        st = proj.status()
+        # v4.24.15：小说**运行中也能切**。写作线程每章重读 config.express，
+        # 切档只影响还没写的章；拦下来只会让用户在「正在写」时无法改速度。
+        running = bool(st.get("running"))
+        paused = bool(st.get("paused"))
+        with proj.lock:
+            plan = proj.plan() or {}
+            if not plan:
+                return JSONResponse({"error": "该作品的写作计划缺失，先从作品库恢复"}, status_code=404)
+            express.set_plan_flag(plan, on)
+            proj.save_plan(plan)
+
     writer._evt(key, "system", "done" if on else "warn",
                 title="⚡ 极速模式" + ("开启" if on else "关闭"),
                 output="后续章节不评分、不重写、字数验收降至60%" if on else "恢复正常验收标准")
     syslog_mod.log_event("system", "极速模式", {"key": key, "on": on},
                          f"{'开启' if on else '关闭'}极速模式（{key[:24]}）")
-    return {"ok": True, "express": on,
-            "msg": ("⚡ 极速模式已开启：后续章节不评分、不重写、字数验收降至 60%，一口气写完" if on
-                    else "已关闭极速模式：恢复正常验收标准（评分 + 90% 字数线）")}
+    _tail = "（当前这一章写完即生效，不会打断）" if running else ""
+    return {"ok": True, "express": on, "running": running, "paused": paused,
+            "msg": ("⚡ 极速模式已开启：后续章节不评分、不重写、字数验收降至 60%" + _tail if on
+                    else "已关闭极速模式：后续章节恢复评分 + 90% 字数线" + _tail)}
 
 
 @app.get("/api/consistency-audit")
@@ -3498,6 +3554,10 @@ def api_status(key: str):
     except Exception:
         pass
     st = proj.status()
+    # v4.24.12：status 必须自带 key —— 前端 refreshWork 用它和作品库条目合并成 work。
+    # 以前 key 只来自 library 条目，于是「刷新页面」时 /api/status 比 /api/library 先回
+    # （单本快、聚合慢），work 就缺 key → 创作状态按钮（继续/暂停）整颗不渲染。
+    st["key"] = key
     if st.get("state") in ("missing", "", None):
         # 剧本/诗词/散文没有 02-写作计划.json，Project.status 会误报 missing；
         # 工作台 refreshWork 对当前作品调的就是本接口，必须回退到全文体元数据，
@@ -3518,6 +3578,180 @@ def api_status(key: str):
     st["has_book"] = os.path.exists(os.path.join(proj.path, f"成书-{st.get('name', key)}.md"))
     return st
 
+# ---------- v4.24.12：未完成章节直接用极速模式续写 ----------
+
+#: key 前缀 → 非小说引擎模块名。api_continue / api_express_write 共用这一份，
+#: 免得加文体时漏改一处（漏改的后果是该文体的入口静默走到小说分支，行为完全不对）。
+_NONNOVEL_MODS = {
+    "s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer",
+    "t_": "thesis_writer", "c_": "children_writer",
+    "n_": "news_writer", "k_": "copy_writer", "o_": "other_writer",
+}
+
+
+def _nonnovel_module(key):
+    """按 key 前缀取非小说引擎模块；不是非小说 key 时返回 None。"""
+    name = _NONNOVEL_MODS.get(str(key)[:2])
+    if not name:
+        return None
+    return {
+        "script_writer": script_writer, "poetry_writer": poetry_writer,
+        "prose_writer": prose_writer, "thesis_writer": thesis_writer,
+        "children_writer": children_writer, "news_writer": news_writer,
+        "copy_writer": copy_writer, "other_writer": other_writer,
+    }.get(name)
+
+
+@app.post("/api/express-write")
+def api_express_write(payload: dict):
+    """v4.24.12：未完成章节直接用极速模式续写。
+
+    需求原文：「在极速模式和普通模式下还未完成的章节也可以直接采用极速模式进行创作」。
+
+    **与「极速开关」的关系（v4.24.13 明确）**：两者共用同一个 `config.express`，
+    不是两套并行逻辑。区别只有动作范围：
+    - 极速开关（/api/express-toggle）：只改速度，不开写；
+    - 极速续写（本接口）：改速度 **并** 立刻开写。
+    因此「极速续写」会把这本书切成极速模式，写完后保持极速，直到用户点
+    「切回标准」或关掉开关。前端菜单文案已按这个语义写明，不再暗示「只对这一批生效」。
+
+    mode="express"（默认）：切极速 + 立即开写剩余章节（一口气写完）。
+    mode="standard"：只切回标准，**不启动写作**。
+
+    开关落在 plan.config.express（与 bot/express.on 同一口径），由
+    express.set_plan_flag 单点写入；小说另有 config.mode（创作模式卡片）同步。
+    """
+    key = str(payload.get("key") or "").strip()
+    mode = str(payload.get("mode") or "express").strip().lower()
+    if not key:
+        return JSONResponse({"error": "缺少作品 key"}, status_code=400)
+    if mode not in ("express", "standard"):
+        return JSONResponse({"error": "mode 只支持 express / standard"}, status_code=400)
+
+    # ---- 非小说文体：走各自引擎的断点恢复，开关写进 plan.config（引擎自己读它）----
+    mod = _nonnovel_module(key)
+    if mod is not None:
+        try:
+            proj = mod.get_project(key)
+        except Exception:
+            proj = None
+        if not proj:
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+        try:
+            plan = proj.plan() or {}
+        except Exception:
+            plan = {}
+        if not plan:
+            return JSONResponse({"error": "该作品的计划文件缺失，请先从作品库恢复"}, status_code=404)
+        # v4.24.13：运行中拒绝切速度（与 /api/express-toggle 同一口径）。
+        # 引擎在启动时就算好了要跑哪些阶段，中途改开关只会让界面与实际分叉。
+        if writer.pipeline_running(key):
+            return {"ok": False, "express": express.plan_flag(plan), "running": True,
+                    "msg": "正在创作中，先暂停再切换速度。"}
+        # v4.24.13：先判「有没有活」，再改开关——已定稿的书不该被切成极速。
+        if mode == "express" and str(plan.get("status") or "") == "completed":
+            return {"ok": False, "express": express.plan_flag(plan), "running": False,
+                    "msg": "该作品已定稿，没有待写的阶段。"}
+        express.set_plan_flag(plan, mode == "express", sync_mode=False)
+        # 只有「极速续写」才清暂停位（要立刻开写）；「切回标准」只改速度，
+        # 不替用户解除暂停——否则界面显示在跑、实际没有线程，比不改更糟。
+        if mode == "express":
+            plan.setdefault("meta", {})["paused"] = False
+            if plan.get("status") == "paused":
+                plan["status"] = "in_progress"
+        try:
+            proj.save_plan(plan)
+        except Exception as e:
+            return JSONResponse({"error": f"写入极速开关失败：{e}"}, status_code=500)
+        if mode == "standard":
+            return {"ok": True, "mode": "standard", "express": False, "running": False,
+                    "paused": bool((plan.get("meta") or {}).get("paused")),
+                    "msg": "已切回标准模式：后续写作恢复逐章审校与打磨。"}
+        fn = getattr(mod, "resume_project", None)
+        if not callable(fn):
+            return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
+        # v4.24.13：7 个引擎的 resume_project 是**同步**的（docstring 写明「调用方放后台线程」）。
+        # 原实现在请求线程里直接调，一本书写完前 HTTP 都不返回 → 按钮像卡死、
+        # 期间 running 还是 false（没走 mark_pipeline），用户再点一次就是两条流水线
+        # 同时改同一批文件。这里与 /api/continue 对齐：后台线程 + 运行标记。
+        import threading as _th
+
+        def _bg():
+            try:
+                fn(key)
+            except Exception as e:
+                print(f"[bg] {mod.__name__} 极速续写失败: {e}", flush=True)
+            finally:
+                writer.mark_pipeline(key, False)
+
+        writer.mark_pipeline(key, True)   # 先置标记，响应返回时前端就能看到「创作中」
+        try:
+            _th.Thread(target=_bg, daemon=True).start()
+        except Exception as e:
+            writer.mark_pipeline(key, False)
+            return JSONResponse({"error": f"极速续写启动失败：{e}"}, status_code=500)
+        return {"ok": True, "mode": "express", "express": True, "running": True, "paused": False,
+                "msg": "⚡ 已切到极速模式，正在一口气写完剩余阶段（不评分、不重写）。"}
+
+    # ---- 小说 ----
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    try:
+        plan = proj.plan()
+    except Exception:
+        plan = None
+    if not plan:
+        return JSONResponse({"error": "该作品还没有写作计划，先点「继续」生成一次"}, status_code=404)
+    st = proj.status()
+    _name = proj.name or key
+    if st.get("running"):
+        # v4.24.15：速度已经可以运行中切换（开关入口），这里拒绝的只是「再起一条写作线程」。
+        return {"ok": False, "running": True, "paused": st.get("paused"), "state": st.get("state"),
+                "msg": f"《{_name}》正在创作中——切速度用「⚡ 极速」开关（下一章起生效），不会再起一条写作线程。"}
+    _chs = plan.get("chapters") or []
+    _done = sum(1 for c in _chs if c.get("status") == "completed")
+    _left = len(_chs) - _done
+    if mode == "standard":
+        express.set_plan_flag(plan, False)
+        proj.save_plan(plan)
+        return {"ok": True, "mode": "standard", "express": False, "running": False,
+                "paused": bool((plan.get("meta") or {}).get("paused")),
+                "state": plan.get("status"),
+                "msg": "已切回标准模式：后续写作恢复逐章审校与打磨。"}
+    # v4.24.13：先判「有没有活」，再改开关。原顺序会把一本已写完的书切成极速模式，
+    # 然后回一句「没有待写的章节了」——操作失败了，状态却变了。
+    if _left <= 0:
+        return {"ok": False, "running": False, "paused": False, "state": plan.get("status"),
+                "express": express.plan_flag(plan),
+                "msg": f"《{_name}》没有待写的章节了。" if _chs else f"《{_name}》还没有章节规划。"}
+    _prev_cfg = dict(plan.get("config") or {})   # 启动失败要原样退回去，别顺带改了速度
+    express.set_plan_flag(plan, True)
+    # 极速续写：清暂停位并开写。completed 的书也允许续写（规划在、章节没写完是常态），
+    # 状态先改回进行中，否则 writer.resume_book 会以「该作品已完成」为由拒绝启动。
+    plan.setdefault("meta", {})["paused"] = False
+    if plan.get("status") in ("paused", "completed"):
+        plan["status"] = "in_progress"
+    proj.save_plan(plan)
+    ok = writer.resume_book(key, batch_size="all")
+    if not ok:
+        # 启动失败（并发抢跑 / 线程已存在）：把速度开关退回原样。
+        # 否则用户看到「无法启动」，书却已经被切成极速，下一次「继续」会被静默降级。
+        try:
+            _p2 = proj.plan() or {}
+            _p2["config"] = _prev_cfg
+            _p2["express"] = express.plan_flag(_p2)
+            proj.save_plan(_p2)
+        except Exception:
+            pass
+        return {"ok": False, "running": True, "paused": False, "state": st.get("state"),
+                "express": express.plan_flag({"config": _prev_cfg}),
+                "msg": "无法启动极速续写（该作品已在创作中）。"}
+    return {"ok": True, "mode": "express", "express": True, "running": True, "paused": False,
+            "state": "in_progress",
+            "msg": f"⚡ 已切到极速模式，正在一口气写完剩余 {_left} 章（不评分、不重写）。"}
+
+
 @app.post("/api/continue")
 def api_continue(payload: dict):
     key = payload.get("key")
@@ -3526,17 +3760,11 @@ def api_continue(payload: dict):
     except (ValueError, TypeError):
         extra = 0
     # ---- 非小说文体：走各自引擎的断点恢复（服务重启/线程中断后的唯一续跑通道）----
-    _medium_mod = {"s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer",
-                   "t_": "thesis_writer", "c_": "children_writer",
-                   "n_": "news_writer", "k_": "copy_writer", "o_": "other_writer"}.get(str(key)[:2])
-    if _medium_mod:
+    # v4.24.12：前缀映射抽成 _nonnovel_module()，与 /api/express-write 共用一份。
+    # 此前这里内联了一份，加文体时漏改一处 → 该文体的「继续」静默走小说分支。
+    mod = _nonnovel_module(key)
+    if mod is not None:
         import threading as _th
-        from bot import script_writer, poetry_writer, prose_writer, thesis_writer
-        from bot import children_writer, news_writer, copy_writer, other_writer
-        mod = {"script_writer": script_writer, "poetry_writer": poetry_writer,
-               "prose_writer": prose_writer, "thesis_writer": thesis_writer,
-               "children_writer": children_writer, "news_writer": news_writer,
-               "copy_writer": copy_writer, "other_writer": other_writer}[_medium_mod]
         fn = getattr(mod, "resume_project", None)
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
@@ -3546,7 +3774,7 @@ def api_continue(payload: dict):
             try:
                 fn(key)
             except Exception as e:
-                print(f"[bg] {_medium_mod} 断点恢复失败: {e}", flush=True)
+                print(f"[bg] {mod.__name__} 断点恢复失败: {e}", flush=True)
             finally:
                 writer.mark_pipeline(key, False)
         _th.Thread(target=_bg, daemon=True).start()

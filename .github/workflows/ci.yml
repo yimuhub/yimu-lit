@@ -58,6 +58,12 @@ jobs:
           node-version: "22"
       - name: Frontend inline JS syntax
         run: python tools/check_frontend_js.py
+      # v4.24.12：jsdom 真渲染回归——「创作状态按钮刷新后消失」和「极速入口看不见」
+      # 这两类问题用字符串断言查不出来（元素压根没进 DOM），必须真跑一遍渲染。
+      - name: Frontend jsdom render tests
+        run: |
+          npm install --no-audit --no-fund
+          npm test
       # 接线体检要 import app 并问 node 要 api.js 的真实 key，所以放在 node
       # 之后；没有 node 时会退回正则，结论会偏宽松，不能当门禁用。
       - name: Wiring audit (api keys ↔ routes)

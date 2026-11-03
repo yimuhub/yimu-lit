@@ -2,6 +2,202 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.24.15 — 极速开关变成真正的动态开关（写着也能切，下一章生效）
+
+用户接着问：「那我如果想要继续使用极速模式呢？开关点不开了。不能让它成为动态的
+吗——随时可以启用，也随时可以关闭。」
+
+能。v4.24.13 的「运行中一律拒绝」是过度防守，代价是用户想换速度就必须先停下整条
+流水线，而长篇一写就是几小时。
+
+### 一、后端：小说运行中允许切档
+
+`POST /api/express-toggle` 对小说不再检查 `running`，直接在 `proj.lock` 里
+读改写落盘，返回体带 `running`，提示语说明「当前这一章写完即生效」。
+非小说仍然拒绝——那 7 个引擎在启动时把要跑的阶段算定了，中途改只会标签变了、
+阶段没变，说清楚比假装生效好。
+
+### 二、写作循环：速度不是启动快照
+
+`_write_loop` 原先把 `_expr` 存下来用到底：启动时是标准，写到一半开极速，
+这一批仍然按 `batch_size` 停、收尾仍跑规划师校准。现在新增 `_live_express()`，
+每章重新读 `config.express`：
+
+- 批次上限检查读实时值（中途开极速 → 不再按批停）；
+- 完结前的规划师校准读实时值；
+- 逐章的去味/评分/字数线本来就在 `_write_chapter` 里按章读，天然跟随。
+
+粒度是「章」：一章写到一半不换档，否则同一章的字数线与评分逻辑会被撕成两半。
+
+### 三、前端：开关不再因「正在写」而禁用
+
+`createExpressSwitch` 去掉 `disabled: running`，运行中提示改为
+「当前这一章写完即生效」。`createExpressButton`（极速续写）仍在运行中隐藏——
+它的语义是「改速度 **并** 开写」，不能起第二条线程。
+
+回归用例：`test_toggle_works_while_running_novel`、
+`test_express_ignores_batch_size_in_write_loop`（改为断言 `_live_express()`）、
+`test_frontend_express_switch_stays_clickable_while_running`，
+jsdom 用例 `planbar_express_test.mjs` 同步改成「运行中仍可点、提示写完即生效」。
+
+## v4.24.14 — 界面说「极速」，引擎跑「标准」：一个只读 token 顶翻了开关
+
+用户报：「作品用极速模式写的，后面让它续写，极速开关明明是开着的，却又开始评分、
+又开始多轮验证」。
+
+### 根因：两处状态，一个判据
+
+`/api/plan` 的 `plan.express` 原本是这么算的：
+
+```python
+plan["express"] = express.on(config) or plan_02c.get("mode") == "express"
+```
+
+`02c-总规划.json` 的 `mode` 是向导开书时写下的**只读记录**（v4.24.0 起），之后
+没有任何代码更新它。于是：
+
+1. 这本书 12:09 被切过一次「关闭极速」（创作事件有记录）→ `config.express=false`；
+2. `02c.mode` 仍是 `"express"` → 接口照样返回 `express: true` → 目标条显示
+   「⚡ 极速模式 · 初稿」、右栏开关显示「极速 · 开」；
+3. 引擎只读 `config.express` → 走标准流程：去味 + 逐章评分（<80 自动重写最多 2 轮）
+   + 字数验收 90%；
+4. 更糟：开关的 on 状态读的就是这个永远为 true 的值 —— **每次点击都发 `on=false`，
+   这扇门再也开不回去**。
+
+### 修法：`config.express` 是唯一判据
+
+- `_plan_view` 只在「config 里 express / mode 两个字段都没有」的老计划上才回落到
+  02c 的 token；有 config 就一律以 config 为准。
+- 关掉极速后 02c 的 `"express"` 只是历史 token，视图层把它还原成 `rolling` 再下发，
+  界面不再照抄原始 token。
+
+回归用例：`test_plan_view_ignores_stale_mode_token`（config 说关、02c 说开 → 必须关）、
+`test_plan_view_falls_back_to_mode_for_legacy_plan`（老计划仍然能认出极速）。
+
+## v4.24.13 — 极速开关 × 极速续写：一个状态，两个入口（冲突审查）
+
+用户问「极速续写和极速开关是不是功能上有冲突」。结论：**不是两套功能，是同一个
+`config.express`**——开关只改速度，续写改速度并立刻开写。但审查发现三处实现层面的
+真冲突，全部修掉。
+
+### 一、「两个写入者」→ 单一写入口
+
+| 入口 | v4.24.12 写的字段 |
+|---|---|
+| `/api/express-toggle`（开关） | `config.express` + 顶层 `plan["express"]` |
+| `/api/express-write`（续写） | `config.express` + `config.mode` |
+
+同一本书可能出现「顶层说开、config 说关」。现在两个入口都只走
+`express.set_plan_flag`：`config.express` 是唯一判据，顶层只做同值镜像，
+`config.mode` 只在小说路径同步（非小说没有「创作模式」卡片，不该被塞脏字段）。
+
+### 二、运行中规则不一致 → 两边都拒绝
+
+续写原本拒绝「写作中切速度」，开关却允许。写作循环的 `batch_limit` 是启动时
+算定的，中途改开关只会让标签变了、批次没变。现在两个入口与右栏按钮统一：
+**先暂停，再切速度**。
+
+### 三、非小说「续写」堵住请求线程 → 后台执行
+
+`poetry/prose/thesis/children/news/copy/other` 的 `resume_project` 是同步实现
+（docstring 明确要求调用方放后台线程），原代码却在请求线程里直接调用：一本书
+写完前 HTTP 不返回、期间 `running` 还是 false，用户再点一次就是两条流水线改同一批
+文件。现在与 `/api/continue` 对齐：后台线程 + `mark_pipeline`，接口立即返回。
+
+### 四、失败不该改状态
+
+- 已写完的书点续写：先判「有没有活」再动开关，不再「切成极速 + 回一句没得写」；
+- 启动失败（并发抢跑）：把 `config` 原样退回，不把书留在极速模式；
+- 非小说已定稿：明确拒绝，不再返回假装在跑的 `running: true`。
+- 开极速会覆盖小说的「创作模式」（滚动规划/大纲优先/一次成稿）；切回标准时
+  还原用户原来那一项，而不是一律落回 rolling。
+
+### 五、顺带补齐
+
+- 非小说右栏也有极速开关了（此前只有小说页有），且开关走各文体的 project——
+  不会往剧本/诗词目录写一份 `02-写作计划.json`；计划文件缺失时明确 404，
+  不会凭空写一份只有开关字段的计划。
+- 续写按钮加请求在飞保护；菜单文案写明「切到极速并写完剩余 N 章（写完后保持极速）」，
+  不再暗示只对这批生效。
+- 新增 `tests/test_v42413_express_conflict.py`（17 例）+ jsdom 开关断言（6 项）。
+
+## v4.24.12 — 「刷新后继续/暂停按钮消失」真正修好（上一版修在了另一个工作树）
+
+上一轮修复没有生效，原因很直接：**改在了 git worktree，而用户跑的是主工作目录**
+（`~/Documents/yimu-lit`）。工作树里版本号走到 4.24.1，主目录还停在 4.24.11，
+所以界面上看到的是 4.24.11、按钮照旧消失。这一版把修复落到主目录，并补了三层兜底。
+
+### 一、根因（两条叠加，缺一不可）
+
+1. **`/api/status` 不带 `key`**：`Project.status()` 只回进度字段。前端 `refreshWork`
+   把它与作品库条目合并成 `work`；刷新时 `/api/status`（单本，快）比 `/api/library`
+   （全量聚合，慢）先回，此刻条目还没到 → `work.key === undefined` →
+   `createCreativeToggle` 首行 `if (!work.key) return null` → 按钮**整颗不渲染**。
+2. **此后不再恢复**：右栏重绘签名里没有 `work.key`，作品库后到时前端认为「没变化」，
+   不重绘；30s 的进度轮询也只刷 library/plan，不刷 work。于是按钮一直缺席，
+   直到用户切换作品——这就是「一刷新就没了」的完整链路。
+
+### 二、五处修改，任何一处单独生效都能救回来
+
+- 后端 `Project.status()` 自带 `key`（`os.path.basename(self.path)`，**不能**用
+  `self.name`——`/api/branch` 传的是 novelName）；`/api/status` 再兜一层 `st["key"]`。
+- 前端 `refreshWork` 合并时显式落 `key`。
+- `createCreativeToggle` 在 `work.key` 缺失时退回 `ctx.currentKey`（新增 getter），
+  按钮不再因为「定位不到作品」而消失。
+- 右栏签名加入 `work.key` 与 `plan.express`；目标条签名加入 `work.key` 与极速开关。
+- `refreshLibrary` 自愈：库到了而当前 work 仍缺 key，就补拉一次 status。
+
+### 三、状态判定的最后一道兜底
+
+`creativeToggleState` 增加 `total > done → resume`。状态字段是 `unknown`、或者刷新
+瞬间只回了进度没回 state，只要还有没写完的章节，就应该给「继续」入口。
+空闲/完成时按钮用 `hidden` 移出布局（配套 `.btn-creative[hidden]{display:none}`，
+否则 `inline-flex` 的优先级会让 hidden 失效，留下 25px 空壳）。
+
+### 四、顺带修掉「线程在跑、界面说没跑」
+
+- `_write_loop` 开头补 `_set_book_running` + `proj.running`：一键完稿（`/api/one-shot`）
+  绕过 `start_writing`，写作全程 `running=False`，按钮显示成「继续」。
+- `/api/book-live` 的 running 漏 `osh`；非小说回退分支漏传 `paused`，
+  导致「暂停中…」永远不出现。
+
+### 五、未完成章节直接用极速续写（新功能）
+
+需求：「在极速模式和普通模式下还未完成的章节也可以直接采用极速模式进行创作」。
+极速是「这一批怎么写」的选择，不是「这本书永久的属性」，所以两种模式都常驻入口。
+
+- `POST /api/express-write`：`mode=express` 切开关并立即开写（一口气写完）；
+  `mode=standard` 只切回标准、不启动写作，也不替你解除暂停。
+- 开关统一 `express.set_plan_flag()`：`config.express` 唯一判据 + 小说 `config.mode`
+  同步；切回标准写 `False` 而不是删键（`on()` 优先看 express，删了就切不回去）。
+- 前端 `createExpressButton` 挂两处：目标条 ⚡ 图标、右栏「⚡ 极速续写」文字按钮；
+  菜单同时给「切回标准」，不用再去别处找。
+- 非小说 key 前缀映射抽成 `_nonnovel_module()`，`/api/continue` 与新接口共用。
+
+### 六、极速模式入口提前到向导第一步首位
+
+小说「创作模式」原排 brief 第 5 位（平台/题材/基调/视角之后），其余 8 文体的极速
+入口都在第 1 位——实际使用中等于「没有入口」。已对齐到首位并补 hint。
+
+### 七、版本号与缓存戳：一条命令同步
+
+新增 `tools/bump_version.py`：升 `VERSION` 的同时把 `index.html` 的 `?v=NNN` 与
+`app.js` 的 `CSS_V` 一起 +1。只改版本号不改戳，浏览器继续吃旧 JS——界面没变、
+按钮没修，版本号却显示新的，这种「看起来更新了其实没更新」最难排查。
+
+```
+python tools/bump_version.py          # 4.24.11 → 4.24.12
+python tools/bump_version.py minor    # → 4.25.0
+```
+
+### 八、测试
+
+新增 `tests/test_v42412_creative_toggle.py`(14) + `tests/test_v42412_express_continue.py`(30)
++ 两个 jsdom 真渲染脚本（`npm test`）。关键一条直接复现用户现场：
+**work 没有 key（还没并库）时，按钮必须渲染出「继续」**——旧代码在这里返回 null。
+
+CI 增加 `npm test` 步骤：元素压根没进 DOM 这类问题，字符串断言查不出来。
+
 ## v4.24.11 — 绑定岗位可见化：作品面板「创作岗位」徽章行 + book-agents 全文体通用
 
 用户反馈：在开书引导里按提示绑定了几个 Agent，但找不到任何地方能看到这些绑定。

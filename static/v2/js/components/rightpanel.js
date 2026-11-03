@@ -27,7 +27,7 @@ import { api, errorText, IS_MOCK } from '../core/api.js';
 /* v4.22.0：collab（≈38K，含 skillCatalog）与 distill 都改为按需 import——
    两者只在用户真正点开「协作」页签 / 「蒸馏风格」时才用得到，
    静态 import 会把整条链拖进首屏闭包。 */
-import { createCreativeToggle } from './planbar.js';
+import { createCreativeToggle, createExpressButton, createExpressSwitch } from './planbar.js';
 
 /* distill 模块懒加载：保留原函数名，两个调用点零改动。 */
 function openDistillModal(payload) {
@@ -784,6 +784,13 @@ function mediumWorkPane(work, ctx) {
      对未跑过线程的书会代理到 continue）；空闲/完成→不渲染。乐观反馈与防连点由工厂统一提供。 */
   const creativeBtn = createCreativeToggle({ work, ctx });
   if (creativeBtn) actions.append(creativeBtn);
+  /* v4.24.12：极速续写入口——剩余章节一键用极速写完（普通/极速模式都可用）。 */
+  const expressBtn = createExpressButton({ work, ctx, plan: st.plan });
+  if (expressBtn) actions.append(expressBtn);
+  /* v4.24.13：极速开关也补齐到非小说面板——此前只有小说页有，
+     剧本/诗词只能用「续写」顺带切速度，没法先把速度调好再点继续。 */
+  const expressSwitch = createExpressSwitch({ work, ctx, plan: st.plan });
+  if (expressSwitch) actions.append(expressSwitch);
   actions.append(
     h('button', {
       class: 'btn btn-sm',
@@ -1000,33 +1007,9 @@ function workPane(ctx) {
       html: `${icon('edit', 13)}<span>章节工作台</span>`,
       on: { click: () => ctx.openBench(Math.min(work.done + 1, work.total || 1)) }
     }),
-    /* v4.22.2：极速模式开关——已存在的书随时切换；打开后未完成章节不评分不重写 */
-    (() => {
-      const planNow = store.get().plan ? (store.get().plan.plan || {}) : {};
-      const on = Boolean(planNow.express || planNow.config && planNow.config.express);
-      return h('button', {
-        class: 'btn btn-sm' + (on ? ' btn-accent' : ''),
-        type: 'button',
-        title: on ? '极速模式已开启（不评分不重写）——点击关闭' : '开启极速模式：剩余章节不评分、不重写，一口气写完',
-        html: `${icon('zap', 13)}<span>极速${on ? ' · 开' : ''}</span>`,
-        on: { click: async (event) => {
-          const btn = event.currentTarget;
-          const key = store.get().currentKey;
-          if (!key) return;
-          btn.disabled = true;
-          try {
-            const res = await api.expressToggle(key, !on);
-            toast((res && res.msg) || (res && res.express ? '极速模式已开启' : '已关闭极速模式'),
-                  { tone: res && res.express ? 'success' : 'info', duration: 4200 });
-            if (ctx && ctx.refreshState) ctx.refreshState();
-            if (ctx && ctx.refreshPlan) ctx.refreshPlan();
-          } catch (err) {
-            toast(errorText(err, '切换失败'), { tone: 'danger' });
-            btn.disabled = false;
-          }
-        } }
-      });
-    })(),
+    /* v4.22.2：极速模式开关——已存在的书随时切换；打开后未完成章节不评分不重写。
+       v4.24.13：抽成工厂与「极速续写」共用同一套状态判定（含运行中禁用）。 */
+    createExpressSwitch({ work, ctx, plan: state.plan }),
     h('button', {
       class: 'btn btn-sm',
       type: 'button',
@@ -1115,6 +1098,8 @@ function workPane(ctx) {
     /* v4.20.0：统一三态创作控制——running→「创作中」（竖杠闪烁、点击请求暂停、乐观反馈）；
        paused / 线程中断→「继续」（点击恢复）；空闲/完成→隐藏。防连点由工厂统一处理。 */
     createCreativeToggle({ work, ctx }),
+    /* v4.24.12：极速续写入口——剩余章节一键用极速写完（普通/极速模式都可用）。 */
+    createExpressButton({ work, ctx, plan: state.plan }),
     h('button', {
       class: 'btn btn-sm',
       type: 'button',

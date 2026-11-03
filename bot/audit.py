@@ -144,7 +144,7 @@ def run_audit(key, trigger="manual"):
     _RUNNING[key] = True
     try:
         from bot import continuity, journal, steps as _steps
-        from bot.writer import Project, _project_dir, _pass_line, per_chapter_scores
+        from bot.writer import Project, _project_dir, _pass_line
         try:
             from bot import steps as _steps
         except Exception:

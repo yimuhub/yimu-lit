@@ -3108,6 +3108,15 @@
   opacity: 0.6;
 }
 
+/* v4.24.12：空闲态的创作控制按钮整体移出布局。
+   .btn-creative 自带 padding: 0 12px + border，若只清空内容不隐藏元素，
+   空壳仍占 25px 宽 —— 在目标条与右栏按钮行里表现为一段莫名加宽的空白。
+   [hidden] 必须显式声明 display:none：.btn-creative 的 display:inline-flex
+   优先级高于 UA 样式表的 [hidden]{display:none}，不写这行就等于没隐藏。 */
+.btn-creative[hidden] {
+  display: none;
+}
+
 /* 创作中：warn 系醒目底色 + 双竖杠闪烁，一眼可知「正在写，点我暂停」 */
 .btn-creative-running {
   background: var(--warn-soft);

@@ -101,8 +101,12 @@ class Project:
 
     def status(self):
         plan = self.plan()
+        # v4.24.12：key 一律取项目目录名（= 作品 key）。
+        # 不能用 self.name —— 分支创建（app.py 的 /api/branch）传进来的是 novelName，
+        # 两者不是一回事，混用会让前端把 work 对到错误的作品上。
+        bkey = os.path.basename(self.path)
         if not plan:
-            return {"state": "missing", "done": 0, "total": 0, "words": 0}
+            return {"state": "missing", "done": 0, "total": 0, "words": 0, "key": bkey}
         chs = plan.get("chapters") or []
         done = sum(1 for c in chs if c.get("status") == "completed")
         words = sum(c.get("wordCount") or 0 for c in chs)
@@ -112,10 +116,15 @@ class Project:
                 # v4.21.0：running 同时查共享注册表——resume_book 每次 new Project 实例，
                 # 线程存活标志挂在新实例上，只读 self.running 会让 /api/status 永远 False，
                 # 前端三态按钮因此恢复后永远显示「继续」。
-                "running": bool(self.running or _book_running(os.path.basename(self.path))),
+                "running": bool(self.running or _book_running(bkey)),
                 "paused": bool(meta.get("paused")),
                 "queued": len([q for q in meta.get("queued_msgs", []) if not q.get("consumed")]),
                 "name": plan.get("novelName", self.name),
+                # v4.24.12：带上 key —— 前端把本返回体并进 work 后靠 key 定位作品。
+                # 以前 key 只来自作品库条目，而「刷新页面」时 /api/status 比
+                # /api/library 先回（单本快、全量聚合慢），此刻条目还没到，
+                # work 就缺 key → 创作状态按钮（继续/暂停）整颗不渲染，且此后不再恢复。
+                "key": bkey,
                 "quality": quality_score(self.path)}
 
 def rebuild_book(proj) -> str:
@@ -1936,8 +1945,10 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
 
 def per_chapter_scores(proj):
     """[{ch, score, dims, weak, status, verdict, evidence}]（meta.chapter_scores，按章号排序）。
-    v4.22.2：补回 dims（六维明细）与 evidence——质量弹窗的数据源。"""
-    cs = (proj.plan().get("meta") or {}).get("chapter_scores", {}) or {}
+    v4.22.2：补回 dims（六维明细）与 evidence——质量弹窗的数据源。
+    v4.24.15：plan 读不到（项目被删/移到别处，成书后后台线程仍在跑）时返回空表，
+    而不是让 AttributeError 打死放行门禁那条线程。"""
+    cs = ((proj.plan() or {}).get("meta") or {}).get("chapter_scores", {}) or {}
     out = []
     for k in sorted(cs, key=lambda x: int(x) if str(x).isdigit() else 9999):
         v = cs[k]
@@ -2529,6 +2540,14 @@ def _write_loop(proj: Project, batch_size=None):
     _sem = _write_semaphore()          # v0.3 P3：并发（默认 2 本同时写，超出排队）
     _sem.acquire()
     llm.book(os.path.basename(proj.path), "writing")   # v0.3.x：写稿 token 归集到该书
+    # v4.24.12：运行标志在这里设，而不是只在 start_writing 里设。
+    # 一键完稿（one_shot）直接调 _write_loop 绕过了 start_writing，
+    # 于是写作期间 running 一直是 False —— 前端创作状态按钮显示成「继续」
+    # （点下去其实正在写），/api/book-live 也报 running:false。
+    # finally 里有对称的清除，这里重复设也无副作用（set 幂等）。
+    _bk = os.path.basename(proj.path)
+    _set_book_running(_bk, True)
+    proj.running = True
     try:
         plan = _ensure_writable_plan(proj)
         if not plan:
@@ -2540,6 +2559,20 @@ def _write_loop(proj: Project, batch_size=None):
         _expr = express.on(plan.get("config") or {})
         if _expr:
             proj.log("⚡ 极速模式：不评分、不重写，一口气写完全部章节（保留章卡与前情摘要，连续性不打折）")
+
+        def _live_express() -> bool:
+            """v4.24.15：每章重新问一次——极速开关是**动态**的，用户随时可切。
+
+            原实现把启动那一刻的速度存进 `_expr` 用到底：中途切开关会出现
+            「界面变了、这批还是不评分/还是按批停」的分叉。写作线程只持有一个
+            Project，`proj.plan()` 每次读盘，所以这里拿到的就是用户刚刚点的值。
+            开关只在章与章之间生效——一章写到一半不会换档（换档会把同章的
+            字数线与评分逻辑撕成两半）。
+            """
+            try:
+                return express.on((proj.plan() or {}).get("config") or {})
+            except Exception:
+                return _expr
 
         # v4.22.2：登记任务档案——「继续」据此知道上次在做什么、做到第几章
         _pdir = proj.path
@@ -2556,10 +2589,11 @@ def _write_loop(proj: Project, batch_size=None):
             journal.progress(_pdir, done=_done0, total=_total_ch, stage="writing")
 
         # v4.15.0：batch_size 控制每批写多少章
+        # v4.24.15：判据改成实时值——启动时是标准、写到一半切极速，这一批也不该再按批停。
         wrote = 0
         _plan_blocked = False
         batch_limit = None
-        if batch_size is not None and not _expr:
+        if batch_size is not None and not _live_express():
             if str(batch_size).lower() in ("all", "0"):
                 batch_limit = None  # 全部写完
             else:
@@ -2571,7 +2605,7 @@ def _write_loop(proj: Project, batch_size=None):
         for ch in plan["chapters"]:
             if is_paused(proj):
                 break
-            if batch_limit is not None and wrote >= batch_limit:
+            if batch_limit is not None and wrote >= batch_limit and not _live_express():
                 # v4.15.6：本批额度用尽——仅当后面还有未完成章时才停；
                 # 若刚好写完全书，落到循环自然结束走 _validate_and_finish 正常完结。
                 _no = ch.get("chapterNumber") or 0
@@ -2630,7 +2664,8 @@ def _write_loop(proj: Project, batch_size=None):
             return
         # v4.20 C3：完结收尾前最后一轮规划师校准（纠偏指引会注入校验轮里失败章的重写；失败不阻断完结）
         # v4.24.0：极速模式跳过——纠偏指引只服务于「校验轮里失败章的重写」，而极速不跑校验轮
-        if not _expr:
+        # v4.24.15：实时判据——收尾前用户刚开启极速，这一轮校准同样不该跑
+        if not _live_express():
             try:
                 workflow.plan_drift_check(proj, (proj.plan() or {}).get("config") or {}, wrote)
             except Exception:

@@ -280,6 +280,9 @@ export const api = {
   status: (key) => request('/api/status', { query: { key } }),
   pause: (key) => request('/api/pause', jsonBody({ key })),
   resume: (key) => request('/api/resume', jsonBody({ key })),
+  /* v4.24.12：未完成章节直接用极速模式续写。mode='express' 切极速并开写，
+     mode='standard' 只把开关切回标准（不启动写作）。 */
+  expressWrite: (key, mode = 'express') => request('/api/express-write', jsonBody({ key, mode })),
   bookLive: (key) => request('/api/book-live', { query: { key }, timeout: 12000 }),
 
   library: (params = {}) => request('/api/library', { query: params }),

@@ -3,7 +3,7 @@
 import { h, icon, fmtWords } from '../core/dom.js';
 import { api, errorText } from '../core/api.js';
 import { store, patch, patchUi } from '../core/state.js';
-import { toast } from '../core/ui.js';
+import { toast, popoverMenu } from '../core/ui.js';
 
 /* ------------------------------------------------------- v4.20.0 创作控制三态按钮
    全部文体、全部入口（目标条 / 右栏作品页签）共用的统一交互规范：
@@ -24,6 +24,13 @@ function creativeToggleState(work) {
   if (paused || st === 'paused') return 'resume';
   /* 线程中断（服务重启 / 断点）但进度未完：一键续跑也归入「继续」态 */
   if (['planning', 'writing', 'in_progress', 'validating'].includes(st)) return 'resume';
+  /* v4.24.12：状态名不在上面的白名单里（如 unknown / 缺失），但只要还有没写完的章节，
+     就仍然可以「继续」——断点续跑是主诉求，不能因为状态字段脏了就让用户失去入口。
+     这一条也是「刷新后按钮消失」的最后一道兜底：刷新瞬间 status 可能只回了进度、
+     状态字段还没到，此刻仍应按「有活没干完」渲染「继续」。 */
+  const done = Number(work && work.done) || 0;
+  const total = Number(work && work.total) || 0;
+  if (total > done) return 'resume';
   return 'idle';
 }
 
@@ -52,8 +59,10 @@ function mergeWorkLive(key, res, expectPaused) {
    按钮自带 store 订阅：右栏的 rightSig 不含 paused（app.js 不可改），乐观态之后
    由这里按最新 work 收敛；元素离开文档后自动退订，不残留监听。 */
 export function createCreativeToggle({ work, ctx, compact = false } = {}) {
-  if (!work || !work.key) return null;
-  const key = work.key;
+  /* v4.24.12：key 缺失也要能定位作品——刷新瞬间 work 可能还没并进作品库条目，
+     此时退回当前路由的作品 key，按钮就不会整颗不渲染（这是「一刷新就没了」的根因之一）。 */
+  const key = (work && work.key) || (ctx && ctx.currentKey) || '';
+  if (!work || !key) return null;
   let phase = creativeToggleState(work); // 当前视觉阶段
   let optimistic = null; // 'pausing' | 'resuming'：乐观期间屏蔽重复点击、且不被旧轮询数据打回
   let optimisticTimer = 0;
@@ -72,6 +81,12 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
     el.disabled = false;
     el.classList.remove('btn-creative-running', 'btn-creative-resume', 'btn-creative-busy');
     el.textContent = '';
+    /* v4.24.12：空闲/完成态不画任何内容，也不能「只留一个空壳按钮」——
+       .btn-creative 有 padding: 0 12px，空壳仍占 25px 宽，在按钮行里表现为
+       一段莫名加宽的空白（目标条与右栏两处都中招）。
+       用 hidden 属性整体移出布局（CSS 配套 .btn-creative[hidden]{display:none}），
+       元素本身留着，store 订阅在状态转成 running/resume 时还能把它点亮。 */
+    el.hidden = st === 'idle';
     if (st === 'running') {
       el.classList.add('btn-creative-running');
       el.title = '点击请求暂停，当前章节写完后停止';
@@ -232,6 +247,150 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
   return el;
 }
 
+/* ------------------------------------------------------- v4.24.12 极速续写入口
+   需求：「在极速模式和普通模式下还未完成的章节也可以直接采用极速模式进行创作」。
+
+   v4.24.13：与「极速开关」共用同一个 config.express，不是两套并行状态。
+   区别只在动作范围——开关只改速度；续写改速度 + 立刻开写。所以续写会让这本书
+   保持极速，直到用户点「切回标准」。菜单文案必须写明这一点，否则用户会以为
+   只对这批生效，下次点「继续」时发现没有评分/重写，反过来怀疑功能坏了。
+
+   做成「创作速度」菜单而不是裸按钮：
+   - ⚡ 极速续写 = 切极速 + 立刻开写剩余章节（重动作，值得一次明确点击）；
+   - 🐢 切回标准 = 只改开关不开写（下一批恢复逐章审校与打磨）。
+   两个动作放一起，用户不用在别处找「怎么切回去」。 */
+export function createExpressButton({ work, ctx, compact = false, plan = null } = {}) {
+  const key = (work && work.key) || (ctx && ctx.currentKey) || '';
+  if (!work || !key) return null;
+  const total = Number(work.total) || 0;
+  const done = Number(work.done) || 0;
+  /* 没有待写章节 → 没有「续写」可言；正在写时也不让切速度（会和在跑的线程抢口径）。 */
+  if (!total || total <= done || work.running) return null;
+  const left = total - done;
+  const planData = (plan && plan.plan) || {};
+  const isExpress = Boolean(planData.express);
+  let busy = false;   // v4.24.13：请求在飞时禁止二次点击
+
+  async function run(mode) {
+    if (busy) return;
+    busy = true;
+    btn.disabled = true;
+    try {
+      const res = await api.expressWrite(key, mode);
+      if (res && res.ok === false) {
+        toast((res && res.msg) || '操作未生效', { tone: 'warn' });
+        if (ctx && ctx.refreshWork) ctx.refreshWork();
+        return;
+      }
+      toast((res && res.msg) || (mode === 'express' ? '已切到极速模式' : '已切回标准模式'), {
+        tone: 'success',
+        duration: 3200
+      });
+      if (mode === 'express') {
+        try { api.chatNote(key, '极速续写', '来自极速入口'); } catch { /* 入库失败不影响交互 */ }
+      }
+      if (ctx && ctx.refreshWork) ctx.refreshWork();
+      if (ctx && ctx.refreshPlan) ctx.refreshPlan();
+    } catch (err) {
+      toast(errorText(err, mode === 'express' ? '极速续写失败' : '切换创作速度失败'), { tone: 'danger' });
+    } finally {
+      busy = false;
+      /* 按钮可能已随重绘离开文档；对游离节点设 disabled 无害。 */
+      btn.disabled = false;
+    }
+  }
+
+  const btn = compact
+    ? h('button', {
+        class: 'icon-btn',
+        type: 'button',
+        'aria-label': '创作速度',
+        title: '创作速度：极速续写 / 切回标准',
+        html: icon('zap', 14)
+      })
+    : h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        title: '不评分、不重写，一口气写完剩余章节（会切到极速模式）',
+        html: `${icon('zap', 13)}<span>极速续写</span>`
+      });
+  btn.addEventListener('click', (event) => {
+    popoverMenu(
+      event.currentTarget,
+      [
+        {
+          label: '极速续写',
+          icon: 'zap',
+          /* v4.24.13：这是一次「切速度 + 开写」的复合动作，写完后书会保持极速。
+             文案必须说清楚，否则用户会以为只对这批生效，下次「继续」发现没评分。 */
+          sub: isExpress
+            ? `已是极速 · 写完剩余 ${left} 章`
+            : `切到极速并写完剩余 ${left} 章（写完后保持极速）`,
+          onSelect: () => run('express')
+        },
+        {
+          label: '切回标准',
+          icon: 'check',
+          sub: isExpress ? '恢复逐章审校与打磨（只改速度，不立即开写）' : '当前已是标准模式',
+          disabled: !isExpress,
+          onSelect: () => run('standard')
+        }
+      ],
+      { align: 'start', label: '创作速度' }
+    );
+  });
+  return btn;
+}
+
+/* ------------------------------------------------------- v4.24.13 极速开关
+   与「极速续写」共用同一个后端开关（express.set_plan_flag），区别只有一点：
+   - 开关：只改速度，不开写；
+   - 续写：改速度 + 立刻开写。
+   两个入口以前各写一半字段（开关写顶层 express，续写写 config.mode），
+   同一本书会出现「顶层说开、config 说关」；现在后端只有一个写入口。
+   v4.24.15：**写作中也能切**。写作线程每章重读 config.express，切档只影响还没写的章，
+   所以不再禁用按钮——以前「先暂停再切」把用户卡死在「正在写」状态里。
+   非小说引擎仍在运行中拒绝（阶段在启动时算定），后端会返回 ok:false + 说明。 */
+export function createExpressSwitch({ work, ctx, plan = null } = {}) {
+  const key = (work && work.key) || (ctx && ctx.currentKey) || '';
+  if (!work || !key) return null;
+  const planData = (plan && plan.plan) || {};
+  const on = Boolean(planData.express);
+  const running = Boolean(work.running);
+  const when = running ? '，当前这一章写完即生效' : '；只改速度，不会立即开写';
+  const btn = h('button', {
+    class: 'btn btn-sm' + (on ? ' btn-accent' : ''),
+    type: 'button',
+    title: on
+      ? `极速模式已开启（不评分不重写）——点击关闭${when}`
+      : `开启极速模式：剩余章节不评分、不重写${when}`,
+    html: `${icon('zap', 13)}<span>极速${on ? ' · 开' : ''}</span>`
+  });
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const res = await api.expressToggle(key, !on);
+      if (res && res.ok === false) {
+        toast((res && res.msg) || '切换未生效', { tone: 'warn' });
+        btn.disabled = false;   // 运行中拒绝：保持可点，暂停后可再点
+        return;
+      }
+      toast((res && res.msg) || (res && res.express ? '极速模式已开启' : '已关闭极速模式'),
+            { tone: res && res.express ? 'success' : 'info', duration: 4200 });
+      if (ctx && ctx.refreshState) ctx.refreshState();
+      if (ctx && ctx.refreshPlan) ctx.refreshPlan();
+      if (ctx && ctx.refreshWork) ctx.refreshWork();
+      /* 刷新失败时按钮会留在禁用态；接口是「显式置位」而非取反，重复点也幂等，安全解锁。 */
+      btn.disabled = false;
+    } catch (err) {
+      toast(errorText(err, '切换失败'), { tone: 'danger' });
+      btn.disabled = false;
+    }
+  });
+  return btn;
+}
+
 export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
   if (!work) return null;
   const total = work.total || 0;
@@ -272,6 +431,9 @@ export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
      与右栏、其他文体入口同一交互规范；mock 模式也走同一工厂（mock 接口已实现 pause/resume）。 */
   const toggle = createCreativeToggle({ work, ctx, compact: true });
   if (toggle) actions.append(toggle);
+  /* v4.24.12：极速续写入口——普通模式/极速模式都能把剩余章节用极速方式写完。 */
+  const expressBtn = createExpressButton({ work, ctx, compact: true, plan });
+  if (expressBtn) actions.append(expressBtn);
   actions.append(
     h('button', {
       class: 'icon-btn',

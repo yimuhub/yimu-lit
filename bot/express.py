@@ -60,3 +60,54 @@ def skip_stage(medium: str, code: str) -> bool:
 def stages(medium: str) -> frozenset[str]:
     """给 UI/日志用：该文体在极速模式下会跳过哪些阶段码。"""
     return _SKIP_STAGES.get(str(medium or ""), frozenset())
+
+
+#: 切回标准模式时，小说「创作模式」卡片回落到的取值。
+#: 老三张卡（滚动规划/大纲优先/一次成稿）此前都没有代码读它们，
+#: 但保留一个语义正确的默认值，比留着一个「express」更诚实。
+STANDARD_MODE = "rolling"
+
+
+def set_plan_flag(plan: dict, on_: bool, *, sync_mode: bool = True) -> dict:
+    """v4.24.13：把极速开关写进 plan，就地返回同一个 plan。
+
+    **所有入口只能走这里**。v4.24.12 之前有两个写入者：
+    `/api/express-toggle` 写 `config.express` + 顶层 `plan["express"]`，
+    `/api/express-write` 写 `config.express` + `config.mode`。
+    同一本书因此可能出现「顶层说开、config 说关」这种自相矛盾的状态；
+    顶层字段虽然当前没有读者，但两份状态迟早会被某个新代码读到。
+
+    现在统一：`config.express` 是唯一判据（`on()` 的口径），顶层 `plan["express"]`
+    只做同步镜像（兼容老数据），`config.mode` 只在小说路径同步（sync_mode=True）——
+    非小说没有「创作模式」卡片，给它们的 config 塞一个 `mode="express"` 是无意义的脏字段。
+
+    切回标准时显式写 `config.express=False`：`on()` 优先看 `express` 键，
+    只把 mode 改回 rolling 是关不掉老书的。
+    """
+    if not isinstance(plan, dict):
+        return plan
+    cfg = plan.get("config")
+    if not isinstance(cfg, dict):
+        cfg = {}
+        plan["config"] = cfg
+    cfg["express"] = bool(on_)
+    plan["express"] = bool(on_)      # 顶层镜像：与 config 永远同值，避免两处读出相反状态
+    if not sync_mode:
+        return plan
+    if on_:
+        # 记住切换前的创作模式（滚动规划/大纲优先/一次成稿），
+        # 切回标准时还原——否则用户选过「大纲优先」，开一次极速就被永久改成 rolling。
+        if str(cfg.get("mode") or "").strip().lower() != "express":
+            cfg["_mode_before_express"] = cfg.get("mode")
+        cfg["mode"] = "express"
+    elif str(cfg.get("mode") or "").strip().lower() == "express":
+        _prev = cfg.pop("_mode_before_express", None)
+        cfg["mode"] = _prev or STANDARD_MODE
+    return plan
+
+
+def plan_flag(plan: dict) -> bool:
+    """这本书当前是不是极速模式（读 plan.config，与 on() 同一口径）。"""
+    if not isinstance(plan, dict):
+        return False
+    return on(plan.get("config") or {})

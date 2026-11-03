@@ -374,10 +374,24 @@ def _plan_view(proj, plan: dict) -> dict:
     # v4.24.0：显式告诉前端这本书是不是极速模式。判据取「写作计划里的 config」——
     # 02c 总规划的 mode 存的是原始 token（rolling/…），且非小说走 _medium_plan_view
     # 时 mode 被换成了文体标签，不能拿来判断。
+    # v4.24.14：`config.express` 是**唯一**判据。旧实现在这里 OR 了 02c 的 `mode`
+    # （v4.24.0 起向导把 `mode:"express"` 写进总规划，之后没有任何代码更新它），
+    # 于是「曾经用极速开过书」的作品，开关被这条只读记录永久锁成「开」：
+    # 用户点一次 ⚡ 发出的是 on=false（按钮读到的仍为 true，界面永远显示「极速 · 开」），
+    # 引擎却按 config.express=false 跑标准流程——逐章评分、多轮重写全回来了。
+    # 只有「config 里 express / mode 两个字段都没有」的老计划才回落到 02c 的 token。
     try:
         from . import express as _express
         _cfg_src = (disk_plan.get("config") if isinstance(disk_plan, dict) else None) or {}
-        plan["express"] = bool(_express.on(_cfg_src) or str(plan.get("mode") or "") == "express")
+        if not isinstance(_cfg_src, dict):
+            _cfg_src = {}
+        _cfg_has_flag = ("express" in _cfg_src) or bool(str(_cfg_src.get("mode") or "").strip())
+        plan["express"] = (_express.on(_cfg_src) if _cfg_has_flag
+                           else _express.on({"mode": plan.get("mode")}))
+        # 已切回标准时，02c 里的 "express" 只是历史 token：别原样吐给前端，
+        # 目标条会照抄成「创作模式：express」。
+        if not plan["express"] and str(plan.get("mode") or "").strip().lower() == "express":
+            plan["mode"] = _express.STANDARD_MODE
     except Exception:
         plan["express"] = False
     volumes = plan.get("volumes")

@@ -28,7 +28,7 @@ import { renderSession } from './views/session.js';
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
    缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
    tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
-const CSS_V = '292';
+const CSS_V = '294';
 
 const els = {
   app: document.getElementById('app'),
@@ -153,6 +153,11 @@ async function guardedRefresh(name, key, { requireKey = true, loader, onOk, onMi
 
 const ctx = {
   navigate,
+  /* v4.24.12：当前打开的作品 key。创作状态按钮等工厂在 work 尚未并库时靠它定位作品，
+     避免「work.key 还没到 → 按钮不渲染」的窗口。 */
+  get currentKey() {
+    return store.get().currentKey || '';
+  },
   /* 刚创建的作品还没落进作品库，先告诉路由它是什么文体，省一次"作品不存在"的竞态。 */
   rememberMedium(key, medium) {
     if (key) mediumCache.set(key, medium || 'novel');
@@ -315,6 +320,16 @@ const ctx = {
         patch('library', { loading: false, loaded: true, error: null });
       }
       if (items.some((i) => i.pending)) schedulePendingPoll();
+      /* v4.24.12：自愈——刷新页面时 /api/status 先回、/api/library 后回，
+         先到的那份 work 可能没有 key（创作状态按钮因此不渲染）。作品库一到，
+         若当前 work 仍缺 key 就补拉一次 status，把按钮点亮，
+         不用等用户手动刷新第二次。 */
+      {
+        const s = store.get();
+        if (s.currentKey && (!s.work || !s.work.key) && !inflight.has('work')) {
+          ctx.refreshWork();
+        }
+      }
     } catch (err) {
       patch('library', { loading: false, error: errorText(err, '作品库加载失败') });
     }
@@ -326,11 +341,15 @@ const ctx = {
     await guardedRefresh('work', key, {
       loader: () => api.status(key),
       onOk: (status) => {
-        /* status 只带进度；侧栏条目带收藏/标签/字数——两者合并成一份 work。 */
+        /* status 只带进度；侧栏条目带收藏/标签/字数——两者合并成一份 work。
+           v4.24.12：key 以本次请求的 key 为准（status 自带 key，library 条目也带 key，
+           两边一致；这里显式落一次，避免任一侧缺失时 work.key 变 undefined，
+           创作状态按钮（继续/暂停）会因「定位不到作品」而整颗不渲染）。 */
         const item = store.get().library.items.find((i) => i.key === key) || null;
         const merged = {
           ...(item || {}),
           ...(status || {}),
+          key,
           total_words: (item && item.total_words) || (status && status.words) || 0,
           status_label: (status && status.status_label) || (item && item.status_label) || '',
           quality: item ? item.quality : null,
@@ -642,8 +661,13 @@ function syncShell(state, force = false) {
     (state.ui.chapterArchive && state.ui.chapterArchive.ts) || 0,
     JSON.stringify(state.features),
     state.work ? [state.work.running, state.work.done, state.work.total, state.work.state].join('~') : '',
+    /* v4.24.12：key 进签名——刷新后 key 晚到（work 先无 key、后有 key）时要重绘右栏，
+       否则「继续/暂停」按钮会一直缺席到下一次状态变化。 */
+    (state.work && state.work.key) || '',
     state.workError || '',
     plan.version || 0,
+    /* v4.24.12：极速开关切换后要重绘右栏——「切回标准」那一项的可用状态跟着变。 */
+    plan.express ? 1 : 0,
     Array.isArray(plan.chapters) ? plan.chapters.length : 0,
     ((state.plan && state.plan.proposals) || []).map((p) => `${p.id}:${p.status}`).join(','),
     (state.refs || []).map((r) => `${r.id}:${r.usage_mode}:${r.analyzed ? 1 : 0}`).join(','),

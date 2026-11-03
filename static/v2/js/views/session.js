@@ -259,12 +259,17 @@ export function renderSession(container, ctx = {}) {
     /* v4.20.0：签名加入 paused / state——暂停请求发出后 planbar 也要重绘（三态按钮收敛） */
     const sig = JSON.stringify({
       k: state.currentKey,
+      /* v4.24.12：work.key 进签名——刷新后 work 可能先无 key、后有 key（并库晚到），
+         若签名看不出这个变化，目标条不会重绘，创作状态按钮就一直缺席。 */
+      wk: work && work.key,
       r: work && work.running,
       p: work && work.paused,
       s: work && work.state,
       d: work && work.done,
       t: work && work.total,
       v: state.plan && state.plan.plan && state.plan.plan.version,
+      /* v4.24.12：极速开关进了签名——「切回标准」那一项的可用状态要跟着重绘。 */
+      x: state.plan && state.plan.plan && state.plan.plan.express ? 1 : 0,
       c: state.plan && Array.isArray(state.plan.plan && state.plan.plan.chapters)
         ? (state.plan.plan.chapters.find((c) => c.status === 'in_progress') || {}).title
         : ''
