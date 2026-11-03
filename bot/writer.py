@@ -1938,10 +1938,19 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
             sc2 = score_chapter(proj, ch_no)
             if (sc2 is not None and sc is not None and sc2 > sc):
                 proj.log(f"🔁 第{ch_no}章 {sc}→{sc2}（提分，保留），按[{','.join(weak[:3])}]局部重写（第{rounds+1}/{max_rounds}轮）")
+                # v4.26.1 分数停滞止损：提分 <2 分视为模型能力已到顶（实测分数在 ±5 内随机震荡，
+                # 继续抽卡每轮白烧 ~2 万 token），接受当前版本直接前进。
+                if (sc2 - sc) < 2:
+                    proj.log(f"⏹ 第{ch_no}章提分不足（{sc}→{sc2}），止损接受，继续下一章")
+                    break
             else:
                 atomic_write_text(fp, body)   # 没提分 → 还原原章，防改坏
                 sc2 = sc
                 proj.log(f"↩️ 第{ch_no}章重写未提分（{sc2}），已还原原章（防 LLM 波动改坏）")
+                # v4.26.1：未提分同样止损——还原后继续下一轮只是重新抽卡
+                break
+        else:
+            break   # 重写产出为空：无材料可保留，继续轮次只会重复失败
         rounds += 1
     final = score_chapter(proj, ch_no)
     # 若最终分低于最初基线，还原到原章基线（保守：只进不退）

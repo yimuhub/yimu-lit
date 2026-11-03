@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -433,10 +434,9 @@ def tick_once(key: str) -> dict:
                  output="请手动点「继续」；若反复停滞请到「系统日志」看原因")
             out.update({"action": "budget_exhausted"})
             return out
-        # 非小说引擎无线程注册表，靠活动流新鲜度判断——刚恢复过就给足启动时间，防双开
-        if resumes and time.time() - float(resumes[-1]) < _RESUME_MIN_GAP:
-            out.update({"action": "resume_cooldown"})
-            return out
+        # v4.26.1b：撤销「30 分钟恢复冷却」——实测有害：服务重启后注册表必然为空
+        # （引擎真的没在跑），冷却却把必要的恢复也拦住，书会卡死到冷却过期。
+        # 防双开已由「3 次/24h 预算 + 引擎真实状态判据」覆盖，冷却纯冗余。
         ok = _dispatch_resume(key, med, pdir)
         if ok:
             _budget_add(key, plan, med, pdir, "resumes", "x")
@@ -527,3 +527,65 @@ def stop(key: str):
         sup = _WATCHDOGS.pop(key, None)
     if sup is not None:
         sup.stop_evt.set()
+
+
+def _last_engine_event_ts(ev_path: str) -> float:
+    """创作事件 JSONL 里最后一条「非 supervisor」事件的时间戳；无文件/无记录返回 0。"""
+    try:
+        with open(ev_path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()[-80:]
+        best = 0.0
+        for ln in reversed(lines):
+            try:
+                e = json.loads(ln)
+            except Exception:
+                continue
+            if not isinstance(e, dict) or str(e.get("agent") or "") == "supervisor":
+                continue
+            best = float(e.get("ts") or 0)
+            break
+        return best
+    except Exception:
+        return 0.0
+
+
+def sweep_orphans():
+    """开机孤儿扫描：把「最近活跃且计划说在写」的书交给总编辑接手。
+    服务重启会杀掉看护线程与写作线程——没有这一步，重启后任何书都只能
+    等用户人工发现并点「继续」（用户点名的「突然停了」场景的正解）。
+
+    v4.26.1 紧急收紧：只接手**活动流 6h 内有动静**的书——否则历史遗留的
+    in_progress 旧测试书会被逐本判定「停滞」并全部自动拉起写作（实测一次
+    开机扫出 66 本、连当天的十几本接口测试书也被拉起，token 灾难）。
+    6h > 单书最长中断-发现窗口（看护间隔×预算），真在写的书必然命中。"""
+    from . import writer as _wr
+    n = 0
+    try:
+        for d in sorted(os.listdir(_wr.PROJECTS_DIR)):
+            pdir = os.path.join(_wr.PROJECTS_DIR, d)
+            if not os.path.isdir(pdir):
+                continue
+            ev = os.path.join(pdir, "创作事件.jsonl")
+            try:
+                # v4.26.1b：用「最后一条非 supervisor 事件」的时间——接手宣言会刷新文件
+                # mtime，用 mtime 自指污染（实测：扫描自己把 66 本旧书全变成"最近活跃"）
+                age = time.time() - _last_engine_event_ts(ev)
+            except OSError:
+                continue   # 从没写过正文的书（规划态旧稿）不接手
+            if age > 6 * 3600:
+                continue
+            med, fp, plan = _wr._plan_of(pdir)
+            if not plan:
+                continue
+            status = str(plan.get("status") or "")
+            if status not in ("in_progress", "planning", "writing"):
+                continue
+            if (plan.get("meta") or {}).get("paused"):
+                continue
+            ensure(d)
+            n += 1
+        if n:
+            print(f"[supervisor] 开机孤儿扫描：已接手 {n} 本最近活跃的在写书", flush=True)
+    except Exception as e:
+        print(f"[supervisor] 孤儿扫描异常: {e}", flush=True)
+    return n

@@ -58,6 +58,17 @@ async def _lifespan(_app):
                 print(f"[recover] 已将 {k} 个中断任务标记为可继续", flush=True)
         except Exception as e:
             print(f"[recover] 任务档案对账失败：{e}", flush=True)
+        # v4.26.1：总编辑开机孤儿扫描——服务重启杀掉了看护线程，重启后
+        # 「计划说在写、实际没人在跑」的书此前只能等用户人工发现。
+        # 现在启动 15 秒后扫描全部 in_progress（未暂停）的书，总编辑逐本接手
+        # （ensure 后首检发现无引擎在跑 → 预算内自动断点恢复）。
+        import time as _t
+        _t.sleep(15)
+        try:
+            from bot import supervisor as _sv
+            _sv.sweep_orphans()
+        except Exception as e:
+            print(f"[recover] 总编辑孤儿扫描失败：{e}", flush=True)
     threading.Thread(target=_recover, daemon=True).start()
     yield
 
