@@ -396,7 +396,8 @@ export function renderSettings(container, ctx) {
         lorebook: Boolean(model.settings.lorebook),
         llm_trace: Boolean(model.settings.llm_trace),
         chat_context_limit: model.settings.chat_context_limit || '200k',
-        chat_auto_compress: model.settings.chat_auto_compress !== false
+        chat_auto_compress: model.settings.chat_auto_compress !== false,
+        supervisor_autonomy: model.settings.supervisor_autonomy || 'guarded'
       });
       model.dirty = false;
       paintChatCtx();
@@ -1359,6 +1360,18 @@ export function renderSettings(container, ctx) {
         model.dirty = true;
         paintQuality();
       }),
+      /* v4.26.0：总编辑自动化程度 */
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '总编辑自动化程度' }),
+          h('div', { class: 'set-row-desc', text: '「标准」：停滞自愈/低分重写/补评分/超期坑巡检全自动，结构级重规划先生成提案等你确认；「全自动」：低风险重规划提案也自动应用（结构级仍会找你确认）。' })
+        ),
+        h('div', { class: 'set-control' }, h('div', { class: 'segmented', role: 'group', 'aria-label': '总编辑自动化程度' },
+          h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': s.supervisor_autonomy === 'auto' ? 'false' : 'true', text: '标准', on: {
+            click: () => { model.settings.supervisor_autonomy = 'guarded'; model.dirty = true; paintQuality(); } } }),
+          h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': s.supervisor_autonomy === 'auto' ? 'true' : 'false', text: '全自动', on: {
+            click: () => { model.settings.supervisor_autonomy = 'auto'; model.dirty = true; paintQuality(); } } })))
+      ),
       h('div', { class: 'set-row' },
         h('div', { class: 'set-row-copy' },
           h('div', { class: 'set-row-title', text: '上下文窗口' }),

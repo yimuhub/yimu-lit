@@ -132,6 +132,21 @@ def emit(key, agent, phase="done", title="", thinking="", output="",
         pass
 
 
+def last_event_ts(key) -> float:
+    """该书活动流最近一条事件的时间戳（秒级 epoch）；无事件返回 0。
+    v4.26.0：供总编辑做「引擎是否还活着」的新鲜度判据（非小说引擎无线程注册表）。"""
+    try:
+        key = str(key or "")
+        _hydrate(key)
+        with _LOCK:
+            ring = _RING.get(key)
+            if not ring:
+                return 0.0
+            return float(max(int(e.get("ts") or 0) for e in ring))
+    except Exception:
+        return 0.0
+
+
 def since(key, cursor=0, limit=60):
     """增量拉取：返回 {items:[no>cursor 的事件], cursor:最新序号}。
     v4.21.3：重启后自动从落盘 JSONL 自愈，历史创作过程永久可回放。"""

@@ -27,6 +27,9 @@ def _mock_llm(monkeypatch):
         return text
 
     monkeypatch.setattr(llm, "chat_stream", _chat_stream_stub, raising=False)
+    # v4.26.0：测试进程禁孵总编辑看护线程（tick_once 仍可显式调用做断言）
+    from bot import supervisor as _sv
+    monkeypatch.setattr(_sv, "TEST_MODE", True, raising=False)
 
 
 @pytest.fixture(autouse=True)

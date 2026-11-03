@@ -736,12 +736,25 @@ _PIPELINE_COUNT: dict[str, int] = {}
 
 
 def mark_pipeline(key, on=True):
-    """按作品 key 增/减流水线运行计数（线程启动 +1，结束 -1）。"""
+    """按作品 key 增/减流水线运行计数（线程启动 +1，结束 -1）。
+    v4.26.0：总编辑看护线程在此收口上下车——0→1 孵化监制（九文体通用），→0 延迟判定
+    （暂停待命 / 完稿终审 / 意外停滞自愈）。"""
     k = os.path.basename(str(key or ""))
     if not k:
         return
     with _PIPELINE_LOCK:
-        _PIPELINE_COUNT[k] = max(0, _PIPELINE_COUNT.get(k, 0) + (1 if on else -1))
+        prev = _PIPELINE_COUNT.get(k, 0)
+        _PIPELINE_COUNT[k] = max(0, prev + (1 if on else -1))
+        now = _PIPELINE_COUNT[k]
+    try:
+        if on and prev == 0 and now == 1:
+            from . import supervisor as _sv
+            _sv.ensure(k)
+        elif not on and prev == 1 and now == 0:
+            from . import supervisor as _sv
+            _sv.pipeline_stopped(k)
+    except Exception:
+        pass
 
 
 def pipeline_running(key) -> bool:
@@ -2567,6 +2580,7 @@ def _write_loop(proj: Project, batch_size=None):
     _bk = os.path.basename(proj.path)
     _set_book_running(_bk, True)
     proj.running = True
+    mark_pipeline(_bk, True)   # v4.26.0：小说主链路也纳入 mark_pipeline 收口（总编辑上下车）
     try:
         plan = _ensure_writable_plan(proj)
         if not plan:
@@ -2713,6 +2727,7 @@ def _write_loop(proj: Project, batch_size=None):
         _sem.release()
         proj.running = False
         _set_book_running(os.path.basename(proj.path), False)
+        mark_pipeline(os.path.basename(proj.path), False)   # v4.26.0：对称下车
 
 # v0.3 P3：并发写（同一时刻最多 N 本在写，N=defaults.concurrency 默认 2，超出排队）
 _WRITE_SEM, _WRITE_SEM_N = None, 0
@@ -3140,6 +3155,11 @@ def delete_book(key, hard=False):
         try:
             from . import steps as _steps_mod
             _steps_mod.reset(key)
+        except Exception:
+            pass
+        try:
+            from . import supervisor as _sv
+            _sv.stop(key)   # v4.26.0：总编辑看护线程随书删除下岗
         except Exception:
             pass
         try:

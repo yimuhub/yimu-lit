@@ -495,7 +495,29 @@ def _apply_title(key, title):
     for sess in SESSIONS.values():
         if sess.get("project") == key:
             sess["project"] = new_key
-    return {"ok": True, "key": new_key, "name": title}
+    # v4.26.0 修复「选完书名就停」：采用书名走的是改名接口（右栏「采用」→ /api/title/set），
+    # 此前只改目录名不启动创作（真正开写的 /api/pick-title 前端这条链路从不调用）——
+    # 引导创建的书选完书名永远停在 awaiting_title。现在检测到待选书名状态：
+    # 清标记 → 启动创作 → 对话流写入确认回复（总编辑随即接手汇报分工）。
+    started = False
+    try:
+        _med2, _fp2, _plan2 = writer._plan_of(target)
+        if _plan2 and (_plan2.get("meta") or {}).get("awaiting_title"):
+            _plan2.setdefault("meta", {})["awaiting_title"] = False
+            _plan2["status"] = "in_progress"
+            atomic_write_json(_fp2, _plan2)
+            started = writer.start_writing(proj, batch_size=((_plan2.get("config") or {}).get("batch_size")))
+            try:
+                from bot.v2api import _save_chat_msg
+                _save_chat_msg(proj, "assistant",
+                               f"✅ 已收到，将以《{title}》进行创作，现在马上安排创作——总编辑已接手，"
+                               f"规划师/作家/审稿人各就各位，进度会在本对话全程汇报。",
+                               {"type": "note"})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {"ok": True, "key": new_key, "name": title, "started": bool(started)}
 
 def _read_title_items(key):
     """读 05-标题候选.json 的 items（无文件返回 []）。"""
@@ -3139,6 +3161,7 @@ def api_settings():
             "call_gap": d.get("call_gap", 2), "max_global_agents": d.get("max_global_agents", 4),
             "chat_context_limit": chatsum.load_limit(),
             "chat_auto_compress": chatsum.compress_enabled(),
+            "supervisor_autonomy": str(d.get("supervisor_autonomy") or "guarded"),
             "score_provider_id": d.get("score_provider_id", ""),
             "score_model": d.get("score_model", "")}
 
@@ -3176,6 +3199,12 @@ def api_settings_save(payload: dict):
         d["chat_context_limit"] = v
     if "chat_auto_compress" in payload:
         d["chat_auto_compress"] = bool(payload.get("chat_auto_compress"))
+    # v4.26.0：总编辑自动化程度（guarded=低自动：结构级重规划找用户确认；auto=全自动）
+    if "supervisor_autonomy" in payload:
+        v = str(payload.get("supervisor_autonomy") or "guarded").strip().lower()
+        if v not in ("guarded", "auto"):
+            return JSONResponse({"error": "supervisor_autonomy 只能是 guarded/auto"}, status_code=400)
+        d["supervisor_autonomy"] = v
     # v4.18.0：评分专用模型（空 = 跟随创作模型）
     if "score_provider_id" in payload:
         d["score_provider_id"] = str(payload.get("score_provider_id") or "").strip()[:60]
