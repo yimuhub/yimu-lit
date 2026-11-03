@@ -126,11 +126,14 @@ def gen_characters(cfg):
         "你是小说人物设计师，执行 「一幕·一幕·YIMU 神笔」创作系统的 00-人物档案 生成。"
         "使用技能的 character-template.md 模板结构，参考 character-building.md 方法论：\n"
         "人物档案必须详细到可以直接指导写作：每个角色的性格核心、致命缺陷、说话风格/口头禅、恐惧/弱项、背景故事都要具体。\n"
+        "v4.25.0 商业连载纪律：主角档案必须含五要素——外在目标/内在需求/缺陷/能力与代价/边界，"
+        "缺一不立；每个重要反派必须有独立的目标、行动逻辑与主角冲突的具体原因，禁止放狠话工具人。\n"
         "只输出 markdown 档案正文（主角1-2名、反派1名、配角2-4名）。"
     )
     user_p = (f"小说配置：{json.dumps(cfg, ensure_ascii=False)}\n"
               f"【技能模板】\n{skill.guide('character-template')[:1500]}\n"
-              f"【建人方法论摘录】\n{skill.guide('character-building')[:2500]}")
+              f"【建人方法论摘录】\n{skill.guide('character-building')[:2200]}\n"
+              f"【故事引擎与主角五要素】\n{skill.guide('story-engine')[:1800]}")
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
@@ -138,13 +141,18 @@ def gen_outline(cfg, book_key=""):
     sys_p = (
         "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
         "参考 plot-structures.md 选一种经典结构。大纲必须人物驱动、冲突递进、每章有钩子。\n"
-        "输出 markdown，必须包含：## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|悬念钩子|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
+        "v4.25.0 商业连载纪律：大纲开头必须有「## 故事承诺」一节——读者为什么点开/前十章如何初步兑现/"
+        "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
+        "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果），不许只把敌人换成更高境界。\n"
+        "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|悬念钩子|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
         "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
         "章节数 = 配置里的 chapters。只输出 markdown。"
     )
     user_p = (f"小说配置：{json.dumps(cfg, ensure_ascii=False)}\n"
               f"【技能模板】\n{skill.guide('outline-template')[:2000]}\n"
-              f"【情节结构方法摘录】\n{skill.guide('plot-structures')[:3000]}")
+              f"【情节结构方法摘录】\n{skill.guide('plot-structures')[:2800]}\n"
+              f"【故事引擎与承诺契约】\n{skill.guide('story-engine')[:1400]}\n"
+              f"【平台适配要点】\n{skill.guide('platform-fit')[:900]}")
     planner_skills = agent_skills_block("planner", cfg, "P0")
     if planner_skills:
         sys_p += "\n\n" + planner_skills
@@ -198,6 +206,8 @@ def _writing_system(ctx):
         "【对话写法】\n" + skill.guide("dialogue-writing")[:1800],
         "【扩充（字数不足时，不注水）】\n" + skill.guide("content-expansion")[:1500],
         "【反 AI 腔（边写边去腔）】\n" + skill.anti_slop()[:1100],
+        # v4.25.0：商业连载纪律——因果链合法推动方式 + 爽点五条件 + 单章任务底线
+        "【因果与爽点纪律】\n" + skill.guide("causality-and-satisfaction")[:1500],
     ]
     if no and no <= 3:
         parts.append("【黄金三章门（本章在前 3 章）】\n" + skill.golden3()[:800])
@@ -428,7 +438,13 @@ SCORE_RUBRIC = (
     "  4-6 AI 腔明显或表达平庸；0-3 大量套话、机器味重。\n"
     "· 读者体验：9-10 欲罢不能、钩子有力；7-8 顺畅有吸引力；\n"
     "  4-6 平淡想跳读；0-3 读不下去。\n"
-    "判分纪律：先按锚点定档，再在档内微调；不得无证据给高分，也不得无证据压分。")
+    "判分纪律：先按锚点定档，再在档内微调；不得无证据给高分，也不得无证据压分。\n"
+    # v4.25.0：商业连载章节五项快评（诊断用，得分供 weak/evidence 佐证，不改六维口径）
+    "【章节五项快评（每项 0-2 分，累计 10 分；在 verdict 前先给五项分）】\n"
+    "①本章任务是否清楚；②是否有真实事件变化（局势/关系/认知至少一项变了）；\n"
+    "③主角是否有主动行动或有效反应；④是否给读者情绪/信息/情节回报；⑤结尾是否自然引出下一步。\n"
+    "五项累计 <7 分：在 weak 里点出最弱项并在 evidence 里给原文证据；"
+    "过渡章/情绪章按其功能评，不用刺激程度一刀切。")
 
 
 def _target_words(ctx):
