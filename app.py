@@ -265,8 +265,10 @@ def chat(session_id, message, key=None, digest=None):
             return "\n".join(reply)
     # ---- options 阶段 ----
     if s["state"] == "options" and s.get("cfg"):
-        _trace("options-branch", msg=msg[:40], starts134=msg.startswith(("1", "3", "4")))
-        if msg.startswith(("1", "3", "4")) or msg in ("确认", "快车道", "直接写", "随机"):
+        _trace("options-branch", msg=msg[:40], starts134=msg.startswith(("1", "2", "3", "4")))
+        # v4.24.16 修复死分支：「2」（快车道）此前被挡在外层准入元组之外——
+        # 内层 if msg.startswith("2") 永不可达，用户回复「2」只会得到「请回复 1/2/3/4」
+        if msg.startswith(("1", "2", "3", "4")) or msg in ("确认", "快车道", "直接写", "随机"):
             cfg = s["cfg"]
             if msg.startswith("3") and len(msg) > 2:
                 # 合并调整意见（带忙锁，防重复投递双跑 LLM）
@@ -452,6 +454,13 @@ def _apply_title(key, title):
     if target != proj.path:
         os.rename(proj.path, target)
     new_key = os.path.basename(target)
+    # v4.24.16 修复：目录改名后必须持久化别名——此前只更新内存 PROJECT_INDEX/SESSIONS，
+    # 服务重启后所有持旧 key 的标签页/书签全部 404「项目不存在」
+    # （writer.pick_title 的改名路径早就调 record_rename，这里补齐同款）。
+    try:
+        writer.record_rename(key, new_key)
+    except Exception:
+        pass
     proj.path = target
     proj.name = title
     # 计划文件改名：v3.3.0 修复——此前硬编码写 02-写作计划.json 的 novelName，
@@ -775,7 +784,7 @@ def _chat_attached(s, proj, msg):
                     "已暂停" if st.get("paused") else
                     "已完结" if st.get("state") == "completed" else "在库待写")
             # 单位随文体：剧本=场、诗词=轮、散文=阶段、小说=章
-            _unit = {"s_": "场", "p_": "轮", "e_": "阶段"}.get(str(key)[:2], "章")
+            _unit = {"s_": "场", "p_": "轮", "e_": "阶段", "c_": "篇", "n_": "阶段", "k_": "阶段", "o_": "阶段"}.get(str(key)[:2], "章")   # v4.24.16：单文档引擎按阶段计
             return (f"📖 《{name}》{mark}：{st['done']}/{st['total']} {_unit}，已写 {st['words']} 字。"
                     f"可随时问「进度」，或直接下修改指令。")
 
@@ -1678,10 +1687,12 @@ _REWRITING = {}  # key -> {"running":bool,"result":dict}
 
 def _start_rewrite(key, chapters=None, dimensions=None, max_rounds=6):
     """v2.3.0：局部重写统一入口（/api/rewrite 端点与 attached 对话共用，不重复造轮子）。
-    已在跑则返回 False；否则后台线程跑 writer.run_guided_rewrite，状态进 _REWRITING 表。"""
-    if _REWRITING.get(key, {}).get("running"):
-        return False
-    _REWRITING[key] = {"running": True, "result": None}
+    已在跑则返回 False；否则后台线程跑 writer.run_guided_rewrite，状态进 _REWRITING 表。
+    v4.24.16：检查+置位加注册表互斥（与 /api/parallel-write 同款 TOCTOU 修复）。"""
+    with _RUNNING_REG_LOCK:
+        if _REWRITING.get(key, {}).get("running"):
+            return False
+        _REWRITING[key] = {"running": True, "result": None}
 
     def _job():
         try:
@@ -1829,12 +1840,26 @@ def api_lib_trash(key: str):
 def api_lib_restore(key: str):
     return writer.restore_book(key)
 
+def _after_book_gone(key: str):
+    """v4.24.16：作品彻底删除后的运行期注册表清理——否则 PROJECT_INDEX 仍持有指向
+    已删路径的 Project（缓存命中直接返回），queue_action 等写入路径会把已删目录
+    连同空壳计划「复活」；活动流与并行/改写状态也要一并清。"""
+    PROJECT_INDEX.pop(key, None)
+    for reg in (_PARALLEL_RUNNING, _REWRITING, _RELEASE_RUNNING, _ONESHOT_RUNNING,
+                _PARA_RW_RUNNING):
+        try:
+            reg.pop(key, None)
+        except Exception:
+            pass
+
+
 @app.delete("/api/library/{key}/purge")
 def api_lib_purge(key: str, confirm: str = ""):
     """彻底删除（不可逆）：confirm 必须与作品显示名完全一致。"""
     res = writer.purge_book(key, confirm)
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
+    _after_book_gone(key)
     return res
 
 @app.post("/api/library/{key}/rename")
@@ -1849,6 +1874,7 @@ def api_lib_delete(key: str, hard: bool = False, confirm: str = ""):
     res = writer.purge_book(key, confirm)
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
+    _after_book_gone(key)
     return res
 
 @app.post("/api/library/batch")
@@ -2331,10 +2357,23 @@ def api_book_agents_set(payload: dict):
         # v4.20：is_known_agent 覆盖内置 + 自定义岗位（此前自定义岗位加不进本书名单）
         if a and (_ag.is_known_agent(a) or str(key)[:2] == "s_"):
             cleaned.append(a)
-    plan = _read_book_plan(key)
-    plan.setdefault("config", {})["agents"] = cleaned
-    if not _write_book_plan(key, plan):
-        return JSONResponse({"error": "计划文件写入失败"}, status_code=500)
+    # v4.24.12：读-改-写纳入按书串行原语——协作页签连点/双端并发改同一本书时不再互相覆盖；
+    # 读失败时绝不整文件覆盖写（否则一次瞬时读错误就会把整本计划清成只剩 config.agents）。
+    with writer._acq_book(key):
+        fp = os.path.join(writer._project_dir(key),
+                          _BOOK_PLAN_BY_PREFIX.get(str(key)[:2], "02-写作计划.json"))
+        plan, read_ok = _read_book_plan(key), False
+        try:
+            with open(fp, encoding="utf-8") as f:
+                import json as _json
+                read_ok = isinstance(_json.load(f), dict)
+        except Exception:
+            read_ok = False
+        if not read_ok:
+            return JSONResponse({"error": "计划文件不可读，已拒绝写入（防止覆盖整本计划）"}, status_code=409)
+        plan.setdefault("config", {})["agents"] = cleaned
+        if not _write_book_plan(key, plan):
+            return JSONResponse({"error": "计划文件写入失败"}, status_code=500)
     return {"ok": True, "key": key, "agents": cleaned}
 
 
@@ -2633,8 +2672,11 @@ def api_book_live(key: str, request: Request):
         "live_log": live,
         "updated_at": int(time.time()),
         # v4.21.0：创作活动流增量 + 当前流式步骤（对话内 Agent 逐条动作/思考/产出）
+        # v4.24.16：stream_think_offset 透传——stream_state 早就设计了独立的思维链
+        # 增量游标，但 HTTP 层从未接（B 支持的字段 A 不传），思维链每 1.5s 全量重发
         "steps": steps_mod.since(key, _q_int(request, "steps_cursor")),
-        "stream": steps_mod.stream_state(key, _q_int(request, "stream_offset")),
+        "stream": steps_mod.stream_state(key, _q_int(request, "stream_offset"),
+                                         _q_int(request, "stream_think_offset")),
     }
 
 
@@ -2748,15 +2790,28 @@ def api_consistency_audit(key: str):
 
 @app.post("/api/consistency-audit/run")
 def api_consistency_audit_run(payload: dict):
-    """v4.24.4：手动触发一致性巡检（异步线程，防重入）。"""
+    """v4.24.4：手动触发一致性巡检。
+    v4.24.16 修复：docstring 写着「异步线程」实际是同步执行——run_audit 内含分钟级
+    LLM 仲裁（审稿人岗 chat_json），请求线程会挂住数分钟占用 uvicorn worker。
+    对齐 chat 意图路径：防重入检查 + 后台线程，接口立即返回。"""
     key = str((payload or {}).get("key") or "")
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    r = audit_mod.run_audit(key, "manual")
-    if r is None:
+    if audit_mod._RUNNING.get(key):
         return {"ok": True, "running": True, "msg": "巡检已在进行中，请稍候"}
-    return {"ok": True, "report": r}
+
+    def _job():
+        try:
+            audit_mod.run_audit(key, "manual")
+        except Exception as e:
+            try:
+                proj.log(f"⚠️ 巡检异常：{e}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_job, daemon=True).start()
+    return {"ok": True, "running": True, "msg": "已启动一致性巡检：完成后活动流会汇报，报告可在右栏查看。"}
 
 
 @app.get("/api/chapter-tokens")
@@ -3533,15 +3588,27 @@ def api_bkchat_branch(key: str, payload: dict):
 
 
 @app.get("/api/feedback")
-def api_feedback_stats():
-    """反馈总账（设置→学习报告用）。"""
-    fb_path = os.path.join(writer.PROJECTS_DIR, "_feedback.json")
-    if os.path.exists(fb_path):
-        try:
-            return json.load(open(fb_path, encoding="utf-8"))
-        except Exception:
-            pass
-    return {"total": 0, "up": 0, "down": 0, "issue": 0, "notes": []}
+def api_feedback_list_compat(key: str = "", medium: str = "", stage: str = "", limit: int = 100):
+    """v4.24.16 修复路由遮蔽：app.py 与 bot/v2api.py 各注册了一个 GET /api/feedback——
+    FastAPI 先注册者赢，v2api 的列表版（items/summary/focus，evolution.js 的
+    feedbackList 消费）永远不可达，前端只能拿到这里的 stats 形状靠容错降级。
+    现在这里直接转发给 feedback 模块的完整实现；stats 形状保留在 v.notes 里向后兼容。"""
+    from bot import feedback as _fb
+    try:
+        items = _fb.list_feedback(key, medium, stage, min(max(int(limit), 1), 500))
+        summary = _fb.aggregate()
+        return {"ok": True, "items": items, "summary": summary,
+                "total": summary.get("total", 0), "up": summary.get("up", 0),
+                "down": summary.get("down", 0), "issue": summary.get("issue", 0),
+                "notes": items}
+    except Exception:
+        fb_path = os.path.join(writer.PROJECTS_DIR, "_feedback.json")
+        if os.path.exists(fb_path):
+            try:
+                return json.load(open(fb_path, encoding="utf-8"))
+            except Exception:
+                pass
+        return {"total": 0, "up": 0, "down": 0, "issue": 0, "notes": []}
 
 @app.get("/api/status")
 def api_status(key: str):
@@ -3768,6 +3835,11 @@ def api_continue(payload: dict):
         fn = getattr(mod, "resume_project", None)
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
+        # v4.24.16 修复：无防重入——对比 chat 意图路径与 /api/express-write 都有
+        # pipeline_running 守卫，唯独这里没有；双击「继续」会起两条恢复流水线
+        # 并发写同一本书的场次/阶段文件。
+        if writer.pipeline_running(key):
+            return {"ok": True, "msg": "该书正在创作中，进度见工作台运行日志。", "running": True, "paused": False}
         _nonnovel_set_paused(key, False)   # v4.20.0：继续前清掉暂停位（统一「继续=接着跑」语义）
         def _bg():
             writer.mark_pipeline(key, True)   # v3.1.0：恢复期间「创作中」可见
@@ -3825,6 +3897,10 @@ def api_branch(payload: dict):
     src = _get_project(key)
     if not src:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    # v4.24.16 修复：创作中的书直接 copytree 会产生撕裂副本（计划说完成、章节文件是半截）。
+    # 与 /api/express-write 对运行中的口径一致：要求先暂停。
+    if writer.pipeline_running(key):
+        return JSONResponse({"error": "该书正在创作中，请先暂停再分支"}, status_code=409)
     plan = src.plan()
     if not plan:
         return JSONResponse({"error": "仅支持小说作品的分支"}, status_code=400)
@@ -4236,6 +4312,8 @@ def api_global_model_set(payload: dict):
 
 # ---------- v0.6 B：并行章节创作（单本书内 N 个 Agent 分章齐写 + 总架构对齐） ----------
 _PARALLEL_RUNNING = {}
+# v4.24.16：运行标志注册表的检查-置位互斥（_PARALLEL_RUNNING/_REWRITING/_ONESHOT_RUNNING 共用）
+_RUNNING_REG_LOCK = threading.Lock()
 
 @app.post("/api/parallel-write")
 def api_parallel_write(payload: dict):
@@ -4246,23 +4324,29 @@ def api_parallel_write(payload: dict):
     proj = _get_project(key)
     if not proj or not proj.plan():
         return JSONResponse({"ok": False, "error": "项目不存在或未创建"}, status_code=404)
-    if _PARALLEL_RUNNING.get(key, {}).get("running"):
-        return {"ok": True, "running": True, "msg": "该书并行创作进行中…"}
-    _PARALLEL_RUNNING[key] = {"running": True, "result": None, "workers": nworkers}
+    # v4.24.16 修复 TOCTOU：检查+置位之间无锁——两个并发请求都能过检查，
+    # 同一本书起两条并行写作线程（v4.7.1 已给 /api/release 修过同款，这里补齐）。
+    with _RUNNING_REG_LOCK:
+        if _PARALLEL_RUNNING.get(key, {}).get("running"):
+            return {"ok": True, "running": True, "msg": "该书并行创作进行中…"}
+        _PARALLEL_RUNNING[key] = {"running": True, "result": None, "workers": nworkers}
     def _job():
         try:
             if key.startswith("s_"):
                 # v4.16.7：剧本走多岗位并行分场齐写（场次结构独立引擎）
+                # v4.24.12 修复：此前在后台线程里再起一个嵌套线程然后直接 return——
+                # 内层线程跑完没人收尾，_PARALLEL_RUNNING[key] 永远 running=True，
+                # /api/parallel-log 和书页活动阶段会永久误报「并行创作进行中」；
+                # 且项目缺失时在线程里 return JSONResponse 无人接收，用户仍被告知「创作中」。
+                # 现在 _job 本身就是后台线程，直接同步跑完并收尾。
                 import script_writer as _sw
                 sproj = _sw.get_project(key)
                 if not sproj:
-                    return JSONResponse({"error": "剧本项目不存在"}, status_code=404)
-                _sp2 = threading.Thread(
-                    target=lambda: _sw._write_loop_parallel_scenes(sproj, n_workers=nworkers, rounds=payload.get("rounds")),
-                    daemon=True)
-                _sp2.start()
-                return {"ok": True, "running": True, "workers": nworkers,
-                        "msg": f"⚡ 剧本并行创作中：{nworkers} 个岗位分场齐写（写完一个立即取下一场）"}
+                    _PARALLEL_RUNNING[key] = {"running": False, "result": {"error": "剧本项目不存在"}, "workers": nworkers}
+                    return
+                _sw._write_loop_parallel_scenes(sproj, n_workers=nworkers, rounds=payload.get("rounds"))
+                _PARALLEL_RUNNING[key] = {"running": False, "result": "ok", "workers": nworkers}
+                return
             writer._write_loop_parallel(proj, n_workers=nworkers, rounds=payload.get("rounds"))
             _PARALLEL_RUNNING[key] = {"running": False, "result": "ok", "workers": nworkers}
         except Exception as e:
@@ -4287,10 +4371,12 @@ def api_one_shot(payload: dict):
     key = payload.get("key"); proj = _get_project(key)
     if not proj or not proj.plan():
         return JSONResponse({"ok": False, "error": "项目不存在或未创建"}, status_code=404)
-    if _ONESHOT_RUNNING.get(key, {}).get("running"):
-        return {"ok": True, "running": True, "msg": "✨ 一键完稿进行中（看对话区本书活动卡）"}
-    auto_rw = bool(payload.get("auto_rewrite", True)); auto_rel = bool(payload.get("auto_release", True))
-    _ONESHOT_RUNNING[key] = {"running": True}
+    # v4.24.16：检查+置位加注册表互斥（TOCTOU，同 /api/parallel-write）
+    with _RUNNING_REG_LOCK:
+        if _ONESHOT_RUNNING.get(key, {}).get("running"):
+            return {"ok": True, "running": True, "msg": "✨ 一键完稿进行中（看对话区本书活动卡）"}
+        auto_rw = bool(payload.get("auto_rewrite", True)); auto_rel = bool(payload.get("auto_release", True))
+        _ONESHOT_RUNNING[key] = {"running": True}
     def _job():
         try:
             writer.one_shot_begin(key)   # v0.7：期间 成书 不再二次自动门控

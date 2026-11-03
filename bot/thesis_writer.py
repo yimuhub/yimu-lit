@@ -294,6 +294,7 @@ def resume_project(key: str) -> Optional["ThesisProject"]:
             proj.log("✅ 论文已定稿，无需恢复")
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
+        llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账与流式接线全部失活
         _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
@@ -349,6 +350,16 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
             return plan
         proj.log(f"✍️ T2：撰写第 {no} 章「{ch.get('title')}」…")
         body = write_chapter(cfg, plan.get("outline") or {}, ch, plan.get("refs") or [])
+        # v4.24.16 修复：_gen 超时/异常会静默返回空串——此前空章照样写盘并标 completed，
+        # resume 因 completed 跳过永不重试，T5 定稿把空章拼进正式论文。
+        # 现在空稿标 failed 不写盘，resume（无 completed 标记）会自动重写该章。
+        if not (body or "").strip():
+            proj.log(f"⚠️ 第 {no} 章生成失败（空稿），标记 failed——点「继续」可重写本章")
+            plan.setdefault("chapterStatus", {})[str(no)] = "failed"
+            meta["stage"] = "T2"
+            plan["meta"] = meta
+            proj.save_plan(plan)
+            continue
         _write(os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md"), body)
         plan.setdefault("chapterStatus", {})[str(no)] = "completed"
         meta["stage"] = "T2"
@@ -373,10 +384,19 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
 
     # ---- T4 降 AIGC 润色 ----
     # v4.24.0：极速模式跳过 T4（逐章拟人化改写），字数统计走 else 分支照常做
+    # v4.24.16：补断点标记——此前 T4 无 chapterStatus 标记，中途中断后 resume
+    # 会对所有章再跑一遍全文改写（多次恢复=多次叠加改写，行文漂移+双倍 token）。
     total_words = 0
     report_lines = ["# 降 AIGC 润色报告\n"]
     _expr = express.on(cfg)
-    if _expr:
+    if plan.get("chapterStatus", {}).get("T4") == "completed":
+        proj.log("🧪 T4：已完成（断点恢复，跳过）")
+        for ch in chapters:
+            no = int(ch.get("no") or 0)
+            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            if os.path.exists(fp):
+                total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
+    elif _expr:
         proj.log("⚡ 极速模式：跳过 T4 降 AIGC 润色（保留引用核查结果）")
         for ch in chapters:
             no = int(ch.get("no") or 0)
@@ -402,6 +422,7 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
             fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
             if os.path.exists(fp):
                 total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
+    plan.setdefault("chapterStatus", {})["T4"] = "completed"   # v4.24.16：断点标记
     meta["stage"] = "T5"
     proj.save_plan(plan)
 

@@ -10,7 +10,7 @@ import re
 
 from bot.safeio import atomic_write_text, safe_join
 
-from . import llm
+from . import llm, express
 from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project
 
 F_PLAN = "其他创作计划.json"
@@ -105,6 +105,7 @@ def resume_project(key: str):
             proj.log("✅ 已定稿")
             return proj
         proj.log("▶ 断点恢复…")
+        llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账失活
         _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
@@ -127,8 +128,19 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan.setdefault("chapterStatus", {})
     proj.save_plan(plan)
 
+    # v4.24.16：暂停检查点——此前整个管线没有任何暂停位，「暂停」对该文体完全无效
+    def _hit_pause() -> bool:
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return True
+        return False
+
     # O1 大纲
     if not plan.get("outline"):
+        if _hit_pause():
+            return plan
         proj.log("📐 O1：生成大纲…")
         out = llm.chat_json([{"role": "user", "content":
             f"{tpl['outline_prompt']}\n主题：{cfg.get('title') or ''}\n要点：{cfg.get('idea') or ''}\n"
@@ -154,6 +166,8 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     os.makedirs(body_dir, exist_ok=True)
     all_text = []
     for i, sec in enumerate(sections, 1):
+        if _hit_pause():
+            return plan
         fp = os.path.join(body_dir, f"{i:02d}-{_safe(sec)}.md")
         if os.path.exists(fp):
             all_text.append(_read(fp))
@@ -183,25 +197,42 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     proj.save_plan(plan)
 
     # O3 打磨
-    proj.log("📝 O3：打磨…")
-    report = llm.chat([{"role": "user", "content":
-        "对以下内容做降AI腔+语感打磨。输出格式：先写【修改说明】要点（不超过 10 条），"
-        "然后单独一行输出 ---（三个减号分隔线），分隔线之后输出修改后的完整正文，"
-        "正文里不要出现任何说明性文字。\n"
-        + "\n\n".join(all_text)[:8000]}], cfg=cfg, stage="review", max_tokens=6000)
-    report = (report or "").strip()
-    atomic_write_text(os.path.join(pdir, F_REPORT), report or "（打磨失败）")
-    plan["chapterStatus"]["O3"] = "completed"
+    # v4.24.16 修复三连：①express 判据此前被无视（express.py 明确 other 跳 O3）；
+    # ②chapterStatus["O3"]="completed" 写了却从不读——resume 时已打磨的稿子被再次全文改写；
+    # ③O3 前无暂停检查点。
+    if _hit_pause():
+        return plan
+    polished_all = "\n\n".join(all_text)
+    if plan["chapterStatus"].get("O3") == "completed" and os.path.exists(os.path.join(pdir, F_REPORT)):
+        proj.log("📝 O3：已打磨过（断点恢复，跳过）")
+        report = _read(os.path.join(pdir, F_REPORT))
+    elif express.on(cfg):
+        proj.log("⚡ 极速模式：跳过 O3 打磨，直接定稿初稿")
+        report = "---\n" + polished_all
+        atomic_write_text(os.path.join(pdir, F_REPORT), "（极速模式：未打磨，初稿直出）")
+        plan["chapterStatus"]["O3"] = "completed"
+    else:
+        proj.log("📝 O3：打磨…")
+        report = llm.chat([{"role": "user", "content":
+            "对以下内容做降AI腔+语感打磨。输出格式：先写【修改说明】要点（不超过 10 条），"
+            "然后单独一行输出 ---（三个减号分隔线），分隔线之后输出修改后的完整正文，"
+            "正文里不要出现任何说明性文字。\n"
+            + polished_all[:8000]}], cfg=cfg, stage="review", max_tokens=6000)
+        report = (report or "").strip()
+        atomic_write_text(os.path.join(pdir, F_REPORT), report or "（打磨失败）")
+        plan["chapterStatus"]["O3"] = "completed"
     meta["stage"] = "O4"
     plan["meta"] = meta
     proj.save_plan(plan)
 
     # O4 定稿
+    if _hit_pause():
+        return plan
     proj.log("📋 O4：定稿…")
     # 定稿只收分隔线之后的正文，说明性文字留在打磨报告里
     polished = report.split("\n---\n", 1)[-1].strip() if "---" in report else ""
-    if len(polished) < len("\n\n".join(all_text)) * 0.4:
-        polished = "\n\n".join(all_text)
+    if len(polished) < len(polished_all) * 0.4:
+        polished = polished_all
     atomic_write_text(os.path.join(pdir, F_FINAL),
                       f"# {plan.get('otherName')}\n\n{polished.strip()}")
     plan["chapterStatus"]["O4"] = "completed"

@@ -779,28 +779,30 @@ def _prune(d: str, medium: str, doc_id: str) -> None:
 
 
 def _update_word_count(proj, medium: str, doc_id: str, words: int) -> None:
-    plan = proj.plan() or {}
-    if medium == "script":
-        for sc in plan.get("scenes") or []:
-            if str(_as_int(sc.get("no"))) == str(doc_id):
-                sc["wordCount"] = words
-                break
-    elif medium == "novel":
-        # v3.2.0：改稿后同步章节字数到写作计划
-        for ch in plan.get("chapters") or []:
-            if str(ch.get("chapterNumber")) == str(doc_id):
-                ch["wordCount"] = words
-                ch["editedAt"] = _now()
-                break
-    else:
-        meta = plan.setdefault("meta", {})
-        dw = meta.setdefault("docWords", {})
-        dw[str(doc_id)] = words
-        # 只有定稿改动了，全文字数才跟着变；改草稿不动成稿的字数
-        if str(doc_id) == "final":
-            meta["words"] = words
-    plan["updatedAt"] = _now()
-    proj.save_plan(plan)
+    # v4.24.16：读-改-写纳入 proj.lock 临界区——改稿应用与写作线程并发时会互相覆盖计划
+    with proj.lock:
+        plan = proj.plan() or {}
+        if medium == "script":
+            for sc in plan.get("scenes") or []:
+                if str(_as_int(sc.get("no"))) == str(doc_id):
+                    sc["wordCount"] = words
+                    break
+        elif medium == "novel":
+            # v3.2.0：改稿后同步章节字数到写作计划
+            for ch in plan.get("chapters") or []:
+                if str(ch.get("chapterNumber")) == str(doc_id):
+                    ch["wordCount"] = words
+                    ch["editedAt"] = _now()
+                    break
+        else:
+            meta = plan.setdefault("meta", {})
+            dw = meta.setdefault("docWords", {})
+            dw[str(doc_id)] = words
+            # 只有定稿改动了，全文字数才跟着变；改草稿不动成稿的字数
+            if str(doc_id) == "final":
+                meta["words"] = words
+        plan["updatedAt"] = _now()
+        proj.save_plan(plan)
 
 
 # ---------------------------------------------------------------- 落盘 / 回退

@@ -141,6 +141,12 @@ def _resume_rewrite(key, proj, task, left, batch_size=None):
     if not left:
         return None
     from . import writer
+    # v4.24.16 修复：无「已在跑」检查——重写批次进行中再点一次「继续」，第二个
+    # run_parallel_rewrite 会把第一批刚改好的章按旧快照再改一遍（白烧 token、可能把好稿改坏）。
+    prog = getattr(writer, "_PARA_RW_PROGRESS", {}).get(key)
+    if isinstance(prog, dict) and prog.get("running"):
+        return {"ok": True, "kind": "rewrite",
+                "text": "批量重写正在进行中，等它跑完即可（进度见右栏改写面板）"}
     params = task.get("params") if isinstance(task.get("params"), dict) else {}
 
     def _num(name, default):

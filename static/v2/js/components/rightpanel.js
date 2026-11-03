@@ -22,7 +22,7 @@ import {
   isMediumBench,
   verdictLabel
 } from '../core/constants.js';
-import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
+import { toast, confirmDialog, openModal, popoverMenu, registerOverlay, unregisterOverlay } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
 /* v4.22.0：collab（≈38K，含 skillCatalog）与 distill 都改为按需 import——
    两者只在用户真正点开「协作」页签 / 「蒸馏风格」时才用得到，
@@ -217,20 +217,33 @@ function featureMissing(name) {
 /* ------------------------------------------------------- v2.5.0 弹窗系统 */
 
 function _modalBox(title, bodyNode, opts = {}) {
+  /* v4.24.16 修复：右栏弹窗此前不进 core/ui 的 modalStack——按 Esc 关掉的是底下
+     的 openModal 弹窗而不是当前可见的 rp-modal；且无焦点圈禁。现在登记进统一
+     modalStack（Esc 由 app.js 的 closeTopOverlay 关最顶层），并做最小焦点管理。 */
   const overlay = h('div', { class: 'rp-modal-overlay', on: {
-    click: (e) => { if (e.target === overlay) overlay.remove(); }
+    click: (e) => { if (e.target === overlay) close(); }
   }});
-  const box = h('div', { class: 'rp-modal-box' },
+  const box = h('div', { class: 'rp-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
     h('div', { class: 'rp-modal-head' },
       h('span', { class: 'rp-modal-title', text: title }),
       h('button', { class: 'rp-modal-close', type: 'button', html: icon('x', 14),
-        on: { click: () => overlay.remove() } })
+        on: { click: () => close() } })
     ),
     h('div', { class: 'rp-modal-body' }, bodyNode)
   );
   if (opts.footer) box.append(h('div', { class: 'rp-modal-foot' }, opts.footer));
   overlay.append(box);
   document.body.append(overlay);
+  let closed = false;
+  function close() {
+    if (closed) return;
+    closed = true;
+    overlay.remove();
+    unregisterOverlay({ close });
+  }
+  registerOverlay({ close });
+  const first = box.querySelector('input, textarea, select, button:not(.rp-modal-close)');
+  if (first) setTimeout(() => { try { first.focus(); } catch { /* ignore */ } }, 0);
   return overlay;
 }
 
@@ -320,9 +333,10 @@ function showQualityDetail(ctx, work) {
               setStep(3, -1, 100, `已有评分：${first.score} 分`);
               return;
             }
-            // 轮询进度
+            // 轮询进度（v4.24.16：切书即停——评分结果只属于发起时的那本书）
             for (let i = 0; i < 240; i++) {
               await new Promise(r => setTimeout(r, 2000));
+              if (store.get().currentKey !== key) return;
               let pr;
               try { pr = await api.scoreProgress(key); } catch { continue; }
               if (!pr || !pr.running && !pr.done) continue;
@@ -1788,8 +1802,17 @@ async function openParallelRewrite(key, ctx) {
         try {
           await api.rewriteParallel({ key, chapters: picked, workers, target: threshold });
           toast('并行改写已启动', { tone: 'success', duration: 4000 });
-          /* 进度轮询 → 完成后逐章汇报进对话框 */
+          /* 进度轮询 → 完成后逐章汇报进对话框
+             v4.24.16 修复：轮询此前无总时长上限、切书/关弹窗也不停（永久 4s 轮询）。
+             加 30 分钟兜底 + 书已切换即退出（完成汇报只属于发起时的那本书）。 */
+          const startedKey = key;
+          let pollTicks = 0;
           const poll = setInterval(async () => {
+            pollTicks += 1;
+            if (store.get().currentKey !== startedKey || pollTicks > 450) {   // 450×4s = 30 分钟
+              clearInterval(poll);
+              return;
+            }
             try {
               const pr = await api.rewriteParallelProgress(key);
               if (pr.rw_running === false && (pr.done || pr.error)) {
@@ -2010,10 +2033,13 @@ async function searchReferences(ctx) {
   }
   panel.refLoading = true;
   ctx.rerenderPanel();
+  const key = store.get().currentKey;   // v4.24.16：切书竞态防护——旧书的检索结果不得画进新书
   try {
-    const res = await api.searchRefs(store.get().currentKey, q, 6);
+    const res = await api.searchRefs(key, q, 6);
+    if (store.get().currentKey !== key) return;
     panel.refHits = (res && res.items) || [];
   } catch (err) {
+    if (store.get().currentKey !== key) return;
     panel.refHits = [];
     toast(errorText(err, '检索失败'), { tone: 'danger' });
   } finally {
@@ -2498,7 +2524,9 @@ function skillsPane(ctx) {
             class: 'btn btn-ghost btn-sm',
             type: 'button',
             text: '驳回',
-            on: async () => {
+            /* v4.24.16 修复：on 传成了裸函数——dom.js 只认 {click: fn}，此前按钮没有任何
+               click 监听，点「驳回」毫无反应（同页 evolution.js 的同功能按钮是正确写法） */
+            on: { click: async () => {
               try {
                 await api.rejectSkill(cand.id, '');
                 toast('已驳回');
@@ -2506,7 +2534,7 @@ function skillsPane(ctx) {
               } catch (err) {
                 toast(errorText(err, '驳回失败'), { tone: 'danger' });
               }
-            }
+            } }
           })
         )
       );

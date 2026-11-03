@@ -36,7 +36,7 @@ CLASSICS = [
 
 
 @pytest.fixture(autouse=True)
-def _mock_llm(monkeypatch):
+def _mock_llm_local(monkeypatch):   # v4.24.16：改名避开 conftest 同名 autouse（同名即遮蔽，conftest 的 stub 面在这些文件里从未生效——烧网事故病灶）
     monkeypatch.setattr(llm, "chat", lambda *a, **k: "白日依山尽\n黄河入海流\n欲穷千里目\n更上一层楼",
                         raising=False)
     monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {

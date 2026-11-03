@@ -161,7 +161,14 @@ def _write_cards(proj, cards: dict[int, dict]) -> None:
     for n in sorted(cards):
         card = _norm_card(cards[n], n)
         lines.append(json.dumps(card, ensure_ascii=False, separators=(",", ":")))
-    atomic_write_text(os.path.join(_pdir(proj), CARD_FILE), "\n".join(lines) + ("\n" if lines else ""))
+    # v4.24.16：与 _upsert_summary_line 同款锁——并行写章各自读改写整份章卡会互相覆盖
+    payload = "\n".join(lines) + ("\n" if lines else "")
+    lock = getattr(proj, "lock", None)
+    if lock is not None:
+        with lock:
+            atomic_write_text(os.path.join(_pdir(proj), CARD_FILE), payload)
+    else:
+        atomic_write_text(os.path.join(_pdir(proj), CARD_FILE), payload)
 
 
 def _norm_status_card(v) -> str:
@@ -306,25 +313,47 @@ _VOL_TEMPLATES = {
 }
 
 
-def _arc_words_for(cfg: dict) -> list:
-    """v2.5.0: 根据题材/类型选择弧名模板，避免所有作品千篇一律。"""
+# v4.24.16 修复：题材化卷/弧名模板此前用英文 key 对中文 genre 做子串匹配——
+# 向导给的 genre 全是中文（悬疑/刑侦、玄幻…），除手填英文外全部落 default，v2.5.0 特性静默失效。
+# 现经 skillkit._genre_key 归一成英文 key，再补引擎模板与 craft key 的别名映射。
+_TEMPLATE_KEY_ALIASES = {
+    "xuanhuan": "fantasy", "xianxia": "fantasy", "wuxia": "history",
+    "military": "history", "horror": "mystery", "workplace": "urban",
+}
+
+
+def _genre_template_key(cfg: dict) -> str:
+    """中文/英文题材名 → 模板 key（fantasy/urban/mystery/romance/history/scifi）；未命中返回 ''。"""
     genre = ""
     if isinstance(cfg, dict):
-        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "").lower()
-    for key in _ARC_TEMPLATES:
-        if key in genre:
-            return _ARC_TEMPLATES[key]
+        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "")
+    if not genre:
+        return ""
+    try:
+        from .skillkit import _genre_key
+        gkey = _genre_key(genre)
+    except Exception:
+        gkey = genre.strip().lower()
+    if not gkey or gkey == "_index":
+        return ""
+    if gkey in _TEMPLATE_KEY_ALIASES:
+        return _TEMPLATE_KEY_ALIASES[gkey]
+    return gkey
+
+
+def _arc_words_for(cfg: dict) -> list:
+    """v2.5.0: 根据题材/类型选择弧名模板，避免所有作品千篇一律。"""
+    gkey = _genre_template_key(cfg)
+    if gkey and gkey in _ARC_TEMPLATES:
+        return _ARC_TEMPLATES[gkey]
     return _ARC_TEMPLATES["default"]
 
 
 def _vol_words_for(cfg: dict) -> list:
     """v2.5.0: 根据题材/类型选择卷名模板。"""
-    genre = ""
-    if isinstance(cfg, dict):
-        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "").lower()
-    for key in _VOL_TEMPLATES:
-        if key in genre:
-            return _VOL_TEMPLATES[key]
+    gkey = _genre_template_key(cfg)
+    if gkey and gkey in _VOL_TEMPLATES:
+        return _VOL_TEMPLATES[gkey]
     return _VOL_TEMPLATES["default"]
 _STAGES = [(0.0, "开局铺陈"), (0.15, "试炼升级"), (0.35, "全面对抗"),
            (0.55, "至暗低谷"), (0.72, "绝地反攻"), (0.88, "终局收束")]
@@ -1659,6 +1688,16 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
 
 def _upsert_summary_line(proj, n: int, record: dict) -> None:
     path = os.path.join(_pdir(proj), CHAPTER_SUMMARY)
+    # v4.24.16 修复：并行写章时多线程同时 读全量→改自己那行→整文件重写 会互相覆盖丢摘要；
+    # 与 _append_replan_log 同款——能拿 proj.lock 就上锁（串行/老调用方无 lock 属性时退化为原子写）。
+    lock = getattr(proj, "lock", None)
+    if lock is not None:
+        with lock:
+            return _upsert_summary_line_locked(path, n, record)
+    return _upsert_summary_line_locked(path, n, record)
+
+
+def _upsert_summary_line_locked(path: str, n: int, record: dict) -> None:
     rows: dict[int, dict] = {}
     try:
         for line in open(path, encoding="utf-8").read().splitlines():

@@ -859,9 +859,14 @@ def wizard_payload(vocab: dict | None = None) -> dict:
                     fld["options"] = (novel_genre_options(vocab) if src == "genres"
                                       else _opts(vocab.get(src) or []))
         # v4.13.0：注入该文体的专属 Agent 词表
+        # v4.24.16 修复：此前写死 basic[0]——v4.15.1 起 basic[0] 是 penname（笔名），
+        # agents 词表会被盖到笔名字段上；改按 key 定位（app.py 早已因同样的事故改按 key 查）。
         agents_key = f"agents_{key}"
         if agents_key in vocab:
-            sections["basic"][0]["options"] = _opts(vocab[agents_key])
+            for _fld in sections["basic"]:
+                if _fld.get("key") == "agents":
+                    _fld["options"] = _opts(vocab[agents_key])
+                    break
         out[key] = sections
     return out
 

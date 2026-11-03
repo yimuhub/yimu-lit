@@ -391,7 +391,9 @@ def build(proj, ch, cfg=None, references=None) -> dict:
     if cfg.get("lorebook", True):
         try:
             from . import lorebook
-            lore_relevant = lorebook.relevant(pdir, f"{title} {card.get('goal') or ''[:300]} {prev_tail[-400:]}")
+            # v4.24.16 修复运算符优先级：原 `card.get('goal') or ''[:300]` 中 or 低于下标，
+            # goal 非空时整段不截断直接进检索 query（超长 goal 污染 lorebook 召回）
+            lore_relevant = lorebook.relevant(pdir, f"{title} {(card.get('goal') or '')[:300]} {prev_tail[-400:]}")
         except Exception:
             lore_relevant = ""
 

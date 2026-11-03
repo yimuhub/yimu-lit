@@ -50,8 +50,28 @@ class MiniWriterProject:
     def status(self) -> dict:
         plan = self.plan() or {}
         meta = plan.get("meta") or {}
-        total = int(plan.get("totalChapters") or len((plan.get("outline") or {}).get("chapters") or []))
-        done = sum(1 for v in (plan.get("chapterStatus") or {}).values() if v == "completed")
+        # v4.24.16：进度口径修正——此前 done 数阶段（≤5 个）而 total 用故事单元数甚至恒 0，
+        # 前端出现「5/3」「5/0」。
+        # · children（逐单元落盘）：done=已写单元文件数，total=单元数（口径与「篇」一致）
+        # · news/copy/other（单文档多阶段）：按 stageTotal 阶段口径
+        # · 老计划无新字段：走旧口径
+        if self.MEDIUM == "children":
+            total = int(plan.get("totalChapters")
+                        or len((plan.get("outline") or {}).get("sections") or []))
+            body_dir = os.path.join(self.path, "02-正文")
+            done = 0
+            try:
+                if os.path.isdir(body_dir):
+                    done = sum(1 for fn in os.listdir(body_dir) if fn.endswith(".md"))
+            except Exception:
+                done = 0
+        elif int(plan.get("stageTotal") or 0):
+            total = int(plan.get("stageTotal"))
+            done = sum(1 for v in (plan.get("chapterStatus") or {}).values()
+                       if v in ("completed", "skipped"))
+        else:
+            total = int(plan.get("totalChapters") or len((plan.get("outline") or {}).get("chapters") or []))
+            done = sum(1 for v in (plan.get("chapterStatus") or {}).values() if v == "completed")
         if plan.get("status") == "completed":
             done = total
         return {
@@ -98,6 +118,10 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
     meta = plan["meta"]
     plan["config"] = {k: v for k, v in cfg.items() if k != "api_key"}
     plan.setdefault("chapterStatus", {})
+    # v4.24.16：进度口径修正——阶段式管线的 done 数的是阶段（≤stageTotal 个），
+    # total 却曾用 totalChapters（故事单元数，children 2-6 个）甚至恒 0（news/copy 无大纲），
+    # 前端会出现「5/0」「5/3」。管线启动时记录阶段总数，status() 优先按阶段口径。
+    plan["stageTotal"] = len(stages)
     from . import steps as _steps
     from . import express as _express
     import time as _time
@@ -145,7 +169,15 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
                     title=f"{code} {label} 完成" if not _stage_err else f"{code} 失败（不阻断后续）",
                     chapter=0, ms=int((_time.time() - _t0) * 1000),
                     output=_stage_err or "")
-    plan["status"] = "completed"
+    # v4.24.16 修复：有阶段失败不再谎报「已完成」（此前 except 只记 failed 照样 completed，
+    # 一本空书显示「已完成」）——置 paused 给出真实重试路径：点「继续」跳过已完成阶段、
+    # 只重跑 failed 阶段（chapterStatus 断点语义本来就支持）。
+    _failed = [c for c, v in (plan.get("chapterStatus") or {}).items() if v == "failed"]
+    if _failed:
+        plan["status"] = "paused"
+        proj.log(f"⚠️ 有 {len(_failed)} 个阶段失败（{'、'.join(_failed)}），点「继续」可只重跑失败阶段")
+    else:
+        plan["status"] = "completed"
     meta["stage"] = "F"
     proj.save_plan(plan)
     proj.log(done_msg)

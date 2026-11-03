@@ -27,7 +27,7 @@ SCENE_MD = """| 场次 | 内/外 | 地点 | 时间 | 出场 | 道具 | 前提 | 
 
 
 @pytest.fixture(autouse=True)
-def _mock_llm(monkeypatch):
+def _mock_llm_local(monkeypatch):   # v4.24.16：改名避开 conftest 同名 autouse（同名即遮蔽，conftest 的 stub 面在这些文件里从未生效——烧网事故病灶）
     monkeypatch.setattr(llm, "chat", lambda *a, **k: "内景  地点  日\n\n某人走进来。", raising=False)
     monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {
         "scores": {"前提": 8, "结构": 7, "人物": 8, "对白": 7, "格式": 8, "可行性": 8},

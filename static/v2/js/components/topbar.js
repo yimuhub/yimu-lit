@@ -247,7 +247,7 @@ function chapterLabel(medium, chapter) {
   const n = chapter || 1;
   const units = {
     novel: '章', script: '场', poetry: '首', prose: '阶段',
-    thesis: '章', children: '篇', news: '篇', copy: '篇', other: '节'
+    thesis: '章', children: '篇', news: '阶段', copy: '阶段', other: '阶段'
   };
   const u = units[medium] || '章';
   return `第 ${n} ${u}`;

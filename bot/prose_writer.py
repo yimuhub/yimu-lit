@@ -563,14 +563,20 @@ def resume_project(key: str) -> ProseProject | None:
     elif not polished.strip():
         if _hit_pause():
             return proj
-        proj.log("🔍 阶段 A：去味与精修…")
-        polished = gen_polish(draft, cfg)
-        if not polished.strip():
-            polished = draft
-        polished, slop_rep = slop_pass(polished, cfg)
-        if slop_rep:
-            proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
-                     f"{slop_rep.get('summary', '')}")
+        # v4.24.16 修复：极速书的断点恢复此前会补跑 A 段（去味+精修+AI腔扫描）——
+        # 与 create_project 的极速分支不一致，违背「极速=初稿即定稿」约定。
+        if express.on(cfg):
+            proj.log("⚡ 极速模式：跳过 A 去味与精修（初稿即定稿）")
+            polished, slop_rep = draft, {}
+        else:
+            proj.log("🔍 阶段 A：去味与精修…")
+            polished = gen_polish(draft, cfg)
+            if not polished.strip():
+                polished = draft
+            polished, slop_rep = slop_pass(polished, cfg)
+            if slop_rep:
+                proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
+                         f"{slop_rep.get('summary', '')}")
         _write(os.path.join(pdir, F_SLOP), polished.strip() + "\n")
         plan["meta"]["slop"] = {"depth": str(cfg.get("slop_depth") or "standard"),
                                 "verdict": slop_rep.get("verdict", ""),

@@ -150,24 +150,28 @@ def book_skill_bindings(pdir):
 
 def set_book_skills(pdir, agent, names):
     """把某本书的岗位技能绑定写进 02-写作计划.json 的 meta.agent_skills。
-    空列表 = 清空该岗位的本书绑定（回落全局绑定）。"""
-    import json, os, datetime
+    空列表 = 清空该岗位的本书绑定（回落全局绑定）。
+    v4.24.16：读-改-写纳入按书串行锁——协作页签操作与写作线程并发时不再互相覆盖整份计划。"""
+    import json, os, datetime, threading
     from .safeio import atomic_write_json as _aw
+    from .writer import _acq_book
     cleaned = _clean_skills(names)
     _check_skills_exist(cleaned)
     fp = os.path.join(pdir, "02-写作计划.json")
-    try:
-        plan = json.load(open(fp, encoding="utf-8"))
-    except Exception:
-        raise ValueError("作品计划缺失或不可读（仅支持小说作品的按作品绑定）") from None
-    meta = plan.setdefault("meta", {})
-    binds = meta.get("agent_skills")
-    if not isinstance(binds, dict):
-        binds = {}
-    binds[agent] = cleaned
-    meta["agent_skills"] = binds
-    plan["updatedAt"] = datetime.datetime.now().isoformat()
-    _aw(fp, plan)
+    key = os.path.basename(pdir)
+    with _acq_book(key):
+        try:
+            plan = json.load(open(fp, encoding="utf-8"))
+        except Exception:
+            raise ValueError("作品计划缺失或不可读（仅支持小说作品的按作品绑定）") from None
+        meta = plan.setdefault("meta", {})
+        binds = meta.get("agent_skills")
+        if not isinstance(binds, dict):
+            binds = {}
+        binds[agent] = cleaned
+        meta["agent_skills"] = binds
+        plan["updatedAt"] = datetime.datetime.now().isoformat()
+        _aw(fp, plan)
     return binds
 
 def _clean_skills(names):

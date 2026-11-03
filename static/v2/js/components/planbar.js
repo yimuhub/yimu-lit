@@ -403,7 +403,7 @@ export function renderPlanBar({ work, plan, ctx, onOpenPlan }) {
   /* v4.14.0：章节标签按文体定制（小说用「章」、剧本用「场」、诗词用「首」…） */
   const MEDIUM_UNITS = {
     novel: '章', script: '场', poetry: '首', prose: '阶段',
-    thesis: '章', children: '篇', news: '篇', copy: '篇', other: '节'
+    thesis: '章', children: '篇', news: '阶段', copy: '阶段', other: '阶段'
   };
   const unit = MEDIUM_UNITS[work.medium] || '章';
   let chapterLabel = `第 ${Math.min(done + 1, total || done + 1)} ${unit}`;

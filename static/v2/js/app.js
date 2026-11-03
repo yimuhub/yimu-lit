@@ -28,7 +28,7 @@ import { renderSession } from './views/session.js';
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
    缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
    tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
-const CSS_V = '294';
+const CSS_V = '295';
 
 const els = {
   app: document.getElementById('app'),
@@ -134,19 +134,25 @@ async function resolveMedium(key) {
 
 /* 五份 refresh（work/plan/state/refs/skills）的同构骨架：
    inflight 防重入 → loader 拉数 → 成功 onOk / 404 降级 onMissing / 报错 errorKey。
-   各自的差异全部收敛进回调——refreshWork 的 merge 也只是自定义 onOk。 */
+   各自的差异全部收敛进回调——refreshWork 的 merge 也只是自定义 onOk。
+   v4.24.16 修复切书竞态：①inflight 按 name+key 维度去重——此前旧书的在途请求会挡住
+   新书的同名刷新（新书页面长期显示旧书数据）；②await 返回后校验 currentKey——
+   用户已切书时旧响应直接丢弃，不再把旧书数据 patch 进新书的 plan/lore/refs/work。 */
 async function guardedRefresh(name, key, { requireKey = true, loader, onOk, onMissing = null, errorKey, errorFallback }) {
-  if (inflight.has(name)) return;
+  const inflightKey = `${name}:${key || ''}`;
+  if (inflight.has(inflightKey)) return;
   if (requireKey && !key) return;
-  inflight.add(name);
+  inflight.add(inflightKey);
   try {
     const res = await loader(key);
+    if (requireKey && store.get().currentKey !== key) return;   // 已切书：丢弃过期响应
     onOk(res);
   } catch (err) {
+    if (requireKey && store.get().currentKey !== key) return;   // 过期请求的错误也不落新书
     if (err && err.isMissing && onMissing) onMissing();
     else patch(errorKey, errorText(err, errorFallback));
   } finally {
-    inflight.delete(name);
+    inflight.delete(inflightKey);
   }
   syncShell(store.get());
 }
@@ -715,11 +721,28 @@ async function renderView(route) {
      改为渲染加载态，library 到位后由 store 订阅触发重渲染（替代原 setTimeout hack，
      避免深链首屏渲染两次与 currentView=null 导致的订阅泄漏） */
   if (!medium && (route.name === 'work' || route.name === 'bench')) {
+    /* v4.24.16 修复：library 已到但仍认不出该作品的文体 → key 不存在/已删除，
+       直接渲染明确错误态。此前两种坏况都无出口：①等待条件要求 items.length，
+       library 失败时（loaded=true 但 items=[]）spinner 永不解除；②本分支在 loaded
+       后重渲染时 medium 仍为空 → 再次进入等待，永远转圈。 */
+    if (store.get().library.loaded) {
+      const errEl = h('div', { class: 'view-scroll', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' } },
+        h('div', { style: { textAlign: 'center' } },
+          h('p', { style: { fontSize: '15px', marginBottom: '6px' }, text: '作品不存在或已被删除' }),
+          h('p', { class: 'hint-text', text: '可能已被移入回收站或链接过期——回到作品库看看。' }),
+          h('button', { class: 'btn btn-primary', type: 'button', style: { marginTop: '14px' },
+            text: '去作品库', on: { click: () => navigate('#/library') } })));
+      els.view.textContent = '';
+      els.view.append(errEl);
+      currentView = { el: errEl, destroy() {} };
+      return;
+    }
     const loadingEl = spinnerViewEl('正在加载作品…');
     els.view.textContent = '';
     els.view.append(loadingEl);
+    /* 等待条件只看 library.loaded（含失败态——失败时由上面的错误分支接管渲染）。 */
     const unsub = store.subscribe((s2) => {
-      if (s2.library.loaded && s2.library.items.length) {
+      if (s2.library.loaded) {
         unsub();
         renderView(route);
       }
@@ -962,7 +985,10 @@ function startLive(key) {
         const qs = new URLSearchParams({
           key,
           steps_cursor: String((s.steps && s.steps.cursor) || 0),
-          stream_offset: String((s.stream && s.stream.offset) || 0)
+          stream_offset: String((s.stream && s.stream.offset) || 0),
+          /* v4.24.16：思维链独立增量游标——后端 stream_state 一直支持，HTTP 层此前
+             从未传，导致模型思考每 1.5s 全量重发（最多 30k 字符/次） */
+          stream_think_offset: String((s.stream && s.stream.thinkOffset) || 0)
         });
         const ctrl = new AbortController();
         const kill = setTimeout(() => ctrl.abort(), 12000);

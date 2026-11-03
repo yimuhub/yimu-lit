@@ -15,14 +15,17 @@ import {
 function messageSignature(chat) {
   /* v2.9.0：章节卡的折叠/展开要触发整行重渲染（正文在 card 内按状态渲染），
      所以签名里带上章节卡状态位。
-     v4.21：step 消息（创作活动流）的折叠 / 思考展开 / 阶段与流式位同样进签名。 */
+     v4.21：step 消息（创作活动流）的折叠 / 思考展开 / 阶段与流式位同样进签名。
+     v4.24.16：点赞/点踩 rating 进签名——此前 updateMessage({rating}) 后签名不变、
+     不触发重渲染（样式不变），且负反馈按钮可被重复点击重复提交。 */
   return (chat.messages || [])
     .map((m) => {
       if (m.kind === 'step') {
         const st = m.step || {};
         return `${m.id}~s${m.collapsed ? 'c' : 'o'}${m.thinkOpen ? 't' : ''}${st.phase || ''}${st.streaming ? 'r' : ''}`;
       }
-      return `${m.id}${m.chapterMeta ? (m.collapsed ? '~c' : '~o') : ''}`;
+      const r = m.rating ? `~r${m.rating}` : '';
+      return `${m.id}${m.chapterMeta ? (m.collapsed ? '~c' : '~o') : ''}${r}`;
     })
     .join('|');
 }
@@ -362,6 +365,7 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
     const extrasKey = JSON.stringify({
       q: (chat.queue || []).map((x) => x.id),
       a: chat.approval && chat.approval.id,
+      ad: chat.approval && chat.approval.done,   // v4.24.16：审批应用/驳回后签名必须变化，否则卡不刷新、可重复提交
       s: chat.streaming,
       c: chat.compressed && chat.compressed.count
     });

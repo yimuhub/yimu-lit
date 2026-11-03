@@ -38,7 +38,10 @@ const BENCH = {
   },
   other: {
     title: '创作工作台',
-    tabs: [['outline', '大纲'], ['final', '正文'], ['report', '打磨报告'], ['final', '定稿']],
+    /* v4.24.16 修复：此前有两个 id='final' 的页签——paintTabs 按 id 比对高亮，
+       点「定稿」与「正文」同时亮、第二次点击静默无响应；且后端 miniPart 只有一个
+       final 文件，两个页签内容完全相同。去重保留「定稿」。 */
+    tabs: [['outline', '大纲'], ['report', '打磨报告'], ['final', '定稿']],
     defaultTab: 'final',
     status: (key) => api.miniStatus(key),
     doc: (key, tab) => api.miniPart(key, tab)
@@ -52,14 +55,16 @@ const BENCH = {
   },
   news: {
     title: '新闻稿工作台',
-    tabs: [['outline', '素材'], ['final', '正文'], ['check', '事实核查'], ['final', '定稿']],
+    /* v4.24.16：同 other——去掉重复的 final 页签 */
+    tabs: [['outline', '素材'], ['check', '事实核查'], ['final', '定稿']],
     defaultTab: 'final',
     status: (key) => api.miniStatus(key),
     doc: (key, tab) => api.miniPart(key, tab)
   },
   copy: {
     title: '文案工作台',
-    tabs: [['outline', '需求'], ['hooks', '钩子'], ['final', '文案'], ['titles', '标题标签'], ['final', '定稿']],
+    /* v4.24.16：同 other——去掉重复的 final 页签 */
+    tabs: [['outline', '需求'], ['hooks', '钩子'], ['titles', '标题标签'], ['final', '定稿']],
     defaultTab: 'final',
     status: (key) => api.miniStatus(key),
     doc: (key, tab) => api.miniPart(key, tab)

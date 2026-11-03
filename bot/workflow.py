@@ -329,7 +329,11 @@ def write_chapter(ctx, book_key="", chapter_no=0):
                                                                       title=f"写第{no}章"),
                               on_thinking=lambda t: steps.emit_delta(bk, "writer", no, "",
                                                                      tchunk=t, title=f"写第{no}章"))
-        steps.emit_delta(bk, "writer", no, "", done=True, title=f"写第{no}章")
+        # v4.24.16 修复：chat_stream 流式异常会静默回退完整 chat()——此前缓冲里只有
+        # 失败前收到的 partial，done 落盘的「正文全文」卡与实际章文件不一致。
+        # final_text 以返回值为准重放（正常路径 out 与缓冲一致，无副作用）。
+        steps.emit_delta(bk, "writer", no, "", done=True, title=f"写第{no}章",
+                         final_text=out or "")
         return out
     # v0.4：读者即时修正指令（运行中随时插一条，标 immediate 立即生效 / 否则下一条生效）
     qnote = (ctx.get("queue_note") or "").strip()

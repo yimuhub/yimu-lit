@@ -23,11 +23,18 @@ _HYDRATED = {}             # key -> True（每进程每书只灌一次）
 
 def _hydrate(key):
     """环形缓冲为空且落盘 JSONL 有历史时（典型：服务重启），把最近 300 条
-    灌回内存——保证「刷新/重启后创作过程仍在」。幂等：只灌一次。"""
+    灌回内存——保证「刷新/重启后创作过程仍在」。幂等：只灌一次。
+    v4.24.16 修复：此前只看 _HYDRATED 标志不看 ring——本 boot 已 emit 过事件
+    （如「继续」后前端才首次轮询 book-live）时，JSONL 尾部 300 条（含刚 emit 的
+    那几条）被重新编号后二次灌入，同一事件出现两份、cursor 虚高。现在 ring
+    非空即跳过：内存里的就是最新的，历史由 chapter_events/读 JSONL 兜底。"""
     key = str(key or "")
     if not key or _HYDRATED.get(key):
         return
     _HYDRATED[key] = True
+    with _LOCK:
+        if _RING.get(key):
+            return   # 本 boot 已有事件：不灌，防重复
     path = _jsonl_path(key)
     if not os.path.exists(path):
         return
@@ -143,9 +150,11 @@ def since(key, cursor=0, limit=60):
         return {"items": [], "cursor": 0}
 
 
-def emit_delta(key, agent, chapter, chunk, done=False, title="", tchunk=""):
+def emit_delta(key, agent, chapter, chunk, done=False, title="", tchunk="", final_text=None):
     """流式步骤：chunk 为正文增量；tchunk 为模型思维链增量（reasoning），分开累积。
-    done=True 结束本次流：正文全文 + 模型思考全文各自落盘（永久记录，随书删除才清）。"""
+    done=True 结束本次流：正文全文 + 模型思考全文各自落盘（永久记录，随书删除才清）。
+    v4.24.16：final_text 传入时以它为准重置正文缓冲——流式失败静默回退 chat() 的场景，
+    缓冲里只有 partial 前缀，落盘全文必须与实际返回一致。"""
     try:
         key = str(key or "")
         if not key:
@@ -161,6 +170,8 @@ def emit_delta(key, agent, chapter, chunk, done=False, title="", tchunk=""):
                 st["text"] = (st.get("text") or "") + str(chunk)[-20000:]
             if tchunk:
                 st["thinking"] = (st.get("thinking") or "") + str(tchunk)[-30000:]
+            if final_text is not None:
+                st["text"] = str(final_text)   # v4.24.16：以调用方实际返回为准（回退场景缓冲只有前缀）
             if done:
                 st["done"] = True
                 # v4.21.3/4：流式全文永久落盘——正文与模型思考各自作为 done 事件

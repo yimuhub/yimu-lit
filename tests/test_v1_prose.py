@@ -30,7 +30,7 @@ HUMAN_TEXT = """我妈的抽屉里还留着我小学的转学申请表，日期�
 
 
 @pytest.fixture(autouse=True)
-def _mock_llm(monkeypatch):
+def _mock_llm_local(monkeypatch):   # v4.24.16：改名避开 conftest 同名 autouse（同名即遮蔽，conftest 的 stub 面在这些文件里从未生效——烧网事故病灶）
     def _fake_chat(messages, *a, **k):
         # 审稿模式要出诊断表，其余返正文
         user = ""

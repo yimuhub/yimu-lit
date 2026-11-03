@@ -229,10 +229,11 @@ export function createCollabPanel(ctx) {
     const existing = document.querySelector(`.agent-chat-window[data-agent="${agentName}"]`);
     if (existing) { existing.remove(); return; }
     const win = h('div', { class: 'agent-chat-window', dataset: { agent: agentName } });
+    let _cleanupDrag = null;   // v4.24.16：窗口关闭时成对摘除 document 级拖拽监听
     const header = h('div', { class: 'agent-chat-header' },
       h('span', { class: 'agent-chat-title', html: `${icon('message-square', 14)} ${esc(agentName)}` }),
       h('button', { class: 'agent-chat-close', type: 'button', html: icon('x', 14),
-        on: { click: () => win.remove() } })
+        on: { click: () => { if (_cleanupDrag) _cleanupDrag(); win.remove(); } } })
     );
     const msgs = h('div', { class: 'agent-chat-msgs' });
     msgs.append(h('div', { class: 'agent-chat-msg agent-chat-msg-bot', text: `你好，我是 ${agentName}。请问有什么需要？` }));
@@ -264,22 +265,35 @@ export function createCollabPanel(ctx) {
     inputRow.append(input, sendBtn);
     win.append(header, msgs, inputRow);
     document.body.append(win);
-    /* 拖拽支持 */
+    /* 拖拽支持（v4.24.16 修复监听泄漏：mousemove/mouseup 挂在 document 上且此前永不移除，
+       每开一个岗位对话泄漏 2 个 document 级监听——窗口关闭后闭包持有 win 无法 GC） */
     let dragging = false, dx = 0, dy = 0;
+    const onMove = (e) => {
+      if (!dragging) return;
+      win.style.left = `${e.clientX - dx}px`;
+      win.style.top = `${e.clientY - dy}px`;
+      win.style.right = 'auto';
+      win.style.bottom = 'auto';
+    };
+    const onUp = () => {
+      dragging = false;
+      if (!win.isConnected) {   // 窗口已关闭：自摘 document 级监听
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+    };
     header.addEventListener('mousedown', (e) => {
       dragging = true;
       const rect = win.getBoundingClientRect();
       dx = e.clientX - rect.left;
       dy = e.clientY - rect.top;
     });
-    document.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      win.style.left = `${e.clientX - dx}px`;
-      win.style.top = `${e.clientY - dy}px`;
-      win.style.right = 'auto';
-      win.style.bottom = 'auto';
-    });
-    document.addEventListener('mouseup', () => { dragging = false; });
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    _cleanupDrag = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
     input.focus();
   }
 

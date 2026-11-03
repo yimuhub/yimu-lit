@@ -144,6 +144,8 @@ export function renderSession(container, ctx = {}) {
     // v4.12.1：8 文体都拉聊天历史（chat_log.jsonl 全文体留档）
     try {
       const res = await api.chatHistory(key);
+      // v4.24.16 修复切书竞态：await 期间用户已切书 → 旧书聊天记录不得全量替换新书对话区
+      if (store.get().currentKey !== key) return;
       if (res && res.ok && Array.isArray(res.items)) {
         patchChat((cs) => {
           // 正在流式输出的对话不覆盖；其余情况以落盘记录为准全量替换
@@ -223,7 +225,13 @@ export function renderSession(container, ctx = {}) {
     patchUi({ pendingFirstMessage: null });
     runTurn({ text: String(pending.text || '') }, { appendUser: true });
   }
-  setTimeout(maybeSendPendingFirstMessage, 400);
+  /* v4.24.16 修复：400ms 定时器此前不进 destroy 清理、回调不查 disposed——
+     work↔bench 往返（同 key 重挂载）时新旧两个定时器构成双发送窗口，
+     已销毁视图也会发出首条消息。 */
+  const firstMsgTimer = setTimeout(() => {
+    if (disposed) return;
+    maybeSendPendingFirstMessage();
+  }, 400);
 
   // v2.3 对话绑定提示：小说且当前打开了作品时，composer 上方挂一枚「已绑定《X》」chip。
   // 纯展示，判断口径与 buildStreamPayload 的 withWork 一致；不碰追章流逻辑。
@@ -904,7 +912,11 @@ export function renderSession(container, ctx = {}) {
     }
     const fresh = items.filter((it) => {
       const no = Number(it && it.no) || 0;
-      if (!it || no <= lastStepNo || seen.has(no)) return false;
+      /* v4.24.16：去重键带事件时间戳——服务端重启后 no 从 1 重新编号，纯 no 键会把
+         新 boot 的新事件误判为已见而丢弃；带 ts 后同一条事件（同 no 同 ts）仍去重，
+         重启后的新事件（同 no 不同 ts）正常上屏。 */
+      const dedupKey = `${no}@${it && it.ts || ''}`;
+      if (!it || no <= lastStepNo || seen.has(dedupKey)) return false;
       /* v4.21.6：作家「（正文全文）」事件不再回放为朴素卡——其内容由章节完成卡承载 */
       if (it.agent === 'writer' && /（正文全文）$/.test(String(it.title || '')) && Number(it.chapter) > 0) {
         return false;
@@ -924,7 +936,7 @@ export function renderSession(container, ctx = {}) {
     let writerDoneCh = 0;
     for (const item of fresh) {
       const no = Number(item.no) || 0;
-      seen.add(no);
+      seen.add(`${no}@${item.ts || ''}`);   // v4.24.16：与过滤侧同键（no@ts）
       const added = addMessage({ kind: 'step', role: 'assistant', step: { ...item }, content: '' });
       addedIds.push(added.id);
       /* v4.22.2：作家完成事件（含极速模式）→ 3 秒后重载对话历史，
@@ -1257,6 +1269,7 @@ export function renderSession(container, ctx = {}) {
     destroy() {
       disposed = true;
       epoch += 1;
+      if (firstMsgTimer) clearTimeout(firstMsgTimer);   // v4.24.16：首条消息定时器入清理
       if (streamDoneTimer) {
         clearTimeout(streamDoneTimer);
         streamDoneTimer = 0;

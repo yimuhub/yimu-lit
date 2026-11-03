@@ -253,7 +253,7 @@ def _era_feedback(issues: list[dict]) -> str:
 # ---------------------------------------------------------------- 阶段生成
 
 def _gen(stage: str, task: str, ctx: str, cfg: dict, stage_code: str = "planning",
-         max_tokens: int | None = None) -> str:
+         max_tokens: int | None = None, chapter: int = 0) -> str:
     """调 LLM 生成一段文本。失败返回空串（调用方降级）。"""
     sys_p = (f"你是一位资深剧本编剧（中文创作）。当前工作阶段：{stage}。\n"
              f"{task}\n\n"
@@ -265,13 +265,15 @@ def _gen(stage: str, task: str, ctx: str, cfg: dict, stage_code: str = "planning
     msgs = [{"role": "system", "content": sys_p + ("\n\n" + ctx if ctx else "")},
             {"role": "user", "content": f"请产出：{task}"}]
     # v4.24.10：流式 + 活动流接线——该引擎全部生成调用自动获得过程可视化
+    # v4.24.16：流缓冲按 chapter 隔离——此前所有场次都用 chapter=0，并行分场时
+    # N 路增量交错进同一缓冲，先 done 的把混合串当「正文全文」永久落盘
     try:
         from . import steps as _steps
         _bk = llm.current_book()
         if _bk:
             out = llm.chat_stream(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens,
-                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", 0, chunk, title=stage))
-            _steps.emit_delta(_bk, "writer", 0, "", done=True, title=stage)
+                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", chapter, chunk, title=stage))
+            _steps.emit_delta(_bk, "writer", chapter, "", done=True, title=stage)
             return out
     except Exception:
         pass
@@ -417,7 +419,8 @@ def gen_scene_body(scene: dict, ctx_extra: str, cfg: dict) -> str:
         f"{_world_block(cfg)}\n\n"
         f"上下文材料：\n{ctx_extra}"
     )
-    return _gen("剧本 · 写作", task, _ctx("S5", cfg=cfg), cfg, "writing", max_tokens=4000)
+    return _gen("剧本 · 写作", task, _ctx("S5", cfg=cfg), cfg, "writing", max_tokens=4000,
+                chapter=int(scene.get("no") or 0))   # v4.24.16：按场号隔离流缓冲（并行分场不串流）
 
 
 def gen_revision(full_text: str, cfg: dict) -> str:
@@ -526,10 +529,16 @@ def parse_scenes(md: str) -> list[dict]:
                                "props": "", "setup": "", "trigger": "", "obstacle": "",
                                "outcome": "", "pages": ""})
     scenes.sort(key=lambda x: x["no"])
-    seen, dedup = set(), []
+    # v4.24.16 修复：重复场号此前被静默丢弃——LLM 场次表按幕分段重新编号（1,2,3,1,2,3）
+    # 时，后半幕的场无声消失，总场数悄悄少于请求数且无任何告警。现在重编号保留全部场，
+    # 并在日志里可见（由调用方 log 告警，这里返回 (场次表, 重复数) 之外的兼容形态不必要，
+    # 直接重编号 + 追加标记字段）。
+    seen, dedup, renumbered = set(), [], 0
     for sc in scenes:
         if sc["no"] in seen:
-            continue
+            renumbered += 1
+            sc["no"] = max(seen) + 1 if seen else 1
+            sc["renumbered"] = True
         seen.add(sc["no"])
         dedup.append(sc)
     return dedup
@@ -662,6 +671,8 @@ def _run_planning(proj: "ScriptProject", plan: dict, cfg: dict) -> None:
         guard = script_checker.check_text(scenes_md, era)
     _write(os.path.join(pdir, F_SCENES), f"# {name} 场次清单\n\n" + (scenes_md or "（场次生成失败，请重试）"))
     scenes = parse_scenes(scenes_md)
+    if any(sc.get("renumbered") for sc in scenes):
+        proj.log(f"⚠️ 场次清单里发现重复场号（LLM 按幕分段编号），已自动重编号为连续 {len(scenes)} 场")
     for i, sc in enumerate(scenes, 1):
         sc["no"] = sc.get("no") or i
         sc["status"] = "pending"
@@ -908,12 +919,22 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
         while True:
             if stop["flag"]:
                 return
+            # v4.24.16 修复：并行分场此前没有任何暂停检查点（stop 开关无人置位，形同虚设），
+            # 用户点「暂停」后 N 个岗位会把剩余场次全部写完——领场前先查暂停位
+            try:
+                if (proj.plan() or {}).get("meta", {}).get("paused"):
+                    stop["flag"] = True
+                    return
+            except Exception:
+                pass
+            # v4.24.16 修复：轮数检查必须在领取之前——原来先领场（队列游标+1）再查上限，
+            # 达到上限的 worker 把领走的场吞掉且无人补写，书写卡在 in_progress
+            if total_limit and done_by_me >= rounds:
+                return
             with plan_lock:
                 if qidx["i"] >= len(queue):
                     return
                 no = queue[qidx["i"]]; qidx["i"] += 1
-            if total_limit and done_by_me >= rounds:
-                return
             plan = proj.plan() or {}
             sc = next((x for x in (plan.get("scenes") or []) if x.get("no") == no), None)
             if not sc or sc.get("status") == "completed":
@@ -927,9 +948,14 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
             text = gen_scene_body(sc, extra, cfg)
             if not text.strip():
                 proj.log(f"⚠️ 第 {no} 场生成失败，跳过")
+                # v4.24.16 修复：失败路径必须锁内重读计划再改——原样保存 LLM 调用前的过期快照，
+                # 会把期间其他 worker 写入的 completed 状态整体回滚成 pending（完成状态丢失）
                 with plan_lock:
-                    sc["status"] = "failed"
-                    proj.save_plan(plan)
+                    plan3 = proj.plan() or {}
+                    sc3 = next((x for x in (plan3.get("scenes") or []) if x.get("no") == no), None)
+                    if sc3 is not None:
+                        sc3["status"] = "failed"
+                        proj.save_plan(plan3)
                 continue
             check = script_checker.check_text(text, era)
             if not check["ok"]:
@@ -954,7 +980,11 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
             t.join()
         plan = proj.plan() or {}
         done = sum(1 for sc in (plan.get("scenes") or []) if sc.get("status") == "completed")
-        if done >= total and total:
+        if (plan.get("meta") or {}).get("paused"):
+            # v4.24.16：并行 worker 检测到暂停退出 → 状态置 paused（点「继续」可断点恢复）
+            plan["status"] = "paused"
+            proj.log("⏸ 并行创作已暂停，点「继续」可从当前进度恢复")
+        elif done >= total and total:
             plan["status"] = "completed"
             plan.setdefault("meta", {})["stage"] = "S7"
         else:

@@ -863,7 +863,12 @@ def pending_queue(key):
 
 def queue_action(key, index, action):
     """对某条待发送指令：'remove'=移除 / 'imm'=标记立即生效。返回剩余（未消化）列表。"""
-    p = Project(_project_dir(key), key)
+    # v4.24.16：目录已删（硬删除后 PROJECT_INDEX 缓存残留）→ 拒绝写入，
+    # 否则 atomic_write_json 会把已删除的作品目录连同空壳计划「复活」。
+    pdir = _project_dir(key)
+    if not os.path.isdir(pdir):
+        return []
+    p = Project(pdir, key)
     plan = p.plan() or {}
     qm = plan.get("meta", {}).get("queued_msgs") or []
     if 0 <= index < len(qm):
@@ -1645,6 +1650,20 @@ def _parallel_role_label(proj, wid):
 
 
 def _write_loop_parallel(proj, n_workers=5, rounds=None):
+    """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）——薄壳。
+    v4.24.16：纳入 _acq_book 同书串行——此前只串行了 重写/门禁，并行写作与它们
+    同时落到同一本书时（如「继续」触发的并行写作 + 用户手动改写）会并发写章节文件。
+    锁在调用期获取（_acq_book 定义在本文件后部，装饰器会在 import 期求值所以不能用）。"""
+    return _write_loop_parallel_locked(os.path.basename(proj.path), proj,
+                                       n_workers=n_workers, rounds=rounds)
+
+
+def _write_loop_parallel_locked(key, proj, n_workers=5, rounds=None):
+    with _acq_book(key):
+        return _write_loop_parallel_body(proj, n_workers=n_workers, rounds=rounds)
+
+
+def _write_loop_parallel_body(proj, n_workers=5, rounds=None):
     """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）。
     先熔炼『总架构』，各 worker 领 1..N 章，写完一个立即取下一未完成章；
     真 LLM 并发由 providers.ConcurrencyGuard 兜底防 429。
@@ -3107,6 +3126,26 @@ def delete_book(key, hard=False):
             if isinstance(sc, dict) and sc.pop(key, None) is not None:
                 atomic_write_json(SCHEDULES_FILE, sc)
         except Exception: pass
+        # v4.24.16 修复「僵尸复活」：硬删除后运行期注册表不清——PROJECT_INDEX 仍持有指向
+        # 已删路径的 Project，queue_action 等写入路径会把目录连同空壳计划重建出来；
+        # 活动流 ring/落盘水位与流水标志也一并清掉。
+        try:
+            _BOOK_LOCKS.pop(key, None)
+        except Exception:
+            pass
+        try:
+            _RW_PROGRESS.pop(key, None)
+        except Exception:
+            pass
+        try:
+            from . import steps as _steps_mod
+            _steps_mod.reset(key)
+        except Exception:
+            pass
+        try:
+            mark_pipeline(key, False)
+        except Exception:
+            pass
         return {"ok": True, "hard": True, "note": "已彻底删除（不可恢复）"}
     res = trash_book(key)
     if not res.get("ok"):
@@ -3278,56 +3317,63 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
     proj.log(f"⚡ 多岗位并行改写：{len(chapters)} 个低分章（同时 {workers} 个岗位，每章 {max_rounds} 轮）")
 
     def _one(ch_no):
+        # v4.24.16 修复两连：①线程池新线程的 thread-local 不继承——不补 llm.book 的话
+        # 改写消耗全靠 score_chapter 的副作用兜底归到 review，score 提前 return 时整章
+        # token 完全不入账（与 v2.9.0 并行写作的修复同型）；②整体 try/finally——此前
+        # before=score_chapter 抛错会跳过 set_chapter(None)/进度收尾，进度标志永久卡 running。
         with sem:
-            if is_paused(proj):
-                return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
-            # v4.21.9：改写消耗计入该章 token 账本 + 过程并入本章创作活动流
-            llm.set_chapter(ch_no)
-            _evt(key, "rewriter", phase="start", title=f"定向重写第{ch_no}章", chapter=ch_no,
-                 thinking="按审稿问题清单逐条定点改写——改写分必须高于原分，否则自动回滚原稿")
-            before = score_chapter(proj, ch_no)
-            dims = findings_by_ch.get(ch_no) or []
-            # v4.17.3：target 驱动——改写评分达到目标分即停（每章最多 2 轮，不烧 token）
-            _stop_at = max(_pass_line(), int(target)) if target else _pass_line()
             try:
-                _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, pass_line=_stop_at, extra_dims=dims or None)
-            except Exception as e:
-                proj.log(f"⚠️ 第{ch_no}章并行改写异常：{e}")
-            after = score_chapter(proj, ch_no)
-            delta = (after or 0) - (before or 0)
-            kept = (after or 0) > (before or 0)
-            r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1), "kept": kept}
-            proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '已回滚原稿，质量优先'}）")
-            _evt(key, "rewriter", phase="done" if kept else "warn",
-                 title=f"定向重写第{ch_no}章", chapter=ch_no,
-                 output=f"{before}→{after} 分（{'保留改稿' if kept else '已回滚原稿'}）")
-            # v4.21.9：改稿保留后更新对话流章节卡（同 no 追加最新记录、completedAt 保持
-            # 原值 → 读取端按章去重后章节卡仍在原位，只更新内容/评分/token）。
-            if kept:
+                llm.book(key, "rewrite")
+                if is_paused(proj):
+                    return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
+                # v4.21.9：改写消耗计入该章 token 账本 + 过程并入本章创作活动流
+                llm.set_chapter(ch_no)
+                _evt(key, "rewriter", phase="start", title=f"定向重写第{ch_no}章", chapter=ch_no,
+                     thinking="按审稿问题清单逐条定点改写——改写分必须高于原分，否则自动回滚原稿")
+                before = score_chapter(proj, ch_no)
+                dims = findings_by_ch.get(ch_no) or []
+                # v4.17.3：target 驱动——改写评分达到目标分即停（每章最多 2 轮，不烧 token）
+                _stop_at = max(_pass_line(), int(target)) if target else _pass_line()
                 try:
-                    from bot.v2api import _save_chat_msg
-                    _pl2 = proj.plan()
-                    _ch2 = next((c for c in (_pl2.get("chapters") or []) if c.get("chapterNumber") == ch_no), None)
-                    _fp2 = os.path.join(proj.path, _ch2.get("filePath")) if _ch2 and _ch2.get("filePath") else None
-                    if _ch2 and _fp2 and os.path.exists(_fp2):
-                        _save_chat_msg(proj, "assistant", _clean_chapter_text(open(_fp2, encoding="utf-8").read()),
-                                       {"type": "chapter", "no": ch_no,
-                                        "title": _ch2.get("title") or f"第{ch_no}章",
-                                        "words": _ch2.get("wordCount"), "quality": after,
-                                        "tokens": llm.book_chapter_tokens(os.path.basename(proj.path), ch_no),
-                                        "ts": int(time.time()),
-                                        "completedAt": _ch2.get("completedAt") or ""})
-                except Exception:
-                    pass
-            llm.set_chapter(None)
-            with proj.lock:
-                prog["done"] += 1
-                prog["results"].append(r)
-            # v4.23.0：把「这一章改完了」写进任务档案。
-            # 以前进度只存在 _PARA_RW_PROGRESS（内存），进程一重启就归零，
-            # 「继续」会把整批已改好的章再改一遍——白烧 token，还可能把好稿改坏。
-            journal.mark_chapter_done(proj.path, ch_no, total=len(chapters), stage="rewriting")
-            return r
+                    _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, pass_line=_stop_at, extra_dims=dims or None)
+                except Exception as e:
+                    proj.log(f"⚠️ 第{ch_no}章并行改写异常：{e}")
+                after = score_chapter(proj, ch_no)
+                delta = (after or 0) - (before or 0)
+                kept = (after or 0) > (before or 0)
+                r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1), "kept": kept}
+                proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '已回滚原稿，质量优先'}）")
+                _evt(key, "rewriter", phase="done" if kept else "warn",
+                     title=f"定向重写第{ch_no}章", chapter=ch_no,
+                     output=f"{before}→{after} 分（{'保留改稿' if kept else '已回滚原稿'}）")
+                # v4.21.9：改稿保留后更新对话流章节卡（同 no 追加最新记录、completedAt 保持
+                # 原值 → 读取端按章去重后章节卡仍在原位，只更新内容/评分/token）。
+                if kept:
+                    try:
+                        from bot.v2api import _save_chat_msg
+                        _pl2 = proj.plan()
+                        _ch2 = next((c for c in (_pl2.get("chapters") or []) if c.get("chapterNumber") == ch_no), None)
+                        _fp2 = os.path.join(proj.path, _ch2.get("filePath")) if _ch2 and _ch2.get("filePath") else None
+                        if _ch2 and _fp2 and os.path.exists(_fp2):
+                            _save_chat_msg(proj, "assistant", _clean_chapter_text(open(_fp2, encoding="utf-8").read()),
+                                           {"type": "chapter", "no": ch_no,
+                                            "title": _ch2.get("title") or f"第{ch_no}章",
+                                            "words": _ch2.get("wordCount"), "quality": after,
+                                            "tokens": llm.book_chapter_tokens(os.path.basename(proj.path), ch_no),
+                                            "ts": int(time.time()),
+                                            "completedAt": _ch2.get("completedAt") or ""})
+                    except Exception:
+                        pass
+                with proj.lock:
+                    prog["done"] += 1
+                    prog["results"].append(r)
+                # v4.23.0：把「这一章改完了」写进任务档案。
+                # 以前进度只存在 _PARA_RW_PROGRESS（内存），进程一重启就归零，
+                # 「继续」会把整批已改好的章再改一遍——白烧 token，还可能把好稿改坏。
+                journal.mark_chapter_done(proj.path, ch_no, total=len(chapters), stage="rewriting")
+                return r
+            finally:
+                llm.set_chapter(None)
 
     with _cf.ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
         list(ex.map(_one, chapters))

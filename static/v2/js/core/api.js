@@ -312,8 +312,8 @@ export const api = {
   scriptScene: (key, no) => request('/api/script/scene', { query: { key, no } }),
   scriptRevise: (key) => request('/api/script/revise', jsonBody({ key })),
   /* 世界观一致性体检 + 按设定重写违规场次（先落快照）。 */
-  scriptCheck: (key) => request('/api/script/check', jsonBody({ key }), { timeout: 180000 }),
-  scriptAudit: (key) => request('/api/script/audit', jsonBody({ key }), { timeout: 120000 }),
+  scriptCheck: (key) => request('/api/script/check', { ...jsonBody({ key }), timeout: 180000 }),
+  scriptAudit: (key) => request('/api/script/audit', { ...jsonBody({ key }), timeout: 120000 }),
   scriptAuditGet: (key) => request('/api/script/audit', { query: { key } }),
   scriptStoryboard: (key) => request('/api/script/storyboard', { query: { key } }),
   thesisStatus: (key) => request('/api/thesis/status', { query: { key } }),
@@ -321,15 +321,15 @@ export const api = {
   miniStatus: (key) => request('/api/mini/status', { query: { key } }),
   miniPart: (key, part) => request('/api/mini/part', { query: { key, part } }),
   aiGenerate: (payload) => request('/api/ai-generate', jsonBody(payload)),
-  regenPlan: (payload) => request('/api/plan/regen', jsonBody(payload), { timeout: 30000 }),
-  scriptStoryboardRun: (key, sceneNo) => request('/api/script/storyboard', jsonBody({ key, sceneNo }), { timeout: 20000 }),
-  novelToDrama: (payload) => request('/api/novel-to-drama', jsonBody(payload), { timeout: 30000 }),
+  regenPlan: (payload) => request('/api/plan/regen', { ...jsonBody(payload), timeout: 30000 }),
+  scriptStoryboardRun: (key, sceneNo) => request('/api/script/storyboard', { ...jsonBody({ key, sceneNo }), timeout: 20000 }),
+  novelToDrama: (payload) => request('/api/novel-to-drama', { ...jsonBody(payload), timeout: 30000 }),
   scriptRewriteScenes: (key, sceneNos, instruction = '') =>
-    request('/api/script/rewrite-scenes', jsonBody({ key, sceneNos, instruction, force: true }), { timeout: 600000 }),
+    request('/api/script/rewrite-scenes', { ...jsonBody({ key, sceneNos, instruction, force: true }), timeout: 600000 }),
   /* 通用副驾（剧本/诗词/散文）：讨论或定向改写；改写只回 diff，应用走 assistApply。 */
   assistStream: (payload, opts) => streamSSE('/api/assist/stream', payload, opts),
-  assistApply: (payload) => request('/api/assist/apply', jsonBody(payload), { timeout: 60000 }),
-  assistRestore: (payload) => request('/api/assist/restore', jsonBody(payload), { timeout: 60000 }),
+  assistApply: (payload) => request('/api/assist/apply', { ...jsonBody(payload), timeout: 60000 }),
+  assistRestore: (payload) => request('/api/assist/restore', { ...jsonBody(payload), timeout: 60000 }),
   /* 对话历史 + 改稿记录（作品目录 .assist/ 留档） */
   assistHistory: (key, medium) => request('/api/assist/history', { query: { key, medium } }),
 
@@ -365,7 +365,7 @@ export const api = {
   removeProvider: (id) => request(`/api/providers/${enc(id)}`, { method: 'DELETE' }),
   setDefaultProvider: (id) => request(`/api/providers/${enc(id)}/default`, jsonBody({})),
   setProviderActive: (id, active) => request(`/api/providers/${enc(id)}/active`, jsonBody({ active })),
-  testProvider: (id) => request(`/api/providers/${enc(id)}/test`, jsonBody({ probe_chat: false }), { timeout: 30000 }),
+  testProvider: (id) => request(`/api/providers/${enc(id)}/test`, { ...jsonBody({ probe_chat: false }), timeout: 30000 }),
   modelOptions: () => request('/api/model_options'),
 
   mediums: () => request('/api/mediums'),
@@ -377,31 +377,31 @@ export const api = {
   onboarding: () => request('/api/onboarding'),
   learn: () => request('/api/learn'),
   styles: () => request('/api/styles'),
-  distill: (payload) => request('/api/distill', jsonBody(payload), { timeout: 180000 }),
+  distill: (payload) => request('/api/distill', { ...jsonBody(payload), timeout: 180000 }),
 
   plan: (key) => request('/api/plan', { query: { key }, timeout: 60000 }),
-  planMulti: (payload) => request('/api/plan/multi', jsonBody(payload), { timeout: 600000 }),
+  planMulti: (payload) => request('/api/plan/multi', { ...jsonBody(payload), timeout: 600000 }),
   applyPlan: (key, proposalId, allowPast = false) =>
-    request('/api/plan/apply', jsonBody({ key, proposal_id: proposalId, allow_past: allowPast }), { timeout: 60000 }),
+    request('/api/plan/apply', { ...jsonBody({ key, proposal_id: proposalId, allow_past: allowPast }), timeout: 60000 }),
   rejectPlan: (key, proposalId, note = '') =>
     request('/api/plan/reject', jsonBody({ key, proposal_id: proposalId, note })),
 
   state: (key, q = '') => request('/api/state', { query: { key, q }, timeout: 30000 }),
 
   references: (key) => request('/api/references', { query: { key } }),
-  addRefText: (payload) => request('/api/references/text', jsonBody(payload), { timeout: 120000 }),
-  addRefUrl: (payload) => request('/api/references/url', jsonBody(payload), { timeout: 120000 }),
+  addRefText: (payload) => request('/api/references/text', { ...jsonBody(payload), timeout: 120000 }),
+  addRefUrl: (payload) => request('/api/references/url', { ...jsonBody(payload), timeout: 120000 }),
   uploadRef: (form) => request('/api/references/upload', { method: 'POST', form, timeout: 180000 }),
   patchRef: (id, payload) => request(`/api/references/${enc(id)}`, { method: 'PATCH', body: payload }),
   deleteRef: (id) => request(`/api/references/${enc(id)}`, { method: 'DELETE' }),
-  analyzeRef: (id) => request(`/api/references/${enc(id)}/analyze`, jsonBody({}), { timeout: 180000 }),
+  analyzeRef: (id) => request(`/api/references/${enc(id)}/analyze`, { ...jsonBody({}), timeout: 180000 }),
   searchRefs: (key, q, k = 6) => request('/api/references/search', { query: { key, q, k } }),
 
   feedback: (payload) => request('/api/feedback', jsonBody(payload)),
   feedbackList: (params = {}) => request('/api/feedback', { query: params }),
   skillsEvolution: (status = '') => request('/api/skills/evolution', { query: { status } }),
-  proposeSkill: (payload) => request('/api/skills/evolution/propose', jsonBody(payload), { timeout: 180000 }),
-  evaluateSkill: (payload) => request('/api/skills/evolution/evaluate', jsonBody(payload), { timeout: 300000 }),
+  proposeSkill: (payload) => request('/api/skills/evolution/propose', { ...jsonBody(payload), timeout: 180000 }),
+  evaluateSkill: (payload) => request('/api/skills/evolution/evaluate', { ...jsonBody(payload), timeout: 300000 }),
   promoteSkill: (id, force = false) =>
     request('/api/skills/evolution/promote', jsonBody({ id, force, approver: 'user' })),
   rejectSkill: (id, note = '') => request('/api/skills/evolution/reject', jsonBody({ id, note })),
@@ -415,20 +415,20 @@ export const api = {
   syslogClear: () => request('/api/syslog/clear', jsonBody({})),
   chatNote: (key, text, note) => request('/api/chat/note', jsonBody({ key, text, note })),
   chapterTokens: (key, no) => request('/api/chapter-tokens', { query: { key, no } }),
-  consistencyAuditRun: (key) => request('/api/consistency-audit/run', jsonBody({ key }), { timeout: 30000 }),
+  consistencyAuditRun: (key) => request('/api/consistency-audit/run', { ...jsonBody({ key }), timeout: 30000 }),
   consistencyAudit: (key) => request('/api/consistency-audit', { query: { key } }),
-  rewriteChapter: (key, no) => request('/api/rewrite', jsonBody({ key, chapters: [no] }), { timeout: 30000 }),
+  rewriteChapter: (key, no) => request('/api/rewrite', { ...jsonBody({ key, chapters: [no] }), timeout: 30000 }),
   expressToggle: (key, on) => request('/api/express-toggle', jsonBody({ key, on })),
   bookAgents: (key) => request('/api/book-agents', { query: { key } }),
   setBookAgents: (payload) => request('/api/book-agents', jsonBody(payload)),
-  selfUpdate: () => request('/api/self-update', jsonBody({}), { timeout: 180000 }),
-  branchBook: (key, chapter) => request('/api/branch', jsonBody({ key, chapter }), { timeout: 60000 }),
-  chapterNamesBackfill: (key) => request('/api/chapter-names/backfill', jsonBody({ key }), { timeout: 20000 }),
+  selfUpdate: () => request('/api/self-update', { ...jsonBody({}), timeout: 180000 }),
+  branchBook: (key, chapter) => request('/api/branch', { ...jsonBody({ key, chapter }), timeout: 60000 }),
+  chapterNamesBackfill: (key) => request('/api/chapter-names/backfill', { ...jsonBody({ key }), timeout: 20000 }),
   bookSkills: (key) => request('/api/book-skills', { query: { key } }),
   setBookSkills: (payload) => request('/api/book-skills', jsonBody(payload)),
   chatHistory: (key) => request(`/api/chat/history?key=${encodeURIComponent(key)}`),
   addAgent: (data) => request('/api/agents/add', jsonBody(data)),
-  scoreBook: (key, force) => request('/api/score', jsonBody({ key, force: !!force }), { timeout: 120000 }),
+  scoreBook: (key, force) => request('/api/score', { ...jsonBody({ key, force: !!force }), timeout: 120000 }),
   scoreProgress: (key) => request('/api/score/progress', { query: { key } }),
   rewriteParallel: (payload) => request('/api/rewrite-parallel', jsonBody(payload)),
   rewriteParallelProgress: (key) => request('/api/rewrite-parallel/progress', { query: { key } }),
@@ -439,7 +439,7 @@ export const api = {
   skillkitFile: (relpath) => request('/api/skills/file', { query: { path: relpath } }),
   skillkitStats: () => request('/api/skillkit/stats'),
   skillsApplicable: (key) => request('/api/skills/applicable', { query: { key } }),
-  skillkitAdd: (payload) => request('/api/skillkit/add', jsonBody(payload), { timeout: 60000 }),
+  skillkitAdd: (payload) => request('/api/skillkit/add', { ...jsonBody(payload), timeout: 60000 }),
   skillkitDelete: (name) => request(`/api/skillkit/custom/${enc(name)}`, { method: 'DELETE' }),
 
   /* 多 Agent：岗位×模型×技能绑定 + 单书并行创作 */
@@ -452,7 +452,7 @@ export const api = {
   agentsRemove: (name) => request('/api/agents/remove', jsonBody({ name })),
   /* v4.20：全局默认模型（default_provider + 其 default_model） */
   globalModelSet: (payload) => request('/api/global-model', jsonBody(payload)),
-  parallelWrite: (payload) => request('/api/parallel-write', jsonBody(payload), { timeout: 60000 }),
+  parallelWrite: (payload) => request('/api/parallel-write', { ...jsonBody(payload), timeout: 60000 }),
   parallelLog: (key) => request('/api/parallel-log', { query: { key } }),
   jobs: (key = '') => request('/api/jobs', { query: { key } }),
 
@@ -460,7 +460,7 @@ export const api = {
   saveChapter: (key, n, text, mode) => request('/api/chapter', { method: 'PUT', body: { key, n, text, mode }, timeout: 60000 }),
   chapterVersions: (key, n) => request('/api/chapter/versions', { query: { key, n } }),
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
-  restoreChapter: (key, n, id) => request('/api/chapter/restore', jsonBody({ key, n, id }), { timeout: 60000 }),
+  restoreChapter: (key, n, id) => request('/api/chapter/restore', { ...jsonBody({ key, n, id }), timeout: 60000 }),
 
   exportUrl(key, fmt = 'docx') {
     return joinUrl('/api/export', { key, fmt });

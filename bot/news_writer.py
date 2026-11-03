@@ -73,6 +73,7 @@ def resume_project(key: str):
             proj.log("✅ 已定稿，无需恢复")
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
+        llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账失活
         _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
@@ -137,14 +138,16 @@ def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
         "新闻语体：第三人称、客观、无形容词堆砌；数字精确；引语用直接引语。\n"
         "输出 markdown 正文（含 ## 分节）。"}],
         cfg=cfg, stage="writing", max_tokens=4000)
-    atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
-    # v4.16.3：字数守护——不足时从结尾续写拼接（增量保证）
+    # v4.24.16 修复：落盘必须在字数守护续写之后——此前先写 F_FINAL 再续写拼接内存变量，
+    # 续写内容永远进不了文件，而 meta.words 统计的是含续写的全文，文件与统计永久分叉。
+    # 字数守护——不足时从结尾续写拼接（增量保证，v4.16.3）
     if _wg.cn_len(body) < _min_words:
         _cont = _wg.clean_continuation(llm.chat([{"role": "user", "content":
             _wg.continue_prompt((body or "")[-600:], max(300, _min_words - _wg.cn_len(body) + 150))}],
             cfg=cfg, stage="writing", max_tokens=2500) or "")
         if _wg.cn_len(_cont) >= 80:
             body = (body or "").rstrip() + "\n\n" + _cont
+    atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
     meta = plan.setdefault("meta", {})
     meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", body or ""))
     proj.save_plan(plan)
