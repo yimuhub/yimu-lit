@@ -391,10 +391,13 @@ def _final_acceptance(key, med, pdir, plan) -> None:
             if ((_wr._cfg_defaults() or {}).get("skill_evolution") or {}).get("auto_propose", True):
                 def _evo():
                     try:
-                        _r = _se.propose_from_writing_data("novel", cfg=plan.get("config") or {})
-                        if isinstance(_r, dict) and _r.get("ok"):
-                            _evt(key, "done", "本书写作数据已沉淀为进化候选技能",
-                                 output="到「技能进化」页审阅：评测达标后转正，下一本更好")
+                        _r = _se.auto_upgrade("novel", cfg=plan.get("config") or {})
+                        if isinstance(_r, dict) and _r.get("ok") and _r.get("action") == "promoted":
+                            _evt(key, "done", "本书写作数据已让技能自动升级",
+                                 output=f"新修订要点已转正（评测 delta={_r.get('delta')}），下一本写作自动生效")
+                        elif isinstance(_r, dict) and _r.get("ok") and _r.get("action") == "rejected":
+                            _evt(key, "warn", "进化候选未通过评测，已自动驳回",
+                                 output="继续积累数据，下本书再战")
                     except Exception:
                         pass
                 threading.Thread(target=_evo, name=f"sv-evo-{key}", daemon=True).start()

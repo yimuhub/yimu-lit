@@ -2331,13 +2331,15 @@ def _write_chapter(proj, ch, min_words, max_retries):
             def _evo_propose():
                 try:
                     from bot import skill_evo as _se
-                    _r = _se.propose_from_writing_data("novel", cfg=plan.get("config") or {})
-                    if isinstance(_r, dict) and _r.get("ok"):
-                        proj.log(f"🧬 写作数据已沉淀为进化候选技能（第 {no} 章节点）——技能进化页可审阅转正")
+                    _r = _se.auto_upgrade("novel", cfg=plan.get("config") or {})
+                    if isinstance(_r, dict) and _r.get("ok") and _r.get("action") == "promoted":
+                        proj.log(f"🧬 写作技能已自动升级（第 {no} 章节点，评测 delta={_r.get('delta')}）——新技能注入后续写作")
+                    elif isinstance(_r, dict) and _r.get("ok") and _r.get("action") == "rejected":
+                        proj.log(f"🧬 进化候选未达标已自动驳回（delta={_r.get('delta')}），继续收集数据")
                     elif isinstance(_r, dict) and _r.get("error"):
-                        proj.log(f"🧬 进化候选未生成：{_r.get('error')}")
+                        proj.log(f"🧬 进化未触发：{_r.get('error')}")
                 except Exception as e:
-                    proj.log(f"🧬 进化候选生成失败（不阻断）：{e}")
+                    proj.log(f"🧬 进化升级失败（不阻断）：{e}")
             _th.Thread(target=_evo_propose, daemon=True).start()
     except Exception:
         pass

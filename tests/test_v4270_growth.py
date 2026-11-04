@@ -102,3 +102,42 @@ def test_auto_propose_default_on():
 def security_auth():
     from bot import security
     return security
+
+
+def test_auto_upgrade_promotes_when_evaluation_passes(env, monkeypatch):
+    """评测达标 → 自动转正（_evolved 目录出现技能文件）。"""
+    from bot import llm
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {}, raising=False)
+    # 评测走 eval_mod.compare（可能依赖 LLM）——monkeypatch 掉评测结果为推荐晋升
+    from bot import eval as eval_mod
+    monkeypatch.setattr(eval_mod, "compare",
+                        lambda base, cand, cfg=None: {"baseline_avg": 5.0, "candidate_avg": 7.5,
+                                                      "delta": 2.5, "win": 6, "tie": 1, "loss": 0,
+                                                      "worst_drop": 0, "recommend": True,
+                                                      "reason": "测试", "fallback": False})
+    r = skill_evo.auto_upgrade("novel")
+    assert r["action"] == "promoted", r
+    # 转正的技能文件已出现在 _evolved 目录（EVOLVED_DIR 被 fixture 指到 tmp）
+    evolved = os.listdir(str(skill_evo.EVOLVED_DIR))
+    assert any(f.endswith(".md") for f in evolved), evolved
+
+
+def test_auto_upgrade_rejects_when_evaluation_fails(env, monkeypatch):
+    """评测不达标 → 自动驳回，绝不转正。"""
+    from bot import llm, eval as eval_mod
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {}, raising=False)
+    monkeypatch.setattr(eval_mod, "compare",
+                        lambda base, cand, cfg=None: {"baseline_avg": 7.0, "candidate_avg": 6.0,
+                                                      "delta": -1.0, "win": 1, "tie": 1, "loss": 5,
+                                                      "worst_drop": 2, "recommend": False,
+                                                      "reason": "测试", "fallback": False})
+    r = skill_evo.auto_upgrade("novel")
+    assert r["action"] == "rejected"
+
+
+def test_auto_upgrade_disabled(env, monkeypatch):
+    from bot import writer as _wr
+    monkeypatch.setattr(_wr, "_cfg_defaults",
+                        lambda: {"skill_evolution": {"auto_promote": False}}, raising=False)
+    r = skill_evo.auto_upgrade("novel")
+    assert r.get("ok") is False and "关闭" in r.get("error", "")

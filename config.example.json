@@ -68,7 +68,8 @@
       "enabled": true,
       "auto_propose": true,
       "require_approval": true,
-      "eval_min_gain": 2
+      "eval_min_gain": 2,
+      "auto_promote": true
     }
   }
 }

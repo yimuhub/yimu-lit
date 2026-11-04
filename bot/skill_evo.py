@@ -1060,3 +1060,47 @@ def propose_from_writing_data(medium: str = "novel", cfg=None) -> dict:
     reason = (f"聚合 {sig.get('books')} 本书 {total} 章评分（低分 {sig.get('lowChapters')}）；"
               f"高频弱点：" + "；".join(x[:30] for x, _ in (sig.get('weakTop') or [])[:3]))
     return propose(name, med, ["P2"], title, content, reason=reason, cfg=cfg)
+
+
+# ================================================================ v4.27.1 自动升级闭环
+
+def auto_promote_enabled() -> bool:
+    try:
+        from . import writer as _wr
+        return bool((_wr._cfg_defaults().get("skill_evolution") or {}).get("auto_promote", True))
+    except Exception:
+        return True
+
+
+def auto_upgrade(medium: str = "novel", cfg=None) -> dict:
+    """v4.27.1 全自动升级闭环：从写作数据出候选 → 自动评测 → 达标自动转正 / 不达标自动驳回。
+
+    用户要求「越写越强必须自动发生」——安全边界不靠人工点击，靠评测闸门：
+    eval_mod.compare 的晋升线（recommend）不过关就绝不转正；转正可随时回滚。
+    config skill_evolution.auto_promote = False 可整体关闭（退回仅出候选）。"""
+    if not auto_promote_enabled():
+        return _err("自动升级已关闭（skill_evolution.auto_promote = false）")
+    r = propose_from_writing_data(medium, cfg=cfg)
+    if not r.get("ok"):
+        return r
+    cand = r.get("candidate") or {}
+    cid = cand.get("id") or r.get("candidate_id")
+    if not cid:
+        return _err("候选缺少 id，无法继续自动升级")
+    ev = evaluate_candidate(cid, "", cfg=cfg)
+    if not ev.get("ok"):
+        reject(cid, note="自动评测执行失败，转人工")
+        return {"ok": False, "action": "evaluate_failed", "error": ev.get("error")}
+    evaluation = ev.get("evaluation") or {}
+    if ev.get("recommend"):
+        pr = promote(cid, force=False, approver="supervisor")
+        if not pr.get("ok"):
+            reject(cid, note=f"自动转正失败（{pr.get('error')}），转人工")
+            return {"ok": False, "action": "promote_failed", "error": pr.get("error")}
+        return {"ok": True, "action": "promoted", "candidate_id": cid,
+                "name": cand.get("name"),
+                "delta": evaluation.get("delta"),
+                "detail": evaluation.get("reason", "")[:140]}
+    reject(cid, note=f"自动评测未达标（delta={evaluation.get('delta')}），已驳回")
+    return {"ok": True, "action": "rejected", "candidate_id": cid,
+            "delta": evaluation.get("delta"), "advice": ev.get("advice", "")}

@@ -465,29 +465,38 @@ export function renderEvolution(container, ctx) {
   /* --------------------------------------------------------- 反馈 */
 
   function paintFeedback() {
+    /* v4.27.1：滤掉空壳机器记录（manual_edit 无评分无正文，用户看到的全是噪音）——
+       只展示有实质内容的人工反馈；空态改为讲清「自动升级不依赖这里」。 */
+    const meaningful = model.feedbackItems.filter((fb) => {
+      const note = String(fb.comment || fb.note || fb.text || '').trim();
+      const rating = fb.rating != null ? fb.rating : fb.score;
+      const tags = (Array.isArray(fb.tags) ? fb.tags : fb.tag ? [fb.tag] : [])
+        .filter((t) => String(t) !== 'manual_edit');
+      return note.length > 0 || rating != null || tags.length > 0;
+    });
     const sec = h('div', { class: 'rp-section' });
     sec.append(
       h(
         'div',
         { class: 'rp-section-head' },
         h('h3', { text: '最近反馈' }),
-        h('span', { class: 'count', text: `${model.feedbackItems.length} 条` })
+        h('span', { class: 'count', text: `${meaningful.length} 条` })
       )
     );
-    if (!model.feedbackItems.length) {
+    if (!meaningful.length) {
       sec.append(
         h(
           'div',
           { class: 'empty-state' },
-          h('div', { class: 'empty-icon', html: icon('message', 16) }),
-          h('p', { text: '还没有反馈样本。在作品里对回复打分或添加标签，就会出现在这里。' })
+          h('div', { class: 'empty-icon', html: icon('activity', 16) }),
+          h('p', { text: '没有需要你处理的人工反馈。技能自动升级由上方「进化信号」（真实评分数据）驱动，不依赖这里。' })
         )
       );
       body.append(sec);
       return;
     }
     const list = h('div', { class: 'evo-list' });
-    for (const fb of model.feedbackItems.slice(0, 12)) {
+    for (const fb of meaningful.slice(0, 12)) {
       const tags = Array.isArray(fb.tags) ? fb.tags : fb.tag ? [fb.tag] : [];
       const text = fb.comment || fb.note || fb.text || '';
       const rating = fb.rating != null ? fb.rating : fb.score;
