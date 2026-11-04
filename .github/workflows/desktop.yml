@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: |
           $env:YIMU_DATA_DIR = "$env:TEMP\yimulit_smoke"
-          $env:YIMU_PORT = "46921"   # launcher 支持 YIMU_PORT；冒烟固定端口
+          $env:YIMU_PORT = "46921"
           $p = Start-Process -FilePath "desktop/dist/YiMuLit/YiMuLit.exe" -PassThru
           Start-Sleep -Seconds 15
           $r = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:46921/" -TimeoutSec 10
@@ -61,7 +61,9 @@ jobs:
           $c = Get-Content $p -Raw -Encoding UTF8
           $c = $c -replace '#define AppVersion "0\.0\.0"', "#define AppVersion `"$ver`""
           [System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding $true))
-      - run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" desktop\windows\installer.iss'
+      - name: Build installer (Inno Setup)
+        shell: cmd
+        run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" desktop\windows\installer.iss'
       - uses: actions/upload-artifact@v4
         with: { name: windows-setup, path: desktop/dist/*.exe }
       - name: Attach to release
