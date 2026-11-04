@@ -23,7 +23,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 ShowLanguageDialog=no
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Files]
 Source: "..\dist\YiMuLit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
