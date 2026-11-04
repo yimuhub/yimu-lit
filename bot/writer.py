@@ -2322,6 +2322,25 @@ def _write_chapter(proj, ch, min_words, max_retries):
         _audit.maybe_auto(_bk, no)
     except Exception:
         pass
+    # v4.27.0：技能进化自动提案——每 25 章从真实写作数据（跨书评分弱点）生成一次
+    # 候选技能（只进候选区，人工审批转正；skill_evolution.auto_propose 可关）。
+    try:
+        _se_cfg = (_cfg_defaults().get("skill_evolution") or {})
+        if _se_cfg.get("auto_propose", True) and no > 0 and no % 25 == 0:
+            import threading as _th
+            def _evo_propose():
+                try:
+                    from bot import skill_evo as _se
+                    _r = _se.propose_from_writing_data("novel", cfg=plan.get("config") or {})
+                    if isinstance(_r, dict) and _r.get("ok"):
+                        proj.log(f"🧬 写作数据已沉淀为进化候选技能（第 {no} 章节点）——技能进化页可审阅转正")
+                    elif isinstance(_r, dict) and _r.get("error"):
+                        proj.log(f"🧬 进化候选未生成：{_r.get('error')}")
+                except Exception as e:
+                    proj.log(f"🧬 进化候选生成失败（不阻断）：{e}")
+            _th.Thread(target=_evo_propose, daemon=True).start()
+    except Exception:
+        pass
     if not _expr:
         _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
     # v4.21.5：章节完成卡永久写入对话流（type=chapter，含最终评分）——

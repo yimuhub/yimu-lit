@@ -1245,6 +1245,9 @@ def register_v2_routes(app, get_project, chat_func=None):
             if payload.get("from_feedback"):
                 res = se.propose_from_feedback(str(payload.get("medium") or ""),
                                                str(payload.get("stage") or ""), cfg=_cfg())
+            elif payload.get("from_writing_data"):
+                # v4.27.0：从真实写作数据（跨书逐章评分弱点）生成进化候选
+                res = se.propose_from_writing_data(str(payload.get("medium") or "novel"), cfg=_cfg())
             else:
                 res = se.propose(str(payload.get("name") or ""),
                                  str(payload.get("medium") or ""),
@@ -1258,6 +1261,17 @@ def register_v2_routes(app, get_project, chat_func=None):
             return {"ok": True, "candidate": res}
         except Exception as e:
             return _bad(f"生成候选失败：{e}", 500)
+
+    @app.get("/api/skills/evolution/growth")
+    def api_skills_growth():
+        """v4.27.0：「越写越强」实测仪表——跨书聚合逐章评分的成长曲线/六维对比/弱点信号。"""
+        se, err = _mod("skill_evo")
+        if err:
+            return err
+        try:
+            return se.growth_report()
+        except Exception as e:
+            return _bad(f"成长数据聚合失败：{e}", 500)
 
     @app.post("/api/skills/evolution/evaluate")
     def api_skills_evaluate(payload: dict):

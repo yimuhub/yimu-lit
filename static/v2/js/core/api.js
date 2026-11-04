@@ -400,6 +400,8 @@ export const api = {
   feedback: (payload) => request('/api/feedback', jsonBody(payload)),
   feedbackList: (params = {}) => request('/api/feedback', { query: params }),
   skillsEvolution: (status = '') => request('/api/skills/evolution', { query: { status } }),
+  /* v4.27.0：「越写越强」成长仪表（跨书逐章评分聚合） */
+  skillGrowth: () => request('/api/skills/evolution/growth', { timeout: 30000 }),
   proposeSkill: (payload) => request('/api/skills/evolution/propose', { ...jsonBody(payload), timeout: 180000 }),
   evaluateSkill: (payload) => request('/api/skills/evolution/evaluate', { ...jsonBody(payload), timeout: 300000 }),
   promoteSkill: (id, force = false) =>

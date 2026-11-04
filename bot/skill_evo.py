@@ -824,3 +824,239 @@ def propose_from_feedback(medium: str = "", stage: str = "", cfg=None) -> dict:
               f"聚焦问题：" + "；".join(x[:40] for x in focus[:3]))
     return propose(name, med or "all", [stage] if stage else [], title, content,
                    reason=reason, source_feedback_ids=source_ids, cfg=cfg)
+
+
+# ================================================================ v4.27.0 写作水平成长（越写越强）
+
+_GROWTH_DIMS = ("结构", "因果可信", "人物", "连续性", "语言", "读者体验")
+
+
+def _collect_chapter_scores():
+    """跨书收集全部逐章评分 [(书名, createdAt, 章号, score, dims, weak, ts)]，按时间排序。"""
+    import glob
+    rows = []
+    for f in sorted(glob.glob(os.path.join(writer_project_dir(), "*", "02-写作计划.json"))):
+        try:
+            d = json.load(open(f, encoding="utf-8"))
+        except Exception:
+            continue
+        meta = d.get("meta") or {}
+        sc = meta.get("chapter_scores") or {}
+        if not isinstance(sc, dict):
+            continue
+        name = d.get("novelName") or os.path.basename(os.path.dirname(f))
+        created = str(d.get("createdAt") or os.path.basename(os.path.dirname(f))[:15])
+        for no, v in sc.items():
+            if not isinstance(v, dict) or not isinstance(v.get("score"), (int, float)):
+                continue
+            rows.append({
+                "book": name, "bookKey": os.path.basename(os.path.dirname(f)),
+                "createdAt": created, "no": int(no) if str(no).isdigit() else 0,
+                "score": round(float(v["score"]), 1),
+                "dims": v.get("dims") if isinstance(v.get("dims"), dict) else {},
+                "weak": v.get("weak") if isinstance(v.get("weak"), list) else [],
+                "ts": float(v.get("ts") or 0),
+            })
+    rows.sort(key=lambda r: (r["createdAt"], r["ts"] or 0, r["no"]))
+    return rows
+
+
+def writer_project_dir() -> str:
+    from . import writer as _wr
+    return _wr.PROJECTS_DIR
+
+
+def growth_report() -> dict:
+    """「越写越强」实测仪表：跨书聚合逐章评分，输出总览/趋势/六维对比/每书档案。
+
+    全部来自真实写作数据（meta.chapter_scores），无任何虚构指标。"""
+    rows = _collect_chapter_scores()
+    books: dict[str, dict] = {}
+    for r in rows:
+        b = books.setdefault(r["bookKey"], {
+            "key": r["bookKey"], "name": r["book"], "createdAt": r["createdAt"],
+            "chapters": 0, "scoreSum": 0.0, "dimsSum": {}, "low": 0,
+            "weakTop": {},
+        })
+        b["chapters"] += 1
+        b["scoreSum"] += r["score"]
+        if r["score"] < 80:
+            b["low"] += 1
+        for w in r["weak"][:3]:
+            b["weakTop"][w] = b["weakTop"].get(w, 0) + 1
+        for k, v in (r["dims"] or {}).items():
+            if isinstance(v, (int, float)):
+                b["dimsSum"][k] = b["dimsSum"].get(k, 0.0) + float(v)
+
+    per_book = []
+    for b in books.values():
+        n = max(1, b["chapters"])
+        per_book.append({
+            "key": b["key"], "name": b["name"], "createdAt": b["createdAt"],
+            "chapters": b["chapters"],
+            "avg": round(b["scoreSum"] / n, 1),
+            "lowRate": round(b["low"] / n, 2),
+            "dims": {k: round(v / n, 1) for k, v in sorted(b["dimsSum"].items())},
+            "weakTop": sorted(b["weakTop"].items(), key=lambda x: -x[1])[:4],
+        })
+    per_book.sort(key=lambda x: x["createdAt"])
+
+    # 时间轴：章序滑动平均（窗 8），跨书按 createdAt+ts 拼接——「越写越高」一眼可见
+    series, win = [], []
+    for r in rows:
+        win.append(r["score"])
+        if len(win) > 8:
+            win.pop(0)
+        series.append(round(sum(win) / len(win), 1))
+    # 六维对比：最早 30% vs 最近 30%（各自均值）
+    dims_cmp = {}
+    n = len(rows)
+    if n >= 6:
+        k = max(3, n * 3 // 10)
+        head, tail = rows[:k], rows[-k:]
+        for dim in _GROWTH_DIMS:
+            h = [r["dims"][dim] for r in head if dim in (r["dims"] or {})]
+            t = [r["dims"][dim] for r in tail if dim in (r["dims"] or {})]
+            if h and t:
+                dims_cmp[dim] = {"early": round(sum(h) / len(h), 1),
+                                 "recent": round(sum(t) / len(t), 1),
+                                 "delta": round(sum(t) / len(t) - sum(h) / len(h), 1)}
+
+    # 进化信号：跨书弱点频次 TOP
+    weak_top = {}
+    for r in rows:
+        for w in r["weak"][:3]:
+            weak_top[w] = weak_top.get(w, 0) + 1
+    weak_top = sorted(weak_top.items(), key=lambda x: -x[1])[:6]
+
+    total_words = 0
+    try:
+        from . import writer as _wr
+        for d in sorted(os.listdir(_wr.PROJECTS_DIR)):
+            it = _wr.library_item(d)
+            if it:
+                total_words += int(it.get("total_words") or 0)
+    except Exception:
+        pass
+
+    early_avg = round(sum(r["score"] for r in rows[:max(1, n * 3 // 10)]) / max(1, n * 3 // 10), 1) if rows else None
+    recent_avg = round(sum(r["score"] for r in rows[-max(1, n * 3 // 10):]) / max(1, n * 3 // 10), 1) if rows else None
+
+    evolved = []
+    try:
+        evolved = [x for x in os.listdir(EVOLVED_DIR) if x.endswith(".md")]
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "total": {"books": len(per_book), "chaptersScored": n, "totalWords": total_words,
+                  "earlyAvg": early_avg, "recentAvg": recent_avg,
+                  "delta": round((recent_avg or 0) - (early_avg or 0), 1) if rows else 0,
+                  "evolvedSkills": len(evolved)},
+        "series": series,                       # 滑动平均分（章序）
+        "seriesLabels": [f"{r['book'][:6]}·{r['no']}" for r in rows[-60:]],
+        "perBook": per_book,
+        "dimsCompare": dims_cmp,
+        "weakTop": weak_top,
+        "sampleSize": n,
+    }
+
+
+def writing_signal() -> dict:
+    """进化信号：从真实写作数据提炼「当前最该改什么」（供候选生成与页面证据卡）。"""
+    rows = _collect_chapter_scores()
+    if not rows:
+        return {"ok": False, "error": "还没有带评分的章节——先写几章再来看进化信号"}
+    low = [r for r in rows if r["score"] < 80]
+    weak_top = {}
+    for r in low:
+        for w in r["weak"][:3]:
+            weak_top[w] = weak_top.get(w, 0) + 1
+    # 低分章的六维短板均值（比全局均值低最多的维度）
+    dims_low = {}
+    for r in low:
+        for k, v in (r["dims"] or {}).items():
+            if isinstance(v, (int, float)):
+                dims_low.setdefault(k, []).append(float(v))
+    dims_weak = sorted(((k, round(sum(v) / len(v), 1), len(v)) for k, v in dims_low.items()),
+                       key=lambda x: x[1])[:4]
+    books = sorted({r["book"] for r in rows})
+    return {"ok": True, "chaptersScored": len(rows), "lowChapters": len(low),
+            "books": len(books), "bookNames": books[:6],
+            "weakTop": sorted(weak_top.items(), key=lambda x: -x[1])[:6],
+            "dimsWeak": dims_weak}
+
+
+def propose_from_writing_data(medium: str = "novel", cfg=None) -> dict:
+    """v4.27.0：从真实写作数据（全部书的逐章评分弱点）生成进化候选——
+    「越写书 → 数据越多 → 候选越准 → 转正后写作水平越高」的正循环。
+    与 propose_from_feedback（用户点踩驱动）互补；同样只进候选区，人工审批转正。"""
+    sig = writing_signal()
+    if not sig.get("ok"):
+        return _err(sig.get("error") or "没有可用的写作数据")
+    med = medium if medium_mod.is_medium(medium) else "novel"
+    label = medium_mod.label(med)
+    weak_txt = "；".join(f"{w}（{n} 次）" for w, n in (sig.get("weakTop") or [])) or "暂无"
+    dims_txt = "；".join(f"{k} 均分 {v}（{c} 个低分章）" for k, v, c in (sig.get("dimsWeak") or [])) or "暂无"
+    prompt = (
+        f"你是网文主编。根据以下真实写作体检数据，为主『{label}』写作流程提炼 5-6 条「下一阶段的修订要点」。\n"
+        f"数据：共评分 {sig.get('chaptersScored')} 章（来自 {sig.get('books')} 本书），低分（<80）{sig.get('lowChapters')} 章。\n"
+        f"高频弱点：{weak_txt}\n低分章六维短板：{dims_txt}\n"
+        "每条要点：一句话规则 + 半句可执行动作（例如「因果可信弱——每个转折先写动机与代价再写结果」）。"
+        "只输出 JSON 数组，元素为字符串。")
+    rules = []
+    try:
+        out = llm.chat_json([{"role": "user", "content": prompt}], cfg=cfg, stage="review",
+                            agent="editor", temperature=0.4)
+        if isinstance(out, list):
+            rules = [str(x)[:120] for x in out if str(x).strip()]
+        elif isinstance(out, dict) and isinstance(out.get("rules"), list):
+            rules = [str(x)[:120] for x in out["rules"] if str(x).strip()]
+    except Exception:
+        pass
+    if not rules:   # LLM 不可用：确定性兜底——直接用弱点频次
+        rules = [f"{w} 是当前高频弱点（{n} 次）——每章写完对照专项自检" for w, n in (sig.get("weakTop") or [])[:5]]
+    rules = rules[:6]
+    # v4.27.0：规则不足时补通用要点而不是拒绝——数据少但真实的候选也有价值
+    _generic = [
+        "先立因果：每个转折先写动机与代价，再写结果，禁止巧合推剧情",
+        "再守连续性：人物伤势/物品/知情范围每章收尾前对照状态库核一遍",
+        "后修语言：同一信息全章只交代一次，删掉不改变局面的段落",
+    ]
+    for g in _generic:
+        if len(rules) >= 3:
+            break
+        if g not in rules:
+            rules.append(g)
+
+    name = re.sub(r"[^a-z0-9-]+", "-", f"evolved-{med}-data")[:60].strip("-")
+    title = f"{label} · 写作数据驱动修订要点 v{len(history(name)) + 1}"
+    total = sig.get("chaptersScored")
+    body = [
+        f"# {title}",
+        "",
+        f"> 生成依据：{sig.get('books')} 本书、{total} 个带评分章节，其中低分（<80）{sig.get('lowChapters')} 章。"
+        "本文件是候选草稿，未经人工审批不会注入任何写作流程。",
+        "",
+        "## 一、下一阶段修订要点（按优先级）",
+        "",
+    ]
+    for i, rule in enumerate(rules, 1):
+        body.append(f"{i}. {rule}")
+    body += [
+        "",
+        "## 二、数据证据",
+        "",
+        f"- 高频弱点：{weak_txt}",
+        f"- 低分章六维短板：{dims_txt}",
+        "- 以上统计来自逐章六维评分（meta.chapter_scores），随写作持续更新。",
+        "",
+        "## 三、使用方式",
+        "",
+        "- 转正后本技能按 frontmatter 的 medium/stages 自动注入对应阶段的写作上下文；",
+        "- 效果可用「写作水平成长」页的六维对比验证（转正前后各看一次）。",
+    ]
+    content = "\n".join(body) + "\n"
+    reason = (f"聚合 {sig.get('books')} 本书 {total} 章评分（低分 {sig.get('lowChapters')}）；"
+              f"高频弱点：" + "；".join(x[:30] for x, _ in (sig.get('weakTop') or [])[:3]))
+    return propose(name, med, ["P2"], title, content, reason=reason, cfg=cfg)

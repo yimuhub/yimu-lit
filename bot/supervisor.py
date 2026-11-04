@@ -385,6 +385,21 @@ def _final_acceptance(key, med, pdir, plan) -> None:
                 overdue_note = f"；⚠️ 仍有 {overdue} 个超期坑未回收（可在对话里说「检查一致性」补巡检）"
         except Exception:
             pass
+        # v4.27.0：完稿即沉淀——本书全部评分数据已就位，自动生成一次进化候选
+        try:
+            from bot import skill_evo as _se
+            if ((_wr._cfg_defaults() or {}).get("skill_evolution") or {}).get("auto_propose", True):
+                def _evo():
+                    try:
+                        _r = _se.propose_from_writing_data("novel", cfg=plan.get("config") or {})
+                        if isinstance(_r, dict) and _r.get("ok"):
+                            _evt(key, "done", "本书写作数据已沉淀为进化候选技能",
+                                 output="到「技能进化」页审阅：评测达标后转正，下一本更好")
+                    except Exception:
+                        pass
+                threading.Thread(target=_evo, name=f"sv-evo-{key}", daemon=True).start()
+        except Exception:
+            pass
         _evt(key, "done", "完稿终审：成品已就绪",
              output=(f"全书 {done}/{len(chs)} 章完成，约 {words} 字"
                      + (f"，均分 {avg}（达标线 {_wr._pass_line()}）" if avg is not None else "")

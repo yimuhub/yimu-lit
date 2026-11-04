@@ -15,6 +15,7 @@ export function renderEvolution(container, ctx) {
     skills: null,
     learn: null,
     feedbackItems: [],
+    growth: null,
     error: '',
     proposing: false
   };
@@ -27,7 +28,7 @@ export function renderEvolution(container, ctx) {
         'div',
         { class: 'evo-head-copy' },
         h('h1', { text: '技能进化' }),
-        h('p', { class: 'hint-text', text: '你的每次评分和修订都会沉淀下来：生成候选技能，评测达标后由你亲手转正。' })
+        h('p', { class: 'hint-text', text: '每一章的评分都会沉淀成你的写作数据：下面是「越写越强」的实测曲线；数据提炼出的候选技能，评测达标后由你亲手转正——下一本书写得更好。' })
       ),
       h(
         'button',
@@ -36,9 +37,9 @@ export function renderEvolution(container, ctx) {
           type: 'button',
           html: model.proposing
             ? '<span class="wiz-loading"><span class="spinner"></span>生成中…</span>'
-            : `${icon('sparkles', 14)}<span>从反馈生成候选</span>`,
+            : `${icon('activity', 14)}<span>从写作数据生成候选</span>`,
           disabled: model.proposing,
-          on: { click: propose }
+          on: { click: proposeWriting }
         }
       )
     )
@@ -47,16 +48,17 @@ export function renderEvolution(container, ctx) {
   const body = h('div', { class: 'evo-view' });
   pad.append(body);
 
-  async function propose() {
+  /* v4.27.0：从真实写作数据（跨书逐章评分弱点）生成进化候选 */
+  async function proposeWriting() {
     if (model.proposing) return;
     model.proposing = true;
     paint();
     try {
-      await api.proposeSkill({ from_feedback: true, medium: store.get().ui.medium });
-      toast('候选技能已生成，评测通过后可转正', { tone: 'success' });
+      await api.proposeSkill({ from_writing_data: true, medium: 'novel' });
+      toast('已从写作数据生成候选技能，评测通过后可转正', { tone: 'success' });
       await load();
     } catch (err) {
-      toast(errorText(err, '生成失败'), { tone: 'danger' });
+      toast(errorText(err, '生成失败——可能写作数据还不够'), { tone: 'danger' });
     }
     model.proposing = false;
     paint();
@@ -65,14 +67,20 @@ export function renderEvolution(container, ctx) {
   async function load() {
     model.error = '';
     paint();
-    const [skillsRes, learnRes, feedbackRes] = await Promise.allSettled([
+    const [skillsRes, learnRes, feedbackRes, growthRes] = await Promise.allSettled([
       api.skillsEvolution(),
       api.learn(),
-      api.feedbackList({ limit: 20 })
+      api.feedbackList({ limit: 20 }),
+      api.skillGrowth()
     ]);
     if (skillsRes.status === 'fulfilled') model.skills = skillsRes.value;
     else if (skillsRes.reason && !skillsRes.reason.isMissing) model.error = errorText(skillsRes.reason, '技能数据加载失败');
     if (learnRes.status === 'fulfilled') model.learn = learnRes.value;
+    if (growthRes.status === 'fulfilled' && growthRes.value && growthRes.value.ok) {
+      model.growth = growthRes.value;
+    } else if (growthRes.status === 'rejected') {
+      model.growth = null;
+    }
     if (feedbackRes.status === 'fulfilled' && feedbackRes.value) {
       const v = feedbackRes.value;
       model.feedbackItems = Array.isArray(v)
@@ -119,11 +127,113 @@ export function renderEvolution(container, ctx) {
       return;
     }
 
+    paintGrowth();
     paintProfile();
     paintStats();
     paintCandidates();
     paintHistory();
     paintFeedback();
+  }
+
+  /* ------------------------------------------- v4.27.0 越写越强（成长仪表） */
+
+  function fmtNum(n) {
+    if (n == null) return '—';
+    if (n >= 10000) return `${(n / 10000).toFixed(1)} 万`;
+    return String(n);
+  }
+
+  function paintGrowth() {
+    const g = model.growth;
+    if (!g || !g.total || !g.total.chaptersScored) {
+      const card = h('div', { class: 'evo-card evo-growth' });
+      card.append(h('h2', {}, h('span', { html: icon('activity', 14) }), h('span', { text: '写作水平成长' })));
+      card.append(h('div', { class: 'hint-text', text: '还没有带评分的章节。写完第一章起，这里会画出你「越写越强」的实测曲线。' }));
+      body.append(card);
+      return;
+    }
+    const t = g.total;
+    const card = h('div', { class: 'evo-card evo-growth' });
+    card.append(h('h2', {}, h('span', { html: icon('activity', 14) }), h('span', { text: '写作水平成长' }),
+      h('span', { class: 'hint-text', text: `（基于 ${t.chaptersScored} 个带评分章节的真实数据）` })));
+
+    /* 三张大数字卡 */
+    const big = h('div', { class: 'evo-big-grid' });
+    big.append(h('div', { class: 'evo-big' },
+      h('span', { class: 'stat-k', text: '累计创作' }),
+      h('span', { class: 'evo-big-v' }, `${t.books}`, h('small', { text: ' 本书' })),
+      h('span', { class: 'hint-text', text: `${t.chaptersScored} 章已评分 · ${fmtNum(t.totalWords)} 字` })));
+    const delta = Number(t.delta) || 0;
+    big.append(h('div', { class: 'evo-big' },
+      h('span', { class: 'stat-k', text: '写作水平变化' }),
+      h('span', { class: `evo-big-v ${delta >= 0 ? 'up' : 'down'}` },
+        `${delta >= 0 ? '+' : ''}${delta}`, h('small', { text: ' 分' })),
+      h('span', { class: 'hint-text', text: `早期均分 ${t.earlyAvg ?? '—'} → 最近均分 ${t.recentAvg ?? '—'}` })));
+    big.append(h('div', { class: 'evo-big' },
+      h('span', { class: 'stat-k', text: '进化沉淀' }),
+      h('span', { class: 'evo-big-v' }, `${t.evolvedSkills}`, h('small', { text: ' 个技能' })),
+      h('span', { class: 'hint-text', text: '转正后自动注入后续写作' })));
+    card.append(big);
+
+    /* 成长曲线（滑动平均分，SVG 折线 + 80 达标线） */
+    const series = (g.series || []).slice(-160);
+    if (series.length >= 3) {
+      const W = 640, H = 150, PAD = 6;
+      const lo = Math.min(45, Math.min(...series) - 3), hi = Math.max(84, Math.max(...series) + 2);
+      const xs = (i) => PAD + (i * (W - PAD * 2)) / (series.length - 1);
+      const ys = (v) => H - PAD - ((v - lo) * (H - PAD * 2)) / (hi - lo);
+      const pts = series.map((v, i) => `${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(' ');
+      const y80 = ys(80);
+      const svg = h('svg', {
+        viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'evo-trend-svg', role: 'img',
+        'aria-label': '逐章评分滑动平均趋势'
+      });
+      svg.append(h('line', { x1: PAD, y1: y80, x2: W - PAD, y2: y80, class: 'evo-trend-goal' }));
+      svg.append(h('polyline', { points: pts, class: 'evo-trend-line' }));
+      svg.append(h('text', { x: W - PAD - 2, y: y80 - 4, class: 'evo-trend-goal-txt', text: '达标线 80' }));
+      const chart = h('div', { class: 'evo-trend' }, svg,
+        h('div', { class: 'evo-trend-cap' },
+          h('span', { text: `第 1 章 ${series[0]} 分` }),
+          h('span', { text: `第 ${t.chaptersScored} 章 ${series[series.length - 1]} 分` })));
+      card.append(chart);
+    }
+
+    /* 六维对比：早期 vs 最近 */
+    const cmp = g.dimsCompare || {};
+    const dims = Object.entries(cmp);
+    if (dims.length) {
+      card.append(h('div', { class: 'evo-sub', text: '六维成长（最早 30% 章 vs 最近 30% 章）' }));
+      const list = h('div', { class: 'evo-dims' });
+      for (const [dim, d] of dims) {
+        const up = (d.delta || 0) >= 0;
+        const maxv = Math.max(d.early || 0, d.recent || 0, 10);
+        const row = h('div', { class: 'evo-dim-row' },
+          h('span', { class: 'evo-dim-name', text: dim }),
+          h('div', { class: 'evo-dim-bars' },
+            h('div', { class: 'evo-dim-bar-wrap' }, h('div', { class: 'evo-dim-bar early', style: { width: `${((d.early || 0) / maxv) * 100}%` } })),
+            h('div', { class: 'evo-dim-bar-wrap' }, h('div', { class: 'evo-dim-bar recent', style: { width: `${((d.recent || 0) / maxv) * 100}%` } }))),
+          h('span', { class: `evo-dim-delta ${up ? 'up' : 'down'}`, text: `${d.early} → ${d.recent}（${up ? '+' : ''}${d.delta}）` }));
+        list.append(row);
+      }
+      card.append(list);
+    }
+
+    /* 进化信号 + 一键生成 */
+    const weak = g.weakTop || [];
+    if (weak.length) {
+      card.append(h('div', { class: 'evo-sub', text: '当前最高频弱点（进化信号）' }));
+      const wrow = h('div', { class: 'evo-weak-row' });
+      const maxw = Math.max(...weak.map((x) => x[1]), 1);
+      for (const [w, n] of weak) {
+        wrow.append(h('div', { class: 'evo-weak-item' },
+          h('span', { class: 'evo-dim-name', text: w }),
+          h('div', { class: 'evo-dim-bar-wrap' }, h('div', { class: 'evo-dim-bar weak', style: { width: `${(n / maxw) * 100}%` } })),
+          h('span', { class: 'hint-text', text: `${n} 章` })));
+      }
+      card.append(wrow);
+      card.append(h('p', { class: 'hint-text', text: '点右上「从写作数据生成候选」：把这些弱点提炼成修订要点，评测转正后自动注入后续写作。' }));
+    }
+    body.append(card);
   }
 
   /* --------------------------------------------------------- 画像 */

@@ -3309,3 +3309,34 @@
   padding: 3px 10px;
   cursor: pointer;
 }
+
+/* ================= v4.27.0 技能进化 · 越写越强成长仪表 ================= */
+.evo-growth h2 { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+.evo-growth h2 .hint-text { margin-left: auto; font-size: 11px; }
+.evo-big-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+.evo-big { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 0.5px solid var(--line-1); border-radius: var(--radius-md); background: var(--bg-sunken); }
+.evo-big .stat-k { color: var(--ink-caption); font-size: 11.5px; }
+.evo-big-v { color: var(--ink-primary); font-size: 26px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.evo-big-v small { font-size: 12px; font-weight: 500; color: var(--ink-secondary); margin-left: 2px; }
+.evo-big-v.up { color: var(--success); }
+.evo-big-v.down { color: var(--danger); }
+.evo-trend { margin-bottom: 4px; }
+.evo-trend-svg { width: 100%; height: 150px; display: block; }
+.evo-trend-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.evo-trend-goal { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 5 4; }
+.evo-trend-goal-txt { fill: var(--ink-caption); font-size: 10px; text-anchor: end; }
+.evo-trend-cap { display: flex; justify-content: space-between; color: var(--ink-caption); font-size: 11px; margin-top: 2px; }
+.evo-sub { color: var(--ink-secondary); font-size: 12px; font-weight: 600; margin: 12px 0 6px; }
+.evo-dims, .evo-weak-row { display: flex; flex-direction: column; gap: 8px; }
+.evo-dim-row, .evo-weak-item { display: grid; grid-template-columns: 72px 1fr auto; align-items: center; gap: 10px; }
+.evo-dim-name { color: var(--ink-secondary); font-size: 12px; }
+.evo-dim-bars { display: flex; flex-direction: column; gap: 3px; }
+.evo-dim-bar-wrap { height: 7px; border-radius: var(--radius-pill); background: var(--bg-chip); overflow: hidden; }
+.evo-dim-bar { height: 100%; border-radius: var(--radius-pill); }
+.evo-dim-bar.early { background: var(--line-2); }
+.evo-dim-bar.recent { background: var(--accent); }
+.evo-dim-bar.weak { background: var(--warn); }
+.evo-dim-delta { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.evo-dim-delta.up { color: var(--success); }
+.evo-dim-delta.down { color: var(--danger); }
+@media (max-width: 720px) { .evo-big-grid { grid-template-columns: 1fr; } }
