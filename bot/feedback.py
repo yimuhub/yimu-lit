@@ -28,7 +28,7 @@ UTC = UTC  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；�
 from . import medium as medium_mod
 from .safeio import atomic_write_text
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 DATA_DIR = os.path.join(ROOT, "data")
 #: 反馈主文件；测试可 monkeypatch 到 tmp_path。
 FEEDBACK_PATH = os.path.join(DATA_DIR, "feedback.jsonl")

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from . import medium as medium_mod
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import RESOURCE_ROOT as ROOT
 SKILLKIT_DIR = os.path.join(ROOT, "skillkit")
 
 # 外部语料挂载目录（默认 gitignore、不随产品分发；放进去的东西不在授权范围内）

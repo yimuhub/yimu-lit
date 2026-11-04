@@ -13,6 +13,8 @@ from typing import Optional
 import datetime
 import json
 import os
+
+from .paths import DATA_ROOT
 import re
 
 from bot.safeio import atomic_write_text, atomic_write_json, safe_join
@@ -89,7 +91,7 @@ def get_project(key: str) -> Optional["ThesisProject"]:
     return ThesisProject(pdir, key)
 
 
-PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "projects")
+PROJECTS_DIR = os.path.join(DATA_ROOT, "projects")
 
 DEGREES = {"undergrad": "本科毕业论文", "master": "硕士论文", "journal": "期刊论文", "report": "课程报告"}
 

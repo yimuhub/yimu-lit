@@ -3,6 +3,8 @@
 未带 cfg 时安全回落到默认 active 供应商，不破坏旧行为。
 """
 import json, os, sys, time, threading
+
+from .paths import DATA_ROOT
 import httpx
 from . import providers
 from .safeio import atomic_write_json, safe_join
@@ -16,10 +18,10 @@ class BudgetExceeded(LLMError):
 
 # ---------- v0.3.x：Token 账本（按书归集 LLM 用量；线程本地防并发串账） ----------
 _TL = threading.local()
-_PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "projects")
-_USAGE_GLOBAL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "usage_global.json")
+_PROJECTS_DIR = os.path.join(DATA_ROOT, "projects")
+_USAGE_GLOBAL = os.path.join(DATA_ROOT, "usage_global.json")
 _USAGE_LOCK = threading.Lock()   # usage.json / usage_global.json 读改写串行化
-_TRACE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "llm_calls.jsonl")
+_TRACE_FILE = os.path.join(DATA_ROOT, "llm_calls.jsonl")
 _TRACE_LOCK = threading.Lock()
 
 def book(key: str, stage: str = ""):
@@ -200,7 +202,7 @@ def _throttle(cfg):
             time.sleep(wait)
 
 
-LLM_ERROR_LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "llm_errors.jsonl")
+LLM_ERROR_LOG = os.path.join(DATA_ROOT, "data", "llm_errors.jsonl")
 
 def _log_llm_error(provider_id: str, model: str, base_url: str, status, detail: str,
                    book: str = "", stage: str = ""):

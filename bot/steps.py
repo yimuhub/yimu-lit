@@ -11,7 +11,7 @@
 import json, os, threading, time
 from collections import deque
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 PROJECTS_DIR = os.path.join(ROOT, "projects")
 MAX_PER_BOOK = 1200         # 内存环形缓冲上限
 JSONL_MAX_BYTES = 8 * 1024 * 1024

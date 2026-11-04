@@ -4,7 +4,7 @@ import json, os, re, datetime, threading, queue, time
 from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT, DATA_ROOT as DATA_ROOT_N
 PROJECTS_DIR = os.path.join(ROOT, "projects")
 
 def _skeleton_refresh(key):
@@ -2772,7 +2772,7 @@ def _write_semaphore():
     return _WRITE_SEM
 
 # ---------- v0.3 P3：定时任务（批量写 + 调度） ----------
-SCHEDULES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "schedules.json")
+SCHEDULES_FILE = os.path.join(DATA_ROOT_N, "schedules.json")
 def load_schedules():
     try:
         return json.load(open(SCHEDULES_FILE, encoding="utf-8"))

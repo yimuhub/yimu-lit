@@ -24,7 +24,7 @@ from . import llm
 from . import medium as medium_mod
 from .safeio import safe_join
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 DATA_DIR = os.path.join(ROOT, "data")
 #: 评测留档目录；测试可 monkeypatch。
 EVAL_DIR = os.path.join(DATA_DIR, "evals")

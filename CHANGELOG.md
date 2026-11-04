@@ -32,6 +32,25 @@
 含候选区隔离），全量 pytest 通过。
 
 
+## v4.28.0 — 桌面化：Mac DMG + Windows 安装包（PyInstaller）+ 双根路径层
+
+用户要求：把全部功能打包成 Mac DMG 与 Windows EXE 桌面软件。
+- **bot/paths.py 双根路径层**（打包地基）：RESOURCE_ROOT（只读资源 skillkit/static/
+  samples/VERSION，随应用分发）与 DATA_ROOT（用户数据 projects/data/config/providers/
+  secrets/styles，桌面版在 ~/Library/Application Support/YiMuLit 或 %APPDATA%/YiMuLit）。
+  23 个文件的自推导根路径全部迁移；config.json 首启自动从模板生成（桌面开箱即用）；
+  开发模式行为完全不变（双根同指仓库根）。
+- **桌面入口** desktop/launcher.py：空闲端口自动右移、起服务、等就绪自动开浏览器、
+  数据目录打印；desktop/yimulit.spec（CLI 版）+ yimulit_mac.spec（.app 无控制台）。
+- **Mac 产出**（本机构建并冒烟验证）：一幕神笔.app + 一幕神笔-4.28.0-mac.dmg（23MB，
+  含 Applications 拖拽链接，挂载即跑）。
+- **Windows 产出**：desktop/windows/build_exe.ps1（venv→PyInstaller→冒烟→Inno Setup
+  中文安装包）+ installer.iss；因 PyInstaller 无法跨平台交叉编译，Windows exe 由
+  GitHub Actions（.github/workflows/desktop.yml）在 windows-latest 自动构建：
+  推 v* tag 时 DMG 与 EXE 安装包自动挂到 GitHub Release。
+- **冻结守卫**：桌面版禁用应用内 zipball 自更新（引导走安装包升级）；冒烟发现的
+  uvicorn 字符串导入在 PYZ 内失效问题已修（传 app 对象）。
+
 ## v4.27.3 — 侧栏菜单导出弹窗（整书/选章范围）+ 去掉冗余「打开作品」
 
 用户反馈：「打开作品」鸡肋（点行就打开）；要能选导出整书还是某几章。

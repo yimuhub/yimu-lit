@@ -12,7 +12,7 @@
 """
 import json, os, threading, time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 LOG_FILE = os.path.join(ROOT, "data", "system_log.jsonl")
 MAX_BYTES = 2 * 1024 * 1024   # 超过即裁剪
 KEEP = 1200                   # 裁剪后保留的最新条数

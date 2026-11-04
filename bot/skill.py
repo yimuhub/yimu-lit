@@ -11,8 +11,10 @@ from functools import cache
 
 from . import skillkit, wordcount
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SECRETS_DIR = os.path.join(ROOT, "secrets")
+from .paths import RESOURCE_ROOT, DATA_ROOT, CONFIG_PATH
+
+ROOT = RESOURCE_ROOT  # 兼容旧引用
+SECRETS_DIR = os.path.join(DATA_ROOT, "secrets")
 
 # 小说技能在技能库中的相对根
 NOVEL_ROOT = os.path.join("skillkit", "novel")
@@ -26,13 +28,15 @@ def _skill_root():
         return env
     cfg = {}
     try:
-        cfg = json.load(open(os.path.join(ROOT, "config.json"), encoding="utf-8"))
+        cfg = json.load(open(CONFIG_PATH, encoding="utf-8"))
     except Exception:
         cfg = {}
     sp = (cfg.get("skill_path") or "").strip()
     if not sp:
         return os.path.join(ROOT, NOVEL_ROOT)
-    cand = sp if os.path.isabs(sp) else os.path.join(ROOT, sp)
+    cand = sp if os.path.isabs(sp) else os.path.join(RESOURCE_ROOT, sp)
+    if not os.path.isdir(cand):
+        cand = os.path.join(DATA_ROOT, sp)
     # v4.16.1 兜底：旧版 config.skill_path 指向的 skill/ 目录在新版不存在（升级后模板
     # 已迁到 skillkit/novel/）→ 坏配置曾让人物档案/大纲模板全部 Errno 2、规划必挂。
     # 目录无效或缺 SKILL.md 时自动回落默认技能目录。

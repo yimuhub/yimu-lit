@@ -37,7 +37,7 @@ from . import medium as medium_mod
 from . import skillkit
 from .safeio import atomic_write_text, safe_join
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 DATA_DIR = os.path.join(ROOT, "data")
 CAND_DIR = os.path.join(DATA_DIR, "skill_candidates")
 VERS_DIR = os.path.join(DATA_DIR, "skill_versions")

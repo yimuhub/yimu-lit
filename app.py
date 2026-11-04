@@ -19,7 +19,9 @@ from bot import purity, journal, express
 from bot import audit as audit_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# v4.28.0：双根路径——ROOT 语义保留为「资源根」（static/samples，桌面版随应用包只读）；
+# 用户可写数据（config/projects/data…）一律走 bot.paths（桌面版在用户数据目录）。
+from bot.paths import RESOURCE_ROOT as ROOT, DATA_ROOT as _DATA_ROOT, CONFIG_PATH as _CONFIG_PATH, DATA_ROOT
 SAMPLE_DIR = os.path.join(ROOT, "samples", "示例书-雨夜出租车")
 
 # 未绑定可用供应商时的统一兜底：v2 流式接口（bot/v2api.py）与旧版 /api/chat 说同一句话
@@ -2063,7 +2065,11 @@ _UPDATE_SYNC = [
 
 @app.post("/api/self-update")
 def api_self_update():
-    """一键自更新：下载 GitHub 最新 release 源码 → 白名单覆盖 → 返回需重启。"""
+    """一键自更新：下载 GitHub 最新 release 源码 → 白名单覆盖 → 返回需重启。
+    v4.28.0：桌面版（PyInstaller 冻结包）禁用——zipball 覆盖源码对冻结包无意义且有风险，
+    桌面版升级走安装包重新安装。"""
+    if os.environ.get("YIMU_DESKTOP") == "1" or getattr(sys, "frozen", False):
+        return JSONResponse({"error": "桌面版请在官网下载新安装包覆盖安装（应用内自更新不适用）"}, status_code=400)
     import zipfile, io, shutil
     repo = "yimuhub/yimu-lit"
     token = None
@@ -2228,7 +2234,7 @@ def api_diagnostics():
     # v4.16.8：供应商配置脱敏摘要（一眼看出 key 未配/供应商未启用——401 排查无需猜）
     prov_summary = []
     try:
-        pv = json.load(open(os.path.join(ROOT, "providers.json"), encoding="utf-8"))
+        pv = json.load(open(os.path.join(_DATA_ROOT, "providers.json"), encoding="utf-8"))
         for p in (pv.get("providers") or []):
             k = str(p.get("api_key") or "")
             prov_summary.append({"name": p.get("id") or p.get("name"), "base_url": p.get("base_url"),

@@ -5,6 +5,8 @@ C1 选题分级 → C2 故事（语言分级）→ C3 互动设计 → C4 插图
 import datetime
 import json
 import os
+
+from .paths import DATA_ROOT
 import re
 
 from bot.safeio import atomic_write_text, safe_join
@@ -37,7 +39,7 @@ class ChildrenProject(MiniWriterProject):
 
 
 get_project = make_get_project(ChildrenProject)
-PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "projects")
+PROJECTS_DIR = os.path.join(DATA_ROOT, "projects")
 
 
 def create_project(cfg: dict):

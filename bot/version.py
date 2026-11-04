@@ -2,7 +2,8 @@
 import os
 def _read():
     try:
-        v = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "VERSION")).read().strip()
+        from .paths import resource
+        v = open(resource("VERSION")).read().strip()
         return v[1:] if v.startswith("v") else v
     except Exception:
         return "0.0.0"

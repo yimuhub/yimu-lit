@@ -23,7 +23,7 @@ import uuid
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import RESOURCE_ROOT as ROOT
 
 
 def _mod(name: str):

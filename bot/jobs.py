@@ -13,7 +13,7 @@ import uuid
 
 from .safeio import atomic_write_json
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 JOBS_FILE = os.path.join(ROOT, "jobs.json")
 _MAX_JOBS = 200
 _LOCK = threading.RLock()

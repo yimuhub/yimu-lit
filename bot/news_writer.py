@@ -5,6 +5,8 @@ N1 素材与信源 → N2 倒金字塔撰写 → N3 事实核查 → N4 多版�
 import datetime
 import json
 import os
+
+from .paths import DATA_ROOT
 import re
 
 from bot.safeio import atomic_write_text, safe_join
@@ -30,7 +32,7 @@ class NewsProject(MiniWriterProject):
 
 
 get_project = make_get_project(NewsProject)
-PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "projects")
+PROJECTS_DIR = os.path.join(DATA_ROOT, "projects")
 
 
 def create_project(cfg: dict):

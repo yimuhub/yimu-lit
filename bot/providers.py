@@ -11,7 +11,7 @@ import json, os, re, threading, httpx
 
 from .safeio import atomic_write_json
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 PROVIDERS_FILE = os.path.join(ROOT, "providers.json")
 CONFIG_FILE = os.path.join(ROOT, "config.json")
 SECRETS_DIR = os.path.join(ROOT, "secrets")

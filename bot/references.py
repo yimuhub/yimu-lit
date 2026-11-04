@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 from . import distill, ingest, llm
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 REFERENCES_DIR = os.path.join(ROOT, "references")
 PROJECTS_DIR = os.path.join(ROOT, "projects")
 

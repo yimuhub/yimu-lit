@@ -32,7 +32,7 @@ import os
 import re
 from functools import lru_cache
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import RESOURCE_ROOT as ROOT
 PINGSHUI_PATH = os.path.join(ROOT, "skillkit", "poetry", "data", "pingshui.json")
 
 # ---------- 体式定义 ----------

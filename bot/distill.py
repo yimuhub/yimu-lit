@@ -16,7 +16,7 @@ from urllib.parse import urljoin, urlparse
 from . import llm
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 STYLES_DIR = os.path.join(ROOT, "styles")
 
 # 四种文体各自的风格维度清单：键名即卡片 dims 的键，值是提示 LLM 该看什么技法。

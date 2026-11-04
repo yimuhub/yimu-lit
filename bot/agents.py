@@ -154,7 +154,7 @@ def set_book_skills(pdir, agent, names):
     """把某本书的岗位技能绑定写进 02-写作计划.json 的 meta.agent_skills。
     空列表 = 清空该岗位的本书绑定（回落全局绑定）。
     v4.24.16：读-改-写纳入按书串行锁——协作页签操作与写作线程并发时不再互相覆盖整份计划。"""
-    import json, os, datetime, threading
+    import json, os, datetime
     from .safeio import atomic_write_json as _aw
     from .writer import _acq_book
     cleaned = _clean_skills(names)

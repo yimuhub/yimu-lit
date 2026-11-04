@@ -1,0 +1,3 @@
+([('一幕神笔',
+   '/Users/shanziya/Documents/yimu-lit/desktop/dist/一幕神笔',
+   'EXECUTABLE')],)

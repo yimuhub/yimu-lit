@@ -1,0 +1,62 @@
+# 桌面版自动构建：推 tag（v*）时产出 Mac DMG + Windows 安装包并挂到 GitHub Release。
+# 手动触发（workflow_dispatch）只上传构建产物到 Actions 工件页。
+name: desktop-build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller desktop/yimulit_mac.spec --noconfirm --distpath desktop/dist --workpath desktop/build
+      - name: Make DMG
+        run: |
+          STAGE=$(mktemp -d)
+          cp -R "desktop/dist/一幕神笔.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          VER=$(cat VERSION)
+          hdiutil create -volname "一幕·YIMU神笔" -srcfolder "$STAGE" -ov -format UDZO "desktop/dist/一幕神笔-$VER-mac.dmg"
+      - uses: actions/upload-artifact@v4
+        with: { name: mac-dmg, path: desktop/dist/*.dmg }
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with: { files: desktop/dist/*.dmg }
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller desktop/yimulit.spec --noconfirm --distpath desktop/dist --workpath desktop/build
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $env:YIMU_DATA_DIR = "$env:TEMP\yimulit_smoke"
+          $env:YIMU_PORT = "46921"   # launcher 支持 YIMU_PORT；冒烟固定端口
+          $p = Start-Process -FilePath "desktop/dist/YiMuLit/YiMuLit.exe" -PassThru
+          Start-Sleep -Seconds 15
+          $r = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:46921/" -TimeoutSec 10
+          if ($r.StatusCode -ne 200) { throw "smoke failed" }
+          Stop-Process -Id $p.Id -Force
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" desktop\windows\installer.iss'
+      - uses: actions/upload-artifact@v4
+        with: { name: windows-setup, path: desktop/dist/*.exe }
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with: { files: desktop/dist/*.exe }

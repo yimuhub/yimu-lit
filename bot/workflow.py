@@ -5,7 +5,7 @@ import json, os, re, datetime, time
 from . import llm, skill, steps, purity
 from .safeio import atomic_write_json
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import DATA_ROOT as ROOT
 PREFS_FILE = os.path.join(ROOT, "user-preferences.json")
 
 # ---------- 偏好系统（技能 shared-infrastructure 定义） ----------
