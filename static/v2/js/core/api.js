@@ -289,6 +289,7 @@ export const api = {
   /* 冷启动只有 key：用它解析作品属于哪种文体，再决定渲染哪套工作台。 */
   project: (key) => request(`/api/library/${enc(key)}`),
   favorite: (key, on) => request(`/api/library/${enc(key)}/favorite`, jsonBody({ on: Boolean(on) })),
+  pin: (key, on) => request(`/api/library/${enc(key)}/pin`, jsonBody({ on: Boolean(on) })),
   /* 归档 = 收进作品库「归档」页；回收站 = 可恢复删除；purge 需作品名确认，不可逆。 */
   archive: (key, on) => request(`/api/library/${enc(key)}/archive`, jsonBody({ on: Boolean(on) })),
   trash: (key) => request(`/api/library/${enc(key)}/trash`, jsonBody({})),

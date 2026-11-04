@@ -3,7 +3,7 @@
 import { h, icon, fmtWords, groupByRecency, initials, mediumGlyph, statusMeta, debounce } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { navigate, openProject } from '../core/router.js';
-import { toast, confirmDialog, openModal } from '../core/ui.js';
+import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { api, errorText } from '../core/api.js';
 
 let localQuery = '';
@@ -37,6 +37,7 @@ function renderRow(item, ctx, { isActive }) {
   const top = h(
     'span',
     { class: 'side-row-top' },
+    item.pinned ? h('span', { class: 'side-pin', title: '已置顶', html: icon('pin', 11) }) : null,
     h('span', { class: `dot${meta.tone === 'muted' ? '' : ' dot-' + meta.tone}`, title: meta.label }),
     h('span', { class: 'side-row-name', text: item.name })
   );
@@ -87,6 +88,20 @@ function renderRow(item, ctx, { isActive }) {
     }
   });
   actions.append(fav);
+  /* v4.27.2：每行右侧「⋯」更多操作菜单（置顶/续写/归档/彻底删除…） */
+  const more = h('button', {
+    class: 'icon-btn icon-btn-sm side-row-more',
+    type: 'button',
+    'aria-label': '更多操作',
+    html: icon('more', 13),
+    on: {
+      click: (event) => {
+        event.stopPropagation();
+        openRowMenu(event.currentTarget, item, ctx);
+      }
+    }
+  });
+  actions.append(more);
   btn.append(actions);
 
   btn.addEventListener('click', () => {
@@ -94,6 +109,69 @@ function renderRow(item, ctx, { isActive }) {
     ctx.closeDrawer();
   });
   return btn;
+}
+
+/* v4.27.2：行级「⋯」更多操作菜单——置顶/续写/暂停/收藏/归档/彻底删除 */
+function openRowMenu(anchor, item, ctx) {
+  const running = Boolean(item.running);
+  const inProgress = ['in_progress', 'paused', 'planning', 'writing'].includes(item.state);
+  const items = [
+    { label: '打开作品', icon: 'book-open', onSelect: () => { openProject(item); ctx.closeDrawer?.(); } }
+  ];
+  if (inProgress && !failed_item(item)) {
+    items.push(running
+      ? { label: '暂停创作', icon: 'pause', onSelect: async () => {
+          try { await api.pause(item.key); toast('已暂停（当前检查点停）', { tone: 'success' }); ctx.refreshLibrary?.(); }
+          catch (err) { toast(errorText(err, '暂停失败'), { tone: 'danger' }); }
+        } }
+      : { label: item.state === 'paused' ? '继续创作' : '续写', icon: 'play', onSelect: async () => {
+          try { await api.resume(item.key); toast('已开始续写，总编辑在岗监工', { tone: 'success' }); ctx.refreshLibrary?.(); }
+          catch (err) { toast(errorText(err, '续写失败'), { tone: 'danger' }); }
+        } });
+  }
+  items.push({ separator: true });
+  items.push(item.pinned
+    ? { label: '取消置顶', icon: 'pin', onSelect: async () => {
+        try { await api.pin(item.key, false); toast('已取消置顶'); ctx.refreshLibrary?.(); }
+        catch (err) { toast(errorText(err, '操作失败'), { tone: 'danger' }); }
+      } }
+    : { label: '置顶', icon: 'pin', onSelect: async () => {
+        try { await api.pin(item.key, true); toast('已置顶', { tone: 'success' }); ctx.refreshLibrary?.(); }
+        catch (err) { toast(errorText(err, '置顶失败'), { tone: 'danger' }); }
+      } });
+  items.push(item.favorite
+    ? { label: '取消收藏', icon: 'star', onSelect: async () => {
+        try { await api.favorite(item.key, false); ctx.refreshLibrary?.(); }
+        catch (err) { toast(errorText(err, '操作失败'), { tone: 'danger' }); }
+      } }
+    : { label: '收藏', icon: 'star', onSelect: async () => {
+        try { await api.favorite(item.key, true); toast('已收藏', { tone: 'success' }); ctx.refreshLibrary?.(); }
+        catch (err) { toast(errorText(err, '收藏失败'), { tone: 'danger' }); }
+      } });
+  items.push({ label: '归档', icon: 'archive', sub: '收进归档页，可恢复', onSelect: async () => {
+    try { await api.archive(item.key, true); toast('已归档', { tone: 'success' }); ctx.refreshLibrary?.(); }
+    catch (err) { toast(errorText(err, '归档失败'), { tone: 'danger' }); }
+  } });
+  items.push({ separator: true });
+  items.push({ label: '彻底删除', icon: 'trash', danger: true, sub: '不可恢复，需二次确认', onSelect: async () => {
+    const ok = await confirmDialog({
+      title: `彻底删除《${item.name}》？`,
+      message: `将删除全部章节与数据，不可恢复。确认请输入作品名：${item.name}`,
+      confirmText: '我已了解，彻底删除'
+    });
+    if (!ok) return;
+    try {
+      await api.purge(item.key, item.name);
+      toast('已彻底删除');
+      ctx.refreshLibrary?.();
+      if (store.get().currentKey === item.key) navigate('#/library');
+    } catch (err) { toast(errorText(err, '删除失败'), { tone: 'danger' }); }
+  } });
+  popoverMenu(anchor, items, { label: item.name || '作品操作' });
+}
+
+function failed_item(item) {
+  return Boolean(item.failed) || item.state === 'failed';
 }
 
 function bindSearch(input, listEl, ctx) {
@@ -158,6 +236,8 @@ function paintList(listEl, ctx) {
     return;
   }
 
+  /* v4.27.2：置顶项在各时间组内排最前（稳定排序，不打乱时间组） */
+  items = [...items].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
   const groups = groupByRecency(items);
   const currentKey = store.get().route.key;
   for (const group of groups) {

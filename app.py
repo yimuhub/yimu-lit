@@ -1837,6 +1837,9 @@ def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
             return str(i.get("state"))
         return i.get("updated_at") or i.get("created_at") or ""
     items = sorted(items, key=_val, reverse=(order != "asc"))
+    # v4.27.2：置顶项永远排最前（侧栏与作品库共用本接口）
+    items.sort(key=lambda i: (not i.get("pinned"), i.get("pinned_at") or ""), reverse=False)
+    items.sort(key=lambda i: not i.get("pinned"))   # 稳定排序：pinned 在前、其余保持原序
     facets = {"genres": sorted({i["genre"] for i in everything}),
               "mediums": sorted({i.get("medium") or "novel" for i in everything})}
     return {"items": items, "stats": stats, "counts": counts, "facets": facets,
@@ -1850,6 +1853,11 @@ def api_lib_item(key: str):
     if not it:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return it
+
+@app.post("/api/library/{key}/pin")
+def api_lib_pin(key: str, payload: dict = None):
+    """v4.27.2：置顶/取消置顶。"""
+    return writer.pin_book(key, bool((payload or {}).get("on", True)))
 
 @app.post("/api/library/{key}/favorite")
 def api_lib_favorite(key: str, payload: dict):
@@ -1926,6 +1934,13 @@ def api_lib_batch(payload: dict):
             r = writer.restore_book(k)
         elif act == "favorite":
             writer.set_meta(k, favorite=True)
+            r = {"ok": True}
+        elif act == "pin":
+            import datetime as _dt
+            writer.set_meta(k, pinned=True, pinned_at=_dt.datetime.now().isoformat())
+            r = {"ok": True}
+        elif act == "unpin":
+            writer.set_meta(k, pinned=False)
             r = {"ok": True}
         elif act == "purge":
             r = {"ok": False, "note": "彻底删除需逐条确认作品名"}

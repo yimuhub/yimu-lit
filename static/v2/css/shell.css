@@ -1255,3 +1255,11 @@
      .mb-prev         modal body 是 .modal-body（已 padding + overflow-y:auto），
                       不是 flex 容器，flex:1 无效；再加 padding 会二次内缩
    ────────────────────────────────────────────────────────────── */
+
+/* v4.27.2 侧栏行级 ⋯ 菜单与置顶标识 */
+.side-row-more { opacity: 0.55; }
+.side-row-more:hover { opacity: 1; }
+.side-row.is-active .side-row-more { opacity: 0.85; }
+.side-pin { display: inline-flex; color: var(--accent-ink); flex: none; }
+.popover-item.danger { color: var(--danger, #c0392b); }
+.popover-item.danger:hover { background: color-mix(in srgb, var(--danger, #c0392b) 10%, transparent); }

@@ -2960,6 +2960,7 @@ def _other_medium_item(key, pdir, med, plan):
             "stage_label": _stage_label_of(med, st.get("stage")), "verdict": st.get("verdict") or "",
             "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
             "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
+            "pinned": bool(meta.get("pinned")),
             **_lifecycle(meta)}
 
 
@@ -3002,6 +3003,7 @@ def library_item(key, with_quality=True):
             "halted": bool(state == "in_progress" and not meta.get("paused") and total_words == 0),
             "created_at": plan.get("createdAt"), "updated_at": plan.get("updatedAt"),
             "favorite": bool(meta.get("favorite")), "tags": meta.get("tags", []),
+            "pinned": bool(meta.get("pinned")),
             **_lifecycle(meta)}
 
 def _meta_from_plan(plan):
@@ -3082,6 +3084,17 @@ def _mutate_meta(key, set_fields=None, drop_fields=()):
     plan["updatedAt"] = _now_iso()
     atomic_write_json(pj, plan)
     return library_item(key)
+
+
+def pin_book(key, on=True):
+    """v4.27.2 置顶：侧栏/作品库默认列表把 pinned 项排最前。"""
+    if on:
+        item = _mutate_meta(key, {"pinned": True, "pinned_at": _now_iso()})
+    else:
+        item = _mutate_meta(key, {"pinned": False}, drop_fields=("pinned_at",))
+    if not item:
+        return {"ok": False, "note": "该作品不存在"}
+    return {"ok": True, "item": item}
 
 
 def archive_book(key, on=True):

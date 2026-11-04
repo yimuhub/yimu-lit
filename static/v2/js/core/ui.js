@@ -247,7 +247,7 @@ export function popoverMenu(anchor, items, { align = 'end', label = '' } = {}) {
     const btn = h(
       'button',
       {
-        class: 'popover-item',
+        class: item.danger ? 'popover-item danger' : 'popover-item',
         type: 'button',
         role: 'menuitem',
         'aria-checked': item.checked ? 'true' : 'false',
