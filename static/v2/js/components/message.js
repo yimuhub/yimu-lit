@@ -255,7 +255,9 @@ function renderChapterCard(msg, handlers = {}) {
           for (const e of items) {
             const row = h('div', { class: 'arch-row' },
               h('span', { class: 'arch-time mono', text: String(e.time || '').slice(0, 8) || '—' }),
-              h('span', { class: 'arch-badge', dataset: { agent: e.agent || 'system' }, text: e.agent_label || e.agent || '系统' }),
+              h('span', { class: 'arch-badge', dataset: { agent: e.agent || 'system' },
+                text: (() => { const l = String(e.agent_label || e.agent || '').trim();
+                  return (!l || l === 'system' || l === 'System') ? '系统' : l; })() }),
               h('span', { class: 'arch-title', text: `${e.phase === 'start' ? '▶' : e.phase === 'warn' ? '⚠' : '✓'} ${e.title || ''}${e.ms ? ` · ${(e.ms / 1000).toFixed(1)}s` : ''}` }));
             const det = [e.thinking, e.output].filter(Boolean).join('\n');
             if (det) {
@@ -644,6 +646,7 @@ const STEP_AGENT_ICONS = {
   deslopper: 'sparkles',
   rewriter: 'wand',
   editor: 'eye',
+  supervisor: 'shield',
   system: 'clock'
 };
 
@@ -744,7 +747,9 @@ function stepStreamBox(msg, live) {
 export function renderStepMessage(msg) {
   const st = msg.step || {};
   const agent = String(st.agent || 'system');
-  const label = String(st.agent_label || '系统').trim() || '系统';
+  /* v4.26.1：历史落盘事件的 agent_label 可能是英文 "system"——统一显示中文「系统」 */
+  const rawLabel = String(st.agent_label || '').trim();
+  const label = (!rawLabel || rawLabel === 'system' || rawLabel === 'System') ? '系统' : rawLabel;
   const phase = String(st.phase || (st.streaming ? 'start' : 'done'));
   const isStreamCard = Boolean(msg.stream);
   const collapsed = Boolean(msg.collapsed);

@@ -70,12 +70,15 @@ def _jsonl_path(key) -> str:
 
 
 def _agent_label(agent) -> str:
+    a = str(agent or "")
+    if a == "system":
+        return "系统"   # v4.26.1：系统事件中文名（历史事件由前端兜底）
     try:
         from bot import agents as _ag
-        info = _ag.AGENTS.get(str(agent or ""))
-        return (info or {}).get("label") or str(agent or "系统")
+        info = _ag.AGENTS.get(a)
+        return (info or {}).get("label") or a or "系统"
     except Exception:
-        return str(agent or "系统")
+        return a or "系统"
 
 
 def _trim_jsonl(path):

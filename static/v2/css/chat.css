@@ -1562,3 +1562,6 @@
   max-height: 60vh;
   overflow-y: auto;
 }
+
+/* v4.26.1 总编辑岗位徽标 */
+.step-ava-supervisor { background: var(--accent-soft-2); color: var(--accent-ink); }
