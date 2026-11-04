@@ -53,6 +53,14 @@ jobs:
           Stop-Process -Id $p.Id -Force
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
+      - name: Inject version into installer.iss
+        shell: pwsh
+        run: |
+          $ver = (Get-Content VERSION -Raw).Trim()
+          $p = 'desktop/windows/installer.iss'
+          $c = Get-Content $p -Raw -Encoding UTF8
+          $c = $c -replace '#define AppVersion "0\.0\.0"', "#define AppVersion `"$ver`""
+          [System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding $true))
       - run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" desktop\windows\installer.iss'
       - uses: actions/upload-artifact@v4
         with: { name: windows-setup, path: desktop/dist/*.exe }

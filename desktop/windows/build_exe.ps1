@@ -26,6 +26,11 @@ try {
 } finally { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 
 Write-Host "== 4/4 Inno Setup 安装包 ==" -ForegroundColor Cyan
+$ver = (Get-Content "$root\VERSION" -Raw).Trim()
+$issPath = "$root\desktop\windows\installer.iss"
+$issText = Get-Content $issPath -Raw -Encoding UTF8
+$issText = $issText -replace '#define AppVersion "0\.0\.0"', "#define AppVersion `"$ver`""
+[System.IO.File]::WriteAllText($issPath, $issText, (New-Object System.Text.UTF8Encoding $true))
 $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { $iscc = "ISCC" }
 & $iscc desktop\windows\installer.iss
