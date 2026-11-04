@@ -69,3 +69,7 @@ dist/
 
 # —— 工具/助手的本地工作目录（记忆、草稿、会话快照，含个人路径）——
 .workbuddy/
+
+# 桌面打包产物（v4.28.0）
+desktop/build/
+desktop/dist/
