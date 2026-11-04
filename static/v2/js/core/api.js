@@ -465,8 +465,9 @@ export const api = {
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
   restoreChapter: (key, n, id) => request('/api/chapter/restore', { ...jsonBody({ key, n, id }), timeout: 60000 }),
 
-  exportUrl(key, fmt = 'docx') {
-    return joinUrl('/api/export', { key, fmt });
+  exportUrl(key, fmt = 'docx', frm = 0, to = 0) {
+    /* v4.27.3：frm/to 章节范围（0=不限），侧栏「导出」弹窗选章用 */
+    return joinUrl('/api/export', { key, fmt, ...(frm || to ? { frm, to } : {}) });
   },
 
   /* 版本与更新检查 */

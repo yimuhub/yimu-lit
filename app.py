@@ -4177,8 +4177,9 @@ def api_download(key: str):
                     headers={"Content-Disposition": disp})
 
 @app.get("/api/export")
-def api_export(key: str, fmt: str = "docx"):
-    """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。"""
+def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
+    """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。
+    v4.27.3：frm/to 章节范围——侧栏「导出」弹窗可选整书或某几章（闭区间，0=不限）。"""
     from urllib.parse import quote
     proj = _get_project(key)
     if not proj:
@@ -4189,10 +4190,6 @@ def api_export(key: str, fmt: str = "docx"):
     if novel:
         title = plan.get("novelName") or proj.name
         chapters = export_mod.novel_chapters(proj)
-        blocks = []
-        for c in chapters:
-            blocks.append((1, f"第{c['n']}章 {export_mod._strip_md(c['title'])}"))
-            blocks.extend(export_mod._md_blocks(c["text"]))
     else:
         sproj = script_writer.ScriptProject(proj.path, proj.name)
         plan = sproj.plan() or plan
@@ -4201,6 +4198,20 @@ def api_export(key: str, fmt: str = "docx"):
                     for sc in export_mod.script_scenes(sproj)]
     if not chapters:
         return JSONResponse({"error": "还没有可导出的正文"}, status_code=400)
+    # v4.27.3：章节范围过滤（闭区间；0=不限）——docx/epub/print 都吃 chapters，
+    # md 由过滤后的章手拼（markdown(proj) 只能整书）。
+    ranged = bool(frm or to)
+    if ranged:
+        lo, hi = sorted((int(frm or 0), int(to or 10 ** 9)))
+        chapters = [c for c in chapters if lo <= int(c.get("n") or 0) <= hi]
+        if not chapters:
+            return JSONResponse({"error": f"第 {lo}-{hi} 章范围内还没有可导出的正文"}, status_code=400)
+        title = f"{title}（第{lo}-{hi}章）"
+    blocks = []
+    if novel:
+        for c in chapters:
+            blocks.append((1, f"第{c['n']}章 {export_mod._strip_md(c['title'])}"))
+            blocks.extend(export_mod._md_blocks(c["text"]))
     # v4.15.3：署名回退链 —— 作品 meta.author → 向导笔名（plan.config.penname）→ 全局默认笔名
     author = ((plan.get("meta") or {}).get("author") or "").strip()
     if not author:
@@ -4209,7 +4220,17 @@ def api_export(key: str, fmt: str = "docx"):
         author = str((_load_pennames().get("default")) or "").strip()
 
     if fmt in ("md", "markdown"):
-        data, media, ext = export_mod.markdown(proj).encode("utf-8"), "text/markdown; charset=utf-8", "md"
+        if ranged:
+            md = [f"# {title}", ""]
+            for c in chapters:
+                md.append(f"## 第{c['n']}章 {c.get('title', '')}")
+                md.append("")
+                md.append(c.get("text", ""))
+                md.append("")
+            data = "\n".join(md).encode("utf-8")
+        else:
+            data = export_mod.markdown(proj).encode("utf-8")
+        media, ext = "text/markdown; charset=utf-8", "md"
     elif fmt == "docx":
         if not blocks and chapters:
             # v4.12.16：剧本 docx 导出——此前 blocks 只在小说分支填充，剧本导出 Word 得到空文档

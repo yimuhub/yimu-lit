@@ -1,6 +1,6 @@
 /* 左侧作品栏：品牌、新建、搜索、按时间分组、状态与进度、底部入口。 */
 
-import { h, icon, fmtWords, groupByRecency, initials, mediumGlyph, statusMeta, debounce } from '../core/dom.js';
+import { h, icon, fmtWords, groupByRecency, initials, mediumGlyph, statusMeta, debounce, downloadUrl } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { navigate, openProject } from '../core/router.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
@@ -111,13 +111,66 @@ function renderRow(item, ctx, { isActive }) {
   return btn;
 }
 
+/* v4.27.3：导出弹窗——整书或章节范围 + 格式选择（复用 /api/export 的 frm/to） */
+function openExportDialog(item) {
+  const done = Number(item.done) || 0;
+  const fmts = [
+    ['docx', 'Word 文档（.docx）'],
+    ['md', 'Markdown（.md）'],
+    ['epub', 'EPUB 电子书'],
+    ['print', '打印版（.html）']
+  ];
+  let range = 'all';
+  const body = h('div', { class: 'exp-form' },
+    h('div', { class: 'evo-sub', text: '范围' }),
+    h('div', { class: 'segmented', role: 'group' },
+      h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': 'true', text: '整书导出', dataset: { range: 'all' } }),
+      h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': 'false', text: '选择章节', dataset: { range: 'range' } })),
+    h('div', { class: 'exp-range', style: { display: 'none' } },
+      h('label', { class: 'exp-field' }, h('span', { text: '从第 ' }),
+        h('input', { class: 'input', type: 'number', min: '1', value: '1', dataset: { role: 'frm' } }),
+        h('span', { text: ' 章' })),
+      h('label', { class: 'exp-field' }, h('span', { text: '到第 ' }),
+        h('input', { class: 'input', type: 'number', min: '1', value: String(Math.max(1, done)), dataset: { role: 'to' } }),
+        h('span', { text: ' 章' })),
+      h('div', { class: 'hint-text', text: `当前已完成 ${done} 章；范围外的章不会导出。` })),
+    h('div', { class: 'evo-sub', text: '格式' }),
+    h('div', { class: 'exp-fmts' },
+      ...fmts.map(([v, label], i) => h('label', { class: 'exp-fmt' },
+        h('input', { type: 'radio', name: 'exp-fmt', value: v, checked: i === 0 ? true : undefined }),
+        h('span', { text: label })))));
+
+  const modal = openModal({ title: `导出《${item.name}》`, body, size: 'sm' });
+  body.addEventListener('click', (e) => {
+    const seg = e.target.closest('.seg-btn');
+    if (seg) {
+      for (const b of body.querySelectorAll('.seg-btn')) b.setAttribute('aria-pressed', 'false');
+      seg.setAttribute('aria-pressed', 'true');
+      range = seg.dataset.range;
+      body.querySelector('.exp-range').style.display = range === 'range' ? '' : 'none';
+    }
+  });
+  body.append(h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '14px' } },
+    h('button', { class: 'btn btn-primary', type: 'button', text: '导出下载', on: {
+      click: () => {
+        const fmt = body.querySelector('input[name="exp-fmt"]:checked')?.value || 'docx';
+        let frm = 0, to = 0;
+        if (range === 'range') {
+          frm = Math.max(1, Number(body.querySelector('[data-role="frm"]').value) || 1);
+          to = Math.max(frm, Number(body.querySelector('[data-role="to"]').value) || frm);
+        }
+        downloadUrl(api.exportUrl(item.key, fmt, frm, to));
+        toast('正在导出下载…', { duration: 2000 });
+        modal.close();
+      }
+    } })));
+}
+
 /* v4.27.2：行级「⋯」更多操作菜单——置顶/续写/暂停/收藏/归档/彻底删除 */
 function openRowMenu(anchor, item, ctx) {
   const running = Boolean(item.running);
   const inProgress = ['in_progress', 'paused', 'planning', 'writing'].includes(item.state);
-  const items = [
-    { label: '打开作品', icon: 'book-open', onSelect: () => { openProject(item); ctx.closeDrawer?.(); } }
-  ];
+  const items = [];
   if (inProgress && !failed_item(item)) {
     items.push(running
       ? { label: '暂停创作', icon: 'pause', onSelect: async () => {
@@ -152,6 +205,7 @@ function openRowMenu(anchor, item, ctx) {
     try { await api.archive(item.key, true); toast('已归档', { tone: 'success' }); ctx.refreshLibrary?.(); }
     catch (err) { toast(errorText(err, '归档失败'), { tone: 'danger' }); }
   } });
+  items.push({ label: '导出…', icon: 'download', sub: '整书或选章', onSelect: () => openExportDialog(item) });
   items.push({ separator: true });
   items.push({ label: '彻底删除', icon: 'trash', danger: true, sub: '不可恢复，需二次确认', onSelect: async () => {
     const ok = await confirmDialog({

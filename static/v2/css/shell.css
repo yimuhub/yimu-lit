@@ -1263,3 +1263,11 @@
 .side-pin { display: inline-flex; color: var(--accent-ink); flex: none; }
 .popover-item.danger { color: var(--danger, #c0392b); }
 .popover-item.danger:hover { background: color-mix(in srgb, var(--danger, #c0392b) 10%, transparent); }
+
+/* v4.27.3 侧栏导出弹窗 */
+.exp-range { display: flex; gap: 10px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }
+.exp-field { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-secondary); font-size: 12.5px; }
+.exp-field .input { width: 76px; }
+.exp-fmts { display: flex; flex-direction: column; gap: 6px; }
+.exp-fmt { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.exp-form { display: flex; flex-direction: column; }
