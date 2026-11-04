@@ -15,7 +15,7 @@ AppPublisher=YiMuHub
 DefaultDirName={autopf}\YiMuLit
 DefaultGroupName={#AppName}
 OutputBaseFilename=YiMuLit-{#AppVersion}-windows-setup
-OutputDir=..\..\dist
+OutputDir=..\dist
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -26,7 +26,7 @@ ShowLanguageDialog=no
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Files]
-Source: "..\..\dist\YiMuLit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\YiMuLit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
