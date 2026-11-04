@@ -51,6 +51,22 @@
 - **冻结守卫**：桌面版禁用应用内 zipball 自更新（引导走安装包升级）；冒烟发现的
   uvicorn 字符串导入在 PYZ 内失效问题已修（传 app 对象）。
 
+## v4.28.1 — 桌面版原生窗口（不再是浏览器标签页）+ 回答「GitHub 打包费用」
+
+用户要求：双击 DMG/EXE 启动后要是**原生应用窗口**，而不是再开一个浏览器标签页。
+- **原生窗口壳**（desktop/launcher.py 改造）：桌面版启动后由 **pywebview** 创建原生
+  应用窗口（Mac=WKWebView、Windows=系统 WebView2），关窗即退出；无 pywebview 环境
+  自动回退系统浏览器（YIMU_NO_WINDOW=1 可强制无窗模式供冒烟/CLI）；.app 无控制台，
+  日志落盘到数据目录 logs/launcher.log。
+- 两个 spec 重写：PyInstaller collect_all("webview") 把窗口壳平台后端打进包；
+  Windows 安装包改用 yimulit_win.spec（windowed 无黑框）；构建脚本与 CI 安装 pywebview。
+- 真机验证：.app 启动弹出原生窗口、服务 200、关窗即退。
+
+**关于「GitHub 打包要不要花钱」**：本仓库是公开仓库——Actions 标准 runner
+（含 macOS/Windows）对公开仓库**免费且不限时长**，不消耗任何付费额度；
+私有仓库才会计费（Windows 2 倍、macOS 10 倍系数）。构建产物（安装包）存几分钟
+即挂到 Release，存储开销可忽略。
+
 ## v4.27.3 — 侧栏菜单导出弹窗（整书/选章范围）+ 去掉冗余「打开作品」
 
 用户反馈：「打开作品」鸡肋（点行就打开）；要能选导出整书还是某几章。

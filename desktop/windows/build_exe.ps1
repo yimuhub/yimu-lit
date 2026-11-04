@@ -8,10 +8,10 @@ Set-Location $root
 Write-Host "== 1/4 虚拟环境 ==" -ForegroundColor Cyan
 if (-not (Test-Path ".venv")) { python -m venv .venv }
 & .venv\Scripts\python.exe -m pip install -q --upgrade pip
-& .venv\Scripts\python.exe -m pip install -q -r requirements.txt pyinstaller
+& .venv\Scripts\python.exe -m pip install -q -r requirements.txt pyinstaller pywebview
 
 Write-Host "== 2/4 PyInstaller 打包 ==" -ForegroundColor Cyan
-& .venv\Scripts\pyinstaller.exe desktop\yimulit.spec --noconfirm --distpath desktop\dist --workpath desktop\build
+& .venv\Scripts\pyinstaller.exe desktop\yimulit_win.spec --noconfirm --distpath desktop\dist --workpath desktop\build
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败" }
 
 Write-Host "== 3/4 冒烟测试 ==" -ForegroundColor Cyan
