@@ -69,6 +69,10 @@
 
 ## v4.27.3 — 侧栏菜单导出弹窗（整书/选章范围）+ 去掉冗余「打开作品」
 
+（v4.28.1 补记：v4.27.3~v4.28.0 期间侧栏「⋯」菜单新增「导出…」弹窗——范围（整书/
+第 X-Y 章）+ 格式（docx/md/epub/打印版）四选一，/api/export 加 frm/to 闭区间参数，
+标题自动带范围后缀。）
+
 用户反馈：「打开作品」鸡肋（点行就打开）；要能选导出整书还是某几章。
 - 菜单去掉「打开作品」；新增「导出…」打开弹窗：范围（整书 / 第 X-Y 章起止输入，
   默认已完成章数）+ 格式（docx/md/epub/打印版四选一）→ 直接下载；
@@ -100,6 +104,22 @@
 - **最近反馈去噪音**：前端过滤无评分无正文的空壳机器记录；过滤后为空的空态改为
   讲清「自动升级由进化信号（真实评分数据）驱动，不依赖这里」。
 - 新增 3 项回归（达标转正/不达标驳回/开关关闭），全量 pytest 通过。
+
+## v4.28.1 — 桌面版原生窗口（不再是浏览器标签页）+ Windows 构建五连修
+
+用户要求：双击 DMG/EXE 启动后要是**原生应用窗口**。改造 desktop/launcher.py：
+pywebview 创建原生窗口（Mac=WKWebView、Windows=系统 WebView2），关窗即退出；
+缺 pywebview 自动回退系统浏览器；YIMU_NO_WINDOW=1 供冒烟/CLI；.app 日志落盘
+数据目录 logs/launcher.log。两个 spec 重写（collect_all("webview")）；Windows
+安装包改用 yimulit_win.spec（windowed 无黑框）。
+
+**Windows CI 构建五连修**（每轮真错才修，全部来自 Actions 日志实锤）：
+①workflow 带引号命令在 pwsh 下解析失败 → ISCC 步骤改 shell: cmd；
+②iss 必须 UTF-8 with BOM（英文 runner 读中文）；③AppId 换合法 GUID；
+④ISCC 的 OutputDir/Source 相对 .iss 目录算术错（desktop/windows 上**一级**是
+desktop/，不是仓库根）；⑤choco 版 Inno Setup 不带中文语言包——官方 issrc
+主包版 ChineseSimplified.isl 入库随仓库分发。
+双平台构建全绿：DMG + EXE 安装包已挂 GitHub v4.28.1 Release。
 
 ## v4.26.2 — 创作活动流「System」岗位中文化
 
