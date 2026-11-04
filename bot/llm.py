@@ -365,17 +365,17 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                 # v4.15.7：wall-clock 总时长守卫——httpx read-timeout 是「两次读之间」的超时，
                 # 代理挂起时若持续滴字节永不触发（实测并行书/百万字规划 25 分钟无动静）。
                 # 请求放独立 daemon 线程，主线程 fut.result(timeout) 强制中断。
-                def _post_once():
+                def _post_once(started):
                     # v4.24.16 修复：wall-clock 守卫此前把「在 8 线程池里排队的时间」也计入
                     # 超时——多书并行 + 评分/规划各岗并发时，后续请求在池里排队，守卫会
                     # 误杀还没真正发出的请求（fut.cancel 对已运行 future 无效，挂起请求
                     # 继续占坑，池被慢慢耗尽）。改为 future 实际开始执行后才起算。
-                    _started.set()
+                    started.set()
                     with httpx.Client(timeout=timeout) as client:
                         return client.post(base + "/chat/completions",
                                            json=body, headers=headers)
-                _started = threading.Event()
-                fut = _HTTP_POOL.submit(_post_once)
+                _started = threading.Event()   # v4.28.0：经参数绑定（ruff B023，重试循环内闭包）
+                fut = _HTTP_POOL.submit(_post_once, _started)
                 try:
                     # 排队宽限 60s（纯等线程）；开始执行后再给完整 timeout+60
                     if not _started.wait(timeout=60):

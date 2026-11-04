@@ -9,9 +9,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest
 
-from bot import skill, skillkit
+from bot import skillkit
 
 
 # ---------- 技能库入库 ----------
@@ -44,7 +43,6 @@ def test_writing_system_has_causality_discipline():
     ctx = {"cfg": {"genre": "悬疑/刑侦", "genre_key": "mystery"},
            "chapter_no": 5, "style_text": "文风", "characters_text": "人物",
            "outline_text": "大纲"}
-    sys_p = skill.__dict__  # 占位避免误用
     from bot.workflow import _writing_system
     sp = _writing_system(ctx)
     assert "因果与爽点纪律" in sp

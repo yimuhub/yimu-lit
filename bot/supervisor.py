@@ -142,9 +142,7 @@ def _dispatch_resume(key: str, med: str, pdir: str) -> bool:
     import threading as _th
     if med in ("", "novel"):
         from . import writer as _wr
-        proj = _wr.Project(pdir, key)
-        ok = _wr.resume_book(key)
-        return bool(ok)
+        return bool(_wr.resume_book(key))
     mod = _nonnovel_module(med)
     if mod is None or not hasattr(mod, "resume_project"):
         return False
@@ -440,7 +438,6 @@ def tick_once(key: str) -> dict:
         out.update({"why": status})
         return out
 
-    from . import writer as _wr
     running = _engine_running(key, med)
 
     # ① 停滞自愈：计划说在写、实际没有引擎在跑 → 断点恢复（预算内 + 最小间隔）
