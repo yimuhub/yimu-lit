@@ -3,9 +3,9 @@
   "port": 46821,
   "skill_path": "skill",
   "llm": {
-    "base_url": "https://api.agnes-ai.cn/v1",
+    "base_url": "",
     "api_key": "",
-    "model": "agnes-2.5-flash",
+    "model": "",
     "temperature": 0.85,
     "max_tokens": 12000,
     "timeout": 900

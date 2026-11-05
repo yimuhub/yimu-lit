@@ -48,4 +48,14 @@ exe = EXE(
     console=False,   # .app 无控制台；launcher 日志重定向到数据目录 launcher.log
     app=True,
 )
-app = BUNDLE(exe, name="一幕神笔.app")
+app = BUNDLE(
+    exe,
+    name="一幕神笔.app",
+    icon=os.path.join(ROOT, "desktop", "icon", "icon.icns"),
+    info_plist={
+        "CFBundleName": "一幕神笔",
+        "CFBundleDisplayName": "一幕·YIMU 神笔",
+        "NSLocalNetworkUsageDescription": "一幕神笔在本机启动创作服务，需要访问本地网络（127.0.0.1）。",
+        "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
+    },
+)

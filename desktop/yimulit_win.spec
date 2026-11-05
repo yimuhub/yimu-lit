@@ -41,6 +41,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="YiMuLit",
+    icon=os.path.join(ROOT, "desktop", "icon", "icon.ico"),
     debug=False,
     strip=False,
     upx=False,

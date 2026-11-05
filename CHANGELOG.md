@@ -67,6 +67,23 @@
 私有仓库才会计费（Windows 2 倍、macOS 10 倍系数）。构建产物（安装包）存几分钟
 即挂到 Release，存储开销可忽略。
 
+## v4.28.2 — 桌面版二轮：品牌图标 + 首启加固 + 默认供应商留空
+
+用户实测 v4.28.1 反馈三问题，逐一处理：
+- **应用图标**：项目品牌图标（蓝底圆角+白笔触 SVG）生成 icns（Mac .app/Dock）与
+  ico（Windows exe/安装程序/快捷方式），全链路接线（spec/Inno Setup）。
+- **首启加固**（针对「弹窗不出+卡顿」：真实 WKWebView 诊断显示核心链路正常，
+  判定为启动环境差异——本地网络权限框/DMG 隔离转位/重复实例）：.app Info.plist
+  注入 NSLocalNetworkUsageDescription + NSAllowsLocalNetworking（不再被本地网络
+  权限卡住）；ad-hoc 签名；launcher 单实例检测（数据目录 instance.lock——已有
+  存活实例直接复用，不再叠开第二个服务）；建议从 DMG 拖入 Applications 再启动
+  （避免隔离转位）。
+- **默认供应商留空**：config.example.json 的 base_url/api_key/model 全部置空——
+  桌面包不含任何供应商地址与密钥，新装用户在设置里自行配置；本地 config.json
+  不进仓库不受影响。
+- 真机诊断（pywebview 注入真实 WKWebView）：hasStore/零 JS 错误/新建作品弹窗
+  全部正常——为后续排障建立了「在真实窗口内测」的基线方法。
+
 ## v4.27.3 — 侧栏菜单导出弹窗（整书/选章范围）+ 去掉冗余「打开作品」
 
 （v4.28.1 补记：v4.27.3~v4.28.0 期间侧栏「⋯」菜单新增「导出…」弹窗——范围（整书/

@@ -33,6 +33,36 @@ if getattr(sys, "frozen", False):
         pass
 
 
+def _existing_instance():
+    """单实例：数据目录 lock 文件里有存活实例（端口可访问）→ 返回其端口，直接复用。"""
+    import urllib.request
+    try:
+        from bot.paths import data
+        lock = data("instance.lock")
+        if os.path.exists(lock):
+            try:
+                port = int(open(lock, encoding="utf-8").read().strip())
+            except Exception:
+                return None
+            try:
+                urllib.request.urlopen("http://127.0.0.1:" + str(port), timeout=1)
+                return port
+            except Exception:
+                return None
+    except Exception:
+        return None
+    return None
+
+
+def _write_lock(port):
+    try:
+        from bot.paths import data
+        with open(data("instance.lock"), "w", encoding="utf-8") as f:
+            f.write(str(port))
+    except Exception:
+        pass
+
+
 def _free_port(start: int = 46821, tries: int = 20) -> int:
     import socket
     for p in range(start, start + tries):
@@ -70,8 +100,17 @@ def _wait_ready() -> bool:
 
 def main() -> None:
     from bot.paths import DATA_ROOT
+    # v4.28.2 单实例：已有存活实例 → 直接开浏览器复用，不再起第二个服务
+    existing = _existing_instance()
+    if existing:
+        print("一幕·YIMU 神笔已在运行（端口 " + str(existing) + "），打开现有窗口", flush=True)
+        import webbrowser
+        webbrowser.open("http://127.0.0.1:" + str(existing))
+        return
+
     t = threading.Thread(target=_serve, daemon=True)
     t.start()
+    _write_lock(PORT)
 
     ready = _wait_ready()
     print(f"一幕·YIMU 神笔已启动：http://127.0.0.1:{PORT}（数据目录 {DATA_ROOT}）", flush=True)
