@@ -26,6 +26,9 @@ FROZEN = bool(getattr(sys, "frozen", False))
 if FROZEN:
     # PyInstaller onedir：资源解包在 _MEIPASS（Mac .app 内 / Windows _internal）
     RESOURCE_ROOT = os.environ.get("_YIMU_RESOURCE_ROOT") or getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    # v4.29.0：overlay 运行时层（自动更新已装的新代码）——static/skillkit 也随层走
+    if os.environ.get("YIMU_OVERLAY"):
+        RESOURCE_ROOT = os.environ["YIMU_OVERLAY"]
     if sys.platform == "darwin":
         _base = os.path.expanduser(f"~/Library/Application Support/{APP_NAME}")
     elif os.name == "nt":

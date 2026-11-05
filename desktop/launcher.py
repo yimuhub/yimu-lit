@@ -23,6 +23,44 @@ def _prepare() -> None:
 
 _prepare()
 
+
+def _bootstrap_overlay() -> None:
+    """v4.29.0：若存在 runtime overlay 层（自动更新已装的新代码），把它插到
+    sys.path 最前，并让冻结 importer 对 app/bot* 让路——应用代码即从可写
+    overlay 层加载。必须在任何 import bot / import app 之前执行。"""
+    if not getattr(sys, "frozen", False):
+        return   # 开发模式：仓库本身就是代码源，无 overlay 概念
+    # DATA_ROOT 推导与 bot/paths.py 保持一致（此时还不能 import bot.paths）
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support/YiMuLit")
+    elif os.name == "nt":
+        base = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "YiMuLit")
+    else:
+        base = os.path.expanduser("~/.yimulit")
+    base = os.environ.get("YIMU_DATA_DIR") or base
+    overlay = os.environ.get("YIMU_OVERLAY") or os.path.join(base, "runtime")
+    if not os.path.exists(os.path.join(overlay, "bot", "paths.py")):
+        return   # 没有 overlay：用冻结包内置代码
+    sys.path.insert(0, overlay)
+    os.environ["YIMU_OVERLAY"] = overlay
+    # 冻结 importer 对 app / bot* 让路 → PathFinder 从 overlay 加载新代码；
+    # 其余（httpx/uvicorn/stdlib…）仍走冻结包，行为不变。
+    for finder in sys.meta_path:
+        if type(finder).__name__ == "FrozenImporter":
+            _orig = finder.find_spec
+            def _patched(name, *a, _orig=_orig, **k):
+                if name == "app" or name == "bot" or name.startswith("bot."):
+                    return None
+                return _orig(name, *a, **k)
+            try:
+                finder.find_spec = _patched
+            except Exception:
+                pass
+            break
+
+
+_bootstrap_overlay()
+
 if getattr(sys, "frozen", False):
     # .app 无控制台：stdout/stderr 重定向到数据目录日志（便于排障）
     try:

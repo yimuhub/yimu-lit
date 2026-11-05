@@ -2066,10 +2066,14 @@ _UPDATE_SYNC = [
 @app.post("/api/self-update")
 def api_self_update():
     """一键自更新：下载 GitHub 最新 release 源码 → 白名单覆盖 → 返回需重启。
-    v4.28.0：桌面版（PyInstaller 冻结包）禁用——zipball 覆盖源码对冻结包无意义且有风险，
-    桌面版升级走安装包重新安装。"""
+    v4.28.0：桌面版（PyInstaller 冻结包）源码覆盖无效——改走 overlay 更新：
+    下载新版代码包解压到数据目录 runtime 层，重启进程即从新代码启动（v4.29.0）。"""
     if os.environ.get("YIMU_DESKTOP") == "1" or getattr(sys, "frozen", False):
-        return JSONResponse({"error": "桌面版请在官网下载新安装包覆盖安装（应用内自更新不适用）"}, status_code=400)
+        from bot import updater as _upd
+        res = _upd.desktop_update()
+        if res.get("updated"):
+            res["need_restart"] = True
+        return res
     import zipfile, io, shutil
     repo = "yimuhub/yimu-lit"
     token = None
@@ -2154,7 +2158,13 @@ def api_self_update():
 
 @app.post("/api/restart")
 def api_restart(request: Request):
-    """重启服务（自更新后调用）。v4.15.18：-m uvicorn 方式（脚本路径方式会遮蔽标准库）+ 端口取自当前请求。"""
+    """重启服务（自更新后调用）。v4.15.18：-m uvicorn 方式（脚本路径方式会遮蔽标准库）+ 端口取自当前请求。
+    v4.29.0：桌面版（冻结包/overlay）→ 重启整个应用进程（新进程带 YIMU_OVERLAY 加载新代码）。"""
+    if os.environ.get("YIMU_DESKTOP") == "1" or getattr(sys, "frozen", False):
+        from bot import updater as _upd
+        syslog_mod.log_event("system", "桌面应用重启", {}, "自动更新后重启桌面进程")
+        threading.Timer(0.8, _upd.desktop_restart).start()
+        return {"ok": True, "msg": "应用正在重启，窗口将自动恢复；稍后自动刷新页面"}
     import sys as _sys, subprocess as _sp
     _port = request.url.port or int(os.environ.get("NOVEL_BOT_PORT") or 46821)
     syslog_mod.log_event("system", "重启服务", {"port": _port}, "手动重启服务")

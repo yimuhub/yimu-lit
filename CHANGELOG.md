@@ -67,6 +67,26 @@
 私有仓库才会计费（Windows 2 倍、macOS 10 倍系数）。构建产物（安装包）存几分钟
 即挂到 Release，存储开销可忽略。
 
+## v4.29.0 — 桌面版应用内自动更新：点击版本号 → 自动升级 → 重启即新版
+
+用户要求：像主流应用一样，点击版本号后自动更新、重启即新版本。桌面版（冻结包）
+无法用源码覆盖更新——v4.28.0 曾因此禁用。本轮实现 **overlay 运行时更新模型**：
+- **bot/updater.py**：GitHub latest 检测（releases/latest 302 重定向解析，避开
+  未认证 API 60 次/h 限流；YIMU_GITHUB_TOKEN 可提额）→ 下载 zipball → 白名单解压
+  （bot/static/skillkit/VERSION/config.example.json/requirements.txt——用户数据
+  projects/config 等绝不触碰）→ 完整性校验 + **新依赖预检**（新版 requirements
+  引入冻结包没有的第三方包时拦截并提示重装，防重启 ImportError）→ 原子换名
+  到 DATA_ROOT/runtime（旧层保留一代便于回滚）→ 幂等保护。
+- **launcher overlay 引导**：启动时若 runtime/bot 存在，把 runtime 插到 sys.path
+  最前并让冻结 importer 对 app/bot* 让路——应用代码与 static/skillkit 全部从
+  新层加载；paths.py 感知 YIMU_OVERLAY 切换资源根。
+- **重启**：/api/restart 桌面分支重启整个应用进程（新进程带 YIMU_OVERLAY 环境变量）。
+- 前端零改动：现有「点击版本号 → 确认 → 自动升级 → 轮询 → 刷新」流程原样生效。
+- **E2E 真机验证**：冻结 .app 伪造旧 overlay(4.0.0) → /api/self-update 真下载
+  GitHub zipball → runtime 层更新至 4.28.2（旧层进备份）→ 带 overlay 重启 →
+  /api/version=4.28.2、静态资源从新层提供。6 项单测（版本比较/白名单解压/依赖
+  预检拦截/幂等/全流程 mock），全量 pytest 通过。
+
 ## v4.28.2 — 桌面版二轮：品牌图标 + 首启加固 + 默认供应商留空
 
 用户实测 v4.28.1 反馈三问题，逐一处理：
