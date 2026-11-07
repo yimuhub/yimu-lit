@@ -335,13 +335,15 @@ def chat(session_id, message, key=None, digest=None):
         plan = proj.plan() if proj else None
         if plan:
             _pick_title(plan, msg.strip())
-            # 按最终书名对齐目录
-            _rename_project(proj, plan["novelName"])
-            proj.save_plan(plan)
-            s["project"] = os.path.basename(proj.path)
+            # v4.30.0：改走 _apply_title 统一路径——旧 _rename_project 不写 rename 别名、
+            # 不刷新索引，改名后旧 key 写入会重建旧目录 → 一个作品两个对话
+            res = _apply_title(s["project"], plan["novelName"])
+            if not res.get("ok"):
+                return f"⚠️ 书名应用失败：{res.get('error')}"
+            s["project"] = res["key"]
             s["state"] = "writing"
             _start_bg(s["project"])
-            return (f"✅ 书名《{plan['novelName']}》确定，阶段3 疯狂创作已启动（{plan['totalChapters']}章）。\n"
+            return (f"✅ 书名《{res['name']}》确定，阶段3 疯狂创作已启动（{plan['totalChapters']}章）。\n"
                     f"技能规定创作全程无需确认，我边写边报进度。完成后可在右侧「作品」里下载成书。")
     # ---- 兜底（按当前状态给上下文提示，不再一律退回首页文案）----
     if s.get("state") == "planning":
@@ -809,6 +811,30 @@ def _chat_attached(s, proj, msg):
     # 消息以 @ 开头时，解析被 @ 的 Agent 列表，注入完整作品上下文后调用 LLM 群聊
     if msg.startswith("@"):
         return _chat_group(s, proj, msg, plan, st, name)
+
+    # v4.30.0：待选书名状态下，回复数字 / 「采用N」 / 「改名X」直接采纳——
+    # 此前这些回复会被折进创作队列（书名永远采纳不了），或经旧目录重建出第二个对话
+    if (plan.get("meta") or {}).get("awaiting_title"):
+        m_pick = re.fullmatch(r"(?:采用|选|用|#)?\s*([1-9]\d?)\s*[#号]?", msg.strip())
+        m_rename = re.match(r"^(?:改名|书名)(?:叫|为|改成|换成)?\s*[《『\"]?(.{1,60}?)[》』\"]?$", msg.strip())
+        if m_rename and m_rename.group(1).strip():
+            res = _apply_title(key, m_rename.group(1).strip())
+            if res.get("ok"):
+                return (f"✅ 已收到，将以《{res.get('name')}》进行创作，现在马上安排创作——"
+                        f"总编辑已接手，进度在本对话全程汇报。")
+            return f"⚠️ 书名应用失败：{res.get('error')}"
+        if m_pick:
+            titles = plan.get("titles") or []
+            idx = int(m_pick.group(1)) - 1
+            if 0 <= idx < len(titles):
+                t = str((titles[idx] or {}).get("title") or "").strip()
+                if t:
+                    res = _apply_title(key, t)
+                    if res.get("ok"):
+                        return (f"✅ 已收到，将以《{t}》进行创作，现在马上安排创作——"
+                                f"总编辑已接手，规划师/作家/审稿人各就各位，进度在本对话全程汇报。")
+                    return f"⚠️ 书名应用失败：{res.get('error')}"
+            return f"该书名序号不存在，请回复 1-{len(titles) or 5}，或直接说「改名为你想用的书名」。"
 
     # v4.22.0：意图分发抽成嵌套函数 _run —— 供「LLM 规划器」逐步调用（多步任务/任意表述）
     def _run(intent, params):
@@ -2738,7 +2764,7 @@ def api_book_live(key: str, request: Request):
         # v4.21.0：创作活动流增量 + 当前流式步骤（对话内 Agent 逐条动作/思考/产出）
         # v4.24.16：stream_think_offset 透传——stream_state 早就设计了独立的思维链
         # 增量游标，但 HTTP 层从未接（B 支持的字段 A 不传），思维链每 1.5s 全量重发
-        "steps": steps_mod.since(key, _q_int(request, "steps_cursor")),
+        "steps": steps_mod.since(key, _q_int(request, "steps_cursor"), _q_int(request, "steps_limit")),
         "stream": steps_mod.stream_state(key, _q_int(request, "stream_offset"),
                                          _q_int(request, "stream_think_offset")),
     }

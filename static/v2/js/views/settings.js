@@ -4,7 +4,7 @@
    只发送后端支持的字段，其余只读展示。 */
 
 import { h, icon } from '../core/dom.js';
-import { store, patchUi } from '../core/state.js';
+import { store, patch, patchUi } from '../core/state.js';
 import { api, errorText } from '../core/api.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { setTheme, themeLabel } from '../core/theme.js';
@@ -479,6 +479,11 @@ export function renderSettings(container, ctx) {
     try {
       await api.globalModelSet({ provider_id: providerId, model: m });
       await loadProviders();
+      /* v4.30.0：同步顶栏/作品页的默认模型显示 */
+      try {
+        const mo = await api.modelOptions();
+        if (mo) patch('models', { default_provider: mo.default_provider, options: mo.options || [] });
+      } catch { /* 忽略 */ }
       const opt = sel.options[sel.selectedIndex];
       toast(`全局默认模型已设为 ${opt ? opt.textContent : `${providerId} · ${m}`}`, { tone: 'success', duration: 2200 });
     } catch (err) {

@@ -1269,6 +1269,11 @@ export function renderSession(container, ctx = {}) {
     destroy() {
       disposed = true;
       epoch += 1;
+      /* v4.30.0：清掉本挂载的去重水位——重挂载时过程卡需要重新回放到新视图
+         （loadChatHistory 只恢复章节卡/笔记，不含 step 卡；此前水位跨挂载残留，
+         导致页面切换回来后策划/前期过程卡全部丢失） */
+      _seenSteps.delete(mountKey);
+      _seenCreatorTs.delete(mountKey);
       if (firstMsgTimer) clearTimeout(firstMsgTimer);   // v4.24.16：首条消息定时器入清理
       if (streamDoneTimer) {
         clearTimeout(streamDoneTimer);

@@ -28,7 +28,7 @@ import { renderSession } from './views/session.js';
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
    缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
    tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
-const CSS_V = '308';
+const CSS_V = '309';
 
 const els = {
   app: document.getElementById('app'),
@@ -249,6 +249,14 @@ const ctx = {
   setModel(providerId, model) {
     patchUi({ providerId: providerId || null, model: model || null });
     syncShell(store.get(), true);
+  },
+  /* v4.30.0：模型选项/全局默认变更后刷新 store——此前 state.models 只在启动时
+     拉一次，设置里切默认模型后作品右上角永远显示旧模型 */
+  async refreshModels() {
+    try {
+      const m = await api.modelOptions();
+      if (m) patch('models', { default_provider: m.default_provider, options: m.options || [] });
+    } catch { /* 网络失败保留旧值 */ }
   },
   onMediumChange(medium) {
     if (medium && medium !== store.get().ui.medium) patchUi({ medium });
@@ -651,7 +659,9 @@ function syncShell(state, force = false) {
     state.ui.rightOpen,
     state.resolvedTheme,
     state.models.default_provider,
-    (state.models.options || []).length
+    (state.models.options || []).length,
+    /* v4.30.0：默认模型本体进签名——同供应商下换默认模型也要重绘右上角 */
+    (state.models.options || []).find((o) => o.id === state.models.default_provider)?.default_model || ''
   ].join('|');
   if (force || topbarSig !== sigs.topbar) {
     sigs.topbar = topbarSig;
@@ -899,10 +909,11 @@ function startLive(key) {
       /* v4.21.3：首批不再吞历史——回放最近 60 条（创作过程要求刷新后永久可见；
          更早的在右栏「本章档案」）。cursor 仍推进到服务端位置，之后走增量。 */
       if (!prev.baselined) {
+        /* v4.30.0：回放上限 60 → 200——此前页面切换回来后策划/前期过程卡全部丢失 */
         return {
           baselined: true,
           cursor: srvCursor || maxNo || prev.cursor || 0,
-          items: incoming.slice(-60)
+          items: incoming.slice(-200)
         };
       }
       const seen = new Set(prev.items.map((it) => Number(it.no) || 0));
@@ -985,6 +996,7 @@ function startLive(key) {
         const qs = new URLSearchParams({
           key,
           steps_cursor: String((s.steps && s.steps.cursor) || 0),
+          steps_limit: '200',
           stream_offset: String((s.stream && s.stream.offset) || 0),
           /* v4.24.16：思维链独立增量游标——后端 stream_state 一直支持，HTTP 层此前
              从未传，导致模型思考每 1.5s 全量重发（最多 30k 字符/次） */
