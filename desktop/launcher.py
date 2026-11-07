@@ -92,6 +92,16 @@ def _existing_instance():
     return None
 
 
+def _remove_lock():
+    try:
+        from bot.paths import data
+        p = data("instance.lock")
+        if os.path.exists(p):
+            os.remove(p)
+    except Exception:
+        pass
+
+
 def _write_lock(port):
     try:
         from bot.paths import data
@@ -138,12 +148,13 @@ def _wait_ready() -> bool:
 
 def main() -> None:
     from bot.paths import DATA_ROOT
-    # v4.28.2 单实例：已有存活实例 → 直接开浏览器复用，不再起第二个服务
+    # v4.30.2 修复：已有存活实例 → 静默退出（macOS 启动同一 .app 会自动把已开的
+    # 窗口带到前台）。此前这里 webbrowser.open 复用旧实例——用户双击客户端时
+    # 若 46821 被占（开发服务器/残留实例），就会「跳转到网页」而不是打开客户端，
+    # 且那个页面常因令牌失效满屏 401。冻结模式绝不弹浏览器。
     existing = _existing_instance()
     if existing:
-        print("一幕·YIMU 神笔已在运行（端口 " + str(existing) + "），打开现有窗口", flush=True)
-        import webbrowser
-        webbrowser.open("http://127.0.0.1:" + str(existing))
+        print("一幕·YIMU 神笔已在运行（端口 " + str(existing) + "），激活已有窗口", flush=True)
         return
 
     t = threading.Thread(target=_serve, daemon=True)
@@ -179,4 +190,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import atexit
+    atexit.register(lambda: _remove_lock())
     main()
