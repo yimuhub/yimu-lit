@@ -517,13 +517,19 @@ function showSkillDetail(ctx, skill, type) {
   _modalBox(`技能详情 · ${skill.name}`, body);
 }
 
-function exportWork(key, fmt, label) {
+async function exportWork(key, fmt, label, name = '') {
   if (IS_MOCK) {
     toast(`演示模式不生成文件；正式环境会导出 ${label}`, { duration: 2600 });
     return;
   }
-  downloadUrl(api.exportUrl(key, fmt));
-  toast(`正在导出 ${label}…`, { duration: 2000 });
+  /* v4.31.0：fetch+blob 下载，报错走 toast 而不是把窗口导航到错误页 */
+  try {
+    toast(`正在导出 ${label}…`, { duration: 2000 });
+    await api.download(api.exportUrl(key, fmt), name ? `${name}.${fmt}` : 'export');
+    toast(`${label} 已开始下载`, { tone: 'success', duration: 2000 });
+  } catch (err) {
+    toast(errorText(err, '导出失败，请稍后重试'), { tone: 'danger', duration: 4000 });
+  }
 }
 
 /* ------------------------------------------------------- v2.3 标题改名/候选 */
@@ -1123,10 +1129,10 @@ function workPane(ctx) {
           popoverMenu(
             event.currentTarget,
             [
-              { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(work.key, 'docx', 'Word') },
-              { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(work.key, 'md', 'Markdown') },
-              { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(work.key, 'epub', 'EPUB') },
-              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(work.key, 'print', '打印版') }
+              { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(work.key, 'docx', 'Word', work.name) },
+              { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(work.key, 'md', 'Markdown', work.name) },
+              { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(work.key, 'epub', 'EPUB', work.name) },
+              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(work.key, 'print', '打印版', work.name) }
             ],
             { align: 'start', label: '导出整本' }
           );

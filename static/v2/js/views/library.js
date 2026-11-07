@@ -424,12 +424,14 @@ export function renderLibrary(container, ctx) {
             }
           ]
         : []),
-      ...(novelOnly
+      /* v4.31.0：导出开放给全部文体（此前只有小说能导出） */
+      ...(!isTrash
         ? [
             {
               label: '导出',
               icon: 'download',
-              onSelect: (event) => exportMenu(event, item)
+              /* v4.31.0：popoverMenu 现在把锚点元素传给 onSelect；导出菜单据它定位 */
+              onSelect: (anchor) => exportMenu(anchor, item)
             }
           ]
         : []),
@@ -449,12 +451,23 @@ export function renderLibrary(container, ctx) {
           downloadUrl(url);
           setTimeout(() => URL.revokeObjectURL(url), 4000);
         } else {
-          downloadUrl(api.exportUrl(item.key, fmt));
+          /* v4.31.0：fetch+blob 下载，报错走 toast 而不是把窗口导航到错误页 */
+          safeExport(() => api.download(api.exportUrl(item.key, fmt), `《${item.name}》.${fmt}`), fmt.toUpperCase());
         }
-        toast(`正在导出 ${fmt.toUpperCase()}…`, { duration: 2000 });
       }
     }));
     popoverMenu(anchor, items, { label: `导出《${item.name}》` });
+  }
+
+  /* v4.31.0：统一导出反馈——成功 toast，失败 toast 错误信息 */
+  async function safeExport(run, label) {
+    try {
+      toast(`正在导出 ${label}…`, { duration: 2000 });
+      await run();
+      toast(`${label} 已开始下载`, { tone: 'success', duration: 2000 });
+    } catch (err) {
+      toast(errorText(err, '导出失败，请稍后重试'), { tone: 'danger', duration: 4000 });
+    }
   }
 
   async function toggleFavorite(item) {

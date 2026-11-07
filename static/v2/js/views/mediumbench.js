@@ -269,7 +269,7 @@ export function renderMediumBench(container, ctx) {
           run: () => api.scriptRevise(key)
         },
         { label: '分镜表', iconName: 'grid', kind: 'sync', run: () => openStoryboard() },
-        { label: '导出剧本', iconName: 'download', kind: 'file', run: () => downloadUrl(`/api/script/export?key=${encodeURIComponent(key)}`) }
+        { label: '导出剧本', iconName: 'download', kind: 'file', run: () => api.download(`/api/script/export?key=${encodeURIComponent(key)}`, '剧本.fountain').catch((err) => toast(errorText(err, '导出失败'), { tone: 'danger', duration: 4000 })) }
       ];
     }
     if (medium === 'poetry') {

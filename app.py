@@ -1,5 +1,5 @@
 """一幕·YIMU 神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
-import json, os, re, shutil, threading, traceback, uuid, time, secrets
+import glob, json, os, re, shutil, threading, traceback, uuid, time, secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
@@ -4227,17 +4227,51 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     fmt = (fmt or "docx").lower()
-    novel = not os.path.exists(os.path.join(proj.path, script_writer.F_PLAN))
+    # v4.31.0：文体三分类——此前非小说一律按剧本取场次，散文/诗词/论文等
+    # 单文档文体导出必 400（用户点导出即见裸 JSON 错误页）。
+    is_script = os.path.exists(os.path.join(proj.path, script_writer.F_PLAN))
+    # 注意排除小说自己的 02-写作计划.json，否则小说会被误判成单文档文体
+    _plan_files = [f for f in glob.glob(os.path.join(proj.path, "*计划.json"))
+                   if os.path.basename(f) != "02-写作计划.json"]
+    _finals = sorted(glob.glob(os.path.join(proj.path, "04-*定稿.md")))
+    _drafts = sorted(glob.glob(os.path.join(proj.path, "02-*稿.md")))
+    is_mini = (not is_script) and bool(_plan_files)
+    novel = not is_script and not is_mini
     plan = proj.plan() or {}
+    sproj = None
     if novel:
         title = plan.get("novelName") or proj.name
         chapters = export_mod.novel_chapters(proj)
-    else:
+    elif is_script:
         sproj = script_writer.ScriptProject(proj.path, proj.name)
         plan = sproj.plan() or plan
         title = plan.get("scriptName") or proj.name
         chapters = [{"n": sc["no"], "title": sc["heading"], "text": sc["text"]}
                     for sc in export_mod.script_scenes(sproj)]
+    else:
+        # 单文档文体（诗词/散文/论文/儿童文学/新闻稿/文案/其他创作）：
+        # 计划里的 *Name 字段做标题，04-*定稿.md 优先、02-*稿.md 兜底。
+        # 单文档文体一律读自己的计划（proj.plan() 是小说的 02-写作计划，这里可能
+        # 返回 None 也可能返回空 dict，都不能作为标题来源）
+        try:
+            plan = json.load(open(_plan_files[0], encoding="utf-8"))
+        except Exception:
+            plan = {}
+        title = re.sub(r"^\d{8}-\d{6}-", "", proj.name)   # 去掉目录名的时间戳前缀
+        if isinstance(plan, dict):
+            for _k, _v in plan.items():
+                if _k.endswith("Name") and isinstance(_v, str) and _v.strip():
+                    title = _v.strip()
+                    break
+        fpath = _finals[0] if _finals else (_drafts[0] if _drafts else None)
+        doc_label = "定稿" if (_finals or not _drafts) else "初稿"
+        ftext = ""
+        if fpath:
+            try:
+                ftext = open(fpath, encoding="utf-8").read().strip()
+            except Exception:
+                ftext = ""
+        chapters = [{"n": 1, "title": doc_label, "text": ftext}] if ftext else []
     if not chapters:
         return JSONResponse({"error": "还没有可导出的正文"}, status_code=400)
     # v4.27.3：章节范围过滤（闭区间；0=不限）——docx/epub/print 都吃 chapters，
@@ -4254,6 +4288,10 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
         for c in chapters:
             blocks.append((1, f"第{c['n']}章 {export_mod._strip_md(c['title'])}"))
             blocks.extend(export_mod._md_blocks(c["text"]))
+    elif is_mini:
+        for c in chapters:
+            blocks.append((1, f"{export_mod._strip_md(c['title'])}"))
+            blocks.extend(export_mod._md_blocks(c["text"]))
     # v4.15.3：署名回退链 —— 作品 meta.author → 向导笔名（plan.config.penname）→ 全局默认笔名
     author = ((plan.get("meta") or {}).get("author") or "").strip()
     if not author:
@@ -4262,11 +4300,24 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
         author = str((_load_pennames().get("default")) or "").strip()
 
     if fmt in ("md", "markdown"):
-        if ranged:
+        if ranged or not novel:
+            # v4.31.0：非小说（剧本/单文档文体）也由章手拼——markdown(proj) 是小说专用
+            _c0 = chapters[0] if len(chapters) == 1 else None
+            _first0 = next((ln for ln in str((_c0 or {}).get("text", "")).splitlines() if ln.strip()), "") if _c0 else ""
+            if _c0 and not ranged and _first0.startswith("# "):
+                # 单文档正文自带 H1（定稿文件首行就是标题）→ 原文直出，不再叠加书名题头
+                data = str(_c0.get("text", "")).encode("utf-8")
+                media, ext = "text/markdown; charset=utf-8", "md"
+                fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
+                disp = f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname + '.' + ext)}"
+                return Response(data, media_type=media, headers={"Content-Disposition": disp})
             md = [f"# {title}", ""]
             for c in chapters:
-                md.append(f"## 第{c['n']}章 {c.get('title', '')}")
-                md.append("")
+                head = f"第{c['n']}章 {c.get('title', '')}" if novel else str(c.get("title", "") or f"第{c['n']}节")
+                _first = next((ln for ln in str(c.get("text", "")).splitlines() if ln.strip()), "")
+                if novel or not _first.startswith("#"):
+                    md.append(f"## {head}")
+                    md.append("")
                 md.append(c.get("text", ""))
                 md.append("")
             data = "\n".join(md).encode("utf-8")
@@ -4286,9 +4337,9 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
     elif fmt in ("print", "html"):
         data = export_mod.print_html(title, author, chapters).encode("utf-8")
         media, ext = "text/html; charset=utf-8", "html"
-    elif fmt == "fountain" and not novel:
+    elif fmt == "fountain" and is_script:
         data, media, ext = export_mod.fountain(sproj).encode("utf-8"), "text/plain; charset=utf-8", "fountain"
-    elif fmt == "fdx" and not novel:
+    elif fmt == "fdx" and is_script:
         data, media, ext = export_mod.fdx_bytes(sproj), "application/xml", "fdx"
     else:
         return JSONResponse({"error": f"不支持的格式：{fmt}"}, status_code=400)

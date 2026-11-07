@@ -81,6 +81,19 @@ function joinUrl(path, query) {
   return `${path}${queryString(query)}`;
 }
 
+/* v4.31.0：blob 触发浏览器下载 */
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'export';
+  a.rel = 'noopener';
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 export async function request(path, opts = {}) {
   if (IS_MOCK) {
     const mock = await loadMock();
@@ -468,6 +481,33 @@ export const api = {
   exportUrl(key, fmt = 'docx', frm = 0, to = 0) {
     /* v4.27.3：frm/to 章节范围（0=不限），侧栏「导出」弹窗选章用 */
     return joinUrl('/api/export', { key, fmt, ...(frm || to ? { frm, to } : {}) });
+  },
+
+  /* v4.31.0：安全下载——fetch + blob，服务端报错时抛 ApiError 走 toast；
+     此前 <a href> 直跳下载地址，出错时整个窗口被导航到裸 JSON 错误页且无法返回
+     （桌面版 webview 不支持 download 属性，必现）。 */
+  async download(path, fallbackName = 'export') {
+    if (IS_MOCK) {
+      const blob = new Blob(['（演示模式）导出内容'], { type: 'text/plain;charset=utf-8' });
+      triggerBlobDownload(blob, fallbackName);
+      return;
+    }
+    const res = await fetch(joinUrl(path), { credentials: 'same-origin' });
+    if (!res.ok) {
+      let payload = null;
+      try { payload = await res.json(); } catch { /* 非 JSON 错误体 */ }
+      throw new ApiError(fieldMessage(payload, res.status), { status: res.status, payload });
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('content-disposition') || '';
+    let name = fallbackName;
+    const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+    if (star) { try { name = decodeURIComponent(star[1]); } catch { /* 保持回退名 */ } }
+    else {
+      const plain = cd.match(/filename="([^"]+)"/i);
+      if (plain && plain[1]) name = plain[1];
+    }
+    triggerBlobDownload(blob, name);
   },
 
   /* 版本与更新检查 */

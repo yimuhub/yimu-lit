@@ -114,6 +114,8 @@ function renderRow(item, ctx, { isActive }) {
 /* v4.27.3：导出弹窗——整书或章节范围 + 格式选择（复用 /api/export 的 frm/to） */
 function openExportDialog(item) {
   const done = Number(item.done) || 0;
+  /* v4.31.0：导出开放给全部文体；非小说没有章节结构，隐藏「选章」 */
+  const isNovel = !item.medium || item.medium === 'novel';
   const fmts = [
     ['docx', 'Word 文档（.docx）'],
     ['md', 'Markdown（.md）'],
@@ -121,25 +123,31 @@ function openExportDialog(item) {
     ['print', '打印版（.html）']
   ];
   let range = 'all';
+  const rangeSeg = h('div', { class: 'segmented', role: 'group' },
+    h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': 'true', text: '整书导出', dataset: { range: 'all' } }),
+    h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': 'false', text: '选择章节', dataset: { range: 'range' } }));
+  const rangeBox = h('div', { class: 'exp-range', style: { display: 'none' } },
+    h('label', { class: 'exp-field' }, h('span', { text: '从第 ' }),
+      h('input', { class: 'input', type: 'number', min: '1', value: '1', dataset: { role: 'frm' } }),
+      h('span', { text: ' 章' })),
+    h('label', { class: 'exp-field' }, h('span', { text: '到第 ' }),
+      h('input', { class: 'input', type: 'number', min: '1', value: String(Math.max(1, done)), dataset: { role: 'to' } }),
+      h('span', { text: ' 章' })),
+    h('div', { class: 'hint-text', text: `当前已完成 ${done} 章；范围外的章不会导出。` }));
   const body = h('div', { class: 'exp-form' },
     h('div', { class: 'evo-sub', text: '范围' }),
-    h('div', { class: 'segmented', role: 'group' },
-      h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': 'true', text: '整书导出', dataset: { range: 'all' } }),
-      h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': 'false', text: '选择章节', dataset: { range: 'range' } })),
-    h('div', { class: 'exp-range', style: { display: 'none' } },
-      h('label', { class: 'exp-field' }, h('span', { text: '从第 ' }),
-        h('input', { class: 'input', type: 'number', min: '1', value: '1', dataset: { role: 'frm' } }),
-        h('span', { text: ' 章' })),
-      h('label', { class: 'exp-field' }, h('span', { text: '到第 ' }),
-        h('input', { class: 'input', type: 'number', min: '1', value: String(Math.max(1, done)), dataset: { role: 'to' } }),
-        h('span', { text: ' 章' })),
-      h('div', { class: 'hint-text', text: `当前已完成 ${done} 章；范围外的章不会导出。` })),
+    rangeSeg,
+    rangeBox,
     h('div', { class: 'evo-sub', text: '格式' }),
     h('div', { class: 'exp-fmts' },
       ...fmts.map(([v, label], i) => h('label', { class: 'exp-fmt' },
         h('input', { type: 'radio', name: 'exp-fmt', value: v, checked: i === 0 ? true : undefined }),
         h('span', { text: label })))));
 
+  if (!isNovel) {
+    rangeSeg.style.display = 'none';
+    rangeBox.style.display = 'none';
+  }
   const modal = openModal({ title: `导出《${item.name}》`, body, size: 'sm' });
   body.addEventListener('click', (e) => {
     const seg = e.target.closest('.seg-btn');
@@ -159,9 +167,18 @@ function openExportDialog(item) {
           frm = Math.max(1, Number(body.querySelector('[data-role="frm"]').value) || 1);
           to = Math.max(frm, Number(body.querySelector('[data-role="to"]').value) || frm);
         }
-        downloadUrl(api.exportUrl(item.key, fmt, frm, to));
-        toast('正在导出下载…', { duration: 2000 });
-        modal.close();
+        /* v4.31.0：fetch+blob 下载，报错走 toast 而不是把窗口导航到错误页 */
+        (async () => {
+          try {
+            toast('正在导出下载…', { duration: 2000 });
+            await api.download(api.exportUrl(item.key, fmt, isNovel ? frm : 0, isNovel ? to : 0), `《${item.name}》.${fmt}`);
+            toast('已开始下载', { tone: 'success', duration: 2000 });
+          } catch (err) {
+            toast(errorText(err, '导出失败，请稍后重试'), { tone: 'danger', duration: 4000 });
+          } finally {
+            modal.close();
+          }
+        })();
       }
     } })));
 }

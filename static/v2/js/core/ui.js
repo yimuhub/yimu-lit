@@ -264,7 +264,9 @@ export function popoverMenu(anchor, items, { align = 'end', label = '' } = {}) {
     );
     btn.addEventListener('click', () => {
       closePopover();
-      if (item.onSelect) item.onSelect();
+      /* v4.31.0：把锚点元素传给 onSelect——此前无参调用，需要 event.currentTarget
+         的调用方（如作品库卡片导出菜单）拿到 undefined 直接抛错，二级菜单打不开 */
+      if (item.onSelect) item.onSelect(anchor);
     });
     pop.append(btn);
   }

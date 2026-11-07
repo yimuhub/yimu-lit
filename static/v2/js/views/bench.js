@@ -100,12 +100,13 @@ export function renderBench(container, ctx) {
     const items = EXPORT_FMTS.map(([fmt, label]) => ({
       label: `导出全书 · ${label}`,
       icon: 'download',
-      onSelect: () => {
+      onSelect: async () => {
         try {
-          downloadUrl(api.exportUrl(key, fmt));
           toast(`正在导出 ${label}（正文已去噪）…`, { duration: 2400 });
+          await api.download(api.exportUrl(key, fmt), `export.${fmt}`);
+          toast(`${label} 已开始下载`, { tone: 'success', duration: 2000 });
         } catch (err) {
-          toast(errorText(err, '导出失败'), { tone: 'danger' });
+          toast(errorText(err, '导出失败'), { tone: 'danger', duration: 4000 });
         }
       }
     }));
