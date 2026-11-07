@@ -41,7 +41,7 @@ exe = EXE(
     a.binaries,
     a.zipfiles,
     a.datas,
-    name="一幕神笔",
+    name="YiMuLit",
     debug=False,
     strip=False,
     upx=False,
@@ -50,10 +50,11 @@ exe = EXE(
 )
 app = BUNDLE(
     exe,
-    name="一幕神笔.app",
+    name="YiMuLit.app",
     icon=os.path.join(ROOT, "desktop", "icon", "icon.icns"),
     info_plist={
-        "CFBundleName": "一幕神笔",
+        "CFBundleName": "YiMuLit",
+        "CFBundleDisplayName": "一幕·YIMU 神笔",
         "CFBundleDisplayName": "一幕·YIMU 神笔",
         "NSLocalNetworkUsageDescription": "一幕神笔在本机启动创作服务，需要访问本地网络（127.0.0.1）。",
         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},

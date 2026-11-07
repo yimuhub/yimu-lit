@@ -19,13 +19,25 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt pyinstaller pywebview
       - run: pyinstaller desktop/yimulit_mac.spec --noconfirm --distpath desktop/dist --workpath desktop/build
+      - name: Verify native window (pywebview)
+        run: |
+          SMOKE=$(mktemp -d)
+          YIMU_DATA_DIR="$SMOKE" YIMU_PORT=46990 ./desktop/dist/YiMuLit.app/Contents/MacOS/YiMuLit &
+          APP_PID=$!
+          sleep 15
+          if grep -q "原生窗口不可用" "$SMOKE/logs/launcher.log" 2>/dev/null; then
+            echo "::error::pywebview 原生窗口失败——检查 pyobjc 采集"; exit 1
+          fi
+          curl -s -o /dev/null "http://127.0.0.1:46990/" || exit 1
+          kill $APP_PID
       - name: Make DMG
         run: |
           STAGE=$(mktemp -d)
-          cp -R "desktop/dist/一幕神笔.app" "$STAGE/"
+          cp -R "desktop/dist/YiMuLit.app" "$STAGE/"
+          cp README-DESKTOP.txt "$STAGE/首次启动说明.txt"
           ln -s /Applications "$STAGE/Applications"
           VER=$(cat VERSION)
-          hdiutil create -volname "一幕·YIMU神笔" -srcfolder "$STAGE" -ov -format UDZO "desktop/dist/一幕神笔-$VER-mac.dmg"
+          hdiutil create -volname "YiMuLit" -srcfolder "$STAGE" -ov -format UDZO "desktop/dist/YiMuLit-$VER-mac.dmg"
       - uses: actions/upload-artifact@v4
         with: { name: mac-dmg, path: desktop/dist/*.dmg }
       - name: Attach to release
