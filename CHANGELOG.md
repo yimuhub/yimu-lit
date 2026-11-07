@@ -2,6 +2,26 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.32.0 — 桌面导出弹原生「存储」对话框选位置 + 应用名回归中文「一幕神笔」
+
+### 用户报障
+1. macOS 客户端散文导出后依旧出现错误页——截图显示是散文正文渲染成乱码页。
+2. 右栏「作品」里要在 极速、蒸馏风格 后面加导出按钮（上一版要求未落实）。
+3. 应用名字最近几版变成英文 YiMuLit，要求中文「一幕神笔」。
+
+### 根因
+- 桌面 webview（macOS WKWebView / Windows WebView2）**不支持 `<a download>`**：v4.31.0 的 fetch+blob 方案在浏览器里正常，但在客户端里 `a.click()` 会被当成导航，跳到文件内容页（即乱码正文页）。桌面端永远不能依赖 webview 下载。
+- 应用名：BUNDLE 的 `CFBundleName`（菜单栏/Dock 显示名）一直是 `YiMuLit`，`CFBundleDisplayName` 还是旧名且重复写了两次。
+
+### 修复
+- **桌面导出 = 原生保存对话框**（Mac/Windows 一致）：新增 POST /api/export/save——服务端构建导出产物后调 pywebview `SAVE_DIALOG`，用户选位置 → 直接写盘（自动补扩展名）；取消则静默返回。前端统一入口 `api.exportWork()`：检测 `/api/version` 的 desktop 标志 + `window.pywebview` 环境，桌面绝不走 blob；旧客户端（无桥接）提示「下载 v4.32.0 安装包重装」而不是默默坏掉。5 处导出入口全部切换。
+- **右栏非小说面板新增「导出」按钮**（散文工作台/极速/蒸馏风格之后），格式菜单 Word/Markdown/EPUB/打印版。
+- **应用名全面回归中文**：CFBundleName/CFBundleDisplayName = 一幕神笔（菜单栏、Dock、关于），窗口标题 = 一幕神笔，Windows 安装器/快捷方式此前已是中文。.app/.exe 文件名保持 ASCII（CI 中文吞字红线）。
+- 导出构建逻辑下沉 `_export_build()`，GET /api/export 与保存端点共用一套；6 项新回归测试 + 浏览器 E2E（右栏导出按钮出现、下载事件触发、页面不跳转）。
+
+### 用户侧操作
+- 需从 Releases 重新下载 v4.32.0 DMG/EXE 安装一次（窗口与对话框桥在桌面壳里，应用内热更新不覆盖壳）。
+
 ## v4.31.0 — 导出全面修复：全文体可导出 + 下载不再跳错误页 + 作品库卡片菜单两个隐藏 bug
 
 ### 用户报障

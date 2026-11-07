@@ -53,9 +53,10 @@ app = BUNDLE(
     name="YiMuLit.app",
     icon=os.path.join(ROOT, "desktop", "icon", "icon.icns"),
     info_plist={
-        "CFBundleName": "YiMuLit",
-        "CFBundleDisplayName": "一幕·YIMU 神笔",
-        "CFBundleDisplayName": "一幕·YIMU 神笔",
+        # v4.32.0：菜单栏/Dock 显示名走 CFBundleName——此前是 YiMuLit（英文），
+        # 用户要求应用名中文「一幕神笔」；.app 目录名保持 ASCII（CI 中文吞字红线）
+        "CFBundleName": "一幕神笔",
+        "CFBundleDisplayName": "一幕神笔",
         "NSLocalNetworkUsageDescription": "一幕神笔在本机启动创作服务，需要访问本地网络（127.0.0.1）。",
         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
     },

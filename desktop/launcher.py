@@ -170,11 +170,15 @@ def main() -> None:
     if ready and not headless:
         try:
             import webview
-            webview.create_window(
-                "一幕·YIMU 神笔",
+            # v4.32.0：应用名统一中文「一幕神笔」；窗口句柄注入 desktop_bridge，
+            # 导出走原生「存储」对话框（webview 不支持 <a download>）
+            _win = webview.create_window(
+                "一幕神笔",
                 f"http://127.0.0.1:{PORT}",
                 width=1440, height=900, min_size=(1024, 680),
             )
+            from bot import desktop_bridge
+            desktop_bridge.WINDOW = _win
             webview.start()   # 阻塞到窗口关闭 → 进程退出（服务是 daemon 线程）
             return
         except Exception as e:

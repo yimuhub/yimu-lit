@@ -81,6 +81,21 @@ function joinUrl(path, query) {
   return `${path}${queryString(query)}`;
 }
 
+/* v4.32.0：桌面模式检测——桌面客户端导出走原生「存储」对话框（webview 不支持
+   <a download>，blob 方案会导航到文件内容页）；网页端走 blob 浏览器下载。 */
+let _desktopFlag = null;
+async function isDesktop() {
+  if (_desktopFlag === null) {
+    try {
+      const v = await request('/api/version', { timeout: 6000 });
+      _desktopFlag = Boolean(v && v.desktop);
+    } catch {
+      _desktopFlag = false;
+    }
+  }
+  return _desktopFlag;
+}
+
 /* v4.31.0：blob 触发浏览器下载 */
 function triggerBlobDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -508,6 +523,28 @@ export const api = {
       if (plain && plain[1]) name = plain[1];
     }
     triggerBlobDownload(blob, name);
+  },
+
+  /* v4.32.0：统一导出入口——桌面端弹原生保存对话框选位置，服务端写盘；
+     网页端走 blob 浏览器下载。返回 { saved } | { cancelled } | undefined(浏览器) */
+  async exportWork(key, fmt, { name = '', frm = 0, to = 0 } = {}) {
+    /* window.pywebview 存在 = 正跑在桌面 webview 里：blob 下载必然变成导航到
+       文件内容页（WKWebView/WebView2 不支持 <a download>），绝不走这条路。
+       若服务端还没升级到带保存对话框的版本，提示重装而不是默默坏掉。 */
+    const inWebview = typeof window !== 'undefined' && window.pywebview !== undefined;
+    if (inWebview || (await isDesktop())) {
+      const r = await request('/api/export/save', {
+        method: 'POST',
+        body: { key, fmt, frm, to },
+        timeout: 300000
+      });
+      if (r && r.saved) return { saved: r.saved };
+      if (r && r.cancelled) return { cancelled: true };
+      if (inWebview && r && r.desktop === false) {
+        throw new ApiError('当前客户端版本较旧：请从 GitHub Releases 下载 v4.32.0 安装包重装一次，导出即可弹出「存储」对话框选择保存位置', { status: 0, code: 'need_update' });
+      }
+    }
+    return this.download(this.exportUrl(key, fmt, frm, to), name ? `${name}.${fmt}` : 'export');
   },
 
   /* 版本与更新检查 */

@@ -12,6 +12,7 @@ from bot import prose_writer, slop_checker, security, jobs, versions, platforms
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
+from bot import desktop_bridge
 from bot import syslog as syslog_mod
 from bot import steps as steps_mod
 from bot import export as export_mod
@@ -4218,14 +4219,19 @@ def api_download(key: str):
     return Response(text.encode("utf-8"), media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": disp})
 
-@app.get("/api/export")
-def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
-    """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。
-    v4.27.3：frm/to 章节范围——侧栏「导出」弹窗可选整书或某几章（闭区间，0=不限）。"""
-    from urllib.parse import quote
+class _ExportError(Exception):
+    def __init__(self, msg, status=400):
+        super().__init__(msg)
+        self.msg = msg
+        self.status = status
+
+
+def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
+    """构建导出产物（v4.32.0 从 GET /api/export 抽出，桌面保存对话框复用）。
+    返回 (data, media, ext, title)；错误抛 _ExportError。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+        raise _ExportError("项目不存在或未加载，请刷新作品库", 404)
     fmt = (fmt or "docx").lower()
     # v4.31.0：文体三分类——此前非小说一律按剧本取场次，散文/诗词/论文等
     # 单文档文体导出必 400（用户点导出即见裸 JSON 错误页）。
@@ -4273,7 +4279,7 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
                 ftext = ""
         chapters = [{"n": 1, "title": doc_label, "text": ftext}] if ftext else []
     if not chapters:
-        return JSONResponse({"error": "还没有可导出的正文"}, status_code=400)
+        raise _ExportError("还没有可导出的正文")
     # v4.27.3：章节范围过滤（闭区间；0=不限）——docx/epub/print 都吃 chapters，
     # md 由过滤后的章手拼（markdown(proj) 只能整书）。
     ranged = bool(frm or to)
@@ -4281,7 +4287,7 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
         lo, hi = sorted((int(frm or 0), int(to or 10 ** 9)))
         chapters = [c for c in chapters if lo <= int(c.get("n") or 0) <= hi]
         if not chapters:
-            return JSONResponse({"error": f"第 {lo}-{hi} 章范围内还没有可导出的正文"}, status_code=400)
+            raise _ExportError(f"第 {lo}-{hi} 章范围内还没有可导出的正文")
         title = f"{title}（第{lo}-{hi}章）"
     blocks = []
     if novel:
@@ -4308,9 +4314,7 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
                 # 单文档正文自带 H1（定稿文件首行就是标题）→ 原文直出，不再叠加书名题头
                 data = str(_c0.get("text", "")).encode("utf-8")
                 media, ext = "text/markdown; charset=utf-8", "md"
-                fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
-                disp = f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname + '.' + ext)}"
-                return Response(data, media_type=media, headers={"Content-Disposition": disp})
+                return data, media, ext, title
             md = [f"# {title}", ""]
             for c in chapters:
                 head = f"第{c['n']}章 {c.get('title', '')}" if novel else str(c.get("title", "") or f"第{c['n']}节")
@@ -4342,11 +4346,54 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
     elif fmt == "fdx" and is_script:
         data, media, ext = export_mod.fdx_bytes(sproj), "application/xml", "fdx"
     else:
-        return JSONResponse({"error": f"不支持的格式：{fmt}"}, status_code=400)
+        raise _ExportError(f"不支持的格式：{fmt}")
+    return data, media, ext, title
 
+
+@app.get("/api/export")
+def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
+    """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。
+    v4.27.3：frm/to 章节范围——侧栏「导出」弹窗可选整书或某几章（闭区间，0=不限）。
+    v4.32.0：构建逻辑下沉 _export_build（桌面原生保存对话框复用同一套）。"""
+    from urllib.parse import quote
+    try:
+        data, media, ext, title = _export_build(key, fmt, frm, to)
+    except _ExportError as e:
+        return JSONResponse({"error": e.msg}, status_code=e.status)
     fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
     disp = f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname + '.' + ext)}"
     return Response(data, media_type=media, headers={"Content-Disposition": disp})
+
+
+@app.post("/api/export/save")
+def api_export_save(payload: dict):
+    """v4.32.0：桌面端导出——弹原生「存储」对话框让用户选位置，服务端直接写盘。
+    桌面 webview（WKWebView/WebView2）不支持 <a download>，blob 方案会导航到
+    文件内容页（用户实测的乱码正文页）；网页端返回 desktop=False 由前端走 blob 下载。"""
+    key = str(payload.get("key") or "")
+    fmt = str(payload.get("fmt") or "docx").lower()
+    frm = int(payload.get("frm") or 0)
+    to = int(payload.get("to") or 0)
+    if not desktop_bridge.is_desktop():
+        return {"desktop": False}
+    try:
+        data, media, ext, title = _export_build(key, fmt, frm, to)
+    except _ExportError as e:
+        return JSONResponse({"error": e.msg}, status_code=e.status)
+    fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
+    path = desktop_bridge.save_dialog(f"{fname}.{ext}")
+    if not path:
+        return {"cancelled": True}
+    path = str(path)
+    root, extn = os.path.splitext(path)
+    if not extn:
+        path = f"{root}.{ext}"
+    _parent = os.path.dirname(path)
+    if _parent:
+        os.makedirs(_parent, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+    return {"saved": path}
 
 @app.get("/api/agents")
 def api_agents():
@@ -4890,7 +4937,8 @@ def api_quality(key: str):
 
 @app.get("/api/version")
 async def api_version():
-    return {"version": version.current()}
+    # v4.32.0：desktop 标志——前端据此决定导出走原生保存对话框还是浏览器下载
+    return {"version": version.current(), "desktop": desktop_bridge.is_desktop()}
 
 # ---------- v1.0.0：文体路由 + 技能库（一幕·YIMU 神笔文学创作台） ----------
 

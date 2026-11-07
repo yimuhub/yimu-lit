@@ -522,11 +522,13 @@ async function exportWork(key, fmt, label, name = '') {
     toast(`演示模式不生成文件；正式环境会导出 ${label}`, { duration: 2600 });
     return;
   }
-  /* v4.31.0：fetch+blob 下载，报错走 toast 而不是把窗口导航到错误页 */
+  /* v4.32.0：桌面端走原生「存储」对话框选位置，网页端走浏览器下载 */
   try {
     toast(`正在导出 ${label}…`, { duration: 2000 });
-    await api.download(api.exportUrl(key, fmt), name ? `${name}.${fmt}` : 'export');
-    toast(`${label} 已开始下载`, { tone: 'success', duration: 2000 });
+    const r = await api.exportWork(key, fmt, { name });
+    if (r && r.cancelled) return;
+    const where = r && r.saved ? `已保存到 ${r.saved}` : `${label} 已开始下载`;
+    toast(where, { tone: 'success', duration: 3200 });
   } catch (err) {
     toast(errorText(err, '导出失败，请稍后重试'), { tone: 'danger', duration: 4000 });
   }
@@ -825,6 +827,27 @@ function mediumWorkPane(work, ctx) {
             genre: '',
             onDone: () => ctx && ctx.refreshWork && ctx.refreshWork()
           });
+        }
+      }
+    }),
+    /* v4.32.0：导出按钮补齐到非小说面板（用户要求：在极速、蒸馏风格之后）——
+       走统一 api.exportWork，桌面端弹原生保存对话框选位置 */
+    h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
+      html: `${icon('download', 13)}<span>导出</span>`,
+      on: {
+        click: (event) => {
+          popoverMenu(
+            event.currentTarget,
+            [
+              { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(work.key, 'docx', 'Word', work.name) },
+              { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(work.key, 'md', 'Markdown', work.name) },
+              { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(work.key, 'epub', 'EPUB', work.name) },
+              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(work.key, 'print', '打印版', work.name) }
+            ],
+            { align: 'start', label: '导出整本' }
+          );
         }
       }
     })

@@ -103,8 +103,10 @@ export function renderBench(container, ctx) {
       onSelect: async () => {
         try {
           toast(`正在导出 ${label}（正文已去噪）…`, { duration: 2400 });
-          await api.download(api.exportUrl(key, fmt), `export.${fmt}`);
-          toast(`${label} 已开始下载`, { tone: 'success', duration: 2000 });
+          const r = await api.exportWork(key, fmt);
+          if (r && r.cancelled) return;
+          const where = r && r.saved ? `已保存到 ${r.saved}` : `${label} 已开始下载`;
+          toast(where, { tone: 'success', duration: 3200 });
         } catch (err) {
           toast(errorText(err, '导出失败'), { tone: 'danger', duration: 4000 });
         }

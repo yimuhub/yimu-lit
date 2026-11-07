@@ -171,8 +171,11 @@ function openExportDialog(item) {
         (async () => {
           try {
             toast('正在导出下载…', { duration: 2000 });
-            await api.download(api.exportUrl(item.key, fmt, isNovel ? frm : 0, isNovel ? to : 0), `《${item.name}》.${fmt}`);
-            toast('已开始下载', { tone: 'success', duration: 2000 });
+            const r = await api.exportWork(item.key, fmt, { name: item.name, frm: isNovel ? frm : 0, to: isNovel ? to : 0 });
+            if (!r || !r.cancelled) {
+              const where = r && r.saved ? `已保存到 ${r.saved}` : '已开始下载';
+              toast(where, { tone: 'success', duration: 3200 });
+            }
           } catch (err) {
             toast(errorText(err, '导出失败，请稍后重试'), { tone: 'danger', duration: 4000 });
           } finally {

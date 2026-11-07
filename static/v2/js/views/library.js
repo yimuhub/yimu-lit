@@ -452,7 +452,7 @@ export function renderLibrary(container, ctx) {
           setTimeout(() => URL.revokeObjectURL(url), 4000);
         } else {
           /* v4.31.0：fetch+blob 下载，报错走 toast 而不是把窗口导航到错误页 */
-          safeExport(() => api.download(api.exportUrl(item.key, fmt), `《${item.name}》.${fmt}`), fmt.toUpperCase());
+          safeExport(() => api.exportWork(item.key, fmt, { name: item.name }), fmt.toUpperCase());
         }
       }
     }));
@@ -463,8 +463,11 @@ export function renderLibrary(container, ctx) {
   async function safeExport(run, label) {
     try {
       toast(`正在导出 ${label}…`, { duration: 2000 });
-      await run();
-      toast(`${label} 已开始下载`, { tone: 'success', duration: 2000 });
+      const r = await run();
+      /* v4.32.0：桌面端用户取消保存对话框 → 不提示 */
+      if (r && r.cancelled) return;
+      const where = r && r.saved ? `已保存到 ${r.saved}` : `${label} 已开始下载`;
+      toast(where, { tone: 'success', duration: 3200 });
     } catch (err) {
       toast(errorText(err, '导出失败，请稍后重试'), { tone: 'danger', duration: 4000 });
     }
