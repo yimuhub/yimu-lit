@@ -828,7 +828,9 @@ def mark_pipeline(key, on=True):
     try:
         if on and prev == 0 and now == 1:
             if _lj is not None:
-                _lj.update(k, phase="running", detail="创作线程已启动，正在准备本批次内容…")
+                # 只推进阶段，不覆盖接口层写的具体文案（「正在写第 3/50 集」比
+                # 「线程已启动」有用得多）
+                _lj.update(k, phase="running")
             if med == "novel":
                 from . import supervisor as _sv
                 _sv.ensure(k)
