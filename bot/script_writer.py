@@ -858,7 +858,13 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
 
 def resume_project(key: str, batch_size=None) -> ScriptProject | None:
     """断点恢复：服务重启/写作线程中断后，从盘上产物继续（缺哪段规划补哪段）。
-    场次清单已就绪 → 直接续写剩余场次；规划未完 → 重跑缺失阶段再开写。"""
+    场次清单已就绪 → 直接续写剩余场次；规划未完 → 重跑缺失阶段再开写。
+
+    v4.33.6：改编剧（有 adaptedFrom）在这里统一转给改编引擎按集续跑。
+    此前只有 /api/continue 判了改编，supervisor 的自动恢复和「极速续写」都直接
+    走到本函数 → 落进 write_scenes 的守卫 → 每次只打一行「已拒绝」，一本书
+    连续四次点「继续」一分字都没写，界面却始终显示「创作中」。
+    """
     import threading as _th
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
@@ -876,6 +882,16 @@ def resume_project(key: str, batch_size=None) -> ScriptProject | None:
     cfg = _merge_cfg(plan.get("config") or {})
     proj = ScriptProject(pdir, plan.get("scriptName") or key)
     plan.setdefault("stages", {})
+    if is_adapted_drama(plan):
+        # 注册器由 app 装配（避免引擎反向 import app）。返回 True 表示已接手。
+        if _ADAPT_RESUMER is not None:
+            try:
+                if _ADAPT_RESUMER(key):
+                    return proj
+            except Exception as e:
+                proj.log(f"⚠️ 改编续跑派发失败：{type(e).__name__}: {e}")
+        proj.log("🛑 改编剧只能按集续跑：请在工作台点「继续」，由改编引擎补齐缺集")
+        return proj
     if not plan.get("scenes"):
         proj.log("▶ 断点恢复：规划未完成，补齐缺失阶段…")
         _run_planning(proj, plan, cfg)
@@ -960,6 +976,20 @@ def is_adapted_drama(plan: dict | None) -> bool:
         return False
     src = plan.get("adaptedFrom")
     return bool(isinstance(src, dict) and str(src.get("key") or "").strip())
+
+
+# v4.33.6：改编剧续跑的注册器。
+# app 启动时把「按集补齐」的实现注册进来，引擎侧（resume_project）在打日志、
+# 起按场写作线程之前就转派出去。这样 supervisor 自动恢复、极速续写、/api/continue
+# 三条入口都汇到同一个正确出口，新增入口也不会再漏判。
+_ADAPT_RESUMER = None
+
+
+def set_adapt_resumer(fn) -> None:
+    """装配改编续跑器：fn(key) -> bool（True = 已接手，不再走按场写）。"""
+    global _ADAPT_RESUMER
+    _ADAPT_RESUMER = fn
+
 
 
 def write_scenes(proj: ScriptProject, only: list[int] | None = None, batch_size=None) -> dict:

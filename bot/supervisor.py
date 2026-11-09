@@ -135,6 +135,31 @@ def _budget_add(key: str, plan: dict, med: str, pdir: str, field: str, value) ->
     return b
 
 
+def reset_resume_budget(key: str, plan: dict, med: str, pdir: str) -> None:
+    """用户手动点「继续」= 人已介入，把自动恢复的断路器清零。
+
+    v4.33.6：此前预算是 24h 硬上限且没有任何重置通道——用户自己点了 4 次继续、
+    每次都被派到错误引擎，3 次自动恢复额度反而先被消耗光，之后 supervisor 直接
+    放弃，书永远停在「创作中」。人一旦动手，就该给自动恢复重新计数的机会。
+    """
+    b = _budget(key, plan)
+    if not b.get("resumes"):
+        return
+    b["resumes"] = []
+    plan.setdefault("meta", {})["supervisor"] = b
+    _save_budget(key, plan, med, pdir)
+
+
+def reset_resume_budget_by_key(key: str) -> None:
+    """按作品 key 清预算（手动「继续」的入口用，调用方不必自己读计划）。"""
+    try:
+        med, pdir, _fp, plan = _load(key)
+    except Exception:
+        return
+    if plan:
+        reset_resume_budget(key, plan, med, pdir)
+
+
 # ---------------------------------------------------------------- 派活（全部复用既有机制）
 
 def _dispatch_resume(key: str, med: str, pdir: str) -> bool:

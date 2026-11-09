@@ -171,7 +171,7 @@ export function groupByRecency(items, getDate = (i) => i.updated_at || i.created
   return groups.filter((g) => g.items.length);
 }
 
-export function statusMeta(state, label) {
+export function statusMeta(state, label, running) {
   const map = {
     completed: { tone: 'success', label: label || '已出书' },
     in_progress: { tone: 'running', label: label || '创作中' },
@@ -182,6 +182,14 @@ export function statusMeta(state, label) {
     failed: { tone: 'danger', label: label || '失败' },
     idle: { tone: 'muted', label: label || '草稿' }
   };
+  /* v4.33.6：in_progress 只说明「没写完」，不说明「机器在写」。
+     实测一部 48/50 的短剧引擎早已退出，计划字段仍停在 in_progress，
+     作品库就一直挂着「创作中」；用户以为在跑，其实在等他点继续。
+     后端下发的 status_label 已是「待继续」，这里再用 running 兜一道，
+     保证任何直接读 state 的页面（文体工作台等）也是同一句话。 */
+  if (running === false && ['in_progress', 'planning', 'writing', 'validating'].includes(state)) {
+    return { tone: 'warn', label: '待继续' };
+  }
   return map[state] || { tone: 'muted', label: label || '未开始' };
 }
 

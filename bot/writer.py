@@ -2979,6 +2979,48 @@ _NAME_KEY = {"novel": "novelName", "script": "scriptName", "poetry": "poemName",
 _FORM_LABEL_KEY = {"novel": "", "script": "formLabel", "poetry": "formLabel", "prose": "genreLabel", "thesis": "degreeLabel", "children": "typeLabel", "news": "typeLabel", "copy": "platformLabel", "other": "templateLabel"}
 _OTHER_LABEL = {"completed": "已完成", "planning": "规划中", "writing": "写作中",
                 "in_progress": "创作中", "failed": "失败", "unknown": "草稿"}
+# v4.33.6：状态徽章只描述「用户该做什么」，不描述计划文件里那个静态字段。
+# 实测：一部 48/50 的短剧，引擎早就不在跑，作品库却写「创作中」——因为
+# plan.status 还停在 in_progress。人在那儿看半天，以为机器在写，其实在等他点继续。
+_RUNNING_STATES = ("in_progress", "planning", "writing", "validating")
+
+
+def display_state_label(state: str, running: bool, paused: bool,
+                        done: int = 0, total: int = 0) -> str:
+    """把「计划状态 + 真实线程状态」翻译成一句人话。
+
+    running 为真才叫「创作中」；没在跑但还有活没干完，就叫「待继续」。
+    """
+    st = str(state or "")
+    if st == "completed":
+        return "已完成"
+    if paused:
+        return "已暂停"
+    if running:
+        return "创作中"
+    if st in _RUNNING_STATES:
+        if total and done >= total:
+            return "待校对"     # 集/章齐了但还没走完收尾流程
+        return "待继续"
+    return _OTHER_LABEL.get(st, st or "草稿")
+
+
+def _live_running(key: str, running: bool, state: str) -> bool:
+    """计划里的 running 之外，再看一眼实时作业登记（v4.33.1 的 livejob）。
+
+    引擎准备素材的头 1-2 分钟还没起写盘线程，Plan.running 仍是 false；
+    这段时间标签不能闪回「待继续」，否则用户以为点了没反应。
+    """
+    if running:
+        return True
+    if str(state or "") not in _RUNNING_STATES:
+        return False
+    try:
+        from . import livejob
+        return bool(livejob.is_active(key))
+    except Exception:
+        return False
+
 
 
 def _plan_of(pdir):
@@ -3057,12 +3099,14 @@ def _other_medium_item(key, pdir, med, plan):
     if state == "completed":
         total = max(total, 1)
         done = total   # 完成态按定稿算：诗词的轮数（如 1/3）只反映改稿轮数，不是完成度
+    running = _live_running(key, bool(st.get("running")), state)
+    label = display_state_label(state, running, bool(meta.get("paused")), done, total)
     return {"key": key, "name": st.get("name") or plan.get(_NAME_KEY[med]) or key,
             "medium": med, "form": form, "genre": genre,
-            "state": state, "status_label": _OTHER_LABEL.get(state, state),
+            "state": state, "status_label": label,
             "done": done, "total": total,
             "progress": round(100 * done / total) if total else 0,
-            "total_words": words, "running": bool(st.get("running")),
+            "total_words": words, "running": running,
             "quality": None, "passing": None, "pass_line": _pass_line(),
             "released": None, "final_quality": None, "awaiting_title": False,
             "gate_rounds": None, "paused": bool(meta.get("paused")), "queued": 0,
@@ -3096,15 +3140,21 @@ def library_item(key, with_quality=True):
     released = meta.get("released")
     final_q = meta.get("final_quality")
     awaiting_title = bool(meta.get("awaiting_title"))
-    label = {"completed": "已出书", "in_progress": "创作中", "validating": "校验中",
-             "awaiting_title": "选书名", "failed": "失败", "idle": "草稿"}.get(state,
-             "规划中" if state in ("planning", "awaiting_title") or not (st.get("total") or 0)
-             else ("未完成" if st.get("done", 0) < st.get("total", 1) else "已完成"))
+    label = display_state_label(state, _live_running(key, bool(st.get("running", False)), state),
+                                bool(meta.get("paused")),
+                                int(st.get("done", 0) or 0), int(st.get("total", 0) or 0))
+    if state == "completed":
+        label = "已出书"
+    elif state == "awaiting_title":
+        label = "选书名"
+    elif state in ("planning", "awaiting_title") and not (st.get("total") or 0):
+        label = "规划中"
     return {"key": key, "name": st.get("name") or key, "medium": "novel", "form": "",
             "genre": genre, "state": state,
             "status_label": label, "done": st.get("done", 0), "total": st.get("total", 0),
             "progress": round(100 * st.get("done", 0) / st.get("total", 1)) if st.get("total") else 0,
-            "total_words": total_words, "running": st.get("running", False),
+            "total_words": total_words,
+            "running": _live_running(key, bool(st.get("running", False)), state),
             "quality": q, "passing": passing, "pass_line": _pass_line(),
             "released": released, "final_quality": final_q, "awaiting_title": awaiting_title,
             "gate_rounds": meta.get("gate_rounds"),

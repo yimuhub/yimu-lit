@@ -75,6 +75,14 @@ class MiniWriterProject:
             done = sum(1 for v in (plan.get("chapterStatus") or {}).values() if v == "completed")
         if plan.get("status") == "completed":
             done = total
+        # v4.33.6：这些引擎是同步阻塞的，status() 每次新建对象，拿不到线程状态。
+        # 但所有入口（创建 / 继续 / 极速续写）都在 writer.mark_pipeline 里登记了，
+        # 那是九文体通用的运行注册表——用它，作品库才能分清「在写」和「等他点继续」。
+        try:
+            from . import writer as _wr
+            running = bool(_wr.pipeline_running(os.path.basename(self.path)))
+        except Exception:
+            running = False
         return {
             "state": plan.get("status", "unknown"),
             "done": done, "total": total,
@@ -82,6 +90,7 @@ class MiniWriterProject:
             "name": plan.get(self.NAME_KEY, self.name), "medium": self.MEDIUM,
             "form": plan.get(self.FORM_KEY, ""),
             "stage": meta.get("stage", ""),
+            "running": running,
         }
 
     MEDIUM = ""

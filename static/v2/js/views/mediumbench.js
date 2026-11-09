@@ -234,7 +234,7 @@ export function renderMediumBench(container, ctx) {
 
   function meta() {
     const st = model.status || {};
-    return statusMeta(st.state || 'unknown', STATE_LABELS[st.state || 'unknown']);
+    return statusMeta(st.state || 'unknown', STATE_LABELS[st.state || 'unknown'], st.running);
   }
 
   /* 四种动作节奏不同：bg 是引擎后台线程（立刻返回，靠轮询看结果）、

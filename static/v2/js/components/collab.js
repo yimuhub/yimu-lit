@@ -130,7 +130,7 @@ export function createCollabPanel(ctx) {
     const done = Number(work.done) || 0;
     const total = Number(work.total) || 0;
     const pct = total ? Math.round((done / total) * 100) : 0;
-    const meta = statusMeta(work.state, work.status_label);
+    const meta = statusMeta(work.state, work.status_label, work.running);
     summaryWrap.append(
       h(
         'div',

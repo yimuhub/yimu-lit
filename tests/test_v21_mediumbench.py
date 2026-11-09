@@ -88,10 +88,12 @@ def bare_plans(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- 契约 1：library/{key}
 
 @pytest.mark.parametrize("key,med,name,state,label,progress", [
-    ("novel_a", "novel", "小说甲", "in_progress", "创作中", 50),
-    ("s_script", "script", "剧本乙", "in_progress", "创作中", 40),
+    # v4.33.6：状态徽章描述「用户该做什么」。这几份都是在库里放着、没有引擎线程在跑、
+    # 也没写完 —— 显示「待继续」而不是「创作中」（旧断言把计划字段当运行状态）。
+    ("novel_a", "novel", "小说甲", "in_progress", "待继续", 50),
+    ("s_script", "script", "剧本乙", "in_progress", "待继续", 40),
     ("p_poem", "poetry", "七绝一首", "completed", "已完成", 100),
-    ("e_prose", "prose", "散文丙", "planning", "规划中", 33),
+    ("e_prose", "prose", "散文丙", "planning", "待继续", 33),
 ])
 def test_library_item_covers_all_four_mediums(four_works, key, med, name, state, label, progress):
     d = client.get(f"/api/library/{key}").json()

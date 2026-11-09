@@ -4045,6 +4045,12 @@ def api_express_write(payload: dict):
             return {"ok": True, "mode": "standard", "express": False, "running": False,
                     "paused": bool((plan.get("meta") or {}).get("paused")),
                     "msg": "已切回标准模式：后续写作恢复逐章审校与打磨。"}
+        # v4.33.6：改编剧走集级续跑，不能套常规剧本的「按场批量写」
+        # （那条路会被守卫拒绝，用户点了两次只看到两行「已拒绝」）。
+        if mod is script_writer:
+            adapt = _resume_novel_to_drama(key)
+            if adapt is not None:
+                return adapt
         fn = getattr(mod, "resume_project", None)
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
@@ -4151,6 +4157,14 @@ def api_continue(payload: dict):
         extra = max(0, int(payload.get("extra") or 0))
     except (ValueError, TypeError):
         extra = 0
+    # v4.33.6：人已经手动点了「继续」，把总编辑的自动恢复断路器清零——
+    # 否则 24h 内 3 次额度一旦用光，之后任何停滞都不会再自愈。
+    if key:
+        try:
+            from bot import supervisor as _sv
+            _sv.reset_resume_budget_by_key(key)
+        except Exception:
+            pass
     # ---- 非小说文体：走各自引擎的断点恢复（服务重启/线程中断后的唯一续跑通道）----
     # v4.24.12：前缀映射抽成 _nonnovel_module()，与 /api/express-write 共用一份。
     # 此前这里内联了一份，加文体时漏改一处 → 该文体的「继续」静默走小说分支。
@@ -6539,6 +6553,19 @@ def _resume_novel_to_drama(key):
     threading.Thread(target=_run, daemon=True).start()
     return _job_payload(key, {"ok": True, "msg": msg, "running": True, "paused": False,
             "state": "in_progress"}, started=True)
+
+
+def _adapt_resumer_for_engine(key):
+    """v4.33.6：把改编续跑注册进剧本引擎。
+
+    script_writer.resume_project 是「继续 / 极速续写 / 总编辑自动恢复」的共同落点，
+    改编剧必须在这里就被接走，否则会掉进 write_scenes 的守卫，只留一行「已拒绝」。
+    """
+    return _resume_novel_to_drama(key) is not None
+
+
+script_writer.set_adapt_resumer(_adapt_resumer_for_engine)
+
 
 
 @app.get("/api/script/forms")

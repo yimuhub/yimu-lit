@@ -736,7 +736,7 @@ function mediumWorkPane(work, ctx) {
   const st = store.get();   // v4.6.1：实时日志带需要读全局 live；此前引用未定义的 state 变量导致整个右栏崩溃
   const unit = MEDIUM_UNITS[work.medium || 'novel'] || '';
   const pct = Number(work.progress) || 0;
-  const meta = statusMeta(work.state, work.status_label);
+  const meta = statusMeta(work.state, work.status_label, work.running);
   const summary = h('div', { class: 'rp-summary' });
   const topRow = h('div', { class: 'rp-summary-top' });
   topRow.append(
@@ -973,7 +973,7 @@ function workPane(ctx) {
   }
   if (isMediumBench(state.workMedium)) return mediumWorkPane(work, ctx);
   const pct = work.total ? Math.round((work.done / work.total) * 100) : 0;
-  const meta = statusMeta(work.state, work.status_label);
+  const meta = statusMeta(work.state, work.status_label, work.running);
 
   const summary = h('div', { class: 'rp-summary' });
   const top = h(

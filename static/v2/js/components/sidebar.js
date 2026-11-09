@@ -22,7 +22,7 @@ function renderRow(item, ctx, { isActive }) {
     ? { tone: 'danger', label: '创建失败' }
     : pending
       ? { tone: 'warn', label: '规划中' }
-      : statusMeta(item.state, item.status_label);
+      : statusMeta(item.state, item.status_label, item.running);
   const { pct, words } = rowMeta(item);
   const btn = h('button', {
     class: `side-row${isActive ? ' is-active' : ''}${pending ? ' is-pending' : ''}${failed ? ' is-failed' : ''}`,
