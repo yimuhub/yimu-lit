@@ -4,6 +4,13 @@ import { h, icon, fmtWords } from '../core/dom.js';
 import { api, errorText } from '../core/api.js';
 import { store, patch, patchUi } from '../core/state.js';
 import { toast, popoverMenu } from '../core/ui.js';
+import { startJobFeedback, attachJobFeedback, endJobFeedback, workerLabelForMedium } from '../core/jobfeed.js';
+
+/* v4.33.1：九文体的「谁在工作」统一称呼——浮层与日志用同一套名字，不再笼统说"系统" */
+function workerLabelOf(work) {
+  const med = (work && (work.medium || work.mediumKey)) || (store.get() && store.get().workMedium) || 'novel';
+  return workerLabelForMedium(med);
+}
 
 /* ------------------------------------------------------- v4.20.0 创作控制三态按钮
    全部文体、全部入口（目标条 / 右栏作品页签）共用的统一交互规范：
@@ -115,11 +122,11 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
     } else if (st === 'resuming') {
       el.classList.add('btn-creative-resume', 'btn-creative-busy');
       el.disabled = true;
-      el.title = '正在恢复创作…';
-      el.setAttribute('aria-label', '正在恢复创作');
+      el.title = '正在启动创作线程…';
+      el.setAttribute('aria-label', '正在启动创作');
       el.append(
         h('span', { html: icon('play', 13) }),
-        h('span', { text: '正在恢复…' })
+        h('span', { text: '启动中…' })
       );
     }
   }
@@ -208,28 +215,42 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
     } else if (st === 'resume') {
       optimistic = 'resuming';
       paint('resuming');
-      toast('正在恢复创作…', { duration: 2000 });
+      /* v4.33.1：点击的同一帧就弹「谁在工作」——后端要准备素材 / 生成创作圣经，
+         可能 1-2 分钟才吐第一个字，这段时间界面必须有反馈，不能像卡死。 */
+      startJobFeedback({ key, workerLabel: workerLabelOf(work),
+                         detail: '已收到继续指令，正在启动创作线程…' });
+      toast('已收到继续指令，正在启动…', { duration: 2400 });
       if (optimisticTimer) clearTimeout(optimisticTimer);
       optimisticTimer = setTimeout(() => {
+        /* 3 分钟兜底。旧值 20s 太短：改编要先提炼全书创作圣经，20 秒后按钮
+           自己变回「继续」，用户以为失败又点一次，反而更乱。 */
         if (optimistic === 'resuming') {
           optimistic = null;
           paint(creativeToggleState(currentWork()));
         }
-      }, 20000);
+      }, 180000);
       try {
         const res = await api.resume(key);
+        if (res && res.job) attachJobFeedback(key, res.job);
         /* v4.20.1：后端明确拒绝（ok:false，如已在创作中/已完成）——按返回体落真实态：
            running=true 会自然收敛成「创作中」，completed 则按钮隐藏；提示用后端原话。 */
         if (res && res.ok === false) {
           optimistic = null;
           if (optimisticTimer) clearTimeout(optimisticTimer);
+          endJobFeedback(key, { ok: false, text: res.msg || '暂时无法继续' });
           mergeWorkLive(key, res, false);
           paint(creativeToggleState(currentWork()));
-          toast((res && res.msg) || '暂时无法继续', { tone: 'warn' });
+          toast((res && res.msg) || '暂时无法继续', { tone: 'warn', duration: 5000 });
           if (ctx && ctx.refreshWork) ctx.refreshWork();
           return;
         }
         mergeWorkLive(key, res, false);
+        /* 后端明确没有真正启动（已完成 / 无需续跑）：立刻恢复按钮，别让「启动中…」空转 */
+        if (res && res.running === false) {
+          optimistic = null;
+          if (optimisticTimer) clearTimeout(optimisticTimer);
+          paint(creativeToggleState(currentWork()));
+        }
         patchUi({ creatorAction: { key, text: '继续', ts: Date.now() } });
         try { api.chatNote(key, '继续', '来自创作按钮'); } catch { /* 入库失败不影响交互 */ }
         toast('已继续创作', { tone: 'success' });
@@ -238,7 +259,8 @@ export function createCreativeToggle({ work, ctx, compact = false } = {}) {
         optimistic = null;
         if (optimisticTimer) clearTimeout(optimisticTimer);
         paint(creativeToggleState(currentWork()));
-        toast(errorText(err, '恢复失败'), { tone: 'danger' });
+        endJobFeedback(key, { ok: false, text: '启动失败，请重试', error: errorText(err, '恢复失败') });
+        toast(errorText(err, '恢复失败'), { tone: 'danger', duration: 5000 });
       }
     }
   });

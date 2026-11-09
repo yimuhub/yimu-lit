@@ -17,6 +17,7 @@ from bot import syslog as syslog_mod
 from bot import steps as steps_mod
 from bot import export as export_mod
 from bot import purity, journal, express
+from bot import livejob
 from bot import audit as audit_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -2705,6 +2706,22 @@ def api_audit(payload: dict):
                       {"at": at, "scope": scope, "issues": list(issues or [])[:50]})
     return {"ok": True, "at": at, "scope": scope, "issues": list(issues or [])[:50]}
 
+@app.get("/api/job")
+def api_job(key: str):
+    """v4.33.1：当前作品的后台作业快照。
+
+    点「继续」后前端立刻轮询这里：接口在起线程前就 `livejob.begin()`，所以
+    200ms 内就能显示「谁在工作、做到哪一步、已经多久」，不再出现「点了没反应」。
+    """
+    row = livejob.get(key)
+    if row and not row.get("finished") and float(row.get("elapsed") or 0) > 12:
+        # 线程异常退出没走到 mark_pipeline 的兜底：项目确实不在跑就收口，别让前端永远转圈
+        if not _medium_running(key):
+            livejob.finish(key, ok=True, detail="本轮已结束")
+            row = livejob.get(key)
+    return {"ok": True, "key": key, "job": row}
+
+
 @app.get("/api/book-live")
 def api_book_live(key: str, request: Request):
     """v0.7 R4：对话区「本书在干什么」live 卡数据源（纯读、无 LLM、按书隔离）。
@@ -2769,10 +2786,12 @@ def api_book_live(key: str, request: Request):
         "key": key, "name": st.get("name"), "phase": phase, "state": state,
         "current_chapter": cur_ch,
         "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0},
-        "running": bool(st.get("running") or par or rw or rel or osh),
+        "running": bool(st.get("running") or par or rw or rel or osh or livejob.is_active(key)),
         "paused": st.get("paused"), "parallel": bool(par), "rewriting": bool(rw), "releasing": bool(rel),
         "live_log": live,
         "updated_at": int(time.time()),
+        # v4.33.1：当前后台作业（谁在工作/做到哪一步）——前端据此渲染「正在工作」卡
+        "job": livejob.get(key),
         # v4.21.0：创作活动流增量 + 当前流式步骤（对话内 Agent 逐条动作/思考/产出）
         # v4.24.16：stream_think_offset 透传——stream_state 早就设计了独立的思维链
         # 增量游标，但 HTTP 层从未接（B 支持的字段 A 不传），思维链每 1.5s 全量重发
@@ -3511,21 +3530,142 @@ def _is_nonnovel(key) -> bool:
     return _nonnovel_module(key) is not None
 
 
+# ---------------------------------------------------------------- v4.33.1 即时反馈
+# 用户实拍：点「继续」后界面一动不动，30 秒后才开写，中途像卡死。根因是「点击
+# 到第一个字」之间没有任何可观测事实。这里给所有文体一套统一的作业登记：
+# 接口在起线程前先登记并写一条项目日志，前端据此立刻显示「谁在工作、做了什么」。
+
+_JOB_WORKER = {
+    "novel": ("writer", "小说引擎"),
+    "script": ("script_writer", "剧本引擎"),
+    "poetry": ("poetry_writer", "诗词引擎"),
+    "prose": ("prose_writer", "散文引擎"),
+    "thesis": ("thesis_writer", "论文引擎"),
+    "children": ("children_writer", "儿童文学引擎"),
+    "news": ("news_writer", "新闻稿引擎"),
+    "copy": ("copy_writer", "文案引擎"),
+    "other": ("other_writer", "创作引擎"),
+}
+
+
+def _job_worker(key) -> tuple[str, str]:
+    """(worker_id, 中文名)：让前端能具体说「剧本引擎正在写第 3/50 集」。"""
+    try:
+        med = writer.medium_of_key(key)
+    except Exception:
+        med = ""
+    return _JOB_WORKER.get(med, ("engine", "创作引擎"))
+
+
+def _job_project(key):
+    """按文体取项目对象（小说 Project 或各文体 Project）；用于写启动日志。"""
+    try:
+        med = writer.medium_of_key(key)
+    except Exception:
+        med = ""
+    if med in ("", "novel"):
+        p = _get_project(key)
+        if p is not None:
+            return p
+    mod = _nonnovel_module(key)
+    gp = getattr(mod, "get_project", None) if mod is not None else None
+    if callable(gp):
+        try:
+            return gp(key)
+        except Exception:
+            return None
+    return None
+
+
+def _job_log(key, msg: str) -> None:
+    """把「已收到指令」写进项目运行日志——前端日志带因此立刻有变化，不是死界面。"""
+    p = _job_project(key)
+    log = getattr(p, "log", None) if p is not None else None
+    if callable(log):
+        try:
+            log(msg)
+        except Exception:
+            pass
+
+
+def _job_start(key, *, kind: str, detail: str, worker: str = "",
+               worker_label: str = "", total: int = 0, done: int = 0) -> dict:
+    """登记作业 + 立即写日志。必须在起线程**之前**调用，保证接口返回即有事实。"""
+    wid, wlabel = _job_worker(key)
+    row = livejob.begin(key, kind=kind, worker=worker or wid,
+                        worker_label=worker_label or wlabel,
+                        detail=detail, total=total, done=done)
+    _job_log(key, f"▶ {detail}")
+    return row
+
+
+def _job_fail(key, detail: str) -> dict:
+    """失败也要留一条带结论的登记——前端据此说「没有可继续的任务」而不是静默。"""
+    wid, wlabel = _job_worker(key)
+    livejob.begin(key, kind="resume", worker=wid, worker_label=wlabel, detail=detail)
+    return livejob.finish(key, ok=False, detail=detail)
+
+
+def _job_done(key, detail: str) -> dict:
+    """「没有活要干」也是一种结论：显式告诉用户，而不是让按钮空转。"""
+    wid, wlabel = _job_worker(key)
+    livejob.begin(key, kind="resume", worker=wid, worker_label=wlabel, detail=detail)
+    return livejob.finish(key, ok=True, detail=detail)
+
+
+def _job_payload(key, payload, *, started=None):
+    """给业务返回体补上统一字段：started / job（前端一套 UI 适配所有文体）。"""
+    if isinstance(payload, dict):
+        payload.setdefault("key", key)
+        row = livejob.get(key)
+        if row:
+            payload.setdefault("job", row)
+        if started is not None:
+            payload.setdefault("started", bool(started))
+    return payload
+
+
+def _medium_running(key) -> bool:
+    """该项目此刻是否真的在跑（作业自愈用：线程异常退出时收口登记）。"""
+    try:
+        if writer.pipeline_running(key):
+            return True
+        med = writer.medium_of_key(key)
+        if med in ("", "novel"):
+            p = _get_project(key)
+            return bool(p and p.status().get("running"))
+        mod = _nonnovel_module(key)
+        gp = getattr(mod, "get_project", None) if mod is not None else None
+        if not callable(gp):
+            return False
+        p = gp(key)
+        if p is None:
+            return False
+        st = p.status() or {}
+        return bool(st.get("running"))
+    except Exception:
+        return False
+
+
 @app.post("/api/pause")
 def api_pause(payload: dict):
     key = payload.get("key")
     if _is_nonnovel(key):
         if not _nonnovel_set_paused(key, True):
             return JSONResponse({"error": "项目不存在或该文体不支持暂停"}, status_code=404)
-        return {"ok": True, "msg": "⏸ 暂停请求已发出：当前步骤做完即停", "running": True,
-                "paused": True, "state": "in_progress"}
+        livejob.update(key, phase="pausing", detail="暂停请求已发出，当前步骤做完即停…")
+        return _job_payload(key, {"ok": True, "msg": "⏸ 暂停请求已发出：当前步骤做完即停",
+                "running": True, "paused": True, "state": "in_progress"})
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ok = writer.pause_book(key)
     st = proj.status()
-    return {"ok": ok, "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停",
-            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")}
+    if ok:
+        livejob.update(key, phase="pausing", detail="暂停请求已发出，当前章节写完即停…")
+    return _job_payload(key, {"ok": ok,
+            "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停",
+            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")})
 
 @app.post("/api/resume")
 def api_resume(payload: dict):
@@ -3546,10 +3686,18 @@ def api_resume(payload: dict):
         r = {"ok": False, "text": f"恢复失败：{e}"}
     st = proj.status()
     ok = bool(r.get("ok"))
-    return {"ok": ok,
+    if ok:
+        # v4.33.1：接口返回前就登记「谁在工作」并写项目日志——点下去界面立刻有反馈
+        detail = f"{r.get('text') or '正在恢复创作'}…"
+        _job_start(key, kind=str(r.get("kind") or "resume"), detail=detail,
+                   total=int(st.get("total") or 0), done=int(st.get("done") or 0))
+    else:
+        _job_fail(key, f"无法继续：{r.get('text') or '无可用断点'}")
+    return _job_payload(key, {"ok": ok,
             "msg": f"▶ {r.get('text')}…" if ok else f"无法继续（{r.get('text') or '无可用断点'}）",
             "kind": r.get("kind") or "",
-            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")}
+            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")},
+            started=ok)
 
 @app.post("/api/queue")
 def api_queue(payload: dict):
@@ -3760,6 +3908,12 @@ def api_status(key: str):
             st["words"] = it.get("total_words", 0)
             st["running"] = bool(it.get("running"))
             st["paused"] = bool(it.get("paused"))
+    # v4.33.1：作业登记在跑 = 创作中。有些引擎（尤其改编）不是通过 Session 的
+    # proj.running 启动的，只信 status 会让按钮在真正写作时仍显示「继续」，
+    # 用户以为没反应就反复点，反而起多条线程。
+    if livejob.is_active(key):
+        st["running"] = True
+        st["state"] = "in_progress" if st.get("state") in ("", None, "missing", "unknown", "writing") else st.get("state")
     st["events"] = proj.events[-15:]
     st["path"] = proj.path
     st["has_book"] = os.path.exists(os.path.join(proj.path, f"成书-{st.get('name', key)}.md"))
@@ -3886,13 +4040,17 @@ def api_express_write(payload: dict):
                 writer.mark_pipeline(key, False)
 
         writer.mark_pipeline(key, True)   # 先置标记，响应返回时前端就能看到「创作中」
+        # v4.33.1：起线程前登记，点「极速续写」也立刻有「谁在工作」反馈
+        _job_start(key, kind="express", detail="⚡ 极速续写启动，正在准备剩余的场次…")
         try:
             _th.Thread(target=_bg, daemon=True).start()
         except Exception as e:
             writer.mark_pipeline(key, False)
+            livejob.finish(key, ok=False, detail=f"极速续写启动失败：{e}", error=str(e)[:300])
             return JSONResponse({"error": f"极速续写启动失败：{e}"}, status_code=500)
-        return {"ok": True, "mode": "express", "express": True, "running": True, "paused": False,
-                "msg": "⚡ 已切到极速模式，正在一口气写完剩余阶段（不评分、不重写）。"}
+        return _job_payload(key, {"ok": True, "mode": "express", "express": True, "running": True,
+                "paused": False,
+                "msg": "⚡ 已切到极速模式，正在一口气写完剩余阶段（不评分、不重写）。"}, started=True)
 
     # ---- 小说 ----
     proj = _get_project(key)
@@ -3925,9 +4083,12 @@ def api_express_write(payload: dict):
     # v4.24.13：先判「有没有活」，再改开关。原顺序会把一本已写完的书切成极速模式，
     # 然后回一句「没有待写的章节了」——操作失败了，状态却变了。
     if _left <= 0:
-        return {"ok": False, "running": False, "paused": False, "state": plan.get("status"),
+        _job_done(key, f"《{_name}》没有待写的章节了")
+        return _job_payload(key, {"ok": False, "running": False, "paused": False,
+                "state": plan.get("status"),
                 "express": express.plan_flag(plan),
-                "msg": f"《{_name}》没有待写的章节了。" if _chs else f"《{_name}》还没有章节规划。"}
+                "msg": f"《{_name}》没有待写的章节了。" if _chs else f"《{_name}》还没有章节规划。"},
+                started=False)
     _prev_cfg = dict(plan.get("config") or {})   # 启动失败要原样退回去，别顺带改了速度
     express.set_plan_flag(plan, True)
     # 极速续写：清暂停位并开写。completed 的书也允许续写（规划在、章节没写完是常态），
@@ -3936,10 +4097,14 @@ def api_express_write(payload: dict):
     if plan.get("status") in ("paused", "completed"):
         plan["status"] = "in_progress"
     proj.save_plan(plan)
+    # v4.33.1：起线程前登记 + 写日志，点下去立刻显示「极速续写正在跑」
+    _job_start(key, kind="express", detail=f"⚡ 极速续写：一口气写完剩余 {_left} 章…",
+               total=len(_chs), done=_done)
     ok = writer.resume_book(key, batch_size="all")
     if not ok:
         # 启动失败（并发抢跑 / 线程已存在）：把速度开关退回原样。
         # 否则用户看到「无法启动」，书却已经被切成极速，下一次「继续」会被静默降级。
+        livejob.finish(key, ok=False, detail="无法启动极速续写（该作品已在创作中）")
         try:
             _p2 = proj.plan() or {}
             _p2["config"] = _prev_cfg
@@ -3947,12 +4112,13 @@ def api_express_write(payload: dict):
             proj.save_plan(_p2)
         except Exception:
             pass
-        return {"ok": False, "running": True, "paused": False, "state": st.get("state"),
+        return _job_payload(key, {"ok": False, "running": True, "paused": False, "state": st.get("state"),
                 "express": express.plan_flag({"config": _prev_cfg}),
-                "msg": "无法启动极速续写（该作品已在创作中）。"}
-    return {"ok": True, "mode": "express", "express": True, "running": True, "paused": False,
-            "state": "in_progress",
-            "msg": f"⚡ 已切到极速模式，正在一口气写完剩余 {_left} 章（不评分、不重写）。"}
+                "msg": "无法启动极速续写（该作品已在创作中）。"}, started=False)
+    return _job_payload(key, {"ok": True, "mode": "express", "express": True, "running": True,
+            "paused": False, "state": "in_progress",
+            "msg": f"⚡ 已切到极速模式，正在一口气写完剩余 {_left} 章（不评分、不重写）。"},
+            started=True)
 
 
 @app.post("/api/continue")
@@ -3981,20 +4147,27 @@ def api_continue(payload: dict):
         # pipeline_running 守卫，唯独这里没有；双击「继续」会起两条恢复流水线
         # 并发写同一本书的场次/阶段文件。
         if writer.pipeline_running(key):
-            return {"ok": True, "msg": "该书正在创作中，进度见工作台运行日志。",
-                    "running": True, "paused": False, "state": "in_progress"}
+            # v4.33.1：已经在跑也要刷新登记，前端才能显示「已在进行中」而不是无反应
+            _job_start(key, kind="resume", detail="创作线程正在运行，进度见运行日志…")
+            return _job_payload(key, {"ok": True, "msg": "该书正在创作中，进度见工作台运行日志。",
+                    "running": True, "paused": False, "state": "in_progress"}, started=False)
         _nonnovel_set_paused(key, False)   # v4.20.0：继续前清掉暂停位（统一「继续=接着跑」语义）
+        # v4.33.1：起线程前先登记 + 写日志——接口返回的同一秒，界面就能说「谁在工作」
+        _job_start(key, kind="resume", detail="正在恢复创作，准备本批次内容…")
         def _bg():
             writer.mark_pipeline(key, True)   # v3.1.0：恢复期间「创作中」可见
             try:
                 fn(key)
             except Exception as e:
+                livejob.finish(key, ok=False, detail=f"恢复失败：{type(e).__name__}",
+                               error=str(e)[:300])
+                _job_log(key, f"💥 恢复失败：{type(e).__name__}: {e}")
                 print(f"[bg] {mod.__name__} 断点恢复失败: {e}", flush=True)
             finally:
                 writer.mark_pipeline(key, False)
         _th.Thread(target=_bg, daemon=True).start()
-        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。",
-                "running": True, "paused": False, "state": "in_progress"}
+        return _job_payload(key, {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。",
+                "running": True, "paused": False, "state": "in_progress"}, started=True)
     proj = _get_project(key)
     if not proj:
         # 内存中未命中时尝试从磁盘加载
@@ -4009,21 +4182,33 @@ def api_continue(payload: dict):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     st = proj.status()
     if st.get("running"):
-        return {"ok": True, "msg": f"《{proj.name}》正在创作中，请稍候。"}
+        _job_start(key, kind="resume", detail="小说引擎正在写作，进度见运行日志…",
+                   total=int(st.get("total") or 0), done=int(st.get("done") or 0))
+        return _job_payload(key, {"ok": True, "msg": f"《{proj.name}》正在创作中，请稍候。",
+                                  "running": True, "paused": False, "state": st.get("state")},
+                            started=False)
     if extra > 0:
         # 续写：追加 extra 章（对已完成/未完成都适用），复用作品的默认供应商/模型
         writer.append_chapters(proj, extra)
+        _job_start(key, kind="append", detail=f"正在续写 {extra} 章…",
+                   total=int(st.get("total") or 0) + extra, done=int(st.get("done") or 0))
         writer.start_writing(proj, batch_size=extra)
-        return {"ok": True, "msg": f"《{proj.name}》续写 {extra} 章中…（已完成 {st.get('done')}/{st.get('total')} 章）",
-                "running": True, "paused": False}
+        return _job_payload(key, {"ok": True,
+                "msg": f"《{proj.name}》续写 {extra} 章中…（已完成 {st.get('done')}/{st.get('total')} 章）",
+                "running": True, "paused": False, "state": "in_progress"}, started=True)
     if st.get("state") == "completed":
-        return {"ok": True, "msg": f"《{proj.name}》已完成。想加章请在作品上点「▶ 续写」。"}
+        _job_done(key, f"《{proj.name}》已完成，没有待写的章节")
+        return _job_payload(key, {"ok": True,
+                "msg": f"《{proj.name}》已完成。想加章请在作品上点「▶ 续写」。"}, started=False)
     # v4.20.0：按开书时设置的「一次写几张」（plan.config.batch_size）写，写完一批自动暂停；
     # 设了「全部写完」才一口气写到底。此前这里漏传批量 → 点一次继续就全书写完。
     _batch = (proj.plan().get("config") or {}).get("batch_size")
+    _job_start(key, kind="resume", detail=f"正在继续写作《{proj.name}》…",
+               total=int(st.get("total") or 0), done=int(st.get("done") or 0))
     writer.start_writing(proj, batch_size=_batch)
-    return {"ok": True, "msg": f"继续写作《{proj.name}》…（本批 {_batch or '全部'} 章，写完自动暂停）",
-            "running": True, "paused": False}
+    return _job_payload(key, {"ok": True,
+            "msg": f"继续写作《{proj.name}》…（本批 {_batch or '全部'} 章，写完自动暂停）",
+            "running": True, "paused": False, "state": "in_progress"}, started=True)
 
 @app.post("/api/branch")
 def api_branch(payload: dict):
@@ -5732,18 +5917,25 @@ def api_novel_to_drama(payload: dict):
             _novel_to_drama_impl(src_key, form, chs, new_key_base, plan, proj,
                                  resume=False, outline=outline, settings=settings)
         except Exception as e:
+            livejob.finish(new_key_base, ok=False, detail=f"改编启动失败：{type(e).__name__}",
+                           error=str(e)[:300])
             print(f"[bg] 小说转短剧失败: {e}", flush=True)
         finally:
             _adapt_release(new_key_base)
+    # v4.33.1：先登记 + 写日志，再起线程；「查看剧本」弹窗和左侧会话立刻有状态
+    _job_start(new_key_base, kind="adapt",
+               detail=f"正在按全书 {len(chs)} 章生成 {len(outline)} 集分集蓝图…",
+               total=len(outline), done=0)
     try:
         _th.Thread(target=_run, daemon=True).start()
-    except Exception:
+    except Exception as e:
         _adapt_release(new_key_base)
+        livejob.finish(new_key_base, ok=False, detail=f"改编启动失败：{e}", error=str(e)[:300])
         raise
-    return {"ok": True, "async": True,
+    return _job_payload(new_key_base, {"ok": True, "async": True,
             "msg": f"改编已后台启动：全书 {len(chs)} 章 → {len(outline)} 集"
                    f"（每集约 {settings['chapters_per_episode']} 章），进度实时可见",
-            **hint}
+            **hint}, started=True)
 
 
 # ---------------------------------------------------------------- 小说 → 短剧改编
@@ -5897,10 +6089,15 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
     script_writer.llm.book(new_key_base, "planning")
 
     material = da.collect_material(proj)
+    # v4.33.1：准备阶段也要可见——读素材/生成圣经可能 1-2 分钟，不能是黑箱
+    livejob.update(new_key_base, phase="prepare",
+                   detail=f"已读取 {len(material['summaries'])} 章摘要，正在生成分集蓝图…",
+                   total=0, done=0)
     if outline is None:
         outline = da.group_chapters(chapters, cfg["chapters_per_episode"], cfg["target_episodes"])
     if not outline:
         sp.log("💥 没有可分集的章节，改编失败")
+        livejob.finish(new_key_base, ok=False, detail="没有可分集的章节")
         return {"ok": False, "error": "没有可分集的章节"}
     form_label = script_writer.FORMS.get(form, {}).get("label", "AI短剧")
     novel_name = str(src_plan.get("novelName") or src_key)
@@ -5913,8 +6110,12 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
     bible_fp = os.path.join(pdir, script_writer.F_BIBLE)
     bible = "" if legacy else da.read_text(bible_fp)
     if not bible.strip():
+        livejob.update(new_key_base, phase="bible",
+                       detail="正在提炼全书创作圣经（约 1-2 分钟，只需一次）…")
+        sp.log("📖 正在提炼全书创作圣经（人物/世界观/全书弧线，约 1-2 分钟）…")
         bible = da.build_bible(_llm, material, novel_name, form_label, log=sp.log)
         script_writer._write(bible_fp, bible)
+        sp.log("📖 创作圣经已就绪，后续每集都按同一份设定写")
     script_writer._write(os.path.join(pdir, script_writer.F_SEASON),
                          da.outline_brief(outline, material["summaries"]))
 
@@ -5971,6 +6172,8 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
         except (TypeError, ValueError):
             continue
     writer.mark_pipeline(new_key_base, True)   # 全程「创作中」，不是只有分镜阶段
+    total_eps = len(outline)
+    finished_eps = 0
     try:
         run_outline = ([ep for ep in outline if ep["no"] in set(only_episodes)]
                        if only_episodes is not None else outline)
@@ -5998,7 +6201,9 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
             prev_tail = da.previous_episode_tail(prev_fp) if prev_fp else ""
             span = (f"{ep['chapters'][0]}-{ep['chapters'][-1]}"
                     if len(ep["chapters"]) > 1 else str(ep["chapters"][0]))
-            sp.log(f"🎬 第 {n}/{len(outline)} 集（原著第 {span} 章）：剧本化…")
+            sp.log(f"🎬 第 {n}/{total_eps} 集（原著第 {span} 章）：剧本化…")
+            livejob.update(new_key_base, phase="writing", total=total_eps, done=finished_eps,
+                           detail=f"正在写第 {n}/{total_eps} 集（原著第 {span} 章，约 1-2 分钟）…")
             messages = da.build_episode_messages(
                 bible=bible, ep=ep, total=len(outline), source=source, beat=beat,
                 prev_tail=prev_tail, form_label=form_label, novel_name=novel_name,
@@ -6018,6 +6223,9 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
             plan_doc["scenes"] = [by_no[k] for k in sorted(by_no)]
             sp.save_plan(plan_doc)                       # 每集实时落盘
             _adapt_write_scene_list(pdir, name, plan_doc["scenes"])
+            finished_eps += 1
+            livejob.update(new_key_base, done=finished_eps, total=total_eps,
+                           detail=f"已完成 {finished_eps}/{total_eps} 集，继续下一集…")
 
         pending = [sc for sc in by_no.values()
                    if sc.get("status") != "completed"
@@ -6028,6 +6236,8 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
             plan_doc.setdefault("meta", {})["storyboard_done"] = False
             sp.save_plan(plan_doc)
             sp.log(f"⏸ 已完成 {done}/{len(by_no)} 集；还有 {len(pending)} 集未完成，点「继续」从断点接着改编")
+            livejob.finish(new_key_base, ok=False,
+                           detail=f"本轮完成 {done}/{len(by_no)} 集，还有 {len(pending)} 集待写")
             return {"ok": False, "done": done, "pending": len(pending)}
 
         sp.log(f"✅ 全书 {done} 集改编完成")
@@ -6049,8 +6259,17 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
         plan_doc["status"] = "completed"   # 正文完成即完成，不再被分镜阻塞
         plan_doc["scenes"] = [by_no[k] for k in sorted(by_no)]
         sp.save_plan(plan_doc)
+        livejob.finish(new_key_base, ok=True, detail=f"全书 {done} 集改编完成")
         return {"ok": True, "done": done, "pending": 0}
+    except Exception as e:
+        livejob.finish(new_key_base, ok=False, detail=f"改编中断：{type(e).__name__}",
+                       error=str(e)[:300])
+        _job_log(new_key_base, f"💥 改编中断：{type(e).__name__}: {e}")
+        raise
     finally:
+        # 兜底：线程异常退出没走到显式 finish 时，不能让前端永远转圈
+        if livejob.is_active(new_key_base):
+            livejob.finish(new_key_base, ok=False, detail="改编线程已结束，点「继续」可续跑")
         writer.mark_pipeline(new_key_base, False)
 
 
@@ -6068,8 +6287,11 @@ def _storyboard_resume(key) -> None:
         p["status"] = "completed" if ok else "writing"
         sp.save_plan(p)
         sp.log("✅ 分镜表已补齐" if ok else f"⚠️ 分镜仍未完成：{res.get('error') or ''}（可再点继续）")
+        livejob.finish(key, ok=ok,
+                       detail="分镜表已补齐" if ok else f"分镜未完成：{res.get('error') or '可再点继续'}")
     except Exception as e:
         sp.log(f"⚠️ 分镜补跑失败：{type(e).__name__}: {e}")
+        livejob.finish(key, ok=False, detail=f"分镜补跑失败：{type(e).__name__}", error=str(e)[:300])
     finally:
         writer.mark_pipeline(key, False)
 
@@ -6122,18 +6344,21 @@ def _resume_novel_to_drama(key):
     if not src_key:
         return None
     if _adapt_busy(key) or writer.pipeline_running(key):
-        return {"ok": True, "msg": "改编任务正在后台运行，进度见工作台实时日志。",
-                "running": True, "paused": False, "state": "in_progress"}
+        _job_start(key, kind="adapt", detail="改编任务正在后台运行，进度见运行日志…")
+        return _job_payload(key, {"ok": True, "msg": "改编任务正在后台运行，进度见工作台实时日志。",
+                "running": True, "paused": False, "state": "in_progress"}, started=False)
     src_proj = _get_project(src_key)
     if src_proj is None:
-        return {"ok": False, "msg": "原小说项目已不存在，无法续跑改编",
-                "running": False, "paused": False, "state": "writing"}
+        _job_fail(key, "原小说项目已不存在，无法续跑改编")
+        return _job_payload(key, {"ok": False, "msg": "原小说项目已不存在，无法续跑改编",
+                "running": False, "paused": False, "state": "writing"}, started=False)
     src_plan = src_proj.plan() or {}
     all_ch = [c for c in (src_plan.get("chapters") or [])
               if c.get("status") == "completed" and _chapter_path(src_proj, c)]
     if not all_ch:
-        return {"ok": False, "msg": "原书没有已完成的章节，无法续跑改编",
-                "running": False, "paused": False, "state": "writing"}
+        _job_fail(key, "原书没有已完成的章节，无法续跑改编")
+        return _job_payload(key, {"ok": False, "msg": "原书没有已完成的章节，无法续跑改编",
+                "running": False, "paused": False, "state": "writing"}, started=False)
     adaptation = plan.get("adaptation") or {}
     legacy = adaptation.get("version") != da.ADAPTER_VERSION
     limits = {"min_chars": int(adaptation.get("minChars") or da.MIN_EPISODE_CHARS),
@@ -6179,11 +6404,21 @@ def _resume_novel_to_drama(key):
         if plan.get("status") != "completed":
             plan["status"] = "completed"
             sp.save_plan(plan)
-        return {"ok": True, "msg": "改编与分镜都已完成。", "running": False,
-                "paused": False, "state": "completed"}
+        _job_done(key, "改编与分镜都已完成")
+        return _job_payload(key, {"ok": True, "msg": "改编与分镜都已完成。", "running": False,
+                "paused": False, "state": "completed"}, started=False)
     if not _adapt_claim(key):
-        return {"ok": True, "msg": "改编任务正在后台运行，进度见工作台实时日志。",
-                "running": True, "paused": False, "state": "in_progress"}
+        _job_start(key, kind="adapt", detail="改编任务正在后台运行，进度见运行日志…")
+        return _job_payload(key, {"ok": True, "msg": "改编任务正在后台运行，进度见工作台实时日志。",
+                "running": True, "paused": False, "state": "in_progress"}, started=False)
+
+    # v4.33.1：起线程前就登记 + 写日志。准备素材 / 提炼创作圣经可能要 1-2 分钟，
+    # 这段时间界面必须显示「正在准备全书素材」，而不是一片死寂。
+    _job_start(key, kind="adapt",
+               detail=("正在按全书重建分集蓝图…" if legacy
+                       else (f"正在续跑改编：{len(only)} 集待写…" if only else "正在补跑分镜头拆解…")),
+               total=(len(outline) if outline else 0),
+               done=max(0, (len(outline) - len(only)) if outline and only else 0))
 
     def _run():
         try:
@@ -6201,12 +6436,13 @@ def _resume_novel_to_drama(key):
                 _storyboard_resume(key)
         except Exception as e:
             sp.log(f"💥 断点续跑失败：{type(e).__name__}: {e}")
+            livejob.finish(key, ok=False, detail=f"续跑失败：{type(e).__name__}", error=str(e)[:300])
             print(f"[bg] 小说转短剧断点续跑失败: {e}", flush=True)
         finally:
             _adapt_release(key)
     threading.Thread(target=_run, daemon=True).start()
-    return {"ok": True, "msg": msg, "running": True, "paused": False,
-            "state": "in_progress"}
+    return _job_payload(key, {"ok": True, "msg": msg, "running": True, "paused": False,
+            "state": "in_progress"}, started=True)
 
 
 @app.get("/api/script/forms")

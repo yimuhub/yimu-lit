@@ -801,8 +801,15 @@ _PIPELINE_COUNT: dict[str, int] = {}
 
 def mark_pipeline(key, on=True):
     """按作品 key 增/减流水线运行计数（线程启动 +1，结束 -1）。
+
     v4.26.0：总编辑看护线程在此收口上下车——0→1 孵化监制（九文体通用），→0 延迟判定
-    （暂停待命 / 完稿终审 / 意外停滞自愈）。"""
+    （暂停待命 / 完稿终审 / 意外停滞自愈）。
+    v4.33.1：
+    * 总编辑只看护**小说**——它的判定全是章节/章卡/放行门禁，对剧本、诗词等
+      非小说毫无意义，此前在改编短剧上输出「全书约 50 场 / 0/0 章完成」的荒诞汇报，
+      还往剧本目录写 18-状态库 / 19-伏笔账本 / 22-规划体检；
+    * 同步维护 livejob：上车写「创作线程已启动」，下车收口，前端据此结束等待动画。
+    """
     k = os.path.basename(str(key or ""))
     if not k:
         return
@@ -811,12 +818,26 @@ def mark_pipeline(key, on=True):
         _PIPELINE_COUNT[k] = max(0, prev + (1 if on else -1))
         now = _PIPELINE_COUNT[k]
     try:
+        from . import livejob as _lj
+    except Exception:
+        _lj = None
+    try:
+        med = medium_of_key(k)
+    except Exception:
+        med = ""
+    try:
         if on and prev == 0 and now == 1:
-            from . import supervisor as _sv
-            _sv.ensure(k)
+            if _lj is not None:
+                _lj.update(k, phase="running", detail="创作线程已启动，正在准备本批次内容…")
+            if med == "novel":
+                from . import supervisor as _sv
+                _sv.ensure(k)
         elif not on and prev == 1 and now == 0:
-            from . import supervisor as _sv
-            _sv.pipeline_stopped(k)
+            if _lj is not None and _lj.is_active(k):
+                _lj.finish(k, ok=True, detail="本轮已结束")
+            if med == "novel":
+                from . import supervisor as _sv
+                _sv.pipeline_stopped(k)
     except Exception:
         pass
 

@@ -28,7 +28,7 @@ import { renderSession } from './views/session.js';
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
    缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
    tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
-const CSS_V = '313';
+const CSS_V = '314';
 
 const els = {
   app: document.getElementById('app'),
@@ -877,22 +877,30 @@ function startLive(key) {
      steps_cursor / stream_offset 续传游标；节奏与原 pollBookLive 一致：
      2.5s 间隔、页面隐藏暂停、防重入、错误静默（404/501 旧后端优雅降级）。
      mock 模式继续走原 pollBookLive（api.bookLive → mock 数据，无 steps/stream）。 */
+  let liveSig = '';   // v4.33.1：日志内容签名，替代失效的「数组长度」判据
   const applyLive = (data) => {
+    const job = data && data.job;
     patch('work', (w) => {
       if (!w) return w;
       const prog = data.progress || {};
       return {
         ...w,
-        running: Boolean(data.running),
+        /* v4.33.1：作业登记在跑也算「创作中」——有些引擎准备素材时 status 还是 false，
+           只信 status 会让按钮在启动阶段被误判成「继续」 */
+        running: Boolean(data.running || (job && !job.finished)),
         paused: Boolean(data.paused),
         done: prog.done != null ? prog.done : w.done,
         total: prog.total != null ? prog.total : w.total,
         phase: data.phase || w.phase
       };
     });
+    /* v4.33.1：旧逻辑用「数组长度」判断有没有新日志——固定返回最后 8 行时长度恒等，
+       右侧「实时日志」永远停在进入页面那一刻。改成内容签名比较，新行一来就刷新。 */
     const lines = (data && data.live_log) || [];
-    if (lines.length) {
-      patch('live', (arr) => (arr.length >= lines.length ? arr : lines.map((m) => ({ message: m, level: 'info', at: Date.now() }))));
+    const sig = lines.join('\n');
+    if (lines.length && sig !== liveSig) {
+      liveSig = sig;
+      patch('live', () => lines.map((m) => ({ message: m, level: 'info', at: Date.now() })));
     }
   };
 

@@ -5,6 +5,7 @@ import { store } from '../core/state.js';
 import { navigate, openProject } from '../core/router.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { api, errorText } from '../core/api.js';
+import { startJobFeedback, attachJobFeedback, endJobFeedback, workerLabelForMedium } from '../core/jobfeed.js';
 
 let localQuery = '';
 
@@ -198,17 +199,25 @@ function openRowMenu(anchor, item, ctx) {
           catch (err) { toast(errorText(err, '暂停失败'), { tone: 'danger' }); }
         } }
       : { label: item.state === 'paused' ? '继续创作' : '续写', icon: 'play', onSelect: async () => {
+          /* v4.33.1：先弹「谁在工作」再发请求——作品库/侧栏点继续同样要立刻有反馈 */
+          startJobFeedback({ key: item.key, workerLabel: workerLabelForMedium(item.medium),
+                             detail: `已收到继续指令，正在启动《${item.name || item.key}》…` });
           try {
             const res = await api.resume(item.key);
+            if (res && res.job) attachJobFeedback(item.key, res.job);
             /* v4.32.3：后端明确拒绝时不能报「已开始续写」——这正是作品库里
                点继续看似毫无反应的原因之一。把后端原话如实告诉用户。 */
             if (res && res.ok === false) {
+              endJobFeedback(item.key, { ok: false, text: res.msg || '暂时无法继续' });
               toast((res && res.msg) || '暂时无法继续', { tone: 'warn', duration: 5000 });
             } else {
-              toast((res && res.msg) || '已开始续写，总编辑在岗监工', { tone: 'success' });
+              toast((res && res.msg) || '已开始续写', { tone: 'success' });
             }
             ctx.refreshLibrary?.();
-          } catch (err) { toast(errorText(err, '续写失败'), { tone: 'danger' }); }
+          } catch (err) {
+            endJobFeedback(item.key, { ok: false, text: '续写启动失败', error: errorText(err, '续写失败') });
+            toast(errorText(err, '续写失败'), { tone: 'danger', duration: 5000 });
+          }
         } });
   }
   items.push({ separator: true });
