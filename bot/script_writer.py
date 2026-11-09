@@ -192,6 +192,50 @@ def _safe(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "", name or "")[:40] or "未命名"
 
 
+_BODY_KEEP_CHARS = 800      # 旧稿达到这个字数就算「合格正文」，不许被短稿顶掉
+
+
+def _body_chars(text: str) -> int:
+    """正文的汉字数（标点/换行不算），用于判断新旧稿的体量。"""
+    return len(re.findall(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _write_body_guarded(path: str, text: str, proj, no) -> bool:
+    """写正文前拦一道：已合格的正文不许被明显更短的文本覆盖。返回是否真的写入。
+
+    用户实测两次：改编引擎写好的整集（6410 字 / 2634 字）被「按场批量写」覆盖成
+    483 字 / 504 字的场次骨架，而计划里字数还是旧值——用户看到的是稿子被吃了。
+    v4.33.4 已在入口拒绝改编剧走按场写，这里是最后一道闸：任何路径想用短稿
+    顶掉长稿，都拒绝并留痕。
+    """
+    old_n = _body_chars(_read(path))
+    new_n = _body_chars(text)
+    if old_n >= _BODY_KEEP_CHARS and new_n < old_n * 0.6:
+        try:
+            proj.log(f"🛑 第 {no} 场新稿只有 {new_n} 字，已有 {old_n} 字合格正文，"
+                     "已拒绝覆盖（保住原稿）")
+        except Exception:
+            pass
+        return False
+    _write(path, text)
+    return True
+
+
+def _gen_scene_body_resilient(sc: dict, extra: str, cfg: dict, proj, no) -> str:
+    """单场生成失败再试一次。只试一次就跳过，会留下「缺场却显示完成」的集。"""
+    text = gen_scene_body(sc, extra, cfg)
+    if text and text.strip():
+        return text
+    try:
+        proj.log(f"↻ 第 {no} 场首稿为空，再试一次…")
+    except Exception:
+        pass
+    retry = gen_scene_body(
+        sc, extra + "\n\n【补充要求】上一次没有返回任何正文。请直接输出本场剧本正文，"
+                    "以场次标题（如「场N：内/外 地点 时间」）开头，不要解释、不要空回复。", cfg)
+    return retry if retry and retry.strip() else ""
+
+
 def _write(path: str, text: str) -> None:
     atomic_write_text(path, text)
 
@@ -889,6 +933,14 @@ def _act_hint(struct_md: str, no: int, total: int) -> str:
     return f"【本场所属幕/序列】{title}" + (f"\n{text[:500]}" if text else "")
 
 
+def is_adapted_drama(plan: dict | None) -> bool:
+    """这份剧本是不是「由小说全书改编」出来的（走 drama_adapter 的集级引擎）。"""
+    if not isinstance(plan, dict):
+        return False
+    src = plan.get("adaptedFrom")
+    return bool(isinstance(src, dict) and str(src.get("key") or "").strip())
+
+
 def write_scenes(proj: ScriptProject, only: list[int] | None = None, batch_size=None) -> dict:
     """S5：按场次清单逐场写正文。
 
@@ -896,8 +948,18 @@ def write_scenes(proj: ScriptProject, only: list[int] | None = None, batch_size=
     此前这里重复做了一遍「读配置→读圣经/人物/结构→算时代」共 8 个变量，全部未被使用
     （真正的实现在 _write_scenes_inner 里又原样做了一遍），等于每次开写都白读三份大文件。
     """
-    if not (proj.plan() or {}).get("scenes"):
+    plan_now = proj.plan() or {}
+    if not plan_now.get("scenes"):
         return {"ok": False, "error": "没有场次清单，请先生成规划"}
+    # v4.33.4：改编剧不许走这条「按场批量写」的老路。
+    # 用户实测：改编引擎刚写完的第 21 集（6410 字）被这里重写成 483 字的场次骨架，
+    # 第 37 集同样被打成 504 字——计划里字数还是旧的，用户看到的是稿子被吃了。
+    # 两个引擎写同一批文件的根因就在这条入口，一律挡死，改造走改编引擎按集补齐。
+    if is_adapted_drama(plan_now):
+        proj.log("🛑 这是小说改编剧，已拒绝「按场批量写」——改编按集推进，"
+                 "请用「继续」走改编引擎补齐缺集，避免整集稿被场次骨架覆盖")
+        return {"ok": False, "adapted": True,
+                "error": "已拒绝：小说改编剧不支持按场批量写，请点「继续」由改编引擎按集续跑"}
     from bot import writer as _wr
     _key = os.path.basename(proj.path)
     _wr.mark_pipeline(_key, True)   # v3.1.0：右栏「继续创作/创作中」状态需要（跨实例可见）
@@ -993,9 +1055,9 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
             hint = _act_hint(struct_md, no if isinstance(no, int) else 0, total)
             if hint:
                 extra += "\n\n" + hint
-            text = gen_scene_body(sc, extra, cfg)
+            text = _gen_scene_body_resilient(sc, extra, cfg, proj, no)
             if not text.strip():
-                proj.log(f"⚠️ 第 {no} 场生成失败，跳过")
+                proj.log(f"⚠️ 第 {no} 场生成失败（已重试一次），标为待补")
                 # v4.24.16 修复：失败路径必须锁内重读计划再改——原样保存 LLM 调用前的过期快照，
                 # 会把期间其他 worker 写入的 completed 状态整体回滚成 pending（完成状态丢失）
                 with plan_lock:
@@ -1003,6 +1065,7 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
                     sc3 = next((x for x in (plan3.get("scenes") or []) if x.get("no") == no), None)
                     if sc3 is not None:
                         sc3["status"] = "failed"
+                        sc3["error"] = "本场生成为空（已重试一次）"
                         proj.save_plan(plan3)
                 continue
             check = script_checker.check_text(text, era)
@@ -1010,7 +1073,9 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
                 retry = gen_scene_body(sc, extra + "\n\n" + _era_feedback(check["issues"]), cfg)
                 if retry.strip():
                     text = retry
-            _write(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"), text.strip() + "\n")
+            if not _write_body_guarded(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"),
+                                       text.strip() + "\n", proj, no):
+                continue        # 保住更长的原稿，且不把它降级成短稿完成态
             with plan_lock:
                 plan2 = proj.plan() or plan
                 sc2 = next((x for x in (plan2.get("scenes") or []) if x.get("no") == no), sc)
@@ -1134,10 +1199,20 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
         hint = _act_hint(struct_md, no if isinstance(no, int) else 0, total)
         if hint:
             extra += "\n\n" + hint
-        text = gen_scene_body(sc, extra, cfg)
+        text = _gen_scene_body_resilient(sc, extra, cfg, proj, no)
         if not text.strip():
-            proj.log(f"⚠️ 第 {no} 场生成失败，跳过")
-            sc["status"] = "failed"
+            proj.log(f"⚠️ 第 {no} 场生成失败（已重试一次），标为待补——点「继续」会补写这一场")
+            # v4.33.4：原来失败只改内存里的 sc 就 continue，跳过了本次落盘；
+            # 进程一断这个「缺场」就没人知道了。这里补一次锁内保存。
+            with proj.lock:
+                latest = proj.plan() or plan
+                cur = next((x for x in (latest.get("scenes") or [])
+                            if x.get("no") == no), None)
+                if isinstance(cur, dict):
+                    cur["status"] = "failed"
+                    cur["error"] = "本场生成为空（已重试一次）"
+                    cur["wordCount"] = 0
+                proj.save_plan(latest)
             continue
         check = script_checker.check_text(text, era)
         if not check["ok"]:
@@ -1153,7 +1228,9 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
             proj.log(f"⚠️ 第 {no} 场仍有时代偏差：{terms}（已保留，待人工修正）")
         else:
             sc.pop("warn", None)
-        _write(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"), text.strip() + "\n")
+        if not _write_body_guarded(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"),
+                                   text.strip() + "\n", proj, no):
+            continue        # 保住更长的原稿，且不把它降级成短稿完成态
         sc["status"] = "completed"
         sc["wordCount"] = len(re.findall(r"[\u4e00-\u9fff]", text))
         done += 1

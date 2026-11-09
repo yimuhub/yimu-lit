@@ -989,6 +989,10 @@ def _chat_attached(s, proj, msg):
             _batch_param = params.get("batch_size") or "1"
             # 非小说：走各自引擎的断点恢复（带 batch_size）
             if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                # v4.33.4：改编剧不能走「按场批量写」——那条路径会把整集稿写成场次骨架
+                if _is_adapted_key(key):
+                    return (f"🎬 《{name}》是小说改编剧，按集推进：请点顶部的「继续」，"
+                            "改编引擎会自动补齐没写或不合格的集（按场批量写已禁用）。")
                 if writer.pipeline_running(key):
                     return f"📖 《{name}》正在创作中：说「继续」可随时查看进度。"
                 import threading as _th
@@ -1018,6 +1022,10 @@ def _chat_attached(s, proj, msg):
 
         if intent in ("start_writing_all", "start_writing", "resume_writing"):
             if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                # v4.33.4：改编剧只能按集续跑，别落到按场批量写
+                if _is_adapted_key(key):
+                    return (f"🎬 《{name}》是小说改编剧，按集推进：请点顶部的「继续」，"
+                            "改编引擎会自动补齐没写或不合格的集。")
                 # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
                 if writer.pipeline_running(key):
                     return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
@@ -3528,6 +3536,21 @@ _NONNOVEL_PREFIXES = ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_")
 
 def _is_nonnovel(key) -> bool:
     return _nonnovel_module(key) is not None
+
+
+def _is_adapted_key(key) -> bool:
+    """是不是「由小说全书改编」的短剧（有 adaptedFrom）。
+
+    这类作品只能走 drama_adapter 的集级引擎：按场批量写会把整集稿写成
+    场次骨架（用户实测第 21 集 6410 字被打成 483 字）。
+    """
+    try:
+        sp = script_writer.get_project(key)
+        if sp is None:
+            return False
+        return script_writer.is_adapted_drama(sp.plan() or {})
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- v4.33.1 即时反馈
@@ -6221,6 +6244,7 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
                 script_writer._write(fp, body)
                 sc.update({"status": "completed", "wordCount": len(body),
                            "attempts": tries, "error": ""})
+                sc.pop("rewriting", None)   # v4.33.4：重写完成后清标记，恢复正常防回退
                 sp.log(f"✅ 第 {n} 集完成：{len(body)} 字"
                        + (f"（第 {tries} 稿通过）" if tries > 1 else ""))
             else:
