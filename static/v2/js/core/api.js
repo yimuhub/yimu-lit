@@ -525,26 +525,50 @@ export const api = {
     triggerBlobDownload(blob, name);
   },
 
-  /* v4.32.0：统一导出入口——桌面端弹原生保存对话框选位置，服务端写盘；
-     网页端走 blob 浏览器下载。返回 { saved } | { cancelled } | undefined(浏览器) */
-  async exportWork(key, fmt, { name = '', frm = 0, to = 0 } = {}) {
-    /* window.pywebview 存在 = 正跑在桌面 webview 里：blob 下载必然变成导航到
-       文件内容页（WKWebView/WebView2 不支持 <a download>），绝不走这条路。
-       若服务端还没升级到带保存对话框的版本，提示重装而不是默默坏掉。 */
+  /* v4.32.2：全系统「向外导出」的唯一入口。
+     桌面端：POST /api/save → 服务端弹原生「存储」对话框选位置并写盘；
+     网页端：执行调用方给的 fallback（fetch + blob 浏览器下载）。
+     铁律：webview 里绝不把文件内容交给 blob / <a download> / window.open——
+     那会导航到一个没有返回键的内容页（诊断包就是这样把用户困住的）。
+     返回 { saved } | { cancelled } | fallback 的返回值（网页端）。 */
+  async saveAny(kind, payload = {}, { fallback = null } = {}) {
     const inWebview = typeof window !== 'undefined' && window.pywebview !== undefined;
     if (inWebview || (await isDesktop())) {
-      const r = await request('/api/export/save', {
-        method: 'POST',
-        body: { key, fmt, frm, to },
-        timeout: 300000
-      });
-      if (r && r.saved) return { saved: r.saved };
-      if (r && r.cancelled) return { cancelled: true };
-      if (inWebview && r && r.desktop === false) {
-        throw new ApiError('当前客户端版本较旧：请从 GitHub Releases 下载 v4.32.0 安装包重装一次，导出即可弹出「存储」对话框选择保存位置', { status: 0, code: 'need_update' });
+      try {
+        const r = await request('/api/save', {
+          method: 'POST', body: { kind, ...payload }, timeout: 300000
+        });
+        if (r && r.saved) return { saved: r.saved };
+        if (r && r.cancelled) return { cancelled: true };
+        if (inWebview && r && r.desktop === false) {
+          throw new ApiError('桌面客户端未启用原生保存：请重启应用或更新到 v4.32.2 及以上', { status: 0, code: 'need_update' });
+        }
+      } catch (err) {
+        // 旧服务端（v4.32.0/4.32.1）没有 /api/save → 404。作品导出还有
+        // /api/export/save 可回落（同样弹原生对话框）；其余类型没有旧端点，
+        // 在 webview 里只能提示升级，绝不降级成 blob（降级 = 又困在内容页）。
+        if (kind === 'export' && err && err.status === 404) {
+          const r0 = await request('/api/export/save', {
+            method: 'POST', body: payload, timeout: 300000
+          });
+          if (r0 && r0.saved) return { saved: r0.saved };
+          if (r0 && r0.cancelled) return { cancelled: true };
+        }
+        if (inWebview && (!err || err.status === 404 || err.code === 'need_update')) {
+          throw new ApiError('当前桌面客户端版本较旧：请更新到 v4.32.2 及以上，导出即可弹出「存储」对话框选择保存位置', { status: 0, code: 'need_update' });
+        }
+        throw err;
       }
     }
-    return this.download(this.exportUrl(key, fmt, frm, to), name ? `${name}.${fmt}` : 'export');
+    if (typeof fallback === 'function') return await fallback();
+    return undefined;
+  },
+
+  /* v4.32.0 作品导出；v4.32.2 起统一委托 saveAny，行为不变。 */
+  async exportWork(key, fmt, { name = '', frm = 0, to = 0 } = {}) {
+    return this.saveAny('export', { key, fmt, frm, to }, {
+      fallback: () => this.download(this.exportUrl(key, fmt, frm, to), name ? `${name}.${fmt}` : 'export')
+    });
   },
 
   /* 版本与更新检查 */

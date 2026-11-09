@@ -49,6 +49,66 @@ def _bkey(proj):
         return ""
 
 
+def chapter_file_exists(pdir, ch) -> bool:
+    """章节正文是否真的落盘且非空；磁盘是完成度的最终事实源。"""
+    fp = ch.get("filePath")
+    if not fp or not pdir:
+        return False
+    try:
+        path = os.path.join(pdir, os.path.basename(str(fp)))
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def done_chapters(plan, pdir=None) -> int:
+    """已完成章数：status == "completed"，或章节正文文件存在且非空。
+
+    v4.32.2：进度条以前只数 status，而 status 被「质量/字数验收」反复改写——
+    总编辑看护把正文偏短的章打回 pending（supervisor._reset_pending_chapter）、
+    校验轮把未达标章标 failed，两处都只改状态、不删文件；成书、预览、字数
+    统计却全按磁盘文件拼。于是「100 章正文齐备、成书已生成，进度只有 74」。
+    这里把磁盘作为兜底事实源，让 /api/status、/api/library、侧栏、目标条、
+    右栏与对话上下文的读数一次对齐。pdir 为空时退化为纯状态计数（兼容
+    只拿到了 plan、没有项目路径的调用点）。
+    """
+    chs = (plan or {}).get("chapters") or []
+    if not chs:
+        return 0
+    if not pdir:
+        return sum(1 for c in chs if c.get("status") == "completed")
+    return sum(1 for c in chs
+               if c.get("status") == "completed" or chapter_file_exists(pdir, c))
+
+
+def reconcile_completed_chapters(plan, pdir):
+    """成书编译时回填：正文文件齐备的章一律算完成，并补齐被清空的字数。
+
+    只改 status / wordCount / completedAt，绝不删文件、不动评分与门禁账本。
+    返回修复的章数。这是「状态与磁盘分叉」的单点收口：以后新书完稿时不会再
+    出现「文件 100 / 状态 74」。"""
+    fixed = 0
+    now = datetime.datetime.now().isoformat()
+    for ch in (plan.get("chapters") or []):
+        if not chapter_file_exists(pdir, ch):
+            continue
+        fp = os.path.join(pdir, os.path.basename(str(ch.get("filePath"))))
+        try:
+            with open(fp, encoding="utf-8", errors="replace") as f:
+                real_words = len(f.read().strip())
+        except OSError:
+            continue
+        if ch.get("status") != "completed":
+            ch["status"] = "completed"
+            ch.setdefault("completedAt", now)
+            fixed += 1
+        # supervisor 打回时会把 wordCount 清成 None；用文件实测值补回，
+        # 否则下一轮校验又会按 0 字把它判成 failed、陷入「打回→重写」循环。
+        if not ch.get("wordCount"):
+            ch["wordCount"] = real_words
+    return fixed
+
+
 class Project:
     def __init__(self, path, name):
         self.path = path
@@ -108,7 +168,8 @@ class Project:
         if not plan:
             return {"state": "missing", "done": 0, "total": 0, "words": 0, "key": bkey}
         chs = plan.get("chapters") or []
-        done = sum(1 for c in chs if c.get("status") == "completed")
+        # v4.32.2：status 会被质量看护打回，磁盘正文才是完成度的事实源。
+        done = done_chapters(plan, self.path)
         words = sum(c.get("wordCount") or 0 for c in chs)
         meta = plan.get("meta") or {}
         return {"state": plan.get("status", "unknown"), "done": done, "total": len(chs),
@@ -581,7 +642,10 @@ def resume_plan(key) -> dict:
         plan = p.plan() or {}
         chapters = plan.get("chapters") or []
         out["total"] = len(chapters)
-        out["done"] = sum(1 for c in chapters if c.get("status") == "completed")
+        # v4.32.2：与 /api/status 同源。旧实现只数 status，还拿任务档案里的
+        # 历史快照取 max（本书快照 84），于是「继续」文案说 84、进度条说 74，
+        # 而磁盘上其实 100 章正文齐备——三套口径互相打架。
+        out["done"] = done_chapters(plan, p.path)
         task = journal.current_task(p.path)
         if isinstance(task, dict):
             out["exists"] = True
@@ -591,12 +655,12 @@ def resume_plan(key) -> dict:
             out["chapter"] = int(task.get("current") or 0)
             if isinstance(task.get("total"), int):
                 out["total"] = max(out["total"], task["total"])
-            if isinstance(task.get("done"), int):
-                out["done"] = max(out["done"], task["done"])
+            # v4.32.2：不再用任务档案的历史快照抬高 done——它是某一时刻的
+            # 计数，状态被回退后不会同步，只会制造「84 / 74 / 100」三套数字。
         if out["kind"] in ("", "writing"):
             if not out["chapter"]:
                 out["chapter"] = next((int(c.get("chapterNumber") or 0) for c in chapters
-                                       if c.get("status") != "completed"), 0)
+                                       if not chapter_file_exists(p.path, c)), 0)
             if out["chapter"]:
                 info = draft_info(p, out["chapter"])
                 out["draft_words"] = info["words"]
@@ -2406,6 +2470,14 @@ def _validate_and_finish(proj):
         except Exception as e:
             proj.log(f"⚠️ 分层审稿失败（不影响成书）：{e}")
 
+    # v4.32.2：成书 = 所有正文文件齐备。此刻把「状态与磁盘分叉」一次性对账：
+    # 总编辑看护打回的 pending、校验轮标 failed 都只改状态不删文件，而下面
+    # 的编译按文件拼。不对账就会留下「100 章正文 + 进度条 74」的永久错位，
+    # 且「极速续写」会把这 26 章当待写章重新覆盖一遍。
+    _repaired = reconcile_completed_chapters(plan, proj.path)
+    if _repaired:
+        proj.log(f"🧩 成书对账：{_repaired} 章正文齐备但状态未标完成，已回填（不重写正文）")
+
     # 成书编译（剥离规划元信息，只保留章题/引子/正文）
     parts, total = [], 0
     for ch in plan["chapters"]:
@@ -2861,7 +2933,7 @@ def quality_score(pdir):
         med, pj, plan = _plan_of(pdir)
         if plan:
             chs = plan.get("chapters") or []
-            done = sum(1 for c in chs if isinstance(c, dict) and c.get("status") == "completed")
+            done = done_chapters(plan, pdir)
             if done > 0:
                 return min(85, 55 + done * 2)
     except Exception:

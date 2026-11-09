@@ -341,6 +341,37 @@ async function api(url,opt){
   sessionStorage.removeItem("shenbi_auth_retry");
   return j;
 }
+/* v4.32.2：全系统「向外导出」统一入口。
+   桌面 webview 一律 POST /api/save → 服务端弹原生「存储」对话框选位置并写盘；
+   网页端走 fetch+blob 下载（也不再 window.open，避免报错时导航到裸 JSON 页）。
+   铁律：webview 里绝不 window.open / <a download> 文件内容——那会开出一个
+   没有返回按键的内容页（诊断包截图里就是这个坑）。 */
+async function yimuSave(kind,params,fallbackUrl){
+  const inWebview=typeof window.pywebview!=="undefined";
+  try{
+    if(inWebview){
+      let r;
+      try{r=await api("/api/save",{method:"POST",body:JSON.stringify(Object.assign({kind:kind},params||{}))});}
+      catch(e){throw new Error("当前桌面客户端版本较旧，请更新到 v4.32.2 及以上再导出（旧版会把文件显示成无法返回的页面）");}
+      if(r&&r.saved){toast("已保存到 "+r.saved,"ok");return;}
+      if(r&&r.cancelled){toast("已取消导出");return;}
+      throw new Error("桌面保存未生效，请重启应用或更新到 v4.32.2 及以上");
+    }
+    const res=await fetch(fallbackUrl,{credentials:"same-origin"});
+    if(!res.ok)throw new Error("HTTP "+res.status);
+    const blob=await res.blob();
+    const cd=res.headers.get("content-disposition")||"";
+    let name=(params&&params.file)||"export";
+    const star=cd.match(/filename\*=UTF-8''([^;]+)/i);
+    if(star){try{name=decodeURIComponent(star[1]);}catch(e){}}
+    else{const plain=cd.match(/filename="([^"]+)"/i);if(plain&&plain[1])name=plain[1];}
+    const u=URL.createObjectURL(blob),a=document.createElement("a");
+    a.href=u;a.download=name;a.rel="noopener";document.body.append(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),4000);
+    toast("已开始下载","ok");
+  }catch(e){toast(String((e&&e.message)||e),"err");}
+}
+window.yimuSave=yimuSave;
 function toast(msg,type){
   const t=document.createElement("div");t.className="toast "+(type||"");t.textContent=String(msg==null?"":msg);
   $("toasts").appendChild(t);setTimeout(()=>{t.style.opacity="0";t.style.transition=".3s";setTimeout(()=>t.remove(),320);},3200);
@@ -1124,7 +1155,7 @@ async function openPreviewModal(key,tab){
   dlg.innerHTML=`<h3 id="pv_title">加载中…</h3>
   <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
     <select class="fsel" id="pv_sel" style="flex:1"><option>加载中…</option></select>
-    <a class="pbtn" id="pv_dow" target="_blank">⬇ 下载</a></div>
+    <button class="pbtn" id="pv_dow" type="button">⬇ 下载</button></div>
   <div style="display:flex;gap:6px;margin:0 0 8px;flex-wrap:wrap">
     <button class="pbtn" id="pv_edit">✏️ 编辑本章</button>
     <button class="pbtn" id="pv_ver">🕘 版本</button>
@@ -1138,7 +1169,7 @@ async function openPreviewModal(key,tab){
   try{j=await api("/api/preview?key="+encodeURIComponent(key));}catch(e){}
   const _t=$("pv_title");if(!_t)return;   // 弹窗已被替换（用户连点）→ 静默退出防串台
   _t.textContent="《"+(j.name||key)+"》"+(j.has_book?" · 成书":" · 已写 "+((j.chapters||[]).filter(c=>c.status==="completed").length)+" 章");
-  $("pv_dow").href="/api/download?key="+encodeURIComponent(key);
+  $("pv_dow").onclick=()=>yimuSave("download",{key:key},"/api/download?key="+encodeURIComponent(key));
   PV.text=j.text||"";
   const haveCh=(j.chapters||[]).filter(c=>(c.words||0)>0||c.status==="completed");
   const sel=$("pv_sel");
@@ -1254,7 +1285,7 @@ async function showVersion(key,n,id,mode){
 }
 function exportBook(key,fmt){
   toast("正在生成 "+fmt.toUpperCase()+" …（大文件可能需要几秒）");
-  window.open("/api/export?key="+encodeURIComponent(key)+"&fmt="+fmt,"_blank");
+  yimuSave("export",{key:key,fmt:fmt},"/api/export?key="+encodeURIComponent(key)+"&fmt="+fmt);
 }
 window.openEditor=openEditor;window.openVersions=openVersions;window.exportBook=exportBook;
 window.openNew=openNew;window.renderWizard=renderWizard;window.closeDlg=closeDlg;
@@ -1314,7 +1345,7 @@ async function novelMenu(key,x,y){
     async()=>{try{const j=await api("/api/queue",{method:"POST",body:JSON.stringify({key,text:t.trim(),immediate:false})});toast(j.ok?"指令已排队":"加入失败","ok");}catch(e){toast(String(e),"err");}});})});
   items.push({label:"✏️ 重命名",fn:()=>uniPrompt("重命名","新书名：","确认",async nn=>{if(!nn||!nn.trim())return;try{const j=await api("/api/library/"+encodeURIComponent(key)+"/rename",{method:"POST",body:JSON.stringify({name:nn.trim()})});toast(j.ok?"已改名":(j.note||"改名失败"),j.ok?"ok":"err");loadTasks();}catch(e){toast(String(e),"err");}},it.name||"")});
   items.push({sep:true});
-  items.push({label:"⬇ 下载成书",fn:()=>window.open("/api/download?key="+encodeURIComponent(key),"_blank")});
+  items.push({label:"⬇ 下载成书",fn:()=>yimuSave("download",{key:key},"/api/download?key="+encodeURIComponent(key))});
   items.push({label:"📊 使用统计",fn:()=>openUsageModal(key)});
   items.push({sep:true});
   items.push({label:"🗑 彻底删除（不可恢复）",danger:true,fn:()=>uniConfirm("彻底删除","彻底删除《"+(it.name||key)+"》？将删除作品目录，不可恢复！","彻底删除",async()=>{try{const j=await api("/api/library/"+encodeURIComponent(key)+"?hard=true",{method:"DELETE"});toast(j.note||"已删除","ok");loadTasks();if(KEY===key){KEY=null;renderHome();}}catch(e){toast(String(e),"err");}})});
@@ -1328,7 +1359,7 @@ async function benchMenu(medium,key,x,y){
   if(medium==="script"){
     items.push({label:"✍️ 写全部场次",fn:async()=>{try{await api("/api/script/write",{method:"POST",body:JSON.stringify({key})});toast("写作完成","ok");openBench("script",key);}catch(e){toast(String(e),"err");}}});
     items.push({label:"🔍 通读修订（S6）",fn:async()=>{try{await api("/api/script/revise",{method:"POST",body:JSON.stringify({key})});toast("修订完成","ok");openBench("script",key);}catch(e){toast(String(e),"err");}}});
-    items.push({label:"⬇ 导出剧本",fn:()=>window.open("/api/script/export?key="+encodeURIComponent(key),"_blank")});
+    items.push({label:"⬇ 导出剧本",fn:()=>yimuSave("script",{key:key},"/api/script/export?key="+encodeURIComponent(key))});
   }
   if(medium==="poetry"){
     items.push({label:"🔍 重新格律校验",fn:async()=>{try{const j=await api("/api/poetry/recheck",{method:"POST",body:JSON.stringify({key})});toast("校验完成："+(j.verdict||JSON.stringify(j).slice(0,60)),"ok");openBench("poetry",key);}catch(e){toast(String(e),"err");}}});
@@ -1893,7 +1924,7 @@ async function renderRPanel(){
     <button class="pbtn" onclick="novelMenu('${esc(KEY)}',innerWidth-380,80)">⋯ 全部操作菜单</button>
     <button class="pbtn" onclick="openScheduleModal('${esc(KEY)}')">⏱ 定时写作</button>
     <button class="pbtn" onclick="openUsageModal('${esc(KEY)}')">📊 Token 统计</button>
-    <button class="pbtn" onclick="window.open('/api/download?key=${encodeURIComponent(KEY)}','_blank')">⬇ 下载成书</button></div>`,false)}`;
+    <button class="pbtn" onclick="yimuSave('download',{key:KEY},'/api/download?key='+encodeURIComponent(KEY))">⬇ 下载成书</button></div>`,false)}`;
 }
 async function saveRPStyle(){
   const style={金手指:$("rp_hand")?$("rp_hand").value:"",节奏:$("rp_pace")?$("rp_pace").value:"",语言:$("rp_lang")?$("rp_lang").value:""};

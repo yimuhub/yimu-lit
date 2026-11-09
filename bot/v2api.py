@@ -121,9 +121,12 @@ def _backfill_chapter_records(proj):
     try:
         # 注意：_clean_chapter_text 定义在 bot.writer（v2api 内只有别的函数的懒导入，
         # 模块命名空间里没有）——必须显式导入，否则 NameError 被吞、回填静默失败。
-        from bot.writer import _clean_chapter_text
+        from bot.writer import _clean_chapter_text, chapter_file_exists
         plan = proj.plan() or {}
-        chs = [c for c in (plan.get("chapters") or []) if c.get("status") == "completed"]
+        # v4.32.2：正文文件齐备的章也要补卡——只筛 status 会让被看护打回的
+        # 26 章在对话流里凭空消失（原本就已有「文件存在且 ≥200 字」的硬校验）。
+        chs = [c for c in (plan.get("chapters") or [])
+               if c.get("status") == "completed" or chapter_file_exists(proj.path, c)]
         if not chs:
             return
         existing = set()
@@ -846,7 +849,9 @@ def register_v2_routes(app, get_project, chat_func=None):
                 pass
             plan = proj.plan() or {}
             total = len(plan.get("chapters") or [])
-            done = sum(1 for c in (plan.get("chapters") or []) if c.get("status") == "completed")
+            # v4.32.2：与 /api/status 同源，磁盘正文兜底（状态会被质量看护打回）
+            from bot import writer as _wr_state
+            done = _wr_state.done_chapters(plan, proj.path)
             cur = min(done + 1, total or done + 1)
             try:
                 issues = stmod.validate(st)
@@ -1693,12 +1698,21 @@ def register_v2_routes(app, get_project, chat_func=None):
     # ------------------------------------------------------------ 版本与更新检查
     @app.get("/api/version")
     def api_version():
+        # v4.32.2：app.py 里也注册了同名路由（先注册者生效）。这里必须同样带
+        # desktop 字段——前端 isDesktop() 靠它决定导出走「原生存储对话框」还是
+        # blob。一旦注册顺序变动落到这个实现上，桌面导出会整体退回 blob，
+        # 重新出现「诊断包渲染成无返回键页面」的故障。
         try:
             from bot.version import current as _version_current
             v = _version_current()
         except Exception:
             v = "0.0.0"
-        return {"ok": True, "version": v, "time": int(time.time())}
+        try:
+            from bot.desktop_bridge import is_desktop as _is_desktop
+            desktop = bool(_is_desktop())
+        except Exception:
+            desktop = False
+        return {"ok": True, "version": v, "time": int(time.time()), "desktop": desktop}
 
     @app.get("/api/check-update")
     def api_check_update():

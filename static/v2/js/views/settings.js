@@ -1472,6 +1472,9 @@ export function renderSettings(container, ctx) {
     { key: 'providers', label: '供应商配置摘要（脱敏）', desc: '不含密钥明文' }
   ];
 
+  /* v4.32.2：仅供「网页端」降级使用。桌面 webview 走 api.saveAny → 服务端弹
+     原生「存储」对话框写盘；在这里创建 blob 会被 WKWebView 当成一次页面导航，
+     把整份诊断包渲染进窗口，既没有保存位置也没有返回按键。 */
   function downloadText(text, filename) {
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const a = h('a', { href: URL.createObjectURL(blob), download: filename });
@@ -1526,16 +1529,28 @@ export function renderSettings(container, ctx) {
             if (!picked.size && !logsCb.checked) { toast('请至少勾选一项', { tone: 'danger' }); return; }
             btn.disabled = true; btn.textContent = '导出中…';
             try {
-              const res = await fetch('/api/diagnostics/export', {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sections: Array.from(picked), logs: logsCb.checked })
-              });
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              const text = await res.text();
+              const payload = { sections: Array.from(picked), logs: logsCb.checked };
               const scope = picked.size === EXPORT_SECTIONS.length ? '全部' : `${picked.size}项`;
-              downloadText(text, `yimu-lit-诊断包-${scope}${logsCb.checked ? '-含日志全文' : ''}.txt`);
-              toast('诊断包已导出', { tone: 'success' });
+              const filename = `yimu-lit-诊断包-${scope}${logsCb.checked ? '-含日志全文' : ''}.txt`;
+              const result = await api.saveAny('diagnostics', payload, {
+                fallback: async () => {
+                  const res = await fetch('/api/diagnostics/export', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                  });
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                  downloadText(await res.text(), filename);
+                }
+              });
+              if (result && result.cancelled) {
+                toast('已取消导出');
+                btn.disabled = false; btn.textContent = '导出';
+                return;
+              }
+              toast(result && result.saved
+                ? `诊断包已保存到：${result.saved}`
+                : '诊断包已导出', { tone: 'success' });
               modal.close();
             } catch (err) {
               toast(errorText(err, '导出失败'), { tone: 'danger' });

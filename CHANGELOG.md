@@ -2,6 +2,72 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.32.2 — 所有导出一律弹「存储」对话框 + 100 章写完却显示 74 章的对账
+
+### 一、导出：诊断包把用户困在没有返回键的窗口里
+
+Mac 桌面客户端点「设置 → 系统日志/作品诊断 → 导出诊断」，弹出来的不是保存位置，
+而是一整份 `# 一幕·YIMU 神笔 诊断包` 纯文本页面，没有保存按钮也没有返回按键。
+
+- **根因**：`static/v2/js/views/settings.js` 自己写了一个 `downloadText()`，用
+  `Blob` + `<a download>` 触发下载。WKWebView / WebView2 **不支持 download 属性**，
+  blob 链接被当成一次页面导航，把 `text/plain` 诊断包渲染进窗口；pywebview 窗口
+  没有地址栏和后退键，于是卡死。`api.js` 里明明写了「webview 里绝不走 blob」，
+  但诊断包这条路径绕过了 `api.exportWork()`。classic 旧界面的 5 处导出更直接用
+  `window.open('/api/...')`，同样会导航到内容页。
+- **修法**：后端新增 `POST /api/save` 作为全系统唯一的导出保存入口，
+  `kind ∈ {export, diagnostics, download, script}`，桌面端一律经
+  `desktop_bridge.save_dialog()` 弹原生「存储」对话框、服务端写盘，
+  响应体只有 `{saved}` / `{cancelled}` / `{desktop:false}`，**绝不回灌文件内容**；
+  网页端返回降级信号，前端才走浏览器 blob 下载。
+- **接线**：`api.js` 新增 `saveAny()`（作品导出也改为委托它，并对旧服务端 404
+  回落 `/api/export/save`）；`settings.js` 诊断包改走 `saveAny('diagnostics')`，
+  blob 降级只留在 fallback；`static/index.html` 新增 `yimuSave()`，替换全部
+  5 处 `window.open` 导出与预览弹窗的 `<a target="_blank">`。
+- 生成逻辑同时收敛：`_build_diagnostics_text()` / `_build_download()` /
+  `_export_build()` / `script_writer.export_text()` 由 `_save_payload()` 统一调度，
+  浏览器附件端点与桌面保存产出同一份内容；`_export_build` 的旧端点保留兼容。
+
+### 二、进度：100 章正文齐备，进度条只有 74
+
+桌面版《收服十万巨兽后，我无敌了》成书 258713 字已生成、100 个章节 `.md` 全在，
+但 `02-写作计划.json` 里 status 是 `completed 74 / pending 23 / failed 3`。
+
+- **根因是两套事实源从未对账**：进度条只数 `chapters[].status`，而成书、预览、
+  字数统计全按**磁盘文件**拼。总编辑看护 `supervisor._reset_pending_chapter()`
+  把正文偏短的 23 章打回 `pending`（只改状态、清 `wordCount`、不删文件、且完全静默），
+  校验轮把 3 章标 `failed`（也不删文件）；随后 `_validate_and_finish()` 按文件拼完
+  成书，只把**顶层** `status` 改成 `completed`，从不回填 `chapters[].status`。
+  任务档案另有 `done:84` 的历史快照、`resume_plan()` 还取 `max`，于是
+  「74 / 84 / 100」三套数字并存。非小说分支在 `library_item()` 里早有
+  「完成态 done=total」补偿，小说分支没有。
+- **修法**：`bot/writer.py` 新增 `chapter_file_exists()` / `done_chapters()` /
+  `reconcile_completed_chapters()`；`Project.status()` 与 `/api/diagnostics`、
+  `/api/state`、`/api/chat` 上下文、极速续写的 `_done` 统一收敛到「状态 or 文件存在」
+  口径；成书编译时一次性把正文齐备的章回填为 `completed` 并用文件实测字数补
+  `None`（不删文件、不动评分与门禁账本）；`_backfill_chapter_records()` 让被打回的
+  章也能补出对话流章节卡；supervisor 在完稿态不再打回，打回时补一条日志。
+- **副作用防线**：回填后极速续写的 `_left = 0`，不会再把已有正文的 26 章覆盖重写、
+  重复计费；`resume_plan()` 不再拿历史快照抬高 done。
+- **现存数据**：已对桌面版该书的 `02-写作计划.json` 做一次性回填（26 章），
+  备份 `/tmp/02-写作计划.收服十万巨兽.before-reconcile.bak.json`；
+  实测当前 4.32.0 客户端 `/api/status` 已从 `74/100` 变成 `100/100`，
+  `meta.released / final_quality / 94 条 chapter_scores` 全部保留。
+
+### 三、桌面版日志位置（排查副产物）
+
+冻结版 `DATA_ROOT` 是 `~/Library/Application Support/YiMuLit`，与仓库 `projects/`、`data/`
+是**两套数据**。主要日志：`logs/launcher.log`（3888 行）、`llm_calls.jsonl`（3848 行）、
+`data/llm_errors.jsonl`（747 条全 502 空回复，集中在 review）、`data/system_log.jsonl`、
+各作品 `运行日志.txt` / `创作事件.jsonl`。累计 4826 万 tokens / 3298 次调用。
+无 Python 崩溃堆栈；`launcher.log` 里有 6 条早期 `projects/` 未建时的孤儿扫描异常。
+
+### 验证
+
+新增 `tests/test_v4322_export_save_all.py`（13 项，覆盖 4 种 kind 的桌面保存、
+取消、未知 kind、浏览器降级、前端接线、磁盘对账）；本地全量 696 项 pytest 通过，
+`ruff`、`static_check` 通过；桌面客户端 `/api/status` 实测 `100/100`。
+
 ## v4.32.1 — CI 连红 6 次修因（测试假依赖清单）+ README 追平桌面版 + Release 空壳
 
 ### 盘点发现

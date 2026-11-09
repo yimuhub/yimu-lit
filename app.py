@@ -685,7 +685,7 @@ def _chat_group(s, proj, msg, plan, st, name):
         except Exception:
             pass
     chs = plan.get("chapters") or []
-    done = sum(1 for c in chs if c.get("status") == "completed")
+    done = writer.done_chapters(plan, proj.path)
     total = len(chs)
     chars = plan.get("characters") or plan.get("cast") or []
     char_summary = ""
@@ -2244,7 +2244,7 @@ def api_diagnostics():
                         or plan.get("bookName") or plan.get("newsName") or plan.get("copyName") or d,
                 "medium": med,
                 "state": plan.get("status") or "unknown",
-                "done": sum(1 for c in (plan.get("chapters") or []) if c.get("status") == "completed"),
+                "done": writer.done_chapters(plan, pdir),
                 "total": len(plan.get("chapters") or []),
                 "stalled_seconds": stalled,
                 "last_line": last_line[-160:],
@@ -2468,12 +2468,14 @@ def api_book_agents_set(payload: dict):
     return {"ok": True, "key": key, "agents": cleaned}
 
 
-@app.post("/api/diagnostics/export")
-def api_diagnostics_export(payload: dict = None):
-    """导出诊断包（纯文本，不含任何密钥/作品正文）——发给开发者排查用。
-    v4.20.0：支持按需选择范围。payload 可选 {sections:[works|sysops|server|llm|providers],
-    logs:bool}；sections 缺省=全部（兼容旧版一键导出）；logs=True 附全部日志全文（可读、
-    截断防爆：服务端 2000 行 / 每本运行日志 800 行 / 系统操作日志 2000 条）。"""
+def _build_diagnostics_text(payload: dict = None):
+    """生成诊断包纯文本，返回 (text, scope)。
+
+    v4.32.2：浏览器下载（/api/diagnostics/export）与桌面原生保存（/api/save
+    kind=diagnostics）必须产出同一份内容，故把文本生成从路由里抽出来共用。
+    payload 可选 {sections:[works|sysops|server|llm|providers], logs:bool}；
+    sections 缺省=全部；logs=True 附日志全文（服务端 2000 行 / 每本运行日志
+    800 行 / 系统操作日志 2000 条，截断防爆）。"""
     import datetime as _dt
     body = payload if isinstance(payload, dict) else {}
     sections = body.get("sections") if isinstance(body.get("sections"), list) else None
@@ -2557,7 +2559,16 @@ def api_diagnostics_export(payload: dict = None):
         lines.append("")
 
     scope = "all" if not sections else "-".join(sorted(want))
-    text = "\n".join(lines)
+    return "\n".join(lines), scope
+
+
+@app.post("/api/diagnostics/export")
+def api_diagnostics_export(payload: dict = None):
+    """浏览器端导出诊断包（纯文本，不含密钥/作品正文）。
+
+    v4.32.2：桌面客户端不要走这里——webview 会把 attachment 响应当成页面导航。
+    桌面统一走 /api/save（弹原生「存储」对话框，服务端写盘）。"""
+    text, scope = _build_diagnostics_text(payload)
     return Response(text, media_type="text/plain; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename=yimu-lit-diagnostics-{scope}.txt"})
 
@@ -3875,7 +3886,9 @@ def api_express_write(payload: dict):
         return {"ok": False, "running": True, "paused": st.get("paused"), "state": st.get("state"),
                 "msg": f"《{_name}》正在创作中——切速度用「⚡ 极速」开关（下一章起生效），不会再起一条写作线程。"}
     _chs = plan.get("chapters") or []
-    _done = sum(1 for c in _chs if c.get("status") == "completed")
+    # v4.32.2：按磁盘正文判定，避免把「正文齐备但被看护打回状态」的章
+    # 当成待写章，启动极速续写后覆盖已有好稿、重复计费。
+    _done = writer.done_chapters(plan, proj.path)
     _left = len(_chs) - _done
     if mode == "standard":
         express.set_plan_flag(plan, False)
@@ -4188,24 +4201,21 @@ def api_live(key: str):
     return StreamingResponse(_gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-@app.get("/api/download")
-def api_download(key: str):
-    """下载整本（Markdown）：正文由章节文件现场拼装并逐章去噪。
+def _build_download(key: str):
+    """拼装整本 Markdown，返回 (bytes, 书名)。桌面保存与浏览器下载共用。
 
-    v4.22.1：旧实现在没有「成书」时直接返回 `01-大纲.md`——用户点「下载全书」拿到的
-    是规划大纲，且成书可能是旧版清洗逻辑的产物（含概要/修改说明/评分表）。现在一律
-    以章节文件为准：章题 + 章首引子 + 正文，一本书里不出现任何非正文小节。
-    """
+    v4.22.1：一律以章节文件为准（章题 + 引子 + 正文），绝不回落 01-大纲.md；
+    v4.32.2：原 /api/download 的主体抽到这里，避免两条导出链路产出不一致。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+        raise _ExportError("项目不存在或未加载，请刷新作品库", 404)
     plan = proj.plan() or {}
     if not (plan.get("chapters") or []) and not export_mod.is_script(proj):
-        return JSONResponse({"error": "还没有可下载的正文"}, status_code=400)
+        raise _ExportError("还没有可下载的正文")
     name = plan.get("novelName") or plan.get("scriptName") or proj.name
     text = export_mod.markdown(proj)
     if not (text or "").strip():
-        return JSONResponse({"error": "还没有可下载的正文"}, status_code=400)
+        raise _ExportError("还没有可下载的正文")
     meta = (plan.get("meta") or {})
     if "gate_rounds" in meta or meta.get("released") is not None:
         pl = int(((plan.get("config") or {}).get("defaults") or {}).get("validation", {}).get("pass_line", 90))
@@ -4214,9 +4224,19 @@ def api_download(key: str):
             text = f"> ✅ **已放行**（质量 {fq}/{pl}，达到放行线，可出书）\n\n" + text
         else:
             text = f"> ⚠️ **beta·未放行**（质量 {fq}/{pl}，未达放行线，仅供内部阅读）\n\n" + text
+    return text.encode("utf-8"), name
+
+
+@app.get("/api/download")
+def api_download(key: str):
+    """浏览器端下载整本（Markdown）；桌面端统一走 /api/save。"""
     from urllib.parse import quote
+    try:
+        data, name = _build_download(key)
+    except _ExportError as e:
+        return JSONResponse({"error": e.msg}, status_code=e.status)
     disp = f"attachment; filename=\"novel.md\"; filename*=UTF-8''{quote(name + '.md')}"
-    return Response(text.encode("utf-8"), media_type="text/markdown; charset=utf-8",
+    return Response(data, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": disp})
 
 class _ExportError(Exception):
@@ -4365,35 +4385,89 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
     return Response(data, media_type=media, headers={"Content-Disposition": disp})
 
 
-@app.post("/api/export/save")
-def api_export_save(payload: dict):
-    """v4.32.0：桌面端导出——弹原生「存储」对话框让用户选位置，服务端直接写盘。
-    桌面 webview（WKWebView/WebView2）不支持 <a download>，blob 方案会导航到
-    文件内容页（用户实测的乱码正文页）；网页端返回 desktop=False 由前端走 blob 下载。"""
-    key = str(payload.get("key") or "")
-    fmt = str(payload.get("fmt") or "docx").lower()
-    frm = int(payload.get("frm") or 0)
-    to = int(payload.get("to") or 0)
-    if not desktop_bridge.is_desktop():
-        return {"desktop": False}
-    try:
-        data, media, ext, title = _export_build(key, fmt, frm, to)
-    except _ExportError as e:
-        return JSONResponse({"error": e.msg}, status_code=e.status)
-    fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
-    path = desktop_bridge.save_dialog(f"{fname}.{ext}")
+_SAVE_KINDS = ("export", "diagnostics", "download", "script")
+
+
+def _safe_export_name(title: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]+', "", str(title or ""))[:60] or "export"
+
+
+def _save_payload(kind: str, payload: dict):
+    """按导出类型产出 (bytes, 默认文件名, 扩展名)。
+
+    v4.32.2：整个系统「向外导出」只有一个生成入口——作品导出、诊断包/系统日志、
+    整本 Markdown、剧本定稿全文。所有调用方最后都经过 _save_bytes_to_dialog，
+    保证桌面端必定弹出「存储」对话框，绝不会把文件内容回灌进 webview。"""
+    p = payload if isinstance(payload, dict) else {}
+    key = str(p.get("key") or "")
+    if kind == "export":
+        fmt = str(p.get("fmt") or "docx").lower()
+        frm = int(p.get("frm") or 0)
+        to = int(p.get("to") or 0)
+        data, _media, ext, title = _export_build(key, fmt, frm, to)
+        return data, f"{_safe_export_name(title)}.{ext}", ext
+    if kind == "diagnostics":
+        text, scope = _build_diagnostics_text(p)
+        return text.encode("utf-8"), f"yimu-lit-诊断包-{scope}.txt", "txt"
+    if kind == "download":
+        data, name = _build_download(key)
+        return data, f"{_safe_export_name(name)}.md", "md"
+    if kind == "script":
+        txt = script_writer.export_text(key)
+        if not txt:
+            raise _ExportError("项目不存在或未加载，请刷新作品库", 404)
+        return txt.encode("utf-8"), f"{_safe_export_name(key)}.txt", "txt"
+    raise _ExportError(f"不支持的导出类型：{kind}")
+
+
+def _save_bytes_to_dialog(data: bytes, default_name: str, ext: str):
+    """弹原生「存储」对话框并写盘。取消 → {cancelled}；成功 → {saved: 绝对路径}。"""
+    path = desktop_bridge.save_dialog(default_name)
     if not path:
         return {"cancelled": True}
     path = str(path)
     root, extn = os.path.splitext(path)
     if not extn:
         path = f"{root}.{ext}"
-    _parent = os.path.dirname(path)
-    if _parent:
-        os.makedirs(_parent, exist_ok=True)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "wb") as f:
         f.write(data)
     return {"saved": path}
+
+
+@app.post("/api/save")
+def api_save(payload: dict):
+    """v4.32.2：全系统统一的导出保存入口。
+
+    桌面 webview（WKWebView / WebView2）不支持 <a download>，blob 会变成导航到
+    文件内容页——诊断包就是这样把用户困在一个没有返回键的窗口里。因此桌面端
+    **一律**由服务端弹原生「存储」对话框写盘；网页端返回 desktop=False，
+    前端走浏览器 blob 下载（浏览器自己的下载管理，不会导航）。"""
+    kind = str((payload or {}).get("kind") or "")
+    if kind not in _SAVE_KINDS:
+        return JSONResponse({"error": f"不支持的导出类型：{kind or '（空）'}"}, status_code=400)
+    if not desktop_bridge.is_desktop():
+        return {"desktop": False}
+    try:
+        data, fname, ext = _save_payload(kind, payload)
+    except _ExportError as e:
+        return JSONResponse({"error": e.msg}, status_code=e.status)
+    return _save_bytes_to_dialog(data, fname, ext)
+
+
+@app.post("/api/export/save")
+def api_export_save(payload: dict):
+    """v4.32.0 作品导出端点（保留兼容旧客户端与既有测试）；v4.32.2 起内部委托
+    给 _save_payload/_save_bytes_to_dialog，与 /api/save 是同一套写盘逻辑。"""
+    if not desktop_bridge.is_desktop():
+        return {"desktop": False}
+    try:
+        data, fname, ext = _save_payload("export", payload)
+    except _ExportError as e:
+        return JSONResponse({"error": e.msg}, status_code=e.status)
+    return _save_bytes_to_dialog(data, fname, ext)
 
 @app.get("/api/agents")
 def api_agents():

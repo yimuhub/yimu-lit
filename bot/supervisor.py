@@ -249,6 +249,11 @@ def _check_chapter_gate(key, med, pdir, plan, cfg) -> None:
         return
     if express_on(cfg):
         return
+    # v4.32.2：全书已成书后不再打回。以前完稿状态下仍可能 tick 一次，
+    # 把某章改 pending 并把顶层 status 拉回 in_progress，制造「书写完了
+    # 却显示未完成、还会重写已有正文」的错位。
+    if plan.get("status") == "completed":
+        return
     chs = plan.get("chapters") or []
     done = [c for c in chs if c.get("status") == "completed"]
     if not done:
@@ -310,6 +315,14 @@ def _reset_pending_chapter(key: str, med: str, pdir: str, no: int) -> None:
                     break
             plan2["status"] = "in_progress"
             atomic_write_json(fp2, plan2)
+            # v4.32.2：以前这一步完全静默，出问题只能靠「wordCount=None 且
+            # completedAt 还在」反推。打回只改状态、不删正文，成书编译会按
+            # 磁盘文件把状态对账回来，日志里也要留下痕迹。
+            try:
+                _wr.Project(pdir, key).log(
+                    f"🔁 第{no}章字数不足，打回待写（正文文件保留；成书时按文件对账）")
+            except Exception:
+                pass
     except Exception:
         pass
 
