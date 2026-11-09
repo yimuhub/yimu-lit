@@ -44,6 +44,17 @@
   抛 `SystemExit(1)`，连锁污染后半程所有 setup（环境限制，不是代码问题）。
 - 提交后由 GitHub Actions 双矩阵复核 CI 由红转绿。
 
+### 补充：版本号口径统一（同一版内收口）
+
+`config.example.json` / `package.json` 的 `version` 从项目早期就停在 `1.4.0`，
+本地 `config.json`（不入库）同样如此，而 `VERSION` 已到 `4.32.1`——三套口径。
+这些字段代码不读、界面不显示，纯声明性元数据，但会让人搞不清「现在到底是哪一版」。
+`tools/bump_version.py` 现在升版本时一并同步三处，并新增 `--meta-only`
+（只补元数据，不升版本、不动资源戳）；`tests/test_version_sync.py` 加 4 项守卫：
+元数据值跟 `VERSION` 一致、本地 `config.json` 存在才查（CI 里没有）、
+前端两处缓存戳一致、同步工具只改顶层 `version` 且重复执行幂等。
+`VERSION` 仍是唯一事实来源，本次不升版本号。
+
 ## v4.32.0 — 桌面导出弹原生「存储」对话框选位置 + 应用名回归中文「一幕神笔」
 
 ### 用户报障
