@@ -2,10 +2,13 @@
 
 # 📖 一幕·YIMU 神笔文学创作台 (YIMU Lit)
 
-**面向小说作者、编剧与文学创作者的九文体全流程 AI 创作台——从一句话简介到成书导出**
+**面向小说作者、编剧与文学创作者的九文体全流程 AI 创作台——从一句话简介到成书导出，浏览器与桌面客户端均可使用**
 
-[![Version](https://img.shields.io/badge/version-4.23.1-orange.svg?style=flat-square)](CHANGELOG.md)
-[![Release](https://img.shields.io/badge/release-v4.23.1-blueviolet.svg?style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
+<!-- 版本徽章走 GitHub 动态接口：以前手写 4.23.1，发到 4.32.0 还挂着旧号。
+     根目录 VERSION 是唯一事实来源，tag / Release 由 tools/release.sh 自动打。 -->
+[![Version](https://img.shields.io/github/v/tag/yimuhub/yimu-lit?label=version&style=flat-square)](CHANGELOG.md)
+[![Release](https://img.shields.io/github/v/release/yimuhub/yimu-lit?label=release&style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
+[![CI](https://github.com/yimuhub/yimu-lit/actions/workflows/ci.yml/badge.svg)](https://github.com/yimuhub/yimu-lit/actions/workflows/ci.yml)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg?style=flat-square)](LICENSE)
 [![Licensor](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E6%96%B9-yimu.hyipf.com-0284c7.svg?style=flat-square)](https://yimu.hyipf.com)
 [![Copyright](https://img.shields.io/badge/%E7%89%88%E6%9D%83%E5%BD%92%E5%B1%9E-%C2%A9%202026%20yimu.hyipf.com-orange.svg?style=flat-square)](https://yimu.hyipf.com)
@@ -29,6 +32,8 @@
 ## 💡 这是什么？
 
 **一幕·YIMU 神笔文学创作台**是一个纯文字的 AI 文学创作平台：对话即开写，从一句话简介到成书导出全流程贯通。覆盖**九种文体**——小说、剧本、诗词、散文、论文、儿童文学、新闻稿、文案、其他内容（剧本杀/播客/课程稿/演讲稿/拆书稿/影评）。
+
+**两种形态，同一套引擎**：浏览器版（`run.py` 起本地服务，类 DeepSeek 三栏工作台）与 **macOS / Windows 桌面客户端**（原生窗口、免装 Python、内置服务、应用内一键更新），共用同一套写作引擎与作者数据，导出/复制口径完全一致。
 
 核心差异化能力：
 - **百万字长篇引擎**：总规划 → 卷 → 弧 → 章四层结构，支持 100–1500 章规模；滚动规划与重规划提案，写前注入前情摘要、活跃伏笔、人物状态与设定词典，配合一致性纲领保障人物/事件/世界观全程连贯。
@@ -65,10 +70,22 @@
 - **专业导出**：Markdown / Word / EPUB / 打印排版 / 剧本 Fountain / FDX，署名自动嵌入；
   整本导出在「章节工作台 → 导出全书」或作品库右键「导出」，导出内容与复制口径完全一致（只含正文）。
 - **创作预算**：单本书 token 预算护栏，支持不限制模式。
+- **极速模式**：一键跳过逐章评分、重写与去味扫描，一口气写完全书（保留章卡与前情摘要，连续性不打折）；写作途中可随时开关，切档粒度是「下一章」，不必先暂停。
 
 ---
 
 ## 🚀 快速启动
+
+### 桌面客户端（推荐，免命令行）
+
+到 [Releases](https://github.com/yimuhub/yimu-lit/releases) 下载最新版 **macOS DMG** 或 **Windows 安装包（.exe）**，双击安装即可用：
+
+- 内置服务与原生窗口（macOS WKWebView / Windows WebView2），不用装 Python、不用开浏览器；
+- 导出时弹系统原生「存储」对话框选位置，桌面端不依赖 webview 下载；
+- 「检查更新」走 overlay 增量更新（只覆盖代码资源，不碰作品与设置），只有桌面壳本身变更时才需重新下载安装包；
+- 单实例：重复双击会激活已开窗口，不会跳到浏览器。
+
+### 源码运行（浏览器版 / 自建服务）
 
 ```bash
 pip install -r requirements.txt
@@ -87,9 +104,9 @@ python run.py          # 默认 http://127.0.0.1:46821
 ## 🏛️ 系统架构
 
 ```
-app.py                 FastAPI 主应用（225 条路由）
+app.py                 FastAPI 主应用（200+ 条路由）
 bot/
-  writer.py            小说引擎（百万字分层规划/并行/质量门禁）
+  writer.py            小说引擎（百万字分层规划/并行/质量门禁/极速模式）
   script_writer.py     剧本引擎（场次/分镜/时代校验）
   poetry|prose|thesis_writer.py   诗词/散文/论文引擎
   children|news|copy|other_writer.py  轻文体引擎（mini_writer_base 模板）
@@ -99,8 +116,13 @@ bot/
   skillkit.py          技能库加载与阶段注入（9 文体 × 阶段）
   purity.py            正文纯净域（复制/预览/成书/导出的唯一取文口径）
   llm.py               多供应商网关（缓存/限流/预算/wall-clock 守卫）
-static/v2/             前端（ES module，无构建步骤）
-tests/                 480+ 用例回归
+  paths.py             桌面/源码双资源根与用户数据根
+  updater.py           桌面 overlay 自更新（白名单解压/依赖预检）
+  desktop_bridge.py    原生保存对话框等桌面桥接
+static/v2/             前端（ES module，无构建步骤；另有 /classic 单文件旧版）
+desktop/               PyInstaller + pywebview 桌面壳（spec / 启动器 / 图标 / 安装包脚本）
+.github/workflows/     CI 双 Python 矩阵 + 桌面 DMG/EXE 构建
+tests/                 600+ 项 pytest 回归 + jsdom 真渲染测试
 ```
 
 ### 正文纯净域（开发铁律，不可回退）
@@ -136,14 +158,14 @@ tests/                 480+ 用例回归
   长篇必漂（《入赘三年》第 41–50 章实证）。现在写每章前都过 `_ensure_card_planned`：
   占位卡先单章补真卡，补不出来就跳过并暂停，而不是静默跑偏。
 
-### 提交与 CI（v4.23.0）
+### 提交与 CI
 
-- 每次改完直接落库：`./tools/commit.sh "新增: v4.23.0 一句话说明"`。
-  说明里必须带 `v版本号`、CHANGELOG 里必须有该版条目，否则脚本拒绝提交（防「代码进了库、版本没动」）。
-- **CI 不挂 push**：`.github/workflows/ci.yml` 改为手动触发。体检在本地做
-  （`bash tools/static_check.sh` + `python -m pytest -q`），秒级不排队。
-- 费用：本仓库是公开仓库，标准 runner 的 Actions 分钟数**免费不限量**，
-  改手动是因为每次 push 都跑、lint 先挂导致测试从未跑起来，零信号加噪音，不是省钱。
+- 每次改完直接落库：`./tools/commit.sh "新增: vX.Y.Z 一句话说明"`。
+  说明里必须带 `v版本号`、CHANGELOG 里必须有该版条目，否则脚本拒绝提交（防「代码进了库、版本没动」）。根目录 `VERSION` 是版本唯一事实来源，`tools/bump_version.py` 一条命令同步它与前端资源戳，`tools/release.sh` 自动打 tag、建 Release。
+- **CI 挂 push / PR**：`.github/workflows/ci.yml` 在 v4.23.2 把自动触发装回来。每次推送跑 Python 3.13 / 3.14 双矩阵：ruff → pytest → jsdom 真渲染 → 接线体检 → 样式体检；本地等价命令写在 workflow 头部注释里，秒级不排队。红叉即真回归。
+- **测试要与 CI 环境对齐**：v4.32.1 修过一次「本地全绿、CI 连红 6 次」——测试构造的假 `requirements.txt` 写了仓库根本不用的 PyYAML，而 CI 只装 `requirements.txt + requirements-dev.txt`，依赖预检必然误报。现在测试直接读真实依赖清单，并有守卫用例防止再脱节。
+- 桌面安装包由 `.github/workflows/desktop.yml` 在推 `v*` tag 时构建 macOS DMG + Windows EXE 并挂到 Release。
+- 费用：公开仓库标准 runner 的 Actions 分钟数**免费不限量**，做这些门禁不是为了省钱。
 
 开发者细则见 [`功能表.md`](功能表.md) 的「铁律 0 / 1 / 2 / 3」。
 

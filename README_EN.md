@@ -2,10 +2,11 @@
 
 # 📖 YIMU Lit (一幕·YIMU 神笔文学创作台)
 
-**A nine-genre full-cycle AI writing workbench for novelists, screenwriters and literary creators — from a one-line premise to a finished, exportable book**
+**A nine-genre full-cycle AI writing workbench for novelists, screenwriters and literary creators — from a one-line premise to a finished, exportable book, in the browser or as a native desktop app**
 
-[![Version](https://img.shields.io/badge/version-4.23.1-orange.svg?style=flat-square)](CHANGELOG.md)
-[![Release](https://img.shields.io/badge/release-v4.23.1-blueviolet.svg?style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
+[![Version](https://img.shields.io/github/v/tag/yimuhub/yimu-lit?label=version&style=flat-square)](CHANGELOG.md)
+[![Release](https://img.shields.io/github/v/release/yimuhub/yimu-lit?label=release&style=flat-square)](https://github.com/yimuhub/yimu-lit/releases)
+[![CI](https://github.com/yimuhub/yimu-lit/actions/workflows/ci.yml/badge.svg)](https://github.com/yimuhub/yimu-lit/actions/workflows/ci.yml)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg?style=flat-square)](LICENSE)
 [![Licensor](https://img.shields.io/badge/Licensor-yimu.hyipf.com-0284c7.svg?style=flat-square)](https://yimu.hyipf.com)
 [![Copyright](https://img.shields.io/badge/Copyright-%C2%A9%202026%20yimu.hyipf.com-orange.svg?style=flat-square)](https://yimu.hyipf.com)
@@ -69,6 +70,19 @@ Every genre ships its own engine: dedicated wizard, writing roles and skills, wo
 
 ## 🚀 Quick Start
 
+### Desktop app (recommended, no command line)
+
+Download the latest **macOS DMG** or **Windows installer (.exe)** from
+[Releases](https://github.com/yimuhub/yimu-lit/releases) and double-click to install:
+
+- Bundled server + native window (macOS WKWebView / Windows WebView2) — no Python, no browser tab;
+- Exports open the system-native Save dialog instead of relying on webview downloads;
+- In-app update uses an overlay (code resources only; your books and settings are never touched).
+  Only shell-level changes require reinstalling the installer;
+- Single instance: a second double-click activates the existing window instead of opening a browser.
+
+### Run from source (browser / self-hosted)
+
 ```bash
 pip install -r requirements.txt
 python run.py          # default http://127.0.0.1:46821
@@ -86,7 +100,7 @@ The UI is a DeepSeek-style three-pane workbench (session sidebar + chat + workbe
 ## 🏛️ Architecture
 
 ```
-app.py                 FastAPI main app (225 routes)
+app.py                 FastAPI main app (200+ routes)
 bot/
   writer.py            Novel engine (million-word layered planning / parallel / quality gates)
   script_writer.py     Screenplay engine (scenes / storyboard / era validation)
@@ -98,8 +112,13 @@ bot/
   purity.py            Body-text purity domain (single source of truth for copy / preview / manuscript / export)
   skillkit.py          Skill library loading & stage injection (9 genres × stages)
   llm.py               Multi-provider gateway (caching / throttling / budget / wall-clock guard)
-static/v2/             Frontend (ES modules, no build step)
-tests/                 480+ regression cases
+  paths.py             Dual resource roots for desktop / source runs + user data root
+  updater.py           Desktop overlay self-update (whitelisted extraction / dependency preflight)
+  desktop_bridge.py    Native Save dialog and other desktop bridges
+static/v2/             Frontend (ES modules, no build step; legacy single-file UI at /classic)
+desktop/               PyInstaller + pywebview shell (specs / launcher / icon / installer scripts)
+.github/workflows/     CI Python matrix + desktop DMG/EXE builds
+tests/                 600+ pytest cases + jsdom render tests
 ```
 
 ---
@@ -145,16 +164,23 @@ clipboard, the preview, the manuscript file, or any export format**.
   passes `_ensure_card_planned`: a placeholder card is re-planned on the spot, and if that fails the
   chapter is skipped and the run pauses instead of drifting silently.
 
-### Commits & CI (v4.23.0)
+### Commits & CI
 
-- Commit straight after each change: `./tools/commit.sh "feat: v4.23.0 one-line summary"`.
+- Commit straight after each change: `./tools/commit.sh "feat: vX.Y.Z one-line summary"`.
   The message must carry the `v<version>` and CHANGELOG must have an entry for it, otherwise the
-  script refuses — preventing "code shipped, version number left behind".
-- **CI is not wired to push**: `.github/workflows/ci.yml` is manual-dispatch only. Checks run locally
-  (`bash tools/static_check.sh` + `python -m pytest -q`), in seconds and without queueing.
+  script refuses — preventing "code shipped, version number left behind". The root `VERSION` file is
+  the single source of truth; `tools/bump_version.py` keeps it in sync with frontend cache stamps,
+  and `tools/release.sh` tags and publishes the Release.
+- **CI runs on push / PR**: `.github/workflows/ci.yml` re-enabled automatic triggers in v4.23.2.
+  Every push runs a Python 3.13 / 3.14 matrix: ruff → pytest → jsdom render tests → wiring audit →
+  CSS audit. Local equivalents are listed in the workflow header, so they run in seconds without
+  queueing. A red X means a real regression.
+- **Tests must match the CI environment**: v4.32.1 fixed six consecutive red CI runs that were green
+  locally — a fabricated `requirements.txt` inside a test listed PyYAML, which the project never
+  uses and CI never installs, so the dependency preflight always failed. Tests now read the real
+  dependency list, with a guard case to keep them in sync.
+- Desktop installers are built by `.github/workflows/desktop.yml` on `v*` tags and attached to the Release.
 - Cost: this is a public repository, so standard-runner Actions minutes are **free and unlimited**.
-  Going manual was about signal, not money — with push triggers the lint step failed first and the
-  tests never even ran, so every commit got a red X within 20 seconds.
 
 ---
 

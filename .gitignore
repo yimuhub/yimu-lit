@@ -57,8 +57,11 @@ llm_calls.jsonl.*
 bot/.nlu_probe
 
 # pytest 临时测试目录（tools/test.sh 用 --basetemp=.pytest-tmp 生成）
+# 下划线写法 --basetemp=./.pytest_tmp 也常见：漏掉它时，一次全量测试会产生
+# 300+ 个未跟踪目录，而 tools/commit.sh 的 git add -A 会把它们全塞进仓库。
 pytest-of-*/
 .pytest-tmp*/
+.pytest_tmp*/
 
 # —— 开发过程文件（只留本地，不入库）——
 问题修复记录.md

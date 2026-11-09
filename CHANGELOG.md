@@ -2,6 +2,48 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.32.1 — CI 连红 6 次修因（测试假依赖清单）+ README 追平桌面版 + Release 空壳
+
+### 盘点发现
+- `CI` workflow 从 v4.29.0 起连续 6 次红，最新 HEAD `f71e490` 仍红；本地 `pytest` 678 项却全绿。
+- README 徽章停在 `4.23.1`，内容只讲浏览器 / Docker，完全没提桌面版；「提交与 CI」段落还写着 v4.23.0 的旧结论「CI 不挂 push」。
+- 最近 3 个 GitHub Release（`v4.30.2` / `v4.31.0` / `v4.32.0`）正文全空，而 CHANGELOG 里写得很全。
+
+### 根因
+- **CI 红不是代码回归，是测试环境与 CI 环境不一致**：`tests/test_v4290_updater.py::_make_zip()`
+  写死 `requirements.txt = "fastapi\npyyaml"`，但生产 `requirements.txt` 里没有 PyYAML，
+  全仓也没有任何 `import yaml`；CI 只装 `requirements.txt + requirements-dev.txt`，
+  于是 `bot/updater.py::_check_new_dependencies` 的 `find_spec("yaml")` 必然为 None
+  → `test_extract_whitelist_and_validate` 抛「此更新需要新依赖：yaml」，
+  `test_desktop_update_full_flow` 连带 `KeyError: 'updated'`。
+  本地 `.venv` 旁带装了 PyYAML 6.0.3，所以本地全绿、CI 的 3.13/3.14 双矩阵全红。
+- **Release 空壳**：推 tag 触发 `desktop-build`，`softprops/action-gh-release` 先建一个
+  name=tag、正文为空的 Release 来挂 DMG/EXE；`tools/release.sh` 调用的
+  `make_releases.py` 不带 `--force` 时看到「已存在」直接跳过，正文永远补不上。
+- **README 徽章手写死**：发到 4.32.0 还挂 4.23.1，属于必然会再次过时的写法。
+
+### 修复
+- `tests/test_v4290_updater.py`：新增 `_real_requirements()`，`_make_zip()` 改读仓库真实
+  `requirements.txt`——CI 装什么、依赖预检就查什么；新增守卫用例
+  `test_zip_requirements_tracks_repo` 防止再手捏假清单；`with_bad_dep` 分支照旧验证
+  「新依赖被拦截」。用「强制 `find_spec('yaml')` 返回 None」的插件模拟纯净 CI 环境实测：
+  7 项全过，旧清单仍能复现原报错，新清单通过。
+- `README.md` / `README_EN.md`：Version / Release 徽章改走 GitHub 动态接口（跟 tag 自动走，
+  不再手改）、新增 CI 徽章；补桌面客户端快速启动（原生窗口 / 原生「存储」对话框 /
+  overlay 增量更新 / 单实例）、极速模式说明、`paths.py` / `updater.py` /
+  `desktop_bridge.py` / `desktop/` 架构条目；架构规模数字与「提交与 CI」段落更新到当前事实
+  （push + PR 自动触发、Python 3.13/3.14 双矩阵、jsdom 真渲染、接线与样式体检）。
+- `tools/release.sh`：默认给 `make_releases.py` 传 `--force`，走 PATCH 覆盖标题与正文
+  （不动已上传 assets、幂等可重复），治住 Release 空壳。
+- `.gitignore`：补 `.pytest_tmp*/`。`--basetemp=./.pytest_tmp`（下划线写法）一次全量测试
+  会生成 300+ 个未跟踪目录，而 `tools/commit.sh` 的 `git add -A` 会把它们全塞进仓库。
+
+### 验证
+- 本地全量 `pytest` 679 项通过。本机跑测试需带 `CODEBUDDY_SAFE_DELETE_ENABLED=0`：
+  否则 WorkBuddy 沙箱的批量删除保护会在 pytest 清理 tmp 目录时累计 50 次删除后
+  抛 `SystemExit(1)`，连锁污染后半程所有 setup（环境限制，不是代码问题）。
+- 提交后由 GitHub Actions 双矩阵复核 CI 由红转绿。
+
 ## v4.32.0 — 桌面导出弹原生「存储」对话框选位置 + 应用名回归中文「一幕神笔」
 
 ### 用户报障

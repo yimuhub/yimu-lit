@@ -92,14 +92,13 @@ PYEOF
     fi
 else
     echo "▸ 建 Release（正文取 CHANGELOG 该版一节）"
-    if [ "${FORCE}" = 1 ]; then
-        # --force 的语义：Release 已存在也按当前 CHANGELOG 覆盖正文。
-        # 必须把 --force 传给 make_releases.py，否则它会把「已存在」当跳过，
-        # 一路打印「跳过已存在」却什么都没做（v4.23.2 踩过）。
-        "${PY}" tools/make_releases.py --apply --force "${CUR}"
-    else
-        "${PY}" tools/make_releases.py --apply "${CUR}"
-    fi
+    # v4.32.1：默认就带 --force。推 tag 会触发 desktop-build，它的
+    # softprops/action-gh-release 会建一个 name=tag、正文为空的 Release
+    # 来挂 DMG/EXE；不带 --force 时 make_releases.py 看到「已存在」直接跳过，
+    # 于是 v4.30.2 / v4.31.0 / v4.32.0 三个 Release 全是空壳，
+    # 而 CHANGELOG 里其实写得很全。--force 走 PATCH 只覆盖标题与正文，
+    # 不动已上传的 assets，幂等可重复执行；传 --force 仍兼容（等同默认）。
+    "${PY}" tools/make_releases.py --apply --force "${CUR}"
 fi
 
 echo "✅ 发版完成：https://github.com/yimuhub/yimu-lit/releases/tag/${CUR}"

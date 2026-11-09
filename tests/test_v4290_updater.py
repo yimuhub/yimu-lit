@@ -8,9 +8,26 @@ import os
 import sys
 import zipfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from bot import updater
+
+
+def _real_requirements() -> str:
+    """构造更新包时写仓库真实的 requirements.txt。
+
+    v4.32.1：这里以前写死「fastapi + pyyaml 两行」，但生产 requirements.txt
+    里根本没有 PyYAML，全仓也没有任何 import yaml。CI 只安装
+    requirements.txt + requirements-dev.txt，于是 _check_new_dependencies
+    的 find_spec("yaml") 必然为 None，解压校验与完整更新流程两个用例
+    从 v4.29.0 起一直误报「需要新依赖 yaml」，而本地 .venv 恰好旁带装了
+    PyYAML 所以全绿——典型的「测试环境与 CI 环境不一致」。
+    改用真实清单：预检要检查的包与 CI 实际安装的包天然一致；
+    with_bad_dep 分支照旧验证「新依赖被拦截」的能力。
+    """
+    with open(os.path.join(REPO_ROOT, "requirements.txt"), encoding="utf-8") as f:
+        return f.read().rstrip("\n") + "\n"
 
 
 def _make_zip(tmp_path, version="9.9.9", with_bad_dep=False):
@@ -24,7 +41,7 @@ def _make_zip(tmp_path, version="9.9.9", with_bad_dep=False):
     (root / "config.example.json").write_text("{}", encoding="utf-8")
     (root / "static" / "index.html").write_text("x", encoding="utf-8")
     (root / "requirements.txt").write_text(
-        "fastapi\npyyaml\n" + ("some-new-package\n" if with_bad_dep else ""), encoding="utf-8")
+        _real_requirements() + ("some-new-package\n" if with_bad_dep else ""), encoding="utf-8")
     zp = tmp_path / "update.zip"
     with zipfile.ZipFile(zp, "w") as zf:
         for f in root.rglob("*"):
@@ -46,6 +63,15 @@ def test_extract_whitelist_and_validate(tmp_path):
     updater._validate_staging(str(st))
     # 用户数据字段绝不进 overlay 白名单
     assert not (st / "projects").exists()
+
+
+def test_zip_requirements_tracks_repo(tmp_path):
+    """构造的更新包依赖清单必须跟着仓库走，别再手捏一份假清单。"""
+    zp = _make_zip(tmp_path)
+    st = tmp_path / "staging"
+    st.mkdir()
+    updater._extract_whitelist(str(zp), str(st))
+    assert (st / "requirements.txt").read_text(encoding="utf-8") == _real_requirements()
 
 
 def test_dependency_preflight_blocks_new_dep(tmp_path):
