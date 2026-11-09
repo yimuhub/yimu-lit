@@ -563,12 +563,27 @@ def _script_state_payload(proj, key: str, q: str = "") -> dict:
     done = sum(1 for sc in scenes if sc.get("status") == "completed")
     words = sum(sc.get("wordCount") or 0 for sc in scenes)
     cur = next((sc.get("no") for sc in scenes if sc.get("status") != "completed"), None) or (scenes[-1].get("no") if scenes else 1)
-    chars = [{"name": k, "status": f"{len(v.get('scenes') or [])} 场"} for k, v in (st.get("characters") or {}).items()]
-    locs = [{"name": k, "status": f"{len(v.get('scenes') or [])} 场"} for k, v in (st.get("locations") or {}).items()]
+    def _char_status(v):
+        # 正文抽取的角色给台词数（对改编剧更有意义），计划登记的角色给场次数
+        if v.get("from") == "body":
+            return f"{v.get('lines') or 0} 句 · {len(v.get('scenes') or [])} 集"
+        return f"{len(v.get('scenes') or [])} 场"
+
+    chars = [{"name": k, "status": _char_status(v)} for k, v in (st.get("characters") or {}).items()]
+    locs = [{"name": k, "status": f"{v.get('count') or len(v.get('scenes') or [])} 场"}
+            for k, v in (st.get("locations") or {}).items()]
+    # v4.33.5：改编剧的场次行 place 是占位「第 N 集」，时间线要换成正文里真实的地点
+    try:
+        from bot import script_entities as _se
+        _ext = _se.extract(proj.path, plan)
+    except Exception:
+        _ext = {}
     timeline = [{"chapter": sc.get("no"), "time": sc.get("time") or "",
-                 "event": (sc.get("heading") or f"{sc.get('kind') or ''} {sc.get('place') or ''}").strip(),
-                 "location": sc.get("place") or "",
-                 "characters": [x.strip() for x in re.split(r"[、，,/\s]+", str(sc.get("cast") or "")) if x.strip()]}
+                 "event": ((_ext.get("episodes") or {}).get(str(sc.get("no"))) or {}).get("title")
+                          or (sc.get("heading") or f"{sc.get('kind') or ''} {sc.get('place') or ''}").strip(),
+                 "location": _se.place_summary(_ext, sc.get("no")) if _ext else (sc.get("place") or ""),
+                 "characters": (_se.cast_of(_ext, sc.get("no")) if _ext else [])
+                               or [x.strip() for x in re.split(r"[、，,/\s]+", str(sc.get("cast") or "")) if x.strip()]}
                 for sc in scenes]
     handled = set(audit.get("handled") or []) if isinstance(audit, dict) else set()
     issues = [i for i in ((audit or {}).get("issues") or []) if i not in handled]

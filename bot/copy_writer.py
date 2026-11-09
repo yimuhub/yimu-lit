@@ -18,6 +18,9 @@ F_PLAN = "文案计划.json"
 F_OUTLINE = "00-需求与钩子.md"
 F_FINAL = "04-文案定稿.md"
 F_TITLE_TAGS = "03-标题与标签.md"
+# v4.33.5：钩子库原来只有字面量「01-钩子库.md」，工作台「钩子」页签拿不到映射
+# 就 404（页签永远空白）。给一个常量，接口与写入共用同一个名字。
+F_HOOKS = "01-钩子库.md"
 
 KTYPES = {"voice": "口播稿", "planting": "种草笔记", "promo": "宣传文案", "marketing": "营销长文"}
 PLATFORMS = {"douyin": "抖音", "xhs": "小红书", "gzh": "公众号", "bili": "B站", "shipinhao": "视频号"}
@@ -122,12 +125,12 @@ def _stage_hooks(proj, pdir, cfg, plan):
         f"主题：{cfg.get('title')}\n卖点：{cfg.get('idea')}\n"
         "钩子类型覆盖：悬念、反差、痛点、数字、热点借势、提问、直给利益。每个一行。\n"
         "输出 markdown 列表。"}], cfg=cfg, stage="review")
-    atomic_write_text(os.path.join(pdir, F_OUTLINE.replace(F_OUTLINE.split("-")[0] + "-", "") if False else "01-钩子库.md"),
+    atomic_write_text(os.path.join(pdir, F_HOOKS),
                       f"# 钩子库（前 3 秒开场）\n\n{out or '（生成失败）'}")
 
 
 def _stage_body(proj, pdir, cfg, plan, ktype, platform, tone):
-    hooks_fp = os.path.join(pdir, "01-钩子库.md")
+    hooks_fp = os.path.join(pdir, F_HOOKS)
     hooks = _read(hooks_fp)[:1500] if os.path.exists(hooks_fp) else ""
     duration = cfg.get("duration_secs") or 60
     prompt = f"写一篇{ktype}。平台：{platform}。语气：{tone}。\n"

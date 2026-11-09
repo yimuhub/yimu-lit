@@ -5393,18 +5393,55 @@ def api_script_audit_get(key: str):
     return {"ok": True, "key": key, **report}
 
 
+def _script_doc_generated(proj, tab: str) -> str:
+    """v4.33.5：文档不存在时，按正文实体现场生成一份（零模型调用）。
+
+    以前人物/结构/修订/质量/分镜五个页签在改编剧上永远是空的——因为这些
+    markdown 只由「通读修订/评分/分镜」之类的模型任务顺手写出，改编剧不走那条链。
+    但正文里其实已有 `场1：外 部落广场 白天` 和 `林野：台词`，抽出来就是可用的底稿。
+    """
+    from bot import script_entities as se
+    plan = (proj.plan() if proj else None) or {}
+    ext = se.extract(proj.path, plan)
+    if tab == "chars":
+        return se.chars_md(ext, plan)
+    if tab == "struct":
+        return se.struct_md(ext, plan)
+    if tab == "quality":
+        return se.quality_md(proj.path, ext, plan)
+    if tab == "revisions":
+        return se.revisions_md(proj.path, ext, plan)
+    if tab == "storyboard":
+        return se.storyboard_md(proj.path, ext, plan)
+    return ""
+
+
+def _script_doc(key: str, part: str) -> dict:
+    """读文档；文件为空就退回生成版，并在返回体里标注 generated。"""
+    proj = script_writer.get_project(key)
+    text = script_writer.read_file_part(key, part) or ""
+    if text.strip():
+        return {"text": text, "generated": False}
+    try:
+        gen = _script_doc_generated(proj, part)
+    except Exception as e:
+        print(f"[script] 生成 {part} 视图失败: {e.__class__.__name__}: {e}", flush=True)
+        gen = ""
+    return {"text": gen, "generated": bool(gen)}
+
+
 @app.get("/api/script/chars")
 async def api_script_chars(key: str):
     if not script_writer.get_project(key):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    return {"key": key, "text": script_writer.read_file_part(key, "chars")}
+    return {"key": key, **_script_doc(key, "chars")}
 
 
 @app.get("/api/script/struct")
 async def api_script_struct(key: str):
     if not script_writer.get_project(key):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    return {"key": key, "text": script_writer.read_file_part(key, "struct")}
+    return {"key": key, **_script_doc(key, "struct")}
 
 
 def _script_scenes_or_reparse(proj, key=""):
@@ -5444,11 +5481,38 @@ def _script_scenes_or_reparse(proj, key=""):
 
 @app.get("/api/script/scenes")
 async def api_script_scenes(key: str):
-    """场次清单（表格 + 解析后的结构化场次）。"""
+    """场次清单（表格 + 解析后的结构化场次）。
+
+    v4.33.5：改编剧的计划里一集就是一场，`place` 是占位「第 N 集」。
+    这里返回**副本**并补上正文抽到的真实地点/出场人物，让场次卡片能显示
+    「部落广场、木屋」而不是「第 1 集」；计划文件本身不动。
+    """
     proj = script_writer.get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     scenes = _script_scenes_or_reparse(proj, key)
+    try:
+        from bot import script_entities as se
+        ext = se.extract(proj.path, proj.plan() or {})
+        if ext.get("summary", {}).get("scenes"):
+            enriched = []
+            for sc in scenes:
+                row = dict(sc)
+                ep = sc.get("no")
+                ps = se.places_of(ext, ep)
+                cast = se.cast_of(ext, ep)
+                if ps:
+                    row["places"] = ps
+                    if not str(row.get("place") or "").strip() or \
+                            re.match(r"^第\s*\d+\s*集", str(row.get("place") or "").strip()):
+                        row["place"] = "、".join(ps[:3]) + (f" 等 {len(ps)} 处" if len(ps) > 3 else "")
+                if cast:
+                    row["cast"] = "、".join(cast[:6]) + ("…" if len(cast) > 6 else "")
+                    row["sceneCount"] = len(((ext.get("episodes") or {}).get(str(ep)) or {}).get("scenes") or [])
+                enriched.append(row)
+            scenes = enriched
+    except Exception:
+        pass
     return {"key": key, "text": script_writer.read_file_part(key, "scenes"),
             "scenes": scenes}
 
@@ -5804,14 +5868,14 @@ async def api_script_write(payload: dict):
 async def api_script_revisions(key: str):
     if not script_writer.get_project(key):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    return {"key": key, "text": script_writer.read_file_part(key, "revisions")}
+    return {"key": key, **_script_doc(key, "revisions")}
 
 
 @app.get("/api/script/quality")
 async def api_script_quality(key: str):
     if not script_writer.get_project(key):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    return {"key": key, "text": script_writer.read_file_part(key, "quality")}
+    return {"key": key, **_script_doc(key, "quality")}
 
 
 @app.post("/api/script/revise")
@@ -5862,10 +5926,10 @@ def api_script_storyboard(payload: dict):
 
 @app.get("/api/script/storyboard")
 async def api_script_storyboard_get(key: str):
-    """v4.5.0：分镜表数据（结构化 JSON）。"""
+    """v4.5.0：分镜表数据（结构化 JSON）。v4.33.5：未生成时给一份「差什么、怎么触发」的说明。"""
     if not script_writer.get_project(key):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    return {"key": key, "text": script_writer.read_file_part(key, "storyboard"),
+    return {"key": key, **_script_doc(key, "storyboard"),
             **script_writer.storyboard_data(key)}
 
 
@@ -6683,7 +6747,12 @@ async def api_mini_status(key: str):
 
 @app.get("/api/mini/part")
 async def api_mini_part(key: str, part: str = "final"):
-    """v4.12.1：children/news/copy 通用文档端点。"""
+    """v4.12.1：children/news/copy/other 通用文档端点。
+
+    v4.33.5：补两个必然 404 的页签——儿童文学的「故事」是 02-故事/ 目录，
+    文案的「钩子」是 01-钩子库.md（此前只有字面量、没有映射）。
+    这两处以前点开就是「part 不存在」，用户看到的是永远空白。
+    """
     for mod in (children_writer, news_writer, copy_writer, other_writer):
         proj = mod.get_project(key)
         if proj:
@@ -6702,6 +6771,21 @@ async def api_mini_part(key: str, part: str = "final"):
                 mapping["titles"] = cls.F_TITLE_TAGS
             if hasattr(cls, 'F_CHECK'):
                 mapping["check"] = cls.F_CHECK
+            if hasattr(cls, 'F_HOOKS'):
+                mapping["hooks"] = cls.F_HOOKS
+            # 「故事」页签：把 02-故事/ 下的章节按文件名顺序拼成一份可读正文
+            if part == "story" and hasattr(cls, 'BODY_DIR'):
+                body_dir = os.path.join(proj.path, cls.BODY_DIR)
+                parts = []
+                if os.path.isdir(body_dir):
+                    for fn in sorted(os.listdir(body_dir)):
+                        if fn.endswith(".md"):
+                            try:
+                                txt = open(os.path.join(body_dir, fn), encoding="utf-8").read()
+                            except Exception:
+                                continue
+                            parts.append(f"## {fn[:-3]}\n\n{txt.strip()}")
+                return {"key": key, "part": part, "text": "\n\n".join(parts)}
             fp = None
             known = part in mapping
             if known:

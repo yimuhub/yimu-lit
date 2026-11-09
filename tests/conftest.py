@@ -54,6 +54,9 @@ def _clean_shared_state():
         if isinstance(d, dict):
             d.clear()
     _livejob.reset_for_tests()
+    # v4.33.5：正文抽取结果按目录签名缓存，临时项目目录会被复用/删掉，不能跨用例留着
+    from bot import script_entities as _se
+    _se.reset_cache()
     # app.py 的运行标志注册表（_PARALLEL_RUNNING/_REWRITING/_RELEASE_RUNNING/_ONESHOT_RUNNING/_PARA_RW_RUNNING）
     for name in ("_PARALLEL_RUNNING", "_REWRITING", "_RELEASE_RUNNING",
                  "_ONESHOT_RUNNING", "_PARA_RW_RUNNING"):

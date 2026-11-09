@@ -15,6 +15,8 @@ from .safeio import atomic_write_json
 
 STATE_FILE = "18-剧本状态库.json"
 AUDIT_FILE = "22-剧本体检.json"
+# 改编剧的场次是「集」，place 只能填占位；这种值不是地点，不能进地点表
+PLACEHOLDER_PLACE = re.compile(r"^(第\s*\d+\s*[集场]|第\s*\d+\s*集.*|场景\s*\d+|\d+)$")
 
 
 def _read(pdir, name):
@@ -30,7 +32,14 @@ def _scene_body(pdir, sc):
 
 
 def build_state(pdir: str) -> dict:
-    """登记人物表 / 场景表。人物来源优先级：场次表 cast 列 > 创作圣经。"""
+    """登记人物表 / 场景表。人物来源优先级：场次表 cast 列 > 正文对白 > 创作圣经。
+
+    v4.33.5：小说改编剧在计划里「一集」就是一个 scene，`place` 只能填占位的
+    「第 N 集」、`cast` 为空——于是状态库的地点成了 50 条「第1集…第50集」，
+    人物表 0 条，工作台的人物/结构页签永远空白。
+    现在计划里缺的（或只有占位的）一律用正文抽取的实体补上：正文里
+    `场1：外 部落广场 白天` 与 `林野：台词` 是比计划更可信的底稿。
+    """
     plan = {}
     try:
         plan = json.load(open(os.path.join(pdir, "剧本计划.json"), encoding="utf-8"))
@@ -49,7 +58,7 @@ def build_state(pdir: str) -> dict:
             if sc.get("no") and sc["no"] not in c["scenes"]:
                 c["scenes"].append(sc.get("no"))
         place = str(sc.get("place") or "").strip()
-        if place:
+        if place and not PLACEHOLDER_PLACE.match(place):
             loc = locations.setdefault(place, {"scenes": []})
             if sc.get("no") and sc["no"] not in loc["scenes"]:
                 loc["scenes"].append(sc.get("no"))
@@ -59,13 +68,35 @@ def build_state(pdir: str) -> dict:
         nm = m.group(1).strip()
         if nm and nm not in characters and not any(k in nm for k in ("场景", "时间", "时代", "主题", "类型")):
             characters.setdefault(nm, {"first_scene": None, "scenes": [], "from": "bible"})
+    # v4.33.5：正文抽取补位——改编剧是唯一真相；常规剧本则是与正文对账的底稿
+    extracted: dict = {}
+    try:
+        from . import script_entities as _se
+        extracted = _se.extract(pdir, plan)
+        for nm, c in (extracted.get("characters") or {}).items():
+            if nm in characters:
+                continue
+            characters[nm] = {"first_scene": c.get("first"),
+                              "scenes": list(c.get("episodes") or []),
+                              "from": "body", "lines": c.get("lines") or 0}
+        for nm, loc in (extracted.get("locations") or {}).items():
+            if nm in locations:
+                continue
+            locations[nm] = {"scenes": list(loc.get("episodes") or []),
+                             "count": loc.get("count") or 0, "from": "body"}
+    except Exception:
+        extracted = {}
     state = {
         "characters": characters,
         "locations": locations,
         "metrics": {"scenes": len(scenes),
-                    "written": sum(1 for sc in scenes if sc.get("status") == "completed")},
+                    "written": sum(1 for sc in scenes if sc.get("status") == "completed"),
+                    "sceneCount": (extracted.get("summary") or {}).get("scenes", 0)},
         "timeline": [{"scene": sc.get("no"), "place": sc.get("place"), "time": sc.get("time")}
                      for sc in scenes[:500]],
+        "entities": {"episodes": len(extracted.get("episodes") or {}),
+                     "scenes": (extracted.get("summary") or {}).get("scenes", 0),
+                     "fromBody": bool(extracted)},
     }
     try:
         atomic_write_json(os.path.join(pdir, STATE_FILE), state)
@@ -131,11 +162,64 @@ def audit_script(pdir: str) -> dict:
             if fn.endswith(".md") and fn not in listed:
                 issues.append(f"正文文件 {fn} 不在场次清单里")
 
+    # 5) v4.33.5 正文结构体检（改编剧的场次表是空的，上面 1/2 两条查不出问题）
+    try:
+        from . import script_entities as _se
+        ext = _se.extract(pdir, plan)
+        for ep in (ext.get("summary") or {}).get("no_scene_heading") or []:
+            issues.append(f"第{ep}集正文没有可识别的场标题（`场N：内外 地点 时间`），无法核对场景一致性")
+        # 单场零对白：纯动作场是合理的，但连续多场没有台词通常是写坏了
+        silent: dict[int, int] = {}
+        for s in ext.get("scenes") or []:
+            if not s.get("lines"):
+                silent[s.get("episode")] = silent.get(s.get("episode"), 0) + 1
+        for ep, n in silent.items():
+            if n >= 2:
+                issues.append(f"第{ep}集有 {n} 场没有台词，建议确认是否写漏了对白")
+        # 主要人物断层：台词数前 5 的角色，连续 8 集以上不出现
+        # （系统/旁白这类非人声不参与——它们本来就只在需要时出现）
+        NON_HUMAN = {"系统", "系统提示音", "旁白", "画外音", "声音", "提示音"}
+        tops = sorted((ext.get("characters") or {}).items(),
+                      key=lambda kv: -(kv[1].get("lines") or 0))[:5]
+        total_ep = max((int(k) for k in (ext.get("episodes") or {}) if str(k).isdigit()),
+                       default=0)
+        for nm, c in tops:
+            if nm in NON_HUMAN:
+                continue
+            eps = c.get("episodes") or []
+            if len(eps) < 2 or total_ep < 12:
+                continue
+            gap, prev = 0, eps[0]
+            worst = None
+            for e in eps[1:] + [total_ep]:
+                if e - prev - 1 > gap:
+                    gap, worst = e - prev - 1, (prev, e)
+                prev = e
+            if gap >= 8 and worst:
+                issues.append(f"主要人物「{nm}」在第{worst[0]}–{worst[1]}集之间连续 {gap} 集未出场")
+        # 同一地点写了多个名字：长名字以短名字开头（古营核心 / 古营核心大厅），
+        # 会让人物-地点一致性对不上号。只认前缀，避免「广场 / 部落广场」这种
+        # 通名误报——那本来就不是同一个地点。
+        loc_names = sorted((ext.get("locations") or {}).keys(), key=len)
+        fuzzy: list[tuple[str, str]] = []
+        for i, short in enumerate(loc_names):
+            if len(short) < 3:
+                continue
+            for long in loc_names[i + 1:]:
+                if short != long and long.startswith(short) and (short, long) not in fuzzy:
+                    fuzzy.append((short, long))
+        if fuzzy:
+            issues.append("同一地点有多种写法（建议统一）：" + "；".join(
+                f"{a} / {b}" for a, b in fuzzy[:4]))
+    except Exception:
+        pass
+
     return {"at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
             "scope": "script", "issues": issues[:50],
             "stats": {"scenes": len(scenes), "written": state.get("metrics", {}).get("written", 0),
                       "checked": checked, "characters": len(characters),
-                      "locations": len(state.get("locations") or {})}}
+                      "locations": len(state.get("locations") or {}),
+                      "bodyScenes": state.get("metrics", {}).get("sceneCount", 0)}}
 
 
 def save_audit(pdir: str, report: dict) -> None:

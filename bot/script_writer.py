@@ -655,7 +655,20 @@ def gen_storyboard(key: str, only_scene: int | None = None) -> dict:
     is_comic = cfg.get("form") == "comic_drama"
     md_parts = [f"# {plan.get('scriptName') or key} · 分镜表\n"]
     all_shots: list[dict] = []
-    for sc in targets:
+    failed: list[str] = []
+    total = len(targets)
+
+    def _flush():
+        """v4.33.5：逐场落盘——50 集的剧跑完要几十分钟，中途被打断/失败时，
+        已经拆好的场次必须留在页签里，而不是整份丢掉（原来只在全部跑完后写一次）。"""
+        try:
+            _write(os.path.join(proj.path, F_STORYBOARD), "\n".join(md_parts) + "\n")
+            atomic_write_json(os.path.join(proj.path, F_STORYBOARD_JSON),
+                              {"form": cfg.get("form", "short_drama"), "shots": all_shots})
+        except Exception as e:
+            print(f"[script] 分镜落盘失败（第 {len(all_shots)} 镜）：{e}", flush=True)
+
+    for idx, sc in enumerate(targets, 1):
         no = sc.get("no")
         body = read_scene(key, no)
         if not body.strip():
@@ -672,9 +685,13 @@ def gen_storyboard(key: str, only_scene: int | None = None) -> dict:
         try:
             out = llm.chat_json([{"role": "user", "content": task}], stage="writing")
         except Exception as e:
-            return {"ok": False, "error": f"第 {no} 场分镜失败：{e}"}
+            # 单场失败不再整单作废：记下来继续下一场，已拆好的照样可用
+            failed.append(f"第{no}场")
+            proj.log(f"⚠️ 第 {no} 场分镜失败（{e.__class__.__name__}），跳过继续")
+            continue
         shots = out.get("shots") if isinstance(out, dict) else None
         if not isinstance(shots, list) or not shots:
+            failed.append(f"第{no}场")
             continue
         md_parts.append(f"\n## 第 {no} 场 · {scene_heading(sc)}\n")
         md_parts.append("| 镜号 | 景别 | 画面 | 台词/旁白 | 音效/BGM | 时长(s) |")
@@ -685,16 +702,20 @@ def gen_storyboard(key: str, only_scene: int | None = None) -> dict:
             md_parts.append(
                 f"| {no}-{sh.get('shot', '')} | {sh.get('size', '')} | {sh.get('picture', '')} | "
                 f"{str(sh.get('lines', '')).replace(chr(10), ' ')} | {sh.get('sfx', '')} | {sh.get('secs', '')} |")
+        _flush()
+        if idx % 5 == 0 or idx == total:
+            proj.log(f"🎬 分镜进度 {idx}/{total} 场，累计 {len(all_shots)} 个镜头")
     if not all_shots:
         return {"ok": False, "error": "分镜生成结果为空"}
-    _write(os.path.join(proj.path, F_STORYBOARD), "\n".join(md_parts) + "\n")
-    atomic_write_json(os.path.join(proj.path, F_STORYBOARD_JSON),
-                      {"form": cfg.get("form", "short_drama"), "shots": all_shots})
+    _flush()
     meta = plan.setdefault("meta", {})
-    meta["storyboard_done"] = True
+    meta["storyboard_done"] = len(failed) == 0
+    meta["storyboard_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     proj.save_plan(plan)
-    proj.log(f"🎬 分镜表已生成：{len(all_shots)} 个镜头（{len(targets)} 场）→ 08-分镜表.md")
-    return {"ok": True, "shots": len(all_shots), "scenes": len(targets)}
+    proj.log(f"🎬 分镜表已生成：{len(all_shots)} 个镜头（{len(targets) - len(failed)}/{total} 场）"
+             + (f"；失败 {len(failed)} 场：{'、'.join(failed[:6])}" if failed else "")
+             + " → 08-分镜表.md")
+    return {"ok": True, "shots": len(all_shots), "scenes": len(targets), "failed": failed}
 
 
 def storyboard_data(key: str) -> dict:
