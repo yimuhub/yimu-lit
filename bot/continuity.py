@@ -125,6 +125,21 @@ def run_project(pdir, min_words=3000, dormant=3, absent=5):
         if not hook:
             add("章末钩子缺失(信号)", "info", f"第{no}章", "章末未检测到典型钩子词（信号，非判词）")
 
+    # 5.1) v4.33.7 统一交付标准：把「不应出现的内容」作为体检 finding 输出。
+    # 只读、不阻断创作；block 级进 critical，warn 级只汇总一条，避免刷屏。
+    try:
+        from . import delivery_gate as _dg
+        _rows = [{"n": no, "title": title, "text": txt} for no, title, txt, _ in chs]
+        if _rows:
+            _rep = _dg.check_novel(_rows, profile="novel_submission")
+            for f in [x for x in _rep["findings"] if x["severity"] == "block"][:40]:
+                add(f"交付·{f['code']} {f['name']}", "critical", f["location"], f["detail"])
+            _warn = [x for x in _rep["findings"] if x["severity"] == "warn"]
+            if _warn:
+                add("交付·告警汇总", "info", "全书", f"{len(_warn)} 项，详见交付就绪报告")
+    except Exception:
+        pass
+
     return {"findings": findings, "stats": {"chapters_done": total_done,
                                              "clues_registered": len(clues)}}
 

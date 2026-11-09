@@ -1,7 +1,7 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
 import json, os, re, datetime, threading, queue, time
-from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express
+from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express, delivery_gate
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 from .paths import DATA_ROOT as ROOT, DATA_ROOT as DATA_ROOT_N
@@ -156,6 +156,13 @@ class Project:
 
     def save_plan(self, plan):
         plan["updatedAt"] = datetime.datetime.now().isoformat()
+        # v4.33.7：新建作品盖章交付规格；已有作品只在首次写盘时盖章，不追溯。
+        try:
+            from . import delivery_spec as _ds
+            _ds.stamp_plan(plan, "novel", plan_exists=os.path.exists(
+                os.path.join(self.path, "02-写作计划.json")), existing=self.plan())
+        except Exception:
+            pass
         with self.lock:   # v0.6 B：并行写作串行化 02-写作计划.json 写盘（RLock，可被读改写临界区复用）
             atomic_write_json(os.path.join(self.path, "02-写作计划.json"), plan)
 
@@ -2086,6 +2093,26 @@ def per_chapter_scores(proj):
                     "verdict": v.get("verdict", ""), "evidence": v.get("evidence") or []})
     return out
 
+def _strip_generated_heading(body: str) -> str:
+    """模型若自带「# 第NN章 …」题头行则剥掉——规范题头由落盘统一写入，避免双题头。"""
+    if re.match(r"^#{1,3}\s*第\s*\d+\s*章", (body or "").lstrip()):
+        return re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body.lstrip(), count=1)
+    return body
+
+def _missing_chapter_nos(proj, plan) -> list:
+    """v4.33.8 成书对账：返回正文文件缺失/为空的章号列表。状态只认磁盘，不认账面。"""
+    out = []
+    for c in plan.get("chapters") or []:
+        fp = _chapter_file_path(proj, c)
+        txt = ""
+        try:
+            txt = open(fp, encoding="utf-8").read().strip() if os.path.exists(fp) else ""
+        except OSError:
+            txt = ""
+        if not txt:
+            out.append(c.get("chapterNumber"))
+    return out
+
 def _write_chapter(proj, ch, min_words, max_retries):
     no = ch["chapterNumber"]
     proj.log(f"✍️ 开始第{no}章「{ch['title']}」")
@@ -2213,6 +2240,32 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 body = body2
             else:
                 proj.log(f"⚠️ 第{no}章重写后仍与近期章节相似，已保留第二次结果并标记人工复核")
+    # v4.33.8：落盘前三查（统一交付标准 N01 非中文残留 / N02 元信息·工作残留）——
+    # 不等导出闸才发现：命中即带处置指令回灌重写一次；仍命中则留痕放行（导出闸 enforcing 兜底）。
+    # 只查读者可见正文（chapter_body 口径），概要/备注小节不参与判定；极速模式也不例外——
+    # 污染类残留（diagonally、「继续写」式独白）进稿的成本远高于一次重写调用。
+    _purity_txt = purity.chapter_body(body)
+    _purity = delivery_gate.chapter_purity_blocks(_purity_txt, title=ch["title"], chapter_no=no)
+    if _purity and not _from_draft:
+        proj.log(f"🚨 第{no}章落盘预检命中 {', '.join(f['code'] for f in _purity)}（{_purity[0]['name']}），带指令回灌重写…")
+        _evt(_bk, "writer", phase="warn", title="落盘前三查命中，回灌重写",
+             output="；".join(f"{f['code']} {f['detail'][:48]}" for f in _purity), chapter=no)
+        ctx3 = dict(ctx)
+        if recent_opens:
+            ctx3["ban_openings"] = recent_opens
+        ctx3["delivery_directives"] = delivery_gate.rewrite_directives(_purity)
+        body3 = _strip_generated_heading(
+            purity.sanitize_chapter(_strip_chatter(workflow.write_chapter(ctx3))))
+        _purity3 = delivery_gate.chapter_purity_blocks(purity.chapter_body(body3),
+                                                       title=ch["title"], chapter_no=no)
+        if not _purity3:
+            body = body3
+            proj.log(f"✅ 第{no}章重写后落盘预检通过")
+        else:
+            proj.log(f"⚠️ 第{no}章重写后仍命中 {', '.join(f['code'] for f in _purity3)}，"
+                     "保留原稿并标记人工复核（导出闸会拦截）")
+            _evt(_bk, "writer", phase="warn", title="落盘前三查未清除，标记人工复核",
+                 output=f"{_purity3[0]['code']} {_purity3[0]['detail'][:48]}", chapter=no)
     # v4.16.2：字数保障体系——
     #   首写目标 = min_words × 1.1（写作提示带硬下限）；
     #   扩充结果有采纳门禁（比当前短 = LLM 抽风，丢弃防「2858→458」倒退）；
@@ -2500,6 +2553,20 @@ def _validate_and_finish(proj):
     _repaired = reconcile_completed_chapters(plan, proj.path)
     if _repaired:
         proj.log(f"🧩 成书对账：{_repaired} 章正文齐备但状态未标完成，已回填（不重写正文）")
+
+    # v4.33.8：成书对账二道闸——正文文件不齐不编译、不标 completed（48/50 也算未完成）。
+    # reconcile_completed_chapters 已把「有文件但状态缺」的章回填，走到这里还缺文件就是真缺章：
+    # 状态置 paused，点「继续」补齐后自然重新走到成书。
+    _missing = _missing_chapter_nos(proj, plan)
+    if _missing:
+        plan["status"] = "paused"
+        proj.save_plan(plan)
+        proj.log(f"🛑 成书拦截：正文缺 {len(_missing)}/{len(plan['chapters'])} 章"
+                 f"（缺：{_missing[:12]}{'…' if len(_missing) > 12 else ''}），不标 completed；点「继续」补齐后再成书")
+        _evt(os.path.basename(proj.path), "writer", phase="warn",
+             title="成书对账拦截：正文不齐不放行",
+             output=f"缺 {len(_missing)} 章：{_missing[:12]}")
+        return
 
     # 成书编译（剥离规划元信息，只保留章题/引子/正文）
     parts, total = [], 0

@@ -46,6 +46,13 @@ class MiniWriterProject:
 
     def save_plan(self, plan):
         plan["updatedAt"] = datetime.datetime.now().isoformat()
+        # v4.33.7：七个小文体新建时同样盖交付规格章（通用正文洁净档）。
+        try:
+            from bot import delivery_spec as _ds
+            _ds.stamp_plan(plan, "mini", plan_exists=os.path.exists(
+                os.path.join(self.path, self.PLAN_FILE)), existing=self.plan())
+        except Exception:
+            pass
         atomic_write_json(os.path.join(self.path, self.PLAN_FILE), plan)
 
     def status(self) -> dict:

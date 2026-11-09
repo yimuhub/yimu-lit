@@ -29,6 +29,8 @@ import math
 import os
 import re
 
+from . import delivery_gate
+
 # 蓝图版本：旧剧本没有这个字段，_resume_novel_to_drama 据此判定需要升级
 ADAPTER_VERSION = 2
 
@@ -349,6 +351,12 @@ def validate_episode(body: str, *, min_chars: int = MIN_EPISODE_CHARS,
     # 中文剧本正常以句号、引号、动作括号收束；以汉字/字母收尾即「扶手上」这类残片
     if last not in _TAIL_OK:
         return False, "正文末尾没有收束标点，疑似输出截断"
+    # v4.33.7 统一交付标准：语言污染 / 元信息泄漏属于任何档位都不允许的硬缺陷。
+    # 命中后返回的原因会被 generate_episode 自动回灌给模型重写，不新增重试轮次。
+    _hard = [f for f in delivery_gate.check_episode(text, profile="universal")
+             if f["severity"] == "block" and f["code"] in ("N02", "N03", "S11")]
+    if _hard:
+        return False, "；".join(f"{f['code']} {f['name']}：{f['detail']}" for f in _hard[:2])
     return True, ""
 
 

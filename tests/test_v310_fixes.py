@@ -66,6 +66,9 @@ def _mk_book(tmp_path, status="validating", chapters=None):
          "minWordsPerChapter": 3000, "chapters": chs}, ensure_ascii=False), encoding="utf-8")
     # 第3章文件有实质内容
     (pdir / "第03章.md").write_text("正文" * 1500, encoding="utf-8")
+    # v4.33.8 成书对账：成书 = 所有正文文件齐备，夹具必须把 3 章正文都落盘
+    for i in (1, 2):
+        (pdir / f"第{i:02d}章.md").write_text("正文" * 1500, encoding="utf-8")
     return pdir
 
 

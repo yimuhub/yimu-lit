@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import glob
 import html
 import io
 import os
@@ -11,7 +12,7 @@ import re
 import uuid
 import zipfile
 
-from . import purity
+from . import delivery_gate, purity
 
 _SCENE_RE = re.compile(r"^(内景|外景|内/外景|日景|夜景|INT\.?|EXT\.?|I/E)", re.I)
 _NONAME_RE = re.compile(r"[，。！？,.!?：:；;、\s]")
@@ -66,6 +67,50 @@ def script_scenes(proj) -> list[dict]:
         if text:
             out.append({"no": sc.get("no"), "heading": sc.get("heading") or "", "text": text})
     return out
+
+
+# ---------------------------------------------------------------- 交付闸门
+
+def delivery_report(proj) -> dict:
+    """统一交付标准：按作品实际文体产出《交付就绪报告》（只读）。
+
+    所有导出格式共用这一份口径；调用方据此决定是否放行交付。
+    """
+    plan = proj.plan() or {}
+    if is_script(proj):
+        from . import script_writer
+        sproj = script_writer.ScriptProject(proj.path, proj.name)
+        rows = [{"n": sc["no"], "title": sc["heading"], "text": sc["text"]}
+                for sc in script_scenes(sproj)]
+        return delivery_gate.check_delivery(rows, title=plan.get("scriptName") or proj.name,
+                                            kind="script",
+                                            profile=plan.get("deliveryProfile") or None)
+    _plan_files = [f for f in glob.glob(os.path.join(proj.path, "*计划.json"))
+                   if os.path.basename(f) != "02-写作计划.json"]
+    kind = "mini" if _plan_files and not (plan.get("chapters") or []) else "novel"
+    return delivery_gate.check_delivery(novel_chapters(proj),
+                                        title=plan.get("novelName") or proj.name,
+                                        kind=kind,
+                                        profile=plan.get("deliveryProfile") or None)
+
+
+def release_export_block(plan: dict) -> tuple[bool, str]:
+    """v4.33.8 未达标不放行：放行门禁已跑且明确未放行（meta.released is False）的作品，
+    整书导出默认拦截。released 缺失（历史作品 / 未跑门禁 / 已放行）一律不拦。
+
+    返回 (blocked, message)；调用方在 enforcing 档位下阻断，force=1 时带标注放行。
+    """
+    meta = (plan or {}).get("meta") or {}
+    if meta.get("released") is not False:
+        return False, ""
+    fq = meta.get("final_quality")
+    pl = ((plan.get("config") or {}).get("validation") or {}).get("pass_line") or 80
+    try:
+        pl = int(pl)
+    except (TypeError, ValueError):
+        pl = 80
+    return True, (f"成书未过放行门禁（最终质量 {fq if fq is not None else '?'} 分 < 达标线 {pl}）。"
+                  "请先跑「放行门禁」至达标，或加 force=1 带「未放行初稿」标注导出。")
 
 
 # ---------------------------------------------------------------- Markdown

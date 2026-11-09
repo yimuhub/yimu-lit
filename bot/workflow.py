@@ -373,6 +373,12 @@ def write_chapter(ctx, book_key="", chapter_no=0):
         if track:
             hookblock = (f"\n【手法账本（最近几章实际用过的断章钩子与情绪）】{track}。\n"
                          "本章必须换一种钩子类型与情绪配比，不得与上面任何一章相同。\n")
+    # v4.33.8：交付预检处置指令——上一稿命中 N01/N02 被打回，机器检测项逐条照办
+    ddir = ctx.get("delivery_directives") or []
+    dblock = ""
+    if ddir:
+        dblock = ("\n【交付预检处置指令（上一稿命中以下禁止项被打回，本稿必须全部消除，否则视为无效交稿）】\n"
+                  + "\n".join(f"- {s}" for s in ddir) + "\n")
     if ctx.get("continuation"):
         user_p = (
             f"{bblock}"
@@ -384,7 +390,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
             f"{banblock}{hookblock}"
             f"{cont}\n"
             f"{p5}\n"
-            f"{qblock}{fblock}\n"
+            f"{qblock}{fblock}{dblock}\n"
             f"现在续写第 {ctx['chapter_no']} 章。这是承接前文的续写章：请严格消化上一章结尾的语态与悬念，"
             f"自然推进剧情，可引入新的转折/冲突/角色（须符合人物性格与既定设定），严禁重复已写情节；"
             f"严守人物性格一致性，结尾必留钩子。输出章节文件内容。"
@@ -401,7 +407,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
         f"{banblock}{hookblock}"
         f"{cont}\n"
         f"{p5}\n"
-        f"{qblock}{fblock}\n"
+        f"{qblock}{fblock}{dblock}\n"
         f"现在写第 {ctx['chapter_no']} 章「{ctx['chapter_title']}」。严格按该章在大纲中的规划（核心事件/承接/钩子/出场人物/场景）创作。"
         f"输出章节文件内容。"
     )

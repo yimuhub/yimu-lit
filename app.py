@@ -4501,7 +4501,7 @@ class _ExportError(Exception):
         self.status = status
 
 
-def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
+def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0):
     """构建导出产物（v4.32.0 从 GET /api/export 抽出，桌面保存对话框复用）。
     返回 (data, media, ext, title)；错误抛 _ExportError。"""
     proj = _get_project(key)
@@ -4555,6 +4555,31 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
         chapters = [{"n": 1, "title": doc_label, "text": ftext}] if ftext else []
     if not chapters:
         raise _ExportError("还没有可导出的正文")
+    # v4.33.7 统一交付闸门：所有导出格式共用同一份《交付就绪报告》。
+    # 盖了交付规格章的整书导出 = enforcing（有禁止项即拒绝）；未盖章的历史作品、
+    # 分章导出与显式 force=1 只出报告、不锁死取回。报告写到项目目录供复核。
+    from bot import delivery_gate as _dg, delivery_spec as _ds
+    _kind = "script" if is_script else ("novel" if novel else "mini")
+    _declared = str(plan.get("deliveryProfile") or "").strip() or _ds.profile_for(_kind)
+    _stamped = bool(plan.get("deliverySpecVersion"))
+    _enforce = "enforcing" if (_stamped and not (frm or to) and not force) else "advisory"
+    _rep = _dg.check_delivery(chapters, title=title, kind=_kind, profile=_declared)
+    try:
+        with open(os.path.join(proj.path, "22-交付就绪报告.md"), "w", encoding="utf-8") as _f:
+            _f.write(_dg.report_markdown(_rep))
+    except OSError:
+        pass
+    _ok, _msg = _dg.export_ready(_rep, enforcement=_enforce)
+    if not _ok:
+        raise _ExportError(_msg, 409)
+    # v4.33.8 未达标不放行：放行门禁已跑且未放行的盖章作品，整书导出默认拦截；
+    # force=1 可带「未放行初稿」标注取阅——绝不静默把 59 分当定稿交付。
+    _rel_block, _rel_msg = export_mod.release_export_block(plan)
+    if _rel_block and _enforce == "enforcing" and not (frm or to):
+        if not force:
+            raise _ExportError(_rel_msg, 409)
+        _fq = (plan.get("meta") or {}).get("final_quality")
+        title = f"{title}（未放行初稿{_fq if _fq is not None else ''}分）"
     # v4.27.3：章节范围过滤（闭区间；0=不限）——docx/epub/print 都吃 chapters，
     # md 由过滤后的章手拼（markdown(proj) 只能整书）。
     ranged = bool(frm or to)
@@ -4626,13 +4651,13 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
 
 
 @app.get("/api/export")
-def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0):
+def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0):
     """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。
     v4.27.3：frm/to 章节范围——侧栏「导出」弹窗可选整书或某几章（闭区间，0=不限）。
     v4.32.0：构建逻辑下沉 _export_build（桌面原生保存对话框复用同一套）。"""
     from urllib.parse import quote
     try:
-        data, media, ext, title = _export_build(key, fmt, frm, to)
+        data, media, ext, title = _export_build(key, fmt, frm, to, force)
     except _ExportError as e:
         return JSONResponse({"error": e.msg}, status_code=e.status)
     fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
@@ -4659,7 +4684,7 @@ def _save_payload(kind: str, payload: dict):
         fmt = str(p.get("fmt") or "docx").lower()
         frm = int(p.get("frm") or 0)
         to = int(p.get("to") or 0)
-        data, _media, ext, title = _export_build(key, fmt, frm, to)
+        data, _media, ext, title = _export_build(key, fmt, frm, to, int(p.get("force") or 0))
         return data, f"{_safe_export_name(title)}.{ext}", ext
     if kind == "diagnostics":
         text, scope = _build_diagnostics_text(p)
@@ -7007,7 +7032,9 @@ if os.path.isdir(_V2_DIR):
 def api_export_post(payload: dict):
     """兼容 v2 前端的 POST 调用；实际导出仍复用 GET /api/export。"""
     return api_export(str(payload.get("key") or ""),
-                      str(payload.get("format") or payload.get("fmt") or "docx"))
+                      str(payload.get("format") or payload.get("fmt") or "docx"),
+                      int(payload.get("frm") or 0), int(payload.get("to") or 0),
+                      int(payload.get("force") or 0))
 
 
 from bot.v2api import register_v2_routes  # noqa: E402  (需在 _get_project/chat 定义后注册)

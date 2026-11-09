@@ -39,6 +39,22 @@ F_CHARS = "01-人物小传.md"
 F_STRUCT = "02-结构大纲.md"
 F_SCENES = "03-场次清单.md"
 F_BODY = "04-正文"
+
+
+def _missing_scene_nos(proj, plan) -> list:
+    """v4.33.8 成书对账：返回场文件缺失/为空的场号列表。状态只认磁盘，不认账面。"""
+    out = []
+    bd = proj.body_dir()
+    for sc in (plan.get("scenes") or []):
+        fp = os.path.join(bd, sc.get("fileName") or f"第{sc.get('no') or 0:03d}场.md")
+        txt = ""
+        try:
+            txt = open(fp, encoding="utf-8").read().strip() if os.path.exists(fp) else ""
+        except OSError:
+            txt = ""
+        if not txt:
+            out.append(sc.get("no"))
+    return out
 F_REVISIONS = "05-修订记录.md"
 F_SEASON = "06-季弧与分集.md"
 F_QUALITY = "07-质量报告.md"
@@ -155,6 +171,13 @@ class ScriptProject:
 
     def save_plan(self, plan: dict) -> None:
         plan["updatedAt"] = datetime.datetime.now().isoformat()
+        # v4.33.7：新建剧本/改编剧盖章交付规格；已有作品不追溯盖章。
+        try:
+            from . import delivery_spec as _ds
+            _ds.stamp_plan(plan, "script", plan_exists=os.path.exists(
+                os.path.join(self.path, F_PLAN)), existing=self.plan())
+        except Exception:
+            pass
         with self.lock:
             # v4.33.3：completed 只增不减。所有保存方都是「整份覆盖」，只要某个
             # 写入者手里的快照比磁盘旧（另一个 worker / 同一部的改编线程），就会
@@ -1149,8 +1172,18 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
             plan["status"] = "paused"
             proj.log("⏸ 并行创作已暂停，点「继续」可从当前进度恢复")
         elif done >= total and total:
-            plan["status"] = "completed"
-            plan.setdefault("meta", {})["stage"] = "S7"
+            # v4.33.8：成书对账——场文件不齐/为空不标 completed（48/50 也算未完成）。
+            # 状态只认磁盘上的正文，不认账面 status；缺场置 in_progress，点「继续」补齐。
+            _missing_eps = _missing_scene_nos(proj, plan)
+            if _missing_eps:
+                plan["status"] = "in_progress"
+                _shown = sorted((x for x in _missing_eps if x is not None),
+                                key=lambda v: int(v) if str(v).isdigit() else 9999)
+                proj.log(f"🛑 成书对账拦截：{len(_missing_eps)} 场文件缺失/为空"
+                         f"（{_shown[:8]}），不标 completed；点「继续」补齐")
+            else:
+                plan["status"] = "completed"
+                plan.setdefault("meta", {})["stage"] = "S7"
         else:
             plan["status"] = "in_progress"
         proj.save_plan(plan)

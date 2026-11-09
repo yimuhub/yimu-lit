@@ -90,6 +90,9 @@ def test_empty_plan_rebuilds_instead_of_finishing(tmp_path, monkeypatch):
     assert rebuilt == ["空计划"]
     assert not finished   # 守卫路径不得触发完结
     monkeypatch.undo()    # 恢复真实的 _validate_and_finish
+    # v4.33.8 成书对账：成书 = 所有正文文件齐备，先把两章正文落盘再完结
+    for i in range(1, 3):
+        (pdir / f"第{i:02d}章.md").write_text("正文" * 1500, encoding="utf-8")
     writer._validate_and_finish(proj)
     assert proj.plan()["status"] == "completed"   # 有章节时正常完结不受影响
 
