@@ -6173,7 +6173,13 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
             continue
     writer.mark_pipeline(new_key_base, True)   # 全程「创作中」，不是只有分镜阶段
     total_eps = len(outline)
-    finished_eps = 0
+    # 续跑时从「已完成」起算：断点续跑第 8 集不能把进度条从 7/50 打回 0/50
+    finished_eps = sum(
+        1 for sc in by_no.values()
+        if sc.get("status") == "completed"
+        and os.path.exists(_adapt_scene_body_path(pdir, sc)))
+    livejob.update(new_key_base, phase="writing", total=total_eps, done=finished_eps,
+                   detail=f"全书 {total_eps} 集，已完成 {finished_eps} 集，开始/继续逐集写作…")
     try:
         run_outline = ([ep for ep in outline if ep["no"] in set(only_episodes)]
                        if only_episodes is not None else outline)
