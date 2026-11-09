@@ -37,6 +37,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 25          # 防止任何一步无声挂死（此前 npm 卡了 27 分钟还没停）
     strategy:
       fail-fast: false
       matrix:
@@ -56,13 +57,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
       - name: Frontend inline JS syntax
         run: python tools/check_frontend_js.py
       # v4.24.12：jsdom 真渲染回归——「创作状态按钮刷新后消失」和「极速入口看不见」
       # 这两类问题用字符串断言查不出来（元素压根没进 DOM），必须真跑一遍渲染。
+      #
+      # 2026-11-09（v4.33.4 之后补）：这一步连续两轮卡在 npm install 上 20+ 分钟。
+      # 根因是 package-lock.json 里 37 个包的 resolved 全指向镜像
+      # registry.npmmirror.com（国内装机快），GitHub 的 Azure runner 拉这个源极慢。
+      # 因此 CI 侧强制走 npmjs 官方源，并用 --no-package-lock 忽略 lock 里的镜像地址：
+      # 只有 jsdom 一个依赖，重新解析代价很小；本地开发仍用 mirror（lock 不动）。
+      # 再加 8 分钟硬超时，网络抖动就直接红，而不是把 job 挂到天荒地老。
       - name: Frontend jsdom render tests
+        timeout-minutes: 8
+        env:
+          npm_config_registry: https://registry.npmjs.org
         run: |
-          npm install --no-audit --no-fund
+          npm install --no-package-lock --no-audit --no-fund --fetch-timeout=45000 --fetch-retries=2
           npm test
       # 接线体检要 import app 并问 node 要 api.js 的真实 key，所以放在 node
       # 之后；没有 node 时会退回正则，结论会偏宽松，不能当门禁用。
