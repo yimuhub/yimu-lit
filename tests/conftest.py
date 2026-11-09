@@ -40,14 +40,20 @@ def _clean_shared_state():
     名字唯一（_clean_shared_state），不会被模块级同名 fixture 遮蔽。"""
     import app as _app
     from bot import writer as _writer
+    from bot import livejob as _livejob
     regs = [
         (_app, "SESSIONS"), (_app, "PROJECT_INDEX"),
         (_writer, "_RUNNING_BOOKS"), (_writer, "_PARA_RW_PROGRESS"),
+        # v4.33.3：v4.33.1 新增的两份全局状态也要登记，否则前一个用例遗留的
+        # 「正在跑」会让 /api/status 的 running 断言串味（本地跑两遍才现形，
+        # CI 上表现为莫名其妙的红）。
+        (_writer, "_PIPELINE_COUNT"),
     ]
     for owner, name in regs:
         d = getattr(owner, name, None)
         if isinstance(d, dict):
             d.clear()
+    _livejob.reset_for_tests()
     # app.py 的运行标志注册表（_PARALLEL_RUNNING/_REWRITING/_RELEASE_RUNNING/_ONESHOT_RUNNING/_PARA_RW_RUNNING）
     for name in ("_PARALLEL_RUNNING", "_REWRITING", "_RELEASE_RUNNING",
                  "_ONESHOT_RUNNING", "_PARA_RW_RUNNING"):
@@ -59,6 +65,7 @@ def _clean_shared_state():
         d = getattr(owner, name, None)
         if isinstance(d, dict):
             d.clear()
+    _livejob.reset_for_tests()
     for name in ("_PARALLEL_RUNNING", "_REWRITING", "_RELEASE_RUNNING",
                  "_ONESHOT_RUNNING", "_PARA_RW_RUNNING"):
         d = getattr(_app, name, None)
