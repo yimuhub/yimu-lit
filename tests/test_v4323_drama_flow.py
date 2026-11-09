@@ -24,8 +24,20 @@ SRC = "20260101-000000-测试小说"
 DRAMA = SRC + "-短剧"
 
 
-def _drama_plan(root, *, done=3, status="writing", storyboard=False):
-    """造一个改编剧本项目：前 done 集有正文，其余留 pending。"""
+GOOD_EPISODE = (
+    "**场1：内 某地 日**\n\n（张三推门而入，环顾四周。）\n\n"
+    "张三：走吧。\n李四：等等。\n王五：好。\n\n"
+    "**场2：外 广场 夜**\n\n（灯亮，众人停步。）\n\n"
+    "张三：到此为止。\n"
+) * 12   # 过 v4.33.0 质量门禁：字数/场景/台词/收束标点都合格
+
+
+def _drama_plan(root, *, done=3, status="writing", storyboard=False, legacy=False):
+    """造一个改编剧本项目：前 done 集有正文，其余留 pending。
+
+    v4.33.0：默认造「新版全书蓝图」剧本；legacy=True 复现旧版 12 集残缺剧本，
+    供升级路径的回归用例使用。
+    """
     d = root / DRAMA
     d.mkdir(exist_ok=True)
     body = d / "04-正文"
@@ -35,18 +47,25 @@ def _drama_plan(root, *, done=3, status="writing", storyboard=False):
         ok = no <= done
         fn = f"第{no:03d}场.md"
         if ok:
-            (body / fn).write_text(f"内景 某地 日\n\n第 {no} 集正文。", encoding="utf-8")
+            (body / fn).write_text(GOOD_EPISODE, encoding="utf-8")
         scenes.append({"no": no, "kind": "集", "place": f"第 {no} 集",
+                       "chapters": [no], "title": f"第{no}章",
                        "status": "completed" if ok else "pending",
-                       "fileName": fn, "wordCount": 60 if ok else 0})
+                       "fileName": fn, "wordCount": len(GOOD_EPISODE) if ok else 0})
     plan = {
         "version": 1, "scriptName": "测试小说·短剧", "projectPath": str(d),
         "medium": "script", "form": "short_drama", "formLabel": "AI短剧",
         "entryPath": "adapt", "status": status, "scenes": scenes,
-        "adaptedFrom": {"key": SRC, "chapters": [1, 2, 3]},
+        "adaptedFrom": {"key": SRC, "chapters": [1, 2, 3], "totalChapters": 3},
         "config": {"form": "short_drama", "title": "测试小说·短剧"},
         "meta": {"storyboard_done": bool(storyboard)},
     }
+    if not legacy:
+        plan["adaptation"] = {
+            "version": 2, "chaptersPerEpisode": 1, "minChars": 700,
+            "totalEpisodes": 3,
+            "blueprint": [{"no": n, "chapters": [n]} for n in range(1, 4)],
+        }
     (d / "剧本计划.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
     return d
 
@@ -141,26 +160,28 @@ def test_resume_adapted_drama_never_reports_no_task(env, monkeypatch):
 
 
 def test_resume_only_reruns_missing_episodes(env, monkeypatch):
-    """断点续跑只补缺的集，不把已完成的集重写一遍。"""
+    """断点续跑只补不合格的集，不把已合格的集重写一遍（v4.33.0 蓝图口径）。"""
     import app as appmod
 
     _drama_plan(env["root"], done=2, storyboard=False)
     captured = {}
 
-    def fake_impl(src_key, form, chapters, key, src_plan, proj=None, resume=False):
-        captured.update(chapters=[c["chapterNumber"] for c in chapters],
-                        resume=resume, key=key)
+    def fake_impl(src_key, form, chapters, key, src_plan, proj=None, resume=False, **kw):
+        captured.update(resume=resume, key=key,
+                        only=kw.get("only_episodes"),
+                        total=len(kw.get("outline") or []))
         return {"ok": True}
 
     monkeypatch.setattr(appmod, "_novel_to_drama_impl", fake_impl)
     r = env["client"].post("/api/resume", json={"key": DRAMA})
     assert r.status_code == 200, r.text
-    assert "剩余 1 集" in r.json()["msg"]
+    assert "1 集需要重写" in r.json()["msg"]
     for _ in range(50):
         if captured:
             break
         time.sleep(0.02)
-    assert captured.get("chapters") == [3]
+    assert captured.get("only") == [3]
+    assert captured.get("total") == 3
     assert captured.get("resume") is True
     assert captured.get("key") == DRAMA
 
@@ -199,15 +220,17 @@ def test_adaptation_writes_progress_after_every_episode(env, monkeypatch):
             p = json.loads(fp.read_text(encoding="utf-8"))
             snapshots.append(sum(1 for s in p.get("scenes") or []
                                  if s.get("status") == "completed"))
-        return "内景 某地 日\n\n张三：走。" * 20
+        return GOOD_EPISODE
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(script_writer, "gen_storyboard",
                         lambda key: {"ok": True, "shots": 3, "scenes": 3})
     plan = json.loads((proot / SRC / "02-写作计划.json").read_text(encoding="utf-8"))
     src_proj = appmod._get_project(SRC)
+    # 1 章/集让 3 章 → 3 集，便于沿用原来的 x/3 进度快照断言
     res = appmod._novel_to_drama_impl(SRC, "short_drama", plan["chapters"],
-                                      DRAMA, plan, src_proj)
+                                      DRAMA, plan, src_proj,
+                                      settings={"chapters_per_episode": 1})
     assert snapshots == [0, 1, 2], snapshots   # 每次 LLM 调用前，前几集已落盘
     assert res["done"] == 3 and res["pending"] == 0
     final = json.loads((drama / "剧本计划.json").read_text(encoding="utf-8"))

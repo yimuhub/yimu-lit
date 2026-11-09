@@ -1082,76 +1082,8 @@ function workPane(ctx) {
       class: 'btn btn-sm',
       type: 'button',
       html: `${icon('film', 13)}<span>转短剧</span>`,
-      title: '把已完成的章节一键改编成 AI 短剧分集剧本并自动分镜',
-      on: {
-        click: async () => {
-          try {
-            const res = await api.novelToDrama({ key: work.key, form: 'short_drama' });
-            const newKey = res.key_hint || '';
-            const dramaName = res.name_hint || '改编短剧';
-            let pollInterval = 0;
-            /* v4.32.3：用户实拍「点查看剧本没有任何反应」。三个叠加原因：
-               ① 点击只 navigate，弹窗从不关闭，遮罩把后面的界面全挡住；
-               ② 按钮要等 6 秒轮询成功才解禁，期间点了等于没点；
-               ③ 新项目还没进作品库缓存，路由渲染成「作品不存在」。
-               现在：点击立刻关弹窗 → 左侧插入全新剧本任务会话 → 刷新作品库 → 切路由。 */
-            const openDramaSession = () => {
-              if (!newKey) return;
-              clearInterval(pollInterval);
-              dramaModal.close();
-              if (ctx && typeof ctx.addPendingWork === 'function') {
-                ctx.addPendingWork({ key: newKey, name: dramaName, medium: 'script' });
-              }
-              if (ctx && ctx.refreshLibrary) ctx.refreshLibrary().catch(() => {});
-              navigate(routePath('work', { key: newKey }));
-            };
-            const statusBtn = h('button', {
-              class: 'btn btn-primary btn-sm',
-              type: 'button',
-              text: '查看剧本（进行中…）',
-              on: { click: openDramaSession }
-            });
-            const body = h('div', { class: 'rp-drama-modal-body' },
-              h('div', { class: 'rp-drama-modal-line' },
-                h('span', { class: 'rp-drama-modal-ico' }, '🎬'),
-                h('span', {}, `《${work.name || work.key}》 正在改编为《${dramaName}》`),
-              ),
-              h('p', { class: 'rp-drama-modal-note' },
-                '剧本与分镜在后台逐集生成，进度实时可见。点击「查看剧本」会在左侧新建一个剧本任务会话，可直接查看场次与分镜；也可以先关闭，稍后从作品库进入。'),
-            );
-            const closeBtn = h('button', {
-              class: 'btn btn-sm',
-              type: 'button',
-              text: '关闭'
-            });
-            const dramaModal = openModal({
-              title: '小说 → AI 短剧',
-              subtitle: '改编任务已启动',
-              body,
-              size: 'sm',
-              footer: h('div', {}, statusBtn, closeBtn),
-              onClose: () => clearInterval(pollInterval)
-            });
-            closeBtn.addEventListener('click', () => dramaModal.close());
-            /* 轮询：项目落盘后更新文案并同步左侧列表；running=false 视为完成。
-               404/异常只表示尚未落盘，下一轮再试（按钮始终可点，不再禁用）。 */
-            pollInterval = setInterval(async () => {
-              try {
-                const st = await api.scriptStatus(newKey);
-                statusBtn.textContent = st.running ? '查看剧本（创作中…）' : '查看剧本（已完成 ✓）';
-                if (ctx && ctx.refreshLibrary) ctx.refreshLibrary().catch(() => {});
-                if (!st.running) clearInterval(pollInterval);
-              } catch {
-                /* 尚未落盘，下一轮再试 */
-              }
-            }, 3000);
-            setTimeout(() => clearInterval(pollInterval), 300000); // 5 min 停止轮询
-            toast(res.msg || '改编已后台启动', { tone: 'success', duration: 3000 });
-          } catch (err) {
-            toast(errorText(err, '改编失败'), { tone: 'danger' });
-          }
-        }
-      }
+      title: '把整本小说改编成 AI 短剧分集剧本（可选改编范围与每集章数）',
+      on: { click: () => openDramaAdaptDialog({ work, ctx }) }
     }),
     /* v4.20.0：统一三态创作控制——running→「创作中」（竖杠闪烁、点击请求暂停、乐观反馈）；
        paused / 线程中断→「继续」（点击恢复）；空闲/完成→隐藏。防连点由工厂统一处理。 */
@@ -2846,4 +2778,154 @@ export function renderRightPanel(container, ctx) {
   body.scrollTop = scrollTop;
 
   return { tab };
+}
+
+/* ---------------------------------------------------------------- 小说 → AI 短剧改编
+   v4.33.0：旧版把一本 100 章 / 25 万字的小说硬截成前 12 章，产出 12「场」
+   不到 1 万字，其中还有 42 字的模型截断残片被记成「已完成」。
+   现在改编前先确认范围与密度，并把后端算出的真实集数展示给用户；
+   启动后仍沿用 v4.32.3 的「左侧新建会话 + 实时查看」链路。 */
+function openDramaAdaptDialog({ work, ctx }) {
+  const done = Math.max(1, Number(work.done) || 0);
+  const scopeOptions = [{ value: 'all', label: `全书（已完成 ${done} 章）` }];
+  for (const n of [12, 24, 60, 100]) {
+    if (n < done) scopeOptions.push({ value: String(n), label: `前 ${n} 章` });
+  }
+  /* 内联中性色，不引入未定义类；currentColor / inherit 让它跟随明暗主题 */
+  const fieldStyle = {
+    width: '100%', marginTop: '6px', padding: '6px 8px',
+    border: '1px solid rgba(128,128,128,.5)', borderRadius: '6px',
+    background: 'transparent', color: 'inherit', fontSize: '13px'
+  };
+  const scopeSel = h('select', { style: fieldStyle },
+    scopeOptions.map(o => h('option', { value: o.value, text: o.label })));
+  const densitySel = h('select', { style: fieldStyle },
+    [1, 2, 3, 4].map(n => h('option', {
+      value: String(n),
+      text: `${n} 章 / 集${n === 2 ? '（推荐）' : ''}`,
+      selected: n === 2
+    })));
+  const rebuildBox = h('input', { type: 'checkbox', style: { marginRight: '6px' } });
+  const estimate = h('p', { class: 'rp-drama-modal-note' });
+  const updateEstimate = () => {
+    const scope = scopeSel.value;
+    const chaptersPerEpisode = Number(densitySel.value) || 2;
+    const chapters = scope === 'all' ? done : Math.min(done, Number(scope) || done);
+    const episodeCount = Math.max(1, Math.ceil(chapters / chaptersPerEpisode));
+    estimate.textContent = `预计 ${episodeCount} 集，覆盖原著 ${chapters} 章。每集都会携带全书设定、人物表与前情提要；字数不足或输出截断的残稿不会计入完成。`;
+  };
+  scopeSel.addEventListener('change', updateEstimate);
+  densitySel.addEventListener('change', updateEstimate);
+  updateEstimate();
+
+  const settingsBody = h('div', { class: 'rp-drama-modal-body' },
+    h('p', { class: 'rp-drama-modal-note' },
+      '整本书按章节顺序重新分集改编，不再只取前 12 章。后台逐集生成，可随时暂停 / 继续。'),
+    h('label', { style: { display: 'block', marginTop: '10px' } }, '改编范围', scopeSel),
+    h('label', { style: { display: 'block', marginTop: '10px' } }, '每集覆盖', densitySel),
+    h('label', { style: { display: 'block', marginTop: '10px' } },
+      rebuildBox, '重新改编全书（覆盖旧稿，旧稿自动归档）'),
+    estimate
+  );
+  let settingsModal = null;
+  const cancelBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '取消' });
+  const startBtn = h('button', { class: 'btn btn-primary btn-sm', type: 'button', text: '开始改编' });
+  settingsModal = openModal({
+    title: '小说 → AI 短剧',
+    subtitle: '改编设置',
+    body: settingsBody,
+    size: 'sm',
+    footer: h('div', {}, cancelBtn, startBtn)
+  });
+  cancelBtn.addEventListener('click', () => settingsModal.close());
+  startBtn.addEventListener('click', async () => {
+    const scope = scopeSel.value;
+    const chaptersPerEpisode = Number(densitySel.value) || 2;
+    const payload = {
+      key: work.key,
+      form: 'short_drama',
+      chapters_per_episode: chaptersPerEpisode
+    };
+    if (scope !== 'all') {
+      payload.chapters = Array.from({ length: Number(scope) }, (_, i) => i + 1);
+    }
+    if (rebuildBox.checked) payload.rebuild = true;
+    settingsModal.close();
+    try {
+      await startDramaAdaptation({ payload, work, ctx });
+    } catch (err) {
+      toast(errorText(err, '改编失败'), { tone: 'danger' });
+    }
+  });
+}
+
+async function startDramaAdaptation({ payload, work, ctx }) {
+  const res = await api.novelToDrama(payload);
+  const newKey = res.key_hint || '';
+  const dramaName = res.name_hint || '改编短剧';
+  const episodeCount = res.episode_count || 0;
+  let pollInterval = 0;
+  let dramaModal = null;
+  /* v4.32.3：用户实拍「点查看剧本没有任何反应」。三个叠加原因：
+     ① 点击只 navigate，弹窗从不关闭，遮罩把后面的界面全挡住；
+     ② 按钮要等轮询成功才解禁，期间点了等于没点；
+     ③ 新项目还没进作品库缓存，路由渲染成「作品不存在」。
+     现在：点击立刻关弹窗 → 左侧插入全新剧本任务会话 → 刷新作品库 → 切路由。 */
+  const openDramaSession = () => {
+    if (!newKey) return;
+    clearInterval(pollInterval);
+    if (dramaModal) dramaModal.close();
+    if (ctx && typeof ctx.addPendingWork === 'function') {
+      ctx.addPendingWork({ key: newKey, name: dramaName, medium: 'script' });
+    }
+    if (ctx && ctx.refreshLibrary) ctx.refreshLibrary().catch(() => {});
+    navigate(routePath('work', { key: newKey }));
+  };
+  if (res.already_exists) {
+    toast(res.msg || '该剧本已存在，已为你打开', { tone: 'info', duration: 6000 });
+    openDramaSession();
+    return;
+  }
+  const statusBtn = h('button', {
+    class: 'btn btn-primary btn-sm',
+    type: 'button',
+    text: '查看剧本（进行中…）',
+    on: { click: openDramaSession }
+  });
+  const body = h('div', { class: 'rp-drama-modal-body' },
+    h('div', { class: 'rp-drama-modal-line' },
+      h('span', { class: 'rp-drama-modal-ico' }, '🎬'),
+      h('span', {}, `《${work.name || work.key}》 正在改编为《${dramaName}》`),
+    ),
+    h('p', { class: 'rp-drama-modal-note' },
+      `全书 ${res.chapter_count || ''} 章 → ${episodeCount} 集，逐集生成、实时可见。点击「查看剧本」会在左侧新建一个剧本任务会话；也可以先关闭，稍后从作品库进入。`),
+  );
+  const closeBtn = h('button', {
+    class: 'btn btn-sm',
+    type: 'button',
+    text: '关闭'
+  });
+  dramaModal = openModal({
+    title: '小说 → AI 短剧',
+    subtitle: '改编任务已启动',
+    body,
+    size: 'sm',
+    footer: h('div', {}, statusBtn, closeBtn),
+    onClose: () => clearInterval(pollInterval)
+  });
+  closeBtn.addEventListener('click', () => dramaModal.close());
+  /* 轮询：项目落盘后更新文案并同步左侧列表；running=false 视为完成。
+     404/异常只表示尚未落盘，下一轮再试（按钮始终可点，不再禁用）。 */
+  pollInterval = setInterval(async () => {
+    try {
+      const st = await api.scriptStatus(newKey);
+      statusBtn.textContent = st.running ? '查看剧本（创作中…）' : '查看剧本（已完成 ✓）';
+      if (ctx && ctx.refreshLibrary) ctx.refreshLibrary().catch(() => {});
+      if (!st.running) clearInterval(pollInterval);
+    } catch {
+      /* 尚未落盘，下一轮再试 */
+    }
+  }, 3000);
+  setTimeout(() => clearInterval(pollInterval), 300000); // 5 min 停止轮询
+  toast(res.msg || '改编已后台启动', { tone: 'success', duration: 3000 });
 }

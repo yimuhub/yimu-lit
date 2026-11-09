@@ -5663,10 +5663,23 @@ async def api_script_storyboard_get(key: str):
 
 @app.post("/api/novel-to-drama")
 def api_novel_to_drama(payload: dict):
-    """v4.5.0：小说一键转 AI 短剧/漫剧剧本——按章改编成分集剧本 + 自动分镜。
-    payload: {key, chapters?: [章号]， form?: short_drama|comic_drama, episodes_per_chapter?: 1}
-    生成独立剧本项目（key 加 -短剧 后缀），原书不动。"""
+    """v4.33.0：小说一键转 AI 短剧/漫剧剧本——**全书**分集改编 + 自动分镜。
+
+    payload:
+      key                     原小说 key
+      form                    short_drama | comic_drama
+      chapters                [章号]，省略 = 全书所有已完成章节（不再截断成 12 章）
+      chapters_per_episode    每集覆盖几章，1-6，默认 2
+      target_episodes         目标集数（优先于 chapters_per_episode）
+      rebuild                 已有新版蓝图时是否重新改编（覆盖旧稿，旧稿会归档）
+
+    v4.32.3 及以前是 ``chs[:12]``，一本 100 章 / 25 万字的小说只改编前 12 章，
+    产出 12「场」不到 1 万字，还有 42 字的残片被记成已完成。现在按全书章节
+    先生成分集蓝图，集数由用户选的密度决定，原书不动。
+    """
     import threading as _th
+    from bot import drama_adapter as da
+
     src_key = str(payload.get("key") or "")
     form = str(payload.get("form") or "short_drama")
     if form not in ("short_drama", "comic_drama"):
@@ -5683,10 +5696,32 @@ def api_novel_to_drama(payload: dict):
         chs = [c for c in chs if c.get("chapterNumber") in want_set] or chs[:1]
     if not chs:
         return JSONResponse({"error": "没有已完成可改编的章节"}, status_code=400)
-    chs = chs[:12]   # 单次改编上限 12 章，防失控
+    settings = {
+        "chapters_per_episode": da.clamp_int(payload.get("chapters_per_episode"), 1, 6,
+                                          da.DEFAULT_CHAPTERS_PER_EPISODE),
+        "target_episodes": da.clamp_int(payload.get("target_episodes"), 1, da.MAX_EPISODES,
+                                     len(chs)) if payload.get("target_episodes") else None,
+        "min_chars": da.clamp_int(payload.get("min_chars"), 200, 5000, da.MIN_EPISODE_CHARS),
+    }
+    outline = da.group_chapters(chs, settings["chapters_per_episode"],
+                                settings["target_episodes"])
     new_key_base = f"{src_key}-{'漫剧' if form == 'comic_drama' else '短剧'}"
-    hint = {"key_hint": new_key_base,
-            "name_hint": f"{plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}"}
+    hint = {
+        "key_hint": new_key_base,
+        "name_hint": f"{plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}",
+        "chapter_count": len(chs), "episode_count": len(outline),
+        "chapters_per_episode": settings["chapters_per_episode"],
+    }
+    # 已有新版蓝图的成品不静默覆盖；旧版 12 集剧本（无 adaptation.version）则自动升级
+    existing = script_writer.get_project(new_key_base)
+    old_plan = (existing.plan() if existing else None) or {}
+    if old_plan and not payload.get("rebuild"):
+        if (old_plan.get("adaptation") or {}).get("version") == da.ADAPTER_VERSION:
+            return {"ok": True, "async": False, "already_exists": True,
+                    "msg": f"《{old_plan.get('scriptName') or new_key_base}》已存在"
+                           f"（{len(old_plan.get('scenes') or [])} 集）。可在作品库打开，"
+                           "或勾选「重新改编全书」覆盖旧稿（旧稿会归档，不删除）。",
+                    **hint}
     # v4.32.3：防重入——连点两次「转短剧」不能起两条线程写同一份计划/正文
     if _adapt_busy(new_key_base) or writer.pipeline_running(new_key_base) or not _adapt_claim(new_key_base):
         return {"ok": True, "async": True, "already_running": True,
@@ -5694,7 +5729,8 @@ def api_novel_to_drama(payload: dict):
 
     def _run():
         try:
-            _novel_to_drama_impl(src_key, form, chs, new_key_base, plan, proj)
+            _novel_to_drama_impl(src_key, form, chs, new_key_base, plan, proj,
+                                 resume=False, outline=outline, settings=settings)
         except Exception as e:
             print(f"[bg] 小说转短剧失败: {e}", flush=True)
         finally:
@@ -5705,7 +5741,8 @@ def api_novel_to_drama(payload: dict):
         _adapt_release(new_key_base)
         raise
     return {"ok": True, "async": True,
-            "msg": f"改编已后台启动（{len(chs)} 章 → {len(chs)} 集），进度实时可见，完成后在作品库查看",
+            "msg": f"改编已后台启动：全书 {len(chs)} 章 → {len(outline)} 集"
+                   f"（每集约 {settings['chapters_per_episode']} 章），进度实时可见",
             **hint}
 
 
@@ -5740,54 +5777,166 @@ def _adapt_scene_body_path(pdir, sc) -> str:
 
 
 def _adapt_write_scene_list(pdir, name, scenes) -> None:
-    md = [f"# {name} 场次清单\n", "| 场次 | 类型 | 集数 | 状态 |",
-          "| :--- | :--- | :--- | :--- |"]
+    """v4.33.0：清单以「集」为单位，并标出每集覆盖的原著章节与实测字数。
+
+    旧版把 1 章当 1「场」，12 行清单却对应每集内部好几个场景，用户看到的
+    「只有 12 场」就是这么来的。
+    """
+    md = [f"# {name} 分集清单\n",
+          "> 每行一集；首列沿用「第N场」编号，以兼容剧本工作台的场次解析。\n",
+          "| 场次 | 集 | 覆盖原著章节 | 集名 | 字数 | 状态 |",
+          "| :--- | :--- | :--- | :--- | :--- | :--- |"]
     for sc in scenes:
-        md.append(f"| 第{sc['no']}场 | {sc.get('kind') or '集'} | {sc.get('place') or ''} | "
-                  f"{'已完成' if sc.get('status') == 'completed' else '待改编'} |")
+        nums = sc.get("chapters") or []
+        span = (f"第 {nums[0]}-{nums[-1]} 章" if len(nums) > 1
+                else (f"第 {nums[0]} 章" if nums else "—"))
+        state = {"completed": "已完成", "failed": "待重跑"}.get(sc.get("status"), "待改编")
+        md.append(f"| 第{sc['no']}场 | 第{sc['no']}集 | {span} | "
+                  f"{sc.get('title') or sc.get('place') or ''} | "
+                  f"{sc.get('wordCount') or 0} | {state} |")
     script_writer._write(os.path.join(pdir, script_writer.F_SCENES), "\n".join(md) + "\n")
 
 
-def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
-                         proj=None, resume=False):
-    """小说 → 短剧改编（后台线程）：逐章 → 分集剧本正文 → 场次清单 → 自动分镜。
+def _adapt_archive_body(pdir, sc) -> None:
+    """把不合格的旧集正文归档而不是删除（旧版把 42 字残片当成品）。"""
+    import shutil
+    fp = _adapt_scene_body_path(pdir, sc)
+    if not os.path.exists(fp):
+        return
+    dst_dir = os.path.join(pdir, script_writer.F_BODY, "旧版备份")
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, os.path.basename(fp))
+    if os.path.exists(dst):
+        dst = dst + "." + str(int(os.path.getmtime(fp))) + ".bak"
+    try:
+        shutil.move(fp, dst)
+    except Exception:
+        pass
 
-    v4.32.3：改成「每集实时落盘」+「断点可续跑」。旧实现只在全部 12 集跑完后
-    一次性回填 scenes，改编期间工作台永远 0/0 场、0 字，日志却在推进；状态停在
-    writing 而 running 只有分镜阶段才置位，于是「写作中」和「继续」同时出现，
-    点继续又被当成小说去找任务档案 → 「没有未完成的任务」。
+
+def _adapt_archive_all_bodies(pdir) -> int:
+    """旧版剧本升级：把全部旧集正文归档，避免把「1 章 1 集」的旧稿误当新蓝图成果。"""
+    import shutil
+    src_dir = os.path.join(pdir, script_writer.F_BODY)
+    if not os.path.isdir(src_dir):
+        return 0
+    dst_dir = os.path.join(src_dir, "旧版备份")
+    os.makedirs(dst_dir, exist_ok=True)
+    moved = 0
+    for fn in sorted(os.listdir(src_dir)):
+        if not fn.endswith(".md"):
+            continue
+        src, dst = os.path.join(src_dir, fn), os.path.join(dst_dir, fn)
+        if os.path.exists(dst):
+            dst += "." + str(moved) + ".bak"
+        try:
+            shutil.move(src, dst)
+            moved += 1
+        except Exception:
+            pass
+    return moved
+
+
+def _adapt_backup_plan(pdir) -> None:
+    import shutil
+    fp = os.path.join(pdir, script_writer.F_PLAN)
+    if os.path.exists(fp):
+        try:
+            shutil.copy2(fp, fp + ".旧版备份.json")
+        except Exception:
+            pass
+
+
+def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
+                         proj=None, resume=False, outline=None, settings=None,
+                         only_episodes=None):
+    """小说 → 短剧**全书**改编（后台线程）。
+
+    v4.33.0 重做：先按全书章节生成分集蓝图（1~6 章/集），提炼一次创作圣经，
+    然后逐集带着「全书设定 + 本集大纲 + 上一集结尾 + 覆盖章节全文」写作；
+    每集必须过质量门禁才落盘，残片自动重试、仍不合格归档重跑。
     """
     from datetime import datetime as _dt
     from bot import llm as _llm
+    from bot import drama_adapter as da
+
+    cfg = {
+        "chapters_per_episode": da.DEFAULT_CHAPTERS_PER_EPISODE,
+        "target_episodes": None,
+        "min_chars": da.MIN_EPISODE_CHARS,
+        "min_headings": da.MIN_SCENE_HEADINGS,
+        "min_lines": da.MIN_DIALOGUE_LINES,
+        "max_attempts": da.MAX_ATTEMPTS,
+        "source_budget": da.SOURCE_BUDGET,
+    }
+    cfg.update({k: v for k, v in (settings or {}).items() if v is not None})
+    limits = {"min_chars": cfg["min_chars"], "min_headings": cfg["min_headings"],
+              "min_lines": cfg["min_lines"]}
     name = re.sub(r'[\/:*?"<>|\s]+', "",
                   f"{src_plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}")[:40]
     pdir = safe_join(script_writer.PROJECTS_DIR, new_key_base, label="项目 key")
     os.makedirs(pdir, exist_ok=True)
-    prev = script_writer.ScriptProject(pdir, name).plan() if resume else None
-    name = (prev or {}).get("scriptName") or name
     sp = script_writer.ScriptProject(pdir, name)
     if proj is None:
         proj = _get_project(src_key)
     if proj is None:
         sp.log("💥 无法读取原小说项目，改编失败")
         return {"ok": False, "error": "原小说项目不存在"}
+
+    disk_plan = sp.plan()
+    legacy = bool(disk_plan) and (disk_plan.get("adaptation") or {}).get("version") != da.ADAPTER_VERSION
+    prev = disk_plan if resume else None
+    if legacy:
+        _adapt_backup_plan(pdir)
+        moved = _adapt_archive_all_bodies(pdir)
+        sp.log(f"♻️ 检测到旧版改编（只取前 12 章 / 1 章 1 集、含残片）；"
+               f"已归档 {moved} 份旧稿与旧计划，按全书重新分集改编")
+        prev = None
+    name = (prev or {}).get("scriptName") or name
+    sp = script_writer.ScriptProject(pdir, name)
     script_writer.llm.book(new_key_base, "planning")
-    if resume:
-        sp.log(f"▶ 断点续跑改编：本轮 {len(chapters)} 集")
-    else:
-        sp.log(f"🎬 从《{src_plan.get('novelName') or src_key}》改编 {form}：{len(chapters)} 章逐集剧本化")
+
+    material = da.collect_material(proj)
+    if outline is None:
+        outline = da.group_chapters(chapters, cfg["chapters_per_episode"], cfg["target_episodes"])
+    if not outline:
+        sp.log("💥 没有可分集的章节，改编失败")
+        return {"ok": False, "error": "没有可分集的章节"}
+    form_label = script_writer.FORMS.get(form, {}).get("label", "AI短剧")
+    novel_name = str(src_plan.get("novelName") or src_key)
+    source_nos = [int(c.get("chapterNumber")) for c in chapters
+                  if str(c.get("chapterNumber") or "").isdigit()]
+    sp.log(f"🎬 全书改编《{novel_name}》：{len(source_nos)} 章 → {len(outline)} 集"
+           f"（每集约 {cfg['chapters_per_episode']} 章）")
+
+    # 创作圣经只生成一次，之后每集都带同一份人物/世界观，避免逐集独立裸调
+    bible_fp = os.path.join(pdir, script_writer.F_BIBLE)
+    bible = "" if legacy else da.read_text(bible_fp)
+    if not bible.strip():
+        bible = da.build_bible(_llm, material, novel_name, form_label, log=sp.log)
+        script_writer._write(bible_fp, bible)
+    script_writer._write(os.path.join(pdir, script_writer.F_SEASON),
+                         da.outline_brief(outline, material["summaries"]))
+
     plan_doc = prev or {
         "version": 1, "scriptName": name, "projectPath": pdir, "medium": "script",
-        "form": form, "formLabel": script_writer.FORMS.get(form, {})["label"],
+        "form": form, "formLabel": form_label,
         "entryPath": "adapt", "targetPages": 30,
         "createdAt": _dt.now().isoformat(), "stages": {"S0": {"done": True}},
-        "adaptedFrom": {"key": src_key,
-                        "chapters": [c.get("chapterNumber") for c in chapters]},
         "config": {"form": form, "title": name,
-                   "idea": f"由小说《{src_plan.get('novelName') or src_key}》改编"},
+                   "idea": f"由小说《{novel_name}》全书改编"},
     }
-    # 一开工就把全部集数占位写进计划：工作台立刻是 0/12 而不是 0/0，
-    # 左边进度条、字数、场次清单都随每一集推进。
+    plan_doc["adaptedFrom"] = {"key": src_key, "chapters": source_nos,
+                               "totalChapters": len(source_nos)}
+    plan_doc["adaptation"] = {
+        "version": da.ADAPTER_VERSION,
+        "chaptersPerEpisode": cfg["chapters_per_episode"],
+        "targetEpisodes": cfg["target_episodes"],
+        "minChars": cfg["min_chars"],
+        "totalEpisodes": len(outline),
+        "blueprint": [{"no": ep["no"], "chapters": ep["chapters"]} for ep in outline],
+    }
+    # 一开工就把全书集数占位写进计划：工作台立刻是 0/N 而不是 0/0
     by_no = {}
     for sc in (plan_doc.get("scenes") or []):
         try:
@@ -5795,13 +5944,18 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
         except (TypeError, ValueError):
             continue
         by_no[n] = dict(sc)
-    for c in chapters:
-        try:
-            n = int(c.get("chapterNumber"))
-        except (TypeError, ValueError):
-            continue
-        by_no.setdefault(n, {"no": n, "kind": "集", "place": f"第 {n} 集",
-                             "time": "", "cast": "", "status": "pending", "wordCount": 0})
+    for ep in outline:
+        n = ep["no"]
+        sc = by_no.get(n) or {"no": n, "status": "pending", "wordCount": 0}
+        sc.update({"kind": "集", "place": f"第 {n} 集", "chapters": ep["chapters"],
+                   "title": ep["title"], "fileName": f"第{n:03d}场.md"})
+        ok, why = da.inspect_existing_body(_adapt_scene_body_path(pdir, sc), **limits)
+        if not ok and os.path.exists(_adapt_scene_body_path(pdir, sc)):
+            _adapt_archive_body(pdir, sc)
+            sc.update({"status": "pending", "wordCount": 0, "error": why})
+        elif sc.get("status") != "completed":
+            sc["status"] = "pending"
+        by_no[n] = sc
     plan_doc["scenes"] = [by_no[n] for n in sorted(by_no)]
     plan_doc["totalScenes"] = len(plan_doc["scenes"])
     plan_doc["episodes"] = len(plan_doc["scenes"])
@@ -5810,13 +5964,18 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
     sp.save_plan(plan_doc)
     _adapt_write_scene_list(pdir, name, plan_doc["scenes"])
 
+    ch_by_no = {}
+    for c in chapters:
+        try:
+            ch_by_no[int(c.get("chapterNumber"))] = c
+        except (TypeError, ValueError):
+            continue
     writer.mark_pipeline(new_key_base, True)   # 全程「创作中」，不是只有分镜阶段
     try:
-        for c in chapters:
-            try:
-                n = int(c.get("chapterNumber"))
-            except (TypeError, ValueError):
-                continue
+        run_outline = ([ep for ep in outline if ep["no"] in set(only_episodes)]
+                       if only_episodes is not None else outline)
+        for ep in run_outline:
+            n = ep["no"]
             sc = by_no.get(n)
             if sc is None:
                 continue
@@ -5824,29 +5983,38 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
                 sp.log("⏸ 收到暂停请求，停在本集之前；剩余集保留待续，点「继续」接着改编")
                 break
             fp = _adapt_scene_body_path(pdir, sc)
-            if sc.get("status") == "completed" and os.path.exists(fp):
-                continue   # 断点续跑：磁盘已有正文，不重复烧 LLM
-            src_fp = _chapter_path(proj, c)
-            src_text = ""
-            if src_fp and os.path.exists(src_fp):
-                src_text = writer._clean_chapter_text(open(src_fp, encoding="utf-8").read())
-            sp.log(f"🎬 第 {n} 章 → 第 {n} 集：剧本化…")
-            body = _llm.chat([
-                {"role": "system", "content":
-                    f"你是竖屏微短剧编剧。把小说章节改编成{script_writer.FORMS[form]['label']}第 {n} 集剧本（3-5 分钟一集）。"
-                    "格式：场标题行（内/外 地点 时间）+ 动作行 + 短促台词（角色名：台词）。"
-                    "开场前 3 秒必须抓人；集尾强钩子；台词短促信息密度高；删掉一切过场与心理描写。"},
-                {"role": "user", "content": f"【原章节】第{n}章 {c.get('title','')}\n\n{src_text[:9000]}"}],
-                stage="writing", max_tokens=6000) or ""
-            if not body.strip():
-                sp.log(f"⚠️ 第 {n} 集本轮没拿到内容，保留待续（点「继续」可重跑）")
+            ok, _ = da.inspect_existing_body(fp, **limits)
+            if sc.get("status") == "completed" and ok:
+                continue   # 断点续跑：已合格的集不重复烧 LLM
+            rows = [ch_by_no[x] for x in ep["chapters"] if x in ch_by_no]
+            source = da.episode_source_text(proj, rows, cfg["source_budget"])
+            if not source.strip():
+                sp.log(f"⚠️ 第 {n} 集读不到原著章节正文，保留待续")
+                sc["status"] = "failed"
+                sp.save_plan(plan_doc)
                 continue
-            fn = f"第{n:03d}场.md"
-            fp = os.path.join(pdir, script_writer.F_BODY, fn)
-            os.makedirs(os.path.dirname(fp), exist_ok=True)
-            script_writer._write(fp, body)
-            sc.update({"kind": "集", "place": f"第 {n} 集", "status": "completed",
-                       "fileName": fn, "wordCount": len(body)})
+            beat = da.episode_beat_text(ep, material["summaries"])
+            prev_fp = _adapt_scene_body_path(pdir, by_no[n - 1]) if n - 1 in by_no else ""
+            prev_tail = da.previous_episode_tail(prev_fp) if prev_fp else ""
+            span = (f"{ep['chapters'][0]}-{ep['chapters'][-1]}"
+                    if len(ep["chapters"]) > 1 else str(ep["chapters"][0]))
+            sp.log(f"🎬 第 {n}/{len(outline)} 集（原著第 {span} 章）：剧本化…")
+            messages = da.build_episode_messages(
+                bible=bible, ep=ep, total=len(outline), source=source, beat=beat,
+                prev_tail=prev_tail, form_label=form_label, novel_name=novel_name,
+                **limits)
+            body, why, tries = da.generate_episode(
+                _llm, messages, max_attempts=cfg["max_attempts"], **limits)
+            if body:
+                os.makedirs(os.path.dirname(fp), exist_ok=True)
+                script_writer._write(fp, body)
+                sc.update({"status": "completed", "wordCount": len(body),
+                           "attempts": tries, "error": ""})
+                sp.log(f"✅ 第 {n} 集完成：{len(body)} 字"
+                       + (f"（第 {tries} 稿通过）" if tries > 1 else ""))
+            else:
+                sc.update({"status": "failed", "wordCount": 0, "error": why})
+                sp.log(f"⚠️ 第 {n} 集未通过质量门禁：{why}；保留待续，点「继续」重跑")
             plan_doc["scenes"] = [by_no[k] for k in sorted(by_no)]
             sp.save_plan(plan_doc)                       # 每集实时落盘
             _adapt_write_scene_list(pdir, name, plan_doc["scenes"])
@@ -5862,21 +6030,26 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
             sp.log(f"⏸ 已完成 {done}/{len(by_no)} 集；还有 {len(pending)} 集未完成，点「继续」从断点接着改编")
             return {"ok": False, "done": done, "pending": len(pending)}
 
-        sp.log(f"✅ 改编完成：{done} 集；启动分镜头拆解…")
+        sp.log(f"✅ 全书 {done} 集改编完成")
         storyboard_ok = False
-        try:
-            sb = script_writer.gen_storyboard(new_key_base) or {}
-            storyboard_ok = bool(sb.get("ok"))
-            if not storyboard_ok:
-                sp.log(f"⚠️ 分镜未完成：{sb.get('error') or '未知原因'}（点「继续」可补跑）")
-        except Exception as e:
-            sp.log(f"⚠️ 分镜失败：{type(e).__name__}: {e}（点「继续」可补跑）")
+        # 大书（>24 集）不在后台一次性跑几十次分镜调用，避免流水线卡死；
+        # 正文已完成即可交付，分镜可在工作台「分镜」页签逐集生成或点「继续」补跑。
+        if len(by_no) <= 24:
+            try:
+                sb = script_writer.gen_storyboard(new_key_base) or {}
+                storyboard_ok = bool(sb.get("ok"))
+                if not storyboard_ok:
+                    sp.log(f"⚠️ 分镜未完成：{sb.get('error') or '未知原因'}（点「继续」可补跑）")
+            except Exception as e:
+                sp.log(f"⚠️ 分镜失败：{type(e).__name__}: {e}（点「继续」可补跑）")
+        else:
+            sp.log("ℹ️ 集数较多，分镜按集在工作台「分镜」页签生成；正文改编已全部完成")
         plan_doc = sp.plan() or plan_doc   # gen_storyboard 可能已写 meta，别覆盖
         plan_doc.setdefault("meta", {})["storyboard_done"] = bool(storyboard_ok)
-        plan_doc["status"] = "completed" if storyboard_ok else "writing"
+        plan_doc["status"] = "completed"   # 正文完成即完成，不再被分镜阻塞
         plan_doc["scenes"] = [by_no[k] for k in sorted(by_no)]
         sp.save_plan(plan_doc)
-        return {"ok": storyboard_ok, "done": done, "pending": 0}
+        return {"ok": True, "done": done, "pending": 0}
     finally:
         writer.mark_pipeline(new_key_base, False)
 
@@ -5901,11 +6074,45 @@ def _storyboard_resume(key) -> None:
         writer.mark_pipeline(key, False)
 
 
+def _blueprint_to_outline(blueprint: list, src_plan: dict) -> list[dict]:
+    """把计划里存的精简蓝图还原成带章名的大纲对象。"""
+    titles = {}
+    for c in (src_plan.get("chapters") or []):
+        try:
+            titles[int(c.get("chapterNumber"))] = str(c.get("title") or "")
+        except (TypeError, ValueError):
+            continue
+    out = []
+    for ep in blueprint or []:
+        try:
+            no = int(ep.get("no"))
+        except (TypeError, ValueError):
+            continue
+        nums = []
+        for x in ep.get("chapters") or []:
+            try:
+                nums.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        if not nums:
+            continue
+        out.append({"no": no, "chapters": nums,
+                    "titles": [titles.get(n) or f"第{n}章" for n in nums],
+                    "title": titles.get(nums[0]) or f"第{nums[0]}章"})
+    return sorted(out, key=lambda x: x["no"])
+
+
 def _resume_novel_to_drama(key):
     """改编剧本的「继续」唯一入口；不是改编剧本返回 None 交给常规剧本引擎。
 
-    按磁盘正文 + scenes 状态对账，只跑缺的集；集齐了但分镜没生成就只补分镜。
+    v4.33.0：两种续跑
+    * 旧版剧本（无 adaptation.version / 只覆盖前 12 章）：自动升级成全书蓝图，
+      归档旧稿后按全书重跑，不再让用户对着「12 场」和 42 字残片点继续；
+    * 新版剧本：按「状态 + 磁盘正文 + 质量门禁」对账，只重跑不合格的集，
+      原书后来又写完的新章也会追加成新集；集齐了但分镜没生成就只补分镜。
     """
+    from bot import drama_adapter as da
+
     sp = script_writer.get_project(key)
     if sp is None:
         return None
@@ -5921,21 +6128,54 @@ def _resume_novel_to_drama(key):
     if src_proj is None:
         return {"ok": False, "msg": "原小说项目已不存在，无法续跑改编",
                 "running": False, "paused": False, "state": "writing"}
-    scenes = [sc for sc in (plan.get("scenes") or []) if isinstance(sc, dict)]
-    missing = set()
-    for sc in scenes:
+    src_plan = src_proj.plan() or {}
+    all_ch = [c for c in (src_plan.get("chapters") or [])
+              if c.get("status") == "completed" and _chapter_path(src_proj, c)]
+    if not all_ch:
+        return {"ok": False, "msg": "原书没有已完成的章节，无法续跑改编",
+                "running": False, "paused": False, "state": "writing"}
+    adaptation = plan.get("adaptation") or {}
+    legacy = adaptation.get("version") != da.ADAPTER_VERSION
+    limits = {"min_chars": int(adaptation.get("minChars") or da.MIN_EPISODE_CHARS),
+              "min_headings": da.MIN_SCENE_HEADINGS, "min_lines": da.MIN_DIALOGUE_LINES}
+    missing: set = set()
+    for sc in (plan.get("scenes") or []):
+        if not isinstance(sc, dict):
+            continue
         try:
             n = int(sc.get("no") or 0)
         except (TypeError, ValueError):
             continue
-        if n > 0 and (sc.get("status") != "completed"
-                      or not os.path.exists(_adapt_scene_body_path(sp.path, sc))):
+        if n <= 0:
+            continue
+        ok, _why = da.inspect_existing_body(_adapt_scene_body_path(sp.path, sc), **limits)
+        if sc.get("status") != "completed" or not ok:
             missing.add(n)
-    src_plan = src_proj.plan() or {}
-    chapters = [c for c in (src_plan.get("chapters") or [])
-                if int(c.get("chapterNumber") or 0) in missing][:12]
+
+    if legacy:
+        outline = da.group_chapters(all_ch, da.DEFAULT_CHAPTERS_PER_EPISODE, None)
+        only = None                          # None = 全部集重跑
+        msg = (f"检测到旧版改编（{len(plan.get('scenes') or [])} 集，未覆盖全书）。"
+               f"已升级为全书 {len(outline)} 集蓝图，旧稿归档后重新改编")
+    else:
+        outline = _blueprint_to_outline(adaptation.get("blueprint"), src_plan)
+        if not outline:
+            outline = da.group_chapters(all_ch, da.DEFAULT_CHAPTERS_PER_EPISODE, None)
+        covered = {n for ep in outline for n in ep["chapters"]}
+        fresh = [c for c in all_ch if int(c.get("chapterNumber") or 0) not in covered]
+        if fresh:
+            extra = da.group_chapters(fresh, da.DEFAULT_CHAPTERS_PER_EPISODE, None)
+            start = max((ep["no"] for ep in outline), default=0)
+            for i, ep in enumerate(extra, 1):
+                ep["no"] = start + i
+                outline.append(ep)
+                missing.add(ep["no"])
+        only = sorted(missing)
+        msg = (f"已从断点续跑改编：{len(only)} 集需要重写/补写" if only
+               else "集数已齐，正在补跑分镜头拆解")
+
     storyboard_done = bool((plan.get("meta") or {}).get("storyboard_done"))
-    if not chapters and storyboard_done:
+    if not legacy and not only and storyboard_done:
         if plan.get("status") != "completed":
             plan["status"] = "completed"
             sp.save_plan(plan)
@@ -5947,13 +6187,16 @@ def _resume_novel_to_drama(key):
 
     def _run():
         try:
-            if chapters:
+            if legacy or only:
                 plan.setdefault("meta", {})["paused"] = False
                 if plan.get("status") == "paused":
                     plan["status"] = "in_progress"
                 sp.save_plan(plan)
                 _novel_to_drama_impl(src_key, str(plan.get("form") or "short_drama"),
-                                     chapters, key, src_plan, src_proj, resume=True)
+                                     all_ch, key, src_plan, src_proj, resume=True,
+                                     outline=outline,
+                                     settings={"min_chars": limits["min_chars"]},
+                                     only_episodes=only)
             else:
                 _storyboard_resume(key)
         except Exception as e:
@@ -5962,8 +6205,6 @@ def _resume_novel_to_drama(key):
         finally:
             _adapt_release(key)
     threading.Thread(target=_run, daemon=True).start()
-    msg = (f"已从断点续跑改编：剩余 {len(chapters)} 集" if chapters
-           else "集数已齐，正在补跑分镜头拆解")
     return {"ok": True, "msg": msg, "running": True, "paused": False,
             "state": "in_progress"}
 
