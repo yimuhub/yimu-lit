@@ -38,9 +38,24 @@ def test_meta_versions_track_VERSION():
 
 
 def test_local_config_version_if_present():
-    if not os.path.exists(os.path.join(ROOT, "config.json")):
-        pytest.skip("新 clone / CI 没有本地 config.json")
-    assert _json_version("config.json") == _version(), (
+    """本地 config.json 是运行态文件，不入库。
+
+    CI 里新 clone 时没有它，但**跑过前面的用例后会被重建**，而且重建出来的
+    配置往往不带 version 键（第一版守卫只判断文件是否存在，结果在 CI 里
+    KeyError 把 3.13/3.14 双矩阵都点红了）。所以只有它确实是完整配置时
+    才要求同步，其余情况一律跳过——仓库里的两个被跟踪文件才是硬门禁。
+    """
+    p = os.path.join(ROOT, "config.json")
+    if not os.path.exists(p):
+        pytest.skip("新 clone 没有本地 config.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        pytest.skip("本地 config.json 不是完整 JSON（运行态文件）")
+    if "version" not in data:
+        pytest.skip("本地 config.json 是运行态重建的，没有 version 字段")
+    assert data["version"] == _version(), (
         "本地 config.json 的 version 落后——跑 python tools/bump_version.py --meta-only")
 
 
