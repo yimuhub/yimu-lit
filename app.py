@@ -6229,7 +6229,9 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
             plan_doc["scenes"] = [by_no[k] for k in sorted(by_no)]
             sp.save_plan(plan_doc)                       # 每集实时落盘
             _adapt_write_scene_list(pdir, name, plan_doc["scenes"])
-            finished_eps += 1
+            # v4.33.3：原来成败都 +1，进度会比实际高；改成按落盘后的真实状态数
+            finished_eps = sum(1 for x in by_no.values()
+                               if x.get("status") == "completed")
             livejob.update(new_key_base, done=finished_eps, total=total_eps,
                            detail=f"已完成 {finished_eps}/{total_eps} 集，继续下一集…")
 

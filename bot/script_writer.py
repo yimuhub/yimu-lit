@@ -78,6 +78,48 @@ def _pipeline_running_for(path: str) -> bool:
         return False
 
 
+def _guard_completed(new_plan: dict, disk_plan: dict, body_dir: str) -> int:
+    """把 new_plan 里「被降级」的集数还原成 completed，返回还原条数。
+
+    场景：两个写入者共用一份 剧本计划.json（改编线程逐集写、普通剧本引擎批量
+    写、并行 worker 各写各的），谁都可能拿一份比磁盘旧的快照整份覆盖回去。
+    实测用户 33/50 集被写成 19/50，字数同时少了 3 万字——正文文件还在，只是
+    状态被抹了，用户看到的是「白写了」。
+
+    规则：
+    - 磁盘上 completed 且**正文文件确实存在** → 不允许降回 pending/failed；
+    - 新计划里标了 rewriting（显式重写）→ 放行，不挡重写；
+    - 正文文件已被删掉 → 放行，允许重写该集。
+    """
+    old = {s.get("no"): s for s in (disk_plan.get("scenes") or [])
+           if isinstance(s, dict)}
+    if not old:
+        return 0
+    fixed = 0
+    for sc in (new_plan.get("scenes") or []):
+        if not isinstance(sc, dict):
+            continue
+        prev = old.get(sc.get("no"))
+        if not prev or prev.get("status") != "completed":
+            continue
+        if sc.get("status") == "completed" or sc.get("rewriting"):
+            continue
+        fp = os.path.join(body_dir, sc.get("fileName") or prev.get("fileName") or "")
+        if not (sc.get("fileName") or prev.get("fileName")) or not os.path.exists(fp):
+            continue
+        try:
+            if os.path.getsize(fp) < 200:      # 空壳/占位文件不算已完成
+                continue
+        except OSError:
+            continue
+        sc["status"] = "completed"
+        if not sc.get("wordCount"):
+            sc["wordCount"] = prev.get("wordCount") or 0
+        sc.pop("error", None)
+        fixed += 1
+    return fixed
+
+
 class ScriptProject:
     """一个剧本项目。字段与小说 Project 对齐，便于前端统一处理。"""
 
@@ -114,6 +156,12 @@ class ScriptProject:
     def save_plan(self, plan: dict) -> None:
         plan["updatedAt"] = datetime.datetime.now().isoformat()
         with self.lock:
+            # v4.33.3：completed 只增不减。所有保存方都是「整份覆盖」，只要某个
+            # 写入者手里的快照比磁盘旧（另一个 worker / 同一部的改编线程），就会
+            # 把已经写完的集数整体打回 pending——用户实测 33/50 掉回 19/50。
+            # 这里在锁内重读磁盘做一次单向合并，正文文件确实存在的集不允许降级。
+            _guard_completed(plan, self.plan() or {},
+                             os.path.join(self.path, F_BODY))
             atomic_write_json(os.path.join(self.path, F_PLAN), plan)
 
     def status(self) -> dict:
