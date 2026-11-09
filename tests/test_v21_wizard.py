@@ -9,6 +9,7 @@ LLM 由 tests/conftest.py 全局 mock；建项目的后台线程在这里换成�
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,6 +20,22 @@ import app as appmod
 from bot import medium as medium_mod, poetry_writer, prose_writer, script_writer, security, writer
 
 client = TestClient(appmod.app)
+
+
+def _await_cfg(captured, key, timeout=3.0):
+    """等后台线程把 cfg 记进捕获表，返回 cfg；超时返回 None。
+
+    v4.33.3：原来这里写的是 `for _ in range(50)` 纯空转——没有 sleep，
+    几十微秒就轮完，本地机器线程起得快看不出来，CI 上后台线程还没被调度
+    就 KeyError('prose')/'poetry'。改成带 sleep 的限期等待：慢机器也稳，
+    真没进引擎时断言信息仍是「没进去」而不是玄学 KeyError。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if key in captured:
+            return captured[key]["cfg"]
+        time.sleep(0.01)
+    return None
 
 # 每个字段 key 的落点：引擎读的 cfg key / 前端专用 / 接口层参数
 ALLOWED_KEYS = {
@@ -232,12 +249,8 @@ def test_dispatch_script(captured_cfg):
     assert r.status_code == 200
     body = r.json()
     assert body["medium"] == "script" and body["key"].startswith("s_") and body["async"]
-    cfg = None
-    for _ in range(50):
-        if "script" in captured_cfg:
-            cfg = captured_cfg["script"]["cfg"]
-            break
-    assert cfg is not None, "后台线程未进入剧本引擎"
+    cfg = _await_cfg(captured_cfg, "script")
+    assert cfg is not None, "后台线程 3 秒内未进入剧本引擎"
     assert cfg["form"] == "series" and cfg["episodes"] == 16
     assert cfg["scenes"] == 45 and cfg["pages"] == 120
     assert not any(k.endswith("_scale") for k in cfg), "token 槽位不该进引擎"
@@ -251,10 +264,8 @@ def test_dispatch_poetry_maps_rounds_and_folds_cipai(captured_cfg):
         "title": "无题", "idea": "秋月与旧城", "maxRounds": 1,
         "metrical_check": False, "with_notes": True, "with_translation": False})
     assert r.status_code == 200 and r.json()["key"].startswith("p_")
-    for _ in range(50):
-        if "poetry" in captured_cfg:
-            break
-    cfg = captured_cfg["poetry"]["cfg"]
+    cfg = _await_cfg(captured_cfg, "poetry")
+    assert cfg is not None, "后台线程 3 秒内未进入诗词引擎"
     assert cfg["maxRounds"] == 1                    # 旧 payload 里的 rounds 已改名 maxRounds
     assert "水调歌头" in cfg["idea"] and "离别后的自省" in cfg["idea"]
     assert cfg["metrical_check"] is False and cfg["with_notes"] is True
@@ -262,18 +273,16 @@ def test_dispatch_poetry_maps_rounds_and_folds_cipai(captured_cfg):
 
 def test_dispatch_poetry_clamps_rounds(captured_cfg):
     client.post("/api/create", json={"medium": "poetry", "idea": "x", "maxRounds": 99})
-    for _ in range(50):
-        if "poetry" in captured_cfg:
-            break
-    assert captured_cfg["poetry"]["cfg"]["maxRounds"] == 5
+    cfg = _await_cfg(captured_cfg, "poetry")
+    assert cfg is not None, "后台线程 3 秒内未进入诗词引擎"
+    assert cfg["maxRounds"] == 5
 
 
 def test_dispatch_poetry_accepts_legacy_rounds_key(captured_cfg):
     client.post("/api/create", json={"medium": "poetry", "idea": "x", "rounds": 2})
-    for _ in range(50):
-        if "poetry" in captured_cfg:
-            break
-    assert captured_cfg["poetry"]["cfg"]["maxRounds"] == 2
+    cfg = _await_cfg(captured_cfg, "poetry")
+    assert cfg is not None, "后台线程 3 秒内未进入诗词引擎"
+    assert cfg["maxRounds"] == 2
 
 
 def test_dispatch_prose_passes_dimension_keys(captured_cfg):
@@ -283,10 +292,8 @@ def test_dispatch_prose_passes_dimension_keys(captured_cfg):
         "tone": "克制", "words": "w2000", "target_words": 2000,
         "slop_depth": "deep", "fact_check": False})
     assert r.status_code == 200 and r.json()["key"].startswith("e_")
-    for _ in range(50):
-        if "prose" in captured_cfg:
-            break
-    cfg = captured_cfg["prose"]["cfg"]
+    cfg = _await_cfg(captured_cfg, "prose")
+    assert cfg is not None, "后台线程 3 秒内未进入散文引擎"
     for k, v in (("genre", "shuqing"), ("operation", "write"), ("audience", "平台订阅读者"),
                  ("purpose", "记录与纪念"), ("tone", "克制"), ("target_words", 2000),
                  ("slop_depth", "deep"), ("fact_check", False)):
@@ -298,10 +305,9 @@ def test_legacy_medium_endpoints_share_the_path(captured_cfg):
     """旧入口仍在，且与 /api/create 走同一套 cfg 组装。"""
     r = client.post("/api/poetry/create", json={"form": "qijue", "idea": "雪夜", "rounds": 3})
     assert r.json()["medium"] == "poetry"
-    for _ in range(50):
-        if "poetry" in captured_cfg:
-            break
-    assert captured_cfg["poetry"]["cfg"]["maxRounds"] == 3
+    cfg = _await_cfg(captured_cfg, "poetry")
+    assert cfg is not None, "后台线程 3 秒内未进入诗词引擎"
+    assert cfg["maxRounds"] == 3
 
 
 def test_unknown_medium_falls_back_to_novel(monkeypatch, tmp_path):
