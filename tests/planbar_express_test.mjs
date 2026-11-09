@@ -5,6 +5,16 @@ import { JSDOM } from 'jsdom';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
+// 2026-11-09：CI 上这条用例断言全绿后进程仍不退出，step 挂满 8 分钟被判超时。
+// 原因：点「继续」会启动 jobfeed 的轮询链（setTimeout → fetch → setTimeout），
+// 卡片一直等不到 finished，定时器就把 node 的事件循环撑住了。
+// 兜底：90 秒看门狗（unref，不自己撑住事件循环）+ 结尾显式 process.exit。
+const WATCHDOG = setTimeout(() => {
+  console.log('❌ 用例超时未结束（疑似定时器未清理）');
+  process.exit(1);
+}, 90000);
+WATCHDOG.unref();
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const dom = new JSDOM(
@@ -229,3 +239,5 @@ if (failed) {
   process.exit(1);
 }
 console.log('✅ 极速续写入口在目标条真实渲染且行为正确');
+clearTimeout(WATCHDOG);
+process.exit(0);   // 显式收尾：jsdom + jobfeed 定时器不会自己让事件循环空出来

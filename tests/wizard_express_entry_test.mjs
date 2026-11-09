@@ -5,6 +5,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
+// 同 planbar_express_test.mjs：结尾显式退出 + unref 看门狗，防止定时器把
+// 事件循环撑住导致 CI 判超时（2026-11-09 实测）。
+const WATCHDOG = setTimeout(() => {
+  console.log('❌ 用例超时未结束（疑似定时器未清理）');
+  process.exit(1);
+}, 90000);
+WATCHDOG.unref();
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // ---- 真实后端 schema（避免测试里手抄一份漂移）----
@@ -165,3 +173,5 @@ for (const [med, sch] of Object.entries(medSchemas)) {
 
 console.log();
 console.log('✅ 极速模式入口确实渲染在向导第一步首位，且 9 种文体全部覆盖');
+clearTimeout(WATCHDOG);
+process.exit(0);   // 显式收尾，别让 jsdom 的定时器把 CI 挂到超时
