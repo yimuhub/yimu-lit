@@ -48,7 +48,7 @@ function ensureLayer() {
   Object.assign(layer.style, {
     position: 'fixed', right: '18px', bottom: '18px', zIndex: '9999',
     display: 'flex', flexDirection: 'column', gap: '10px',
-    maxWidth: '360px', pointerEvents: 'none'
+    maxWidth: 'min(360px, calc(100vw - 36px))', pointerEvents: 'none'
   });
   document.body.append(layer);
   return layer;
