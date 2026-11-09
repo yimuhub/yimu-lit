@@ -41,6 +41,28 @@ def _bad(msg: str, code: int = 400):
     return JSONResponse({"error": msg}, status_code=code)
 
 
+_PREFIX_MEDIUM = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis",
+                  "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}
+
+
+def _medium_of_key(key) -> str:
+    """v4.32.3：文体判定的统一口径。
+
+    key 前缀只是新建作品时的命名约定；小说转短剧生成的 key 是「<小说key>-短剧」，
+    不带 s_。此前 /api/plan、/api/state 只认前缀，于是把改编剧本当小说：
+    /api/plan 调 longform.ensure_plan() 在剧本目录里写出 02c-总规划、章卡、
+    状态库，规划条显示「第 1 场·启动规划」，状态与进度全部分叉。
+    """
+    med = _PREFIX_MEDIUM.get(str(key)[:2])
+    if med:
+        return med
+    try:
+        from bot import writer as _wr
+        return _wr.medium_of_key(key) or ""
+    except Exception:
+        return ""
+
+
 # 各文体的「写正文」阶段码（bot/medium.py 的 stages）。技能文件的 stages 用的是这些码，
 # 前端传来的泛化值（WRITE / 空）需要先落地成具体码，否则 pick 只会返回通用技能。
 _WRITE_STAGE = {"novel": "P2", "script": "S5", "poetry": "C", "prose": "D", "thesis": "T2", "children": "C2", "news": "N2", "copy": "K3"}
@@ -463,11 +485,12 @@ def _chapter_ledger(pdir: str, k: int = 5) -> dict:
 
 def _medium_state_payload(proj, key: str, q: str = "") -> dict:
     """v4.6.2：非小说的状态 pane 数据（剧本用剧本状态库；诗词/散文/论文给阶段/产物映射）。"""
-    if str(key).startswith("s_"):
+    med = _medium_of_key(key)
+    if med == "script":
         return _script_state_payload(proj, key, q)
     from bot import writer as _wr
-    med = {"p_": "poetry", "e_": "prose", "t_": "thesis",
-           "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(str(key)[:2], "prose")
+    if med in ("", "novel"):
+        med = "prose"   # 兼容旧调用方：认不出时按散文面板兜底
     it = _wr.library_item(key) or {}
     timeline: list[dict] = []
     issues: list[str] = []
@@ -692,8 +715,9 @@ def register_v2_routes(app, get_project, chat_func=None):
             return err
         # v4.6.2：剧本/诗词/散文/论文的「规划」页签——把各自计划映射成与小说同构的
         # volumes/arcs/chapters 树，planPane 直接复用
-        _med = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis",
-                "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(str(key)[:2])
+        _med = _medium_of_key(key)
+        if _med in ("", "novel"):
+            _med = None   # 只有小说才走 longform 分层规划，剧本绝不写 02c/章卡
         if _med:
             return {"ok": True, "key": key, "plan": _medium_plan_view(proj, key, _med),
                     "digest": None, "proposals": []}
@@ -826,7 +850,7 @@ def register_v2_routes(app, get_project, chat_func=None):
         if err:
             return err
         # v4.3.0：剧本的状态 pane —— 数据源换 18-剧本状态库 / 22-剧本体检 / 剧本计划
-        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+        if _medium_of_key(key) not in ("", "novel"):
             return _medium_state_payload(proj, key, q)
         stmod, err = _mod("state")
         if err:
@@ -1190,9 +1214,7 @@ def register_v2_routes(app, get_project, chat_func=None):
             if not med:
                 # v4.12.6：key 前缀兜底——children/news/copy 引擎不写 plan["medium"]，
                 # 此前永远回落 novel → 技能面板全部显示小说技能
-                med = {"c_": "children", "n_": "news", "k_": "copy", "o_": "other",
-                       "s_": "script", "p_": "poetry", "e_": "prose",
-                       "t_": "thesis"}.get(str(key)[:2], "novel")
+                med = _medium_of_key(key) or "novel"
             if not medium_mod.is_medium(med):
                 med = "novel"
             st = _resolve_stage(stage, med)

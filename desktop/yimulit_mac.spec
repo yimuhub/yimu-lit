@@ -53,8 +53,11 @@ app = BUNDLE(
     name="YiMuLit.app",
     icon=os.path.join(ROOT, "desktop", "icon", "icon.icns"),
     info_plist={
-        # v4.32.0：菜单栏/Dock 显示名走 CFBundleName——此前是 YiMuLit（英文），
-        # 用户要求应用名中文「一幕神笔」；.app 目录名保持 ASCII（CI 中文吞字红线）
+        # v4.32.0：菜单栏/Dock 显示名走 CFBundleName——此前是 YiMuLit（英文）。
+        # v4.32.3：用户实拍 DMG 里仍显示英文，光改 plist 不够：Finder 优先展示
+        # .app 目录名、DMG 窗口标题展示卷名。构建产物这里保持 ASCII（PyInstaller
+        # 与 CI 工件对中文路径有过吞字），改名与中文卷名在 desktop.yml 打 DMG 时做，
+        # 并有两道 plutil 红线守卫。
         "CFBundleName": "一幕神笔",
         "CFBundleDisplayName": "一幕神笔",
         "NSLocalNetworkUsageDescription": "一幕神笔在本机启动创作服务，需要访问本地网络（127.0.0.1）。",

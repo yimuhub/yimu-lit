@@ -28,7 +28,7 @@ import { renderSession } from './views/session.js';
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
    缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
    tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
-const CSS_V = '311';
+const CSS_V = '312';
 
 const els = {
   app: document.getElementById('app'),
@@ -1052,11 +1052,16 @@ function startLive(key) {
     if (!s.currentKey) return;
     const w = s.work;
     if (w && (w.running || w.phase === 'planning' || (w.done != null && w.total != null && w.done < w.total))) {
+      /* v4.32.3：剧本等非小说不拉小说规划/状态库（旧版会给改编短剧写出
+         02c-总规划与章卡，还会把规划条渲染成「第 1 场·启动规划」）。
+         作品状态本身仍要刷新，让 x/12 集、字数、创作中/暂停实时收敛。 */
+      const mediumBench = isMediumBench(s.workMedium);
       try {
         await Promise.allSettled([
-          ctx.refreshPlan(),
-          ctx.refreshState(),
+          !mediumBench && ctx.refreshPlan(),
+          !mediumBench && ctx.refreshState(),
           ctx.refreshLibrary(),
+          ctx.refreshWork()
         ]);
       } catch (e) {
         /* 静默失败，下次 tick 再试 */

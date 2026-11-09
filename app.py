@@ -3468,45 +3468,53 @@ def api_release_log(key: str):
 # ---------- v0.4：暂停 / 继续 / 读者即时指令（像 Agent 聊天一样随时控）----------
 def _nonnovel_set_paused(key, paused: bool) -> bool:
     """v4.20.0：非小说文体通用暂停位——直接写 plan.meta.paused，
-    各引擎在步骤/章间检查该位后自停（剧本引擎原生支持，其余本次补齐）。"""
-    from bot import script_writer, poetry_writer, prose_writer, thesis_writer
-    from bot import children_writer, news_writer, copy_writer, other_writer
-    for mod in (script_writer, poetry_writer, prose_writer, thesis_writer,
-                children_writer, news_writer, copy_writer, other_writer):
-        gp = getattr(mod, "get_project", None)
-        if not callable(gp):
-            continue
-        try:
-            proj = gp(key)
-        except Exception:
-            proj = None
-        if proj is None:
-            continue
-        try:
-            pl = proj.plan() or {}
-        except Exception:
-            continue
-        pl.setdefault("meta", {})["paused"] = bool(paused)
-        if paused:
-            if pl.get("status") in ("in_progress", "writing", "planning"):
-                pl["status"] = "paused"
-        elif pl.get("status") == "paused":
-            pl["status"] = "in_progress"
-        try:
-            proj.save_plan(pl)
-            return True
-        except Exception:
-            return False
-    return False
+    各引擎在步骤/章间检查该位后自停（剧本引擎原生支持，其余本次补齐）。
+    v4.32.3：改为按 _nonnovel_module(key) 精确定位引擎。旧实现遍历 8 个引擎，
+    而各引擎的 get_project() 大多只判断「目录存在」，第一个 script_writer 就会
+    命中任意作品，并在小说目录里凭空写出一份只有 paused 的「剧本计划.json」。"""
+    mod = _nonnovel_module(key)
+    if mod is None:
+        return False
+    gp = getattr(mod, "get_project", None)
+    if not callable(gp):
+        return False
+    try:
+        proj = gp(key)
+    except Exception:
+        return False
+    if proj is None:
+        return False
+    try:
+        pl = proj.plan() or {}
+    except Exception:
+        return False
+    if not pl:
+        return False
+    pl.setdefault("meta", {})["paused"] = bool(paused)
+    if paused:
+        if pl.get("status") in ("in_progress", "writing", "planning"):
+            pl["status"] = "paused"
+    elif pl.get("status") == "paused":
+        pl["status"] = "in_progress"
+    try:
+        proj.save_plan(pl)
+        return True
+    except Exception:
+        return False
 
 
+# 兼容旧调用点；v4.32.3 起一律走 _nonnovel_module()（按内容判文体，不只认前缀）。
 _NONNOVEL_PREFIXES = ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_")
+
+
+def _is_nonnovel(key) -> bool:
+    return _nonnovel_module(key) is not None
 
 
 @app.post("/api/pause")
 def api_pause(payload: dict):
     key = payload.get("key")
-    if str(key)[:2] in _NONNOVEL_PREFIXES:
+    if _is_nonnovel(key):
         if not _nonnovel_set_paused(key, True):
             return JSONResponse({"error": "项目不存在或该文体不支持暂停"}, status_code=404)
         return {"ok": True, "msg": "⏸ 暂停请求已发出：当前步骤做完即停", "running": True,
@@ -3522,7 +3530,10 @@ def api_pause(payload: dict):
 @app.post("/api/resume")
 def api_resume(payload: dict):
     key = payload.get("key")
-    if str(key)[:2] in _NONNOVEL_PREFIXES:
+    if _is_nonnovel(key):
+        # v4.32.3：改编生成的剧本 key 是「<小说key>-短剧」，没有 s_ 前缀。
+        # 旧版只认前缀 → 落到 writer.resume_task() 找小说任务档案 →
+        # 「无法继续，没有未完成的任务」。现在按计划文件认文体，走剧本引擎断点恢复。
         _nonnovel_set_paused(key, False)
         return api_continue({"key": key})
     proj = _get_project(key)
@@ -3765,17 +3776,31 @@ _NONNOVEL_MODS = {
 }
 
 
+_MODULES_BY_NAME = {
+    "script_writer": script_writer, "poetry_writer": poetry_writer,
+    "prose_writer": prose_writer, "thesis_writer": thesis_writer,
+    "children_writer": children_writer, "news_writer": news_writer,
+    "copy_writer": copy_writer, "other_writer": other_writer,
+}
+_MEDIUM_TO_MODULE = {"script": "script_writer", "poetry": "poetry_writer",
+                     "prose": "prose_writer", "thesis": "thesis_writer",
+                     "children": "children_writer", "news": "news_writer",
+                     "copy": "copy_writer", "other": "other_writer"}
+
+
 def _nonnovel_module(key):
-    """按 key 前缀取非小说引擎模块；不是非小说 key 时返回 None。"""
+    """取非小说引擎模块；小说 / 不存在的 key 返回 None。
+
+    v4.32.3：先按 key 前缀（新建作品的命名约定），前缀不认时再按磁盘计划文件
+    判定文体。小说转短剧生成的 key「<小说key>-短剧」没有 s_ 前缀，只认前缀会把
+    它当小说，导致「继续」报「没有未完成的任务」、暂停/极速开关写错计划文件。
+    """
     name = _NONNOVEL_MODS.get(str(key)[:2])
     if not name:
-        return None
-    return {
-        "script_writer": script_writer, "poetry_writer": poetry_writer,
-        "prose_writer": prose_writer, "thesis_writer": thesis_writer,
-        "children_writer": children_writer, "news_writer": news_writer,
-        "copy_writer": copy_writer, "other_writer": other_writer,
-    }.get(name)
+        med = writer.medium_of_key(key)
+        if med and med != "novel":
+            name = _MEDIUM_TO_MODULE.get(med)
+    return _MODULES_BY_NAME.get(name) if name else None
 
 
 @app.post("/api/express-write")
@@ -3943,6 +3968,12 @@ def api_continue(payload: dict):
     mod = _nonnovel_module(key)
     if mod is not None:
         import threading as _th
+        # v4.32.3：小说改编出来的短剧有 adaptedFrom，必须走改编专用断点恢复
+        # （续跑缺的集 / 补分镜），不能套常规剧本流水线把 12 集重写一遍。
+        if mod is script_writer:
+            adapt = _resume_novel_to_drama(key)
+            if adapt is not None:
+                return adapt
         fn = getattr(mod, "resume_project", None)
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
@@ -3950,7 +3981,8 @@ def api_continue(payload: dict):
         # pipeline_running 守卫，唯独这里没有；双击「继续」会起两条恢复流水线
         # 并发写同一本书的场次/阶段文件。
         if writer.pipeline_running(key):
-            return {"ok": True, "msg": "该书正在创作中，进度见工作台运行日志。", "running": True, "paused": False}
+            return {"ok": True, "msg": "该书正在创作中，进度见工作台运行日志。",
+                    "running": True, "paused": False, "state": "in_progress"}
         _nonnovel_set_paused(key, False)   # v4.20.0：继续前清掉暂停位（统一「继续=接着跑」语义）
         def _bg():
             writer.mark_pipeline(key, True)   # v3.1.0：恢复期间「创作中」可见
@@ -3961,7 +3993,8 @@ def api_continue(payload: dict):
             finally:
                 writer.mark_pipeline(key, False)
         _th.Thread(target=_bg, daemon=True).start()
-        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。", "running": True, "paused": False}
+        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。",
+                "running": True, "paused": False, "state": "in_progress"}
     proj = _get_project(key)
     if not proj:
         # 内存中未命中时尝试从磁盘加载
@@ -5652,91 +5685,287 @@ def api_novel_to_drama(payload: dict):
         return JSONResponse({"error": "没有已完成可改编的章节"}, status_code=400)
     chs = chs[:12]   # 单次改编上限 12 章，防失控
     new_key_base = f"{src_key}-{'漫剧' if form == 'comic_drama' else '短剧'}"
+    hint = {"key_hint": new_key_base,
+            "name_hint": f"{plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}"}
+    # v4.32.3：防重入——连点两次「转短剧」不能起两条线程写同一份计划/正文
+    if _adapt_busy(new_key_base) or writer.pipeline_running(new_key_base) or not _adapt_claim(new_key_base):
+        return {"ok": True, "async": True, "already_running": True,
+                "msg": "这部短剧的改编任务已在后台运行，进度见工作台实时日志。", **hint}
 
     def _run():
         try:
             _novel_to_drama_impl(src_key, form, chs, new_key_base, plan, proj)
         except Exception as e:
             print(f"[bg] 小说转短剧失败: {e}", flush=True)
-    _th.Thread(target=_run, daemon=True).start()
+        finally:
+            _adapt_release(new_key_base)
+    try:
+        _th.Thread(target=_run, daemon=True).start()
+    except Exception:
+        _adapt_release(new_key_base)
+        raise
     return {"ok": True, "async": True,
-            "msg": f"改编已后台启动（{len(chs)} 章 → {len(chs)} 集），完成后在作品库查看",
-            "key_hint": new_key_base,
-            "name_hint": f"{plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}"}
+            "msg": f"改编已后台启动（{len(chs)} 章 → {len(chs)} 集），进度实时可见，完成后在作品库查看",
+            **hint}
 
 
-def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan, proj=None):
-    """v4.7.0：小说→短剧改编实现（后台线程）：逐章 → 分集剧本正文 → 场次清单 → 自动分镜。
-    proj 参数由调用方传入（v4.5.0 版本缺少此参数导致 _chapter_path 抛出 NameError 静默失败）。"""
-    import threading as _th
+# ---------------------------------------------------------------- 小说 → 短剧改编
+_ADAPT_LOCK = threading.Lock()
+_ADAPT_RUNNING: set = set()
+
+
+def _adapt_claim(key) -> bool:
+    """进程内防重入：同一部短剧只能有一条改编/续跑线程在写盘。"""
+    with _ADAPT_LOCK:
+        if key in _ADAPT_RUNNING:
+            return False
+        _ADAPT_RUNNING.add(key)
+        return True
+
+
+def _adapt_release(key) -> None:
+    with _ADAPT_LOCK:
+        _ADAPT_RUNNING.discard(key)
+
+
+def _adapt_busy(key) -> bool:
+    with _ADAPT_LOCK:
+        return key in _ADAPT_RUNNING
+
+
+def _adapt_scene_body_path(pdir, sc) -> str:
+    no = int(sc.get("no") or 0)
+    fn = str(sc.get("fileName") or f"第{no:03d}场.md")
+    return os.path.join(pdir, script_writer.F_BODY, fn)
+
+
+def _adapt_write_scene_list(pdir, name, scenes) -> None:
+    md = [f"# {name} 场次清单\n", "| 场次 | 类型 | 集数 | 状态 |",
+          "| :--- | :--- | :--- | :--- |"]
+    for sc in scenes:
+        md.append(f"| 第{sc['no']}场 | {sc.get('kind') or '集'} | {sc.get('place') or ''} | "
+                  f"{'已完成' if sc.get('status') == 'completed' else '待改编'} |")
+    script_writer._write(os.path.join(pdir, script_writer.F_SCENES), "\n".join(md) + "\n")
+
+
+def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
+                         proj=None, resume=False):
+    """小说 → 短剧改编（后台线程）：逐章 → 分集剧本正文 → 场次清单 → 自动分镜。
+
+    v4.32.3：改成「每集实时落盘」+「断点可续跑」。旧实现只在全部 12 集跑完后
+    一次性回填 scenes，改编期间工作台永远 0/0 场、0 字，日志却在推进；状态停在
+    writing 而 running 只有分镜阶段才置位，于是「写作中」和「继续」同时出现，
+    点继续又被当成小说去找任务档案 → 「没有未完成的任务」。
+    """
     from datetime import datetime as _dt
     from bot import llm as _llm
-    name = re.sub(r'[\/:*?"<>|\s]+', "", f"{src_plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}")[:40]
+    name = re.sub(r'[\/:*?"<>|\s]+', "",
+                  f"{src_plan.get('novelName') or src_key}·{'漫剧' if form == 'comic_drama' else '短剧'}")[:40]
     pdir = safe_join(script_writer.PROJECTS_DIR, new_key_base, label="项目 key")
     os.makedirs(pdir, exist_ok=True)
+    prev = script_writer.ScriptProject(pdir, name).plan() if resume else None
+    name = (prev or {}).get("scriptName") or name
     sp = script_writer.ScriptProject(pdir, name)
-    script_writer.llm.book(new_key_base, "planning")
-    sp.log(f"🎬 从《{src_plan.get('novelName') or src_key}》改编 {form}：{len(chapters)} 章逐集剧本化")
-    era = "modern"
-    scenes = []
-    plan_doc = {
-        "version": 1, "scriptName": name, "projectPath": pdir, "medium": "script",
-        "form": form, "formLabel": script_writer.FORMS.get(form, {})["label"],
-        "entryPath": "adapt", "totalScenes": 0, "targetPages": 30, "episodes": len(chapters),
-        "createdAt": _dt.now().isoformat(), "status": "writing", "stages": {"S0": {"done": True}},
-        "scenes": [], "adaptedFrom": {"key": src_key, "chapters": [c.get("chapterNumber") for c in chapters]},
-        "config": {"form": form, "title": name, "idea": f"由小说《{src_plan.get('novelName') or src_key}》改编"},
-    }
-    # v4.7.0：proj 由调用方传入；兜底用 _get_project 重建，避免 NameError
     if proj is None:
         proj = _get_project(src_key)
     if proj is None:
         sp.log("💥 无法读取原小说项目，改编失败")
-        return
-    # v4.7.0：先落一份「进行中」的剧本计划，让项目立即进作品库（可查/可进工作台）；
-    # 即使 LLM 未配置或全部失败，用户也能在作品库看到这部短剧条目（而非凭空消失）。
-    sp.save_plan(plan_doc)
-    for c in chapters:
-        no = c.get("chapterNumber")
-        src_text = writer._clean_chapter_text(open(_chapter_path(proj, c), encoding="utf-8").read()) if _chapter_path(proj, c) and os.path.exists(_chapter_path(proj, c)) else ""
-        sp.log(f"🎬 第 {no} 章 → 第 {no} 集：剧本化…")
-        body = _llm.chat([
-            {"role": "system", "content":
-                f"你是竖屏微短剧编剧。把小说章节改编成{script_writer.FORMS[form]['label']}第 {no} 集剧本（3-5 分钟一集）。"
-                "格式：场标题行（内/外 地点 时间）+ 动作行 + 短促台词（角色名：台词）。"
-                "开场前 3 秒必须抓人；集尾强钩子；台词短促信息密度高；删掉一切过场与心理描写。"},
-            {"role": "user", "content": f"【原章节】第{no}章 {c.get('title','')}\n\n{src_text[:9000]}"}],
-            stage="writing", max_tokens=6000) or ""
-        if not body.strip():
+        return {"ok": False, "error": "原小说项目不存在"}
+    script_writer.llm.book(new_key_base, "planning")
+    if resume:
+        sp.log(f"▶ 断点续跑改编：本轮 {len(chapters)} 集")
+    else:
+        sp.log(f"🎬 从《{src_plan.get('novelName') or src_key}》改编 {form}：{len(chapters)} 章逐集剧本化")
+    plan_doc = prev or {
+        "version": 1, "scriptName": name, "projectPath": pdir, "medium": "script",
+        "form": form, "formLabel": script_writer.FORMS.get(form, {})["label"],
+        "entryPath": "adapt", "targetPages": 30,
+        "createdAt": _dt.now().isoformat(), "stages": {"S0": {"done": True}},
+        "adaptedFrom": {"key": src_key,
+                        "chapters": [c.get("chapterNumber") for c in chapters]},
+        "config": {"form": form, "title": name,
+                   "idea": f"由小说《{src_plan.get('novelName') or src_key}》改编"},
+    }
+    # 一开工就把全部集数占位写进计划：工作台立刻是 0/12 而不是 0/0，
+    # 左边进度条、字数、场次清单都随每一集推进。
+    by_no = {}
+    for sc in (plan_doc.get("scenes") or []):
+        try:
+            n = int(sc.get("no"))
+        except (TypeError, ValueError):
             continue
-        os.makedirs(os.path.join(pdir, script_writer.F_BODY), exist_ok=True)
-        fn = f"第{no:03d}场.md"
-        script_writer._write(os.path.join(pdir, script_writer.F_BODY, fn), body)
-        scenes.append({"no": no, "kind": "集", "place": f"第 {no} 集", "time": "",
-                       "cast": "", "status": "completed",
-                       "fileName": fn, "wordCount": len(body)})
-    if not scenes:
-        sp.log("💥 改编失败：没有生成任何剧本内容")
-        # v4.7.0：失败也保留计划文件并标记状态，让作品库可见（可删可重试），不是凭空消失
-        plan_doc["status"] = "failed"
-        sp.save_plan(plan_doc)
-        return
-    # v4.12.14 重大修复：scenes 回填到计划——此前从没写入 plan_doc["scenes"]，
-    # 导致剧本工作台 0/0、状态永远 "writing"、分镜静默失败（一切假状态的总根因）
-    plan_doc["scenes"] = scenes
-    plan_doc["status"] = "completed"
-    # 写出 03-场次清单.md（reparse 兜底 + 工作台场次页签数据源）
-    md = [f"# {name} 场次清单\n", "| 场次 | 类型 | 集数 | 状态 |", "| :--- | :--- | :--- | :--- |"]
-    for sc in scenes:
-        md.append(f"| 第{sc['no']}场 | {sc['kind']} | {sc['place']} | 已完成 |")
-    script_writer._write(os.path.join(pdir, script_writer.F_SCENES), "\n".join(md) + "\n")
+        by_no[n] = dict(sc)
+    for c in chapters:
+        try:
+            n = int(c.get("chapterNumber"))
+        except (TypeError, ValueError):
+            continue
+        by_no.setdefault(n, {"no": n, "kind": "集", "place": f"第 {n} 集",
+                             "time": "", "cast": "", "status": "pending", "wordCount": 0})
+    plan_doc["scenes"] = [by_no[n] for n in sorted(by_no)]
+    plan_doc["totalScenes"] = len(plan_doc["scenes"])
+    plan_doc["episodes"] = len(plan_doc["scenes"])
+    plan_doc["status"] = "writing"
+    plan_doc.setdefault("meta", {})["paused"] = False
     sp.save_plan(plan_doc)
-    sp.log(f"✅ 改编完成：{len(scenes)} 集；启动分镜头拆解…")
-    writer.mark_pipeline(new_key_base, True)
+    _adapt_write_scene_list(pdir, name, plan_doc["scenes"])
+
+    writer.mark_pipeline(new_key_base, True)   # 全程「创作中」，不是只有分镜阶段
     try:
-        script_writer.gen_storyboard(new_key_base)
+        for c in chapters:
+            try:
+                n = int(c.get("chapterNumber"))
+            except (TypeError, ValueError):
+                continue
+            sc = by_no.get(n)
+            if sc is None:
+                continue
+            if (sp.plan() or {}).get("meta", {}).get("paused"):
+                sp.log("⏸ 收到暂停请求，停在本集之前；剩余集保留待续，点「继续」接着改编")
+                break
+            fp = _adapt_scene_body_path(pdir, sc)
+            if sc.get("status") == "completed" and os.path.exists(fp):
+                continue   # 断点续跑：磁盘已有正文，不重复烧 LLM
+            src_fp = _chapter_path(proj, c)
+            src_text = ""
+            if src_fp and os.path.exists(src_fp):
+                src_text = writer._clean_chapter_text(open(src_fp, encoding="utf-8").read())
+            sp.log(f"🎬 第 {n} 章 → 第 {n} 集：剧本化…")
+            body = _llm.chat([
+                {"role": "system", "content":
+                    f"你是竖屏微短剧编剧。把小说章节改编成{script_writer.FORMS[form]['label']}第 {n} 集剧本（3-5 分钟一集）。"
+                    "格式：场标题行（内/外 地点 时间）+ 动作行 + 短促台词（角色名：台词）。"
+                    "开场前 3 秒必须抓人；集尾强钩子；台词短促信息密度高；删掉一切过场与心理描写。"},
+                {"role": "user", "content": f"【原章节】第{n}章 {c.get('title','')}\n\n{src_text[:9000]}"}],
+                stage="writing", max_tokens=6000) or ""
+            if not body.strip():
+                sp.log(f"⚠️ 第 {n} 集本轮没拿到内容，保留待续（点「继续」可重跑）")
+                continue
+            fn = f"第{n:03d}场.md"
+            fp = os.path.join(pdir, script_writer.F_BODY, fn)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            script_writer._write(fp, body)
+            sc.update({"kind": "集", "place": f"第 {n} 集", "status": "completed",
+                       "fileName": fn, "wordCount": len(body)})
+            plan_doc["scenes"] = [by_no[k] for k in sorted(by_no)]
+            sp.save_plan(plan_doc)                       # 每集实时落盘
+            _adapt_write_scene_list(pdir, name, plan_doc["scenes"])
+
+        pending = [sc for sc in by_no.values()
+                   if sc.get("status") != "completed"
+                   or not os.path.exists(_adapt_scene_body_path(pdir, sc))]
+        done = len(by_no) - len(pending)
+        if pending:
+            plan_doc["status"] = "writing"
+            plan_doc.setdefault("meta", {})["storyboard_done"] = False
+            sp.save_plan(plan_doc)
+            sp.log(f"⏸ 已完成 {done}/{len(by_no)} 集；还有 {len(pending)} 集未完成，点「继续」从断点接着改编")
+            return {"ok": False, "done": done, "pending": len(pending)}
+
+        sp.log(f"✅ 改编完成：{done} 集；启动分镜头拆解…")
+        storyboard_ok = False
+        try:
+            sb = script_writer.gen_storyboard(new_key_base) or {}
+            storyboard_ok = bool(sb.get("ok"))
+            if not storyboard_ok:
+                sp.log(f"⚠️ 分镜未完成：{sb.get('error') or '未知原因'}（点「继续」可补跑）")
+        except Exception as e:
+            sp.log(f"⚠️ 分镜失败：{type(e).__name__}: {e}（点「继续」可补跑）")
+        plan_doc = sp.plan() or plan_doc   # gen_storyboard 可能已写 meta，别覆盖
+        plan_doc.setdefault("meta", {})["storyboard_done"] = bool(storyboard_ok)
+        plan_doc["status"] = "completed" if storyboard_ok else "writing"
+        plan_doc["scenes"] = [by_no[k] for k in sorted(by_no)]
+        sp.save_plan(plan_doc)
+        return {"ok": storyboard_ok, "done": done, "pending": 0}
     finally:
         writer.mark_pipeline(new_key_base, False)
+
+
+def _storyboard_resume(key) -> None:
+    """改编集数已齐、只差分镜时的补跑（用户点「继续」）。"""
+    sp = script_writer.get_project(key)
+    if sp is None:
+        return
+    writer.mark_pipeline(key, True)
+    try:
+        res = script_writer.gen_storyboard(key) or {}
+        ok = bool(res.get("ok"))
+        p = sp.plan() or {}
+        p.setdefault("meta", {})["storyboard_done"] = ok
+        p["status"] = "completed" if ok else "writing"
+        sp.save_plan(p)
+        sp.log("✅ 分镜表已补齐" if ok else f"⚠️ 分镜仍未完成：{res.get('error') or ''}（可再点继续）")
+    except Exception as e:
+        sp.log(f"⚠️ 分镜补跑失败：{type(e).__name__}: {e}")
+    finally:
+        writer.mark_pipeline(key, False)
+
+
+def _resume_novel_to_drama(key):
+    """改编剧本的「继续」唯一入口；不是改编剧本返回 None 交给常规剧本引擎。
+
+    按磁盘正文 + scenes 状态对账，只跑缺的集；集齐了但分镜没生成就只补分镜。
+    """
+    sp = script_writer.get_project(key)
+    if sp is None:
+        return None
+    plan = sp.plan() or {}
+    src = plan.get("adaptedFrom") or {}
+    src_key = str(src.get("key") or "")
+    if not src_key:
+        return None
+    if _adapt_busy(key) or writer.pipeline_running(key):
+        return {"ok": True, "msg": "改编任务正在后台运行，进度见工作台实时日志。",
+                "running": True, "paused": False, "state": "in_progress"}
+    src_proj = _get_project(src_key)
+    if src_proj is None:
+        return {"ok": False, "msg": "原小说项目已不存在，无法续跑改编",
+                "running": False, "paused": False, "state": "writing"}
+    scenes = [sc for sc in (plan.get("scenes") or []) if isinstance(sc, dict)]
+    missing = set()
+    for sc in scenes:
+        try:
+            n = int(sc.get("no") or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0 and (sc.get("status") != "completed"
+                      or not os.path.exists(_adapt_scene_body_path(sp.path, sc))):
+            missing.add(n)
+    src_plan = src_proj.plan() or {}
+    chapters = [c for c in (src_plan.get("chapters") or [])
+                if int(c.get("chapterNumber") or 0) in missing][:12]
+    storyboard_done = bool((plan.get("meta") or {}).get("storyboard_done"))
+    if not chapters and storyboard_done:
+        if plan.get("status") != "completed":
+            plan["status"] = "completed"
+            sp.save_plan(plan)
+        return {"ok": True, "msg": "改编与分镜都已完成。", "running": False,
+                "paused": False, "state": "completed"}
+    if not _adapt_claim(key):
+        return {"ok": True, "msg": "改编任务正在后台运行，进度见工作台实时日志。",
+                "running": True, "paused": False, "state": "in_progress"}
+
+    def _run():
+        try:
+            if chapters:
+                plan.setdefault("meta", {})["paused"] = False
+                if plan.get("status") == "paused":
+                    plan["status"] = "in_progress"
+                sp.save_plan(plan)
+                _novel_to_drama_impl(src_key, str(plan.get("form") or "short_drama"),
+                                     chapters, key, src_plan, src_proj, resume=True)
+            else:
+                _storyboard_resume(key)
+        except Exception as e:
+            sp.log(f"💥 断点续跑失败：{type(e).__name__}: {e}")
+            print(f"[bg] 小说转短剧断点续跑失败: {e}", flush=True)
+        finally:
+            _adapt_release(key)
+    threading.Thread(target=_run, daemon=True).start()
+    msg = (f"已从断点续跑改编：剩余 {len(chapters)} 集" if chapters
+           else "集数已齐，正在补跑分镜头拆解")
+    return {"ok": True, "msg": msg, "running": True, "paused": False,
+            "state": "in_progress"}
 
 
 @app.get("/api/script/forms")

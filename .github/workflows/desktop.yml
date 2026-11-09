@@ -33,11 +33,18 @@ jobs:
       - name: Make DMG
         run: |
           STAGE=$(mktemp -d)
-          cp -R "desktop/dist/YiMuLit.app" "$STAGE/"
+          # v4.32.3：用户实拍 DMG 里应用显示成英文「YiMuLit」。构建产物仍用 ASCII
+          # 名字（PyInstaller/上传工件对中文路径有过吞字），但在装进 DMG 时改名为
+          # 中文「一幕神笔.app」，卷名也一并中文化；Finder / Dock / 菜单栏都以此为准。
+          cp -R "desktop/dist/YiMuLit.app" "$STAGE/一幕神笔.app"
           cp README-DESKTOP.txt "$STAGE/首次启动说明.txt"
           ln -s /Applications "$STAGE/Applications"
           VER=$(cat VERSION)
-          hdiutil create -volname "YiMuLit" -srcfolder "$STAGE" -ov -format UDZO "desktop/dist/YiMuLit-$VER-mac.dmg"
+          hdiutil create -volname "一幕神笔" -srcfolder "$STAGE" -ov -format UDZO "desktop/dist/YiMuLit-$VER-mac.dmg"
+          # 打包红线：应用显示名必须是中文，任何一个环节退回英文就直接让 CI 失败
+          test -d "$STAGE/一幕神笔.app/Contents"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$STAGE/一幕神笔.app/Contents/Info.plist")" = "一幕神笔"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$STAGE/一幕神笔.app/Contents/Info.plist")" = "一幕神笔"
       - uses: actions/upload-artifact@v4
         with: { name: mac-dmg, path: desktop/dist/*.dmg }
       - name: Attach to release

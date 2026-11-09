@@ -1089,13 +1089,27 @@ function workPane(ctx) {
             const res = await api.novelToDrama({ key: work.key, form: 'short_drama' });
             const newKey = res.key_hint || '';
             const dramaName = res.name_hint || '改编短剧';
-            /* 启动后台任务后弹出引导卡片：告知成品已生成，可直达剧本工作台 */
+            let pollInterval = 0;
+            /* v4.32.3：用户实拍「点查看剧本没有任何反应」。三个叠加原因：
+               ① 点击只 navigate，弹窗从不关闭，遮罩把后面的界面全挡住；
+               ② 按钮要等 6 秒轮询成功才解禁，期间点了等于没点；
+               ③ 新项目还没进作品库缓存，路由渲染成「作品不存在」。
+               现在：点击立刻关弹窗 → 左侧插入全新剧本任务会话 → 刷新作品库 → 切路由。 */
+            const openDramaSession = () => {
+              if (!newKey) return;
+              clearInterval(pollInterval);
+              dramaModal.close();
+              if (ctx && typeof ctx.addPendingWork === 'function') {
+                ctx.addPendingWork({ key: newKey, name: dramaName, medium: 'script' });
+              }
+              if (ctx && ctx.refreshLibrary) ctx.refreshLibrary().catch(() => {});
+              navigate(routePath('work', { key: newKey }));
+            };
             const statusBtn = h('button', {
               class: 'btn btn-primary btn-sm',
               type: 'button',
               text: '查看剧本（进行中…）',
-              disabled: true,
-              on: { click: () => navigate(`/work/${encodeURIComponent(newKey)}`) }
+              on: { click: openDramaSession }
             });
             const body = h('div', { class: 'rp-drama-modal-body' },
               h('div', { class: 'rp-drama-modal-line' },
@@ -1103,7 +1117,7 @@ function workPane(ctx) {
                 h('span', {}, `《${work.name || work.key}》 正在改编为《${dramaName}》`),
               ),
               h('p', { class: 'rp-drama-modal-note' },
-                '剧本与分镜在后台生成中，完成后在作品库可见。点击「查看剧本」直达剧本工作台（场次 / 分镜页签）。'),
+                '剧本与分镜在后台逐集生成，进度实时可见。点击「查看剧本」会在左侧新建一个剧本任务会话，可直接查看场次与分镜；也可以先关闭，稍后从作品库进入。'),
             );
             const closeBtn = h('button', {
               class: 'btn btn-sm',
@@ -1115,21 +1129,22 @@ function workPane(ctx) {
               subtitle: '改编任务已启动',
               body,
               size: 'sm',
-              footer: h('div', {}, statusBtn, closeBtn)
+              footer: h('div', {}, statusBtn, closeBtn),
+              onClose: () => clearInterval(pollInterval)
             });
             closeBtn.addEventListener('click', () => dramaModal.close());
-            /* 轮询：检查项目是否已落盘。落盘后即可跳转；running=false 视为完成，更新文案 */
-            const pollInterval = setInterval(async () => {
+            /* 轮询：项目落盘后更新文案并同步左侧列表；running=false 视为完成。
+               404/异常只表示尚未落盘，下一轮再试（按钮始终可点，不再禁用）。 */
+            pollInterval = setInterval(async () => {
               try {
                 const st = await api.scriptStatus(newKey);
-                /* 404/异常 → 项目尚未落盘，继续等 */
-                statusBtn.disabled = false;
                 statusBtn.textContent = st.running ? '查看剧本（创作中…）' : '查看剧本（已完成 ✓）';
-                clearInterval(pollInterval);
+                if (ctx && ctx.refreshLibrary) ctx.refreshLibrary().catch(() => {});
+                if (!st.running) clearInterval(pollInterval);
               } catch {
                 /* 尚未落盘，下一轮再试 */
               }
-            }, 6000);
+            }, 3000);
             setTimeout(() => clearInterval(pollInterval), 300000); // 5 min 停止轮询
             toast(res.msg || '改编已后台启动', { tone: 'success', duration: 3000 });
           } catch (err) {

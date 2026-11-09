@@ -1,6 +1,6 @@
 {
   "name": "yimu-lit",
-  "version": "4.32.2",
+  "version": "4.32.3",
   "private": true,
   "description": "神笔文学创作台 前端 jsdom 回归测试依赖",
   "scripts": {

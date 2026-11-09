@@ -2970,6 +2970,21 @@ def _plan_of(pdir):
     return "", "", {}
 
 
+def medium_of_key(key) -> str:
+    """v4.32.3：按磁盘计划文件判断文体，与作品库 library_item/library_all 同一事实源。
+
+    key 前缀只是命名约定，不是判据：小说一键转短剧生成的目录叫
+    「<小说key>-短剧」，没有 s_ 前缀，但它带着「剧本计划.json」。
+    此前 /api/resume、/api/pause、/api/continue 只按前缀认引擎，把这类剧本
+    当小说处理（「无法继续，没有未完成的任务」），并在剧本项目里写出小说规划文件。
+    """
+    try:
+        pdir = _project_dir(key)
+    except (ValueError, OSError, TypeError):
+        return ""
+    return _plan_of(pdir)[0]
+
+
 def _lifecycle(meta):
     """v2.2 作品生命周期字段（展示口径，惰性判定不写盘）。
 

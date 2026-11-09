@@ -198,8 +198,17 @@ function openRowMenu(anchor, item, ctx) {
           catch (err) { toast(errorText(err, '暂停失败'), { tone: 'danger' }); }
         } }
       : { label: item.state === 'paused' ? '继续创作' : '续写', icon: 'play', onSelect: async () => {
-          try { await api.resume(item.key); toast('已开始续写，总编辑在岗监工', { tone: 'success' }); ctx.refreshLibrary?.(); }
-          catch (err) { toast(errorText(err, '续写失败'), { tone: 'danger' }); }
+          try {
+            const res = await api.resume(item.key);
+            /* v4.32.3：后端明确拒绝时不能报「已开始续写」——这正是作品库里
+               点继续看似毫无反应的原因之一。把后端原话如实告诉用户。 */
+            if (res && res.ok === false) {
+              toast((res && res.msg) || '暂时无法继续', { tone: 'warn', duration: 5000 });
+            } else {
+              toast((res && res.msg) || '已开始续写，总编辑在岗监工', { tone: 'success' });
+            }
+            ctx.refreshLibrary?.();
+          } catch (err) { toast(errorText(err, '续写失败'), { tone: 'danger' }); }
         } });
   }
   items.push({ separator: true });

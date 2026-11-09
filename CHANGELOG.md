@@ -2,6 +2,75 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.32.3 — 应用名统一中文「一幕神笔」 + 小说转短剧的完整闭环修复
+
+### 一、Mac DMG 里应用仍叫 YiMuLit
+
+用户实拍：装进 DMG 的应用图标显示「YiMuLit」，窗口标题也是英文。v4.32.0 只改了
+`Info.plist` 的 `CFBundleName` / `CFBundleDisplayName`，Finder 优先展示的是 **.app
+目录名**，DMG 窗口标题展示的是**卷名**，两者都还是 `YiMuLit`。
+
+- **修法**：构建产物保持 ASCII（PyInstaller / CI 工件对中文路径有过吞字），在
+  `desktop.yml` 打 DMG 时把 `YiMuLit.app` 复制成 `一幕神笔.app`，`hdiutil
+  -volname` 改成「一幕神笔」；`README-DESKTOP.txt` 同步去掉英文名。
+- **红线**：Make DMG 末尾用 `PlistBuddy` 校验 `CFBundleName` 与
+  `CFBundleDisplayName` 均为「一幕神笔」，任一环节退回英文直接让 CI 失败。
+- Windows 侧 `installer.iss` 的 `AppName` / 开始菜单 / 桌面快捷方式本来就是中文，
+  原生窗口标题 `launcher.py` 也已是中文；本版把四处口径收齐并加测试守卫。
+- DMG / exe 的**文件名**仍是 ASCII `YiMuLit-<ver>-mac.dmg`（Release 资产名，不是应用名），
+  避免改动分发链路。
+
+### 二、「查看剧本」点了没有反应
+
+旧弹窗的按钮只有一句 `navigate('/work/<key>')`，实际有三个叠加故障：
+① 弹窗从不关闭，全屏遮罩把后面的界面挡得严严实实；② 按钮要等 6 秒轮询成功
+才解禁，期间点击等于没点；③ 新剧本项目还没进作品库缓存，路由渲染成
+「作品不存在或已被删除」。
+
+- **修法**：点击立即关弹窗 → `addPendingWork()` 在左侧插入一个全新的剧本任务会话
+  → 刷新作品库 → 再切路由。按钮从第一秒就可点，文案按「创作中 / 已完成」变化；
+  轮询同时刷新左侧列表，`onClose` 统一清理定时器。
+- 弹窗说明同步改成「会新建一个剧本任务会话」，不再谎称直达工作台页签。
+
+### 三、写着写着却提示「没有未完成的任务」
+
+改编生成的剧本目录叫 `<小说key>-短剧`，**没有 `s_` 前缀**。而 `app.py` 与
+`bot/v2api.py` 多处只按 key 前缀认文体，于是这部剧本被当成小说：
+
+- `/api/resume` → `writer.resume_task()` 去找小说任务档案 → 「没有未完成的任务」；
+- `/api/plan` → `longform.ensure_plan()` 在剧本目录里写出 `02c-总规划.json`、
+  `02d-章卡.jsonl`、`18-状态库.json`，规划条变成「第 1 场·启动规划」；
+- `/api/state`、技能面板、极速开关同样落到小说分支；`_nonnovel_set_paused()`
+  遍历 8 个引擎，第一个 `script_writer` 只要目录存在就命中，会在小说目录凭空
+  写出一份空的「剧本计划.json」。
+
+- **统一口径**：`bot/writer.py` 新增 `medium_of_key()`（按磁盘计划文件判文体，
+  与作品库 `library_item` 同一事实源）；`_nonnovel_module()` 与 v2api 的
+  `_medium_of_key()` 都改成「前缀优先、内容兜底」。`/api/resume`、`/api/pause`、
+  `/api/continue`、`/api/express-toggle`、`/api/plan`、`/api/state`、技能面板全部受益。
+  `_nonnovel_set_paused()` 改为精确定位单个引擎且计划为空时直接拒绝写盘。
+- **进度分叉**：旧改编线程只在 12 集全部跑完后一次性回填 `scenes`，进行中工作台
+  永远 `0/0 场 · 0 字`；`running` 只有分镜阶段才置位，于是「写作中」和「继续」
+  同屏出现。现在一开工就把 12 集占位写进计划，每集写完立即原子落盘
+  `scenes / 03-场次清单.md`，全程 `mark_pipeline` 标记创作中，x/12 与字数实时可见。
+- **真能继续**：新增 `_resume_novel_to_drama()`，按「状态 + 磁盘正文」对账，只重跑
+  缺的集；集齐但分镜没生成就只补分镜；已在后台跑就如实回「正在创作中」。
+  `/api/continue` 对改编剧本优先走这条专用恢复，绝不套常规剧本流水线重写 12 集。
+  改编循环每集前检查暂停位，`暂停 → 继续` 闭环；连点两次「转短剧」有防重入。
+- **前端**：侧栏「继续创作」不再无条件报「已开始续写」（后端 `ok:false` 时如实提示）；
+  30 秒进度轮询对非小说跳过小说规划/状态库，并补一次 `refreshWork()`。
+
+### 四、已卡住的那部作品
+
+`~/Library/Application Support/YiMuLit/projects/…收服十万巨兽后，我无敌了-短剧`
+实测 12 集正文齐全、无分镜产物，计划却停在 `status=completed`（「继续」按钮因此
+被整个隐藏）。已备份到 `/tmp/剧本计划.收服十万巨兽.before-v4323.bak.json` 后，
+把状态改为 `writing`、`meta.storyboard_done=false`：装上新版后点「继续」会补跑分镜。
+目录里被旧 `/api/plan` 误写的小说规划文件未删除（不影响文体判定，避免动用户数据）。
+
+> **生效边界**：应用名与前端 JS 都在冻结的桌面包里，应用内自更新换不掉；
+> 必须下载本版新 DMG 重装（数据目录不变，作品不会丢）。网页版刷新即生效。
+
 ## v4.32.2 — 所有导出一律弹「存储」对话框 + 100 章写完却显示 74 章的对账
 
 ### 一、导出：诊断包把用户困在没有返回键的窗口里
