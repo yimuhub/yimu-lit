@@ -1,7 +1,7 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
 import json, os, re, datetime, threading, queue, time
-from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express, delivery_gate
+from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express, delivery_gate, lexicon_ledger, checkup
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 from .paths import DATA_ROOT as ROOT, DATA_ROOT as DATA_ROOT_N
@@ -1951,6 +1951,9 @@ def score_chapter(proj, ch_no):
     if total is not None:   # v4.21.0：评分成功 → 创作事件（百分制）
         _evt(os.path.basename(proj.path), "reviewer", phase="done", title=f"第{ch_no}章评分",
              output=f"{total} 分", chapter=ch_no, ms=int((time.perf_counter() - _t0) * 1000))
+    # v4.33.9：语义哨兵——评分时顺带报与前文矛盾/未登记名词/复述前情（零额外调用）
+    for _c in ((r.get("conflicts") if r else None) or [])[:3]:
+        proj.log(f"🧭 第{ch_no}章语义哨兵：{str(_c)[:90]}")
     with proj.lock:   # v0.6 B：并行写作下 meta.chapter_scores 读改写原子化
         plan = proj.plan()
         if not isinstance(plan.get("meta"), dict):
@@ -1960,6 +1963,7 @@ def score_chapter(proj, ch_no):
         cs[str(ch_no)] = {"score": total, "dims": r.get("scores", {}) if r else {},
                           "weak": (r.get("weak", []) if r else []), "verdict": (r.get("verdict", "") if r else ""),
                           "evidence": (r.get("evidence") or [])[:6] if r else [],
+                          "conflicts": (r.get("conflicts") or [])[:6] if r else [],
                           "status": "unscored" if total is None else ("pass" if total >= pl else "below"),
                           "ts": int(datetime.datetime.now().timestamp())}
         proj.save_plan(plan)
@@ -2099,6 +2103,34 @@ def _strip_generated_heading(body: str) -> str:
         return re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body.lstrip(), count=1)
     return body
 
+def _world_banned_terms(plan) -> list:
+    """项目世界观红线词表（config.world_rules.banned_terms），原始部落禁打火机这类穿帮。"""
+    cfg = (plan or {}).get("config") if isinstance((plan or {}).get("config"), dict) else {}
+    wr = cfg.get("world_rules") if isinstance(cfg.get("world_rules"), dict) else {}
+    out = []
+    for t in (wr.get("banned_terms") or []):
+        t = str(t).strip()
+        if t:
+            out.append(t)
+    return out
+
+def _prev_body_overlap(body: str, prev_full: str, *, win: int = 500, step: int = 250) -> float:
+    """复述前情检测：章首 win 字与上一章全文滑窗的最大 3-gram Jaccard。
+    既有撞车门只比「开头 vs 开头」；整段复述可以发生在正文中部（第2/3章实测）。"""
+    head = re.sub(r"\s+", "", body or "")[:win]
+    prevz = re.sub(r"\s+", "", prev_full or "")
+    if len(head) < 100 or len(prevz) < 150:
+        return 0.0
+    hg = _trigrams(head)
+    best = 0.0
+    for s in range(0, max(1, len(prevz) - win + 1), step):
+        sim = _jaccard(hg, _trigrams(prevz[s:s + win]))
+        if sim > best:
+            best = sim
+            if best > 0.85:
+                break
+    return best
+
 def _missing_chapter_nos(proj, plan) -> list:
     """v4.33.8 成书对账：返回正文文件缺失/为空的章号列表。状态只认磁盘，不认账面。"""
     out = []
@@ -2140,6 +2172,19 @@ def _write_chapter(proj, ch, min_words, max_retries):
     ctx = _build_ctx(proj, ch)
     # v4.24.0：极速模式是**本书级**开关。只问 express.on()，不在这里拼 cfg 条件。
     _expr = express.on(ctx.get("cfg") or {})
+    # v4.33.9：世界观红线 + 全书口癖账本（写前注入，零 LLM）
+    _banned = _world_banned_terms(plan0)
+    if _banned:
+        ctx["world_banned"] = _banned
+    try:
+        _done_units = sum(1 for c in (proj.plan() or {}).get("chapters", [])
+                          if c.get("status") == "completed")
+        _lex = lexicon_ledger.banned_block(proj.path, units_done=_done_units)
+        if _lex:
+            ctx["lexicon_note"] = _lex
+            proj.log("📖 " + _lex.strip().splitlines()[1][:100])
+    except Exception:
+        pass
     # v4.20 C3：规划师纠偏指引（每批收尾时规划师校准写入 plan.meta.drift_guidance，随写作提示注入）
     try:
         _dg = str(((proj.plan() or {}).get("meta") or {}).get("drift_guidance") or "").strip()
@@ -2245,7 +2290,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # 只查读者可见正文（chapter_body 口径），概要/备注小节不参与判定；极速模式也不例外——
     # 污染类残留（diagonally、「继续写」式独白）进稿的成本远高于一次重写调用。
     _purity_txt = purity.chapter_body(body)
-    _purity = delivery_gate.chapter_purity_blocks(_purity_txt, title=ch["title"], chapter_no=no)
+    _purity = delivery_gate.chapter_purity_blocks(_purity_txt, title=ch["title"], chapter_no=no,
+                                                  banned_terms=_banned)
     if _purity and not _from_draft:
         proj.log(f"🚨 第{no}章落盘预检命中 {', '.join(f['code'] for f in _purity)}（{_purity[0]['name']}），带指令回灌重写…")
         _evt(_bk, "writer", phase="warn", title="落盘前三查命中，回灌重写",
@@ -2257,7 +2303,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
         body3 = _strip_generated_heading(
             purity.sanitize_chapter(_strip_chatter(workflow.write_chapter(ctx3))))
         _purity3 = delivery_gate.chapter_purity_blocks(purity.chapter_body(body3),
-                                                       title=ch["title"], chapter_no=no)
+                                                       title=ch["title"], chapter_no=no,
+                                                       banned_terms=_banned)
         if not _purity3:
             body = body3
             proj.log(f"✅ 第{no}章重写后落盘预检通过")
@@ -2266,6 +2313,38 @@ def _write_chapter(proj, ch, min_words, max_retries):
                      "保留原稿并标记人工复核（导出闸会拦截）")
             _evt(_bk, "writer", phase="warn", title="落盘前三查未清除，标记人工复核",
                  output=f"{_purity3[0]['code']} {_purity3[0]['detail'][:48]}", chapter=no)
+    # v4.33.9：复述前情检测——章首 500 字与上一章全文滑窗比对（撞车门只看开头 vs 开头，
+    # 整段复述可以发生在正文中部；《收服十万巨兽》第2/3章实测）。
+    _prev_full = ""
+    try:
+        _cands = [c2 for c2 in (proj.plan() or {}).get("chapters") or []
+                  if c2.get("chapterNumber") != no and c2.get("status") == "completed"
+                  and (c2.get("chapterNumber") or 0) < (no or 0)]
+        if _cands:
+            _pc = max(_cands, key=lambda x: x.get("chapterNumber") or 0)
+            _pfp = _chapter_file_path(proj, _pc)
+            if _pfp and os.path.exists(_pfp):
+                _prev_full = _clean_chapter_text(open(_pfp, encoding="utf-8").read())
+    except Exception:
+        _prev_full = ""
+    _overlap = 0.0 if _from_draft else _prev_body_overlap(body, _prev_full)
+    if _overlap > 0.55 and _prev_full:
+        proj.log(f"🚨 第{no}章章首与上一章正文大面积重合（{_overlap:.2f}），判定复述前情，自动重写…")
+        _evt(_bk, "writer", phase="warn", title="复述前情检测命中，回灌重写",
+             output=f"章首与上一章相似度 {_overlap:.2f}", chapter=no)
+        ctx4 = dict(ctx)
+        if recent_opens:
+            ctx4["ban_openings"] = recent_opens
+        ctx4["ban_openings"] = (ctx4.get("ban_openings") or []) + [_prev_full[:300]]
+        body4 = _strip_generated_heading(
+            purity.sanitize_chapter(_strip_chatter(workflow.write_chapter(ctx4))))
+        if _prev_body_overlap(body4, _prev_full) <= 0.55:
+            body = body4
+            proj.log(f"✅ 第{no}章重写后复述前情检测通过")
+        else:
+            proj.log(f"⚠️ 第{no}章重写后仍与上一章高度重合（{_overlap:.2f}），保留并标记人工复核")
+            _evt(_bk, "writer", phase="warn", title="复述前情未清除，标记人工复核",
+                 output=f"相似度 {_overlap:.2f}", chapter=no)
     # v4.16.2：字数保障体系——
     #   首写目标 = min_words × 1.1（写作提示带硬下限）；
     #   扩充结果有采纳门禁（比当前短 = LLM 抽风，丢弃防「2858→458」倒退）；
@@ -2359,6 +2438,30 @@ def _write_chapter(proj, ch, min_words, max_retries):
     except Exception as e:
         proj.log(f"⚠️ 第{no}章元数据提取失败：{e}")
         summary = ""
+    # v4.33.9：口癖账本记账 + 每 10 章阶段体检（确定性、零 LLM、不阻断）
+    try:
+        _final_txt = _strip_chatter(open(fp, encoding="utf-8").read()) if os.path.exists(fp) else body
+        lexicon_ledger.record(proj.path, no, _final_txt)
+    except Exception:
+        pass
+    if no and str(no).isdigit() and int(no) % 10 == 0:
+        try:
+            _rows = []
+            for c2 in sorted((proj.plan() or {}).get("chapters") or [],
+                             key=lambda x: x.get("chapterNumber") or 0):
+                if c2.get("chapterNumber") == no or c2.get("status") != "completed":
+                    continue
+                _p2 = _chapter_file_path(proj, c2)
+                if _p2 and os.path.exists(_p2):
+                    _rows.append({"n": c2.get("chapterNumber"),
+                                  "title": c2.get("title") or "",
+                                  "text": _clean_chapter_text(open(_p2, encoding="utf-8").read())})
+                if len(_rows) >= 10:
+                    break
+            if _rows:
+                checkup.stage_checkup(proj, _rows, kind="novel")
+        except Exception as e:
+            proj.log(f"⚠️ 阶段体检失败（不影响创作）：{e}")
     # v3.1.0：默认章名 → 用本章摘要起真名（写完即定名，不额外读全文）
     if summary:
         _name_chapter(proj, no, summary)

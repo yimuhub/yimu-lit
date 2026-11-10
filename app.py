@@ -6263,6 +6263,14 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
         "totalEpisodes": len(outline),
         "blueprint": [{"no": ep["no"], "chapters": ep["chapters"]} for ep in outline],
     }
+    # v4.33.9：改编保真清单——关键设定/名场面/人物结局/主线承诺，写完全集后逐项验收
+    if not (prev or {}).get("adaptation", {}).get("fidelity"):
+        try:
+            _fid = da.build_fidelity(_llm, material, novel_name, log=sp.log)
+            plan_doc["adaptation"]["fidelity"] = _fid
+            sp.log(f"📜 改编保真清单就绪：{len(_fid)} 项必须保留的要素")
+        except Exception as _e:
+            sp.log(f"⚠️ 保真清单生成失败（不影响改编）：{_e}")
     # 一开工就把全书集数占位写进计划：工作台立刻是 0/N 而不是 0/0
     by_no = {}
     for sc in (plan_doc.get("scenes") or []):

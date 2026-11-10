@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import os
@@ -424,3 +425,82 @@ def generate_episode(llm, messages: list[dict], *, max_attempts: int = MAX_ATTEM
                      f"上一稿不合格：{reason}。请重新输出**完整的一集剧本**，"
                      "从集名第一行写到集尾钩子收束，不要截断、不要只写开头、不要解释。"})
     return None, reason or "未拿到可用正文", max(1, max_attempts)
+
+# ---------------------------------------------------------------- 保真清单（v4.33.9）
+
+FIDELITY_NAME = "25-改编保真清单.json"
+
+
+def build_fidelity(llm, material: dict, novel_name: str, *, log=None) -> list[dict]:
+    """改编保真清单：必须原样保留的要素（关键设定/名场面/人物结局/主线承诺）。
+    一次模型调用产出 JSON；失败退回确定性兜底（首尾章要点），绝不阻断改编。"""
+    raw = "\n\n".join(filter(None, [material.get("bible", ""), material.get("season", ""),
+                                    material.get("digest", "")]))
+    items: list[dict] = []
+    if raw.strip():
+        prompt = (
+            f"你是短剧总编剧，要把长篇小说《{novel_name}》完整改编成短剧。"
+            "请列出《改编保真清单》：改编必须原样保留的 8-15 个要素——关键设定、名场面、"
+            "主要人物的结局、必须在剧终前兑现的主线承诺（如退婚复仇、身世之谜）。"
+            '只输出 JSON：{"items":[{"item":"要素名（一句话）","keyword":"验收关键词，取原著原词1-6字",'
+            '"kind":"设定|场面|结局|承诺"}]}。keyword 必须是正文里会原样出现的词，否则验收会误报。\n\n'
+            f"【全书素材】\n{raw[:9000]}"
+        )
+        try:
+            out = (llm.chat([{"role": "user", "content": prompt}],
+                            stage="planning", max_tokens=2000, use_cache=False) or "").strip()
+            m = re.search(r"\{.*\}", out, re.S)
+            if m:
+                data = json.loads(m.group())
+                for it in (data.get("items") or [])[:15]:
+                    if isinstance(it, dict) and it.get("item") and it.get("keyword"):
+                        items.append({"item": str(it["item"])[:80],
+                                      "keyword": str(it["keyword"])[:12],
+                                      "kind": str(it.get("kind") or "设定")[:6]})
+        except Exception as e:
+            if log:
+                log(f"⚠️ 保真清单生成失败（{type(e).__name__}），退回首尾章兜底")
+    if not items:
+        items = [{"item": "全书开局核心事件按原著保留", "keyword": "", "kind": "场面"}]
+    return items
+
+
+def verify_fidelity(pdir: str, plan: dict, *, log=None) -> dict:
+    """验收保真清单：关键词在全剧正文里逐项检索，缺项写进 25 号报告并返回。"""
+    items = ((plan.get("adaptation") or {}).get("fidelity") or [])
+    if not items:
+        return {}
+    body_dir = os.path.join(pdir, "04-正文")
+    full = []
+    if os.path.isdir(body_dir):
+        for fn in sorted(os.listdir(body_dir)):
+            fp = os.path.join(body_dir, fn)
+            if os.path.isfile(fp):
+                try:
+                    full.append(open(fp, encoding="utf-8").read())
+                except OSError:
+                    continue
+    full_text = "\n".join(full)
+    results = []
+    for it in items:
+        kw = str(it.get("keyword") or "").strip()
+        results.append({"item": it.get("item"), "keyword": kw, "kind": it.get("kind"),
+                        "kept": (kw in full_text) if kw else None})
+    missing = [r for r in results if r["kept"] is False]
+    lines = ["# 改编保真清单验收", "",
+             f"- 验收时间：{datetime.datetime.now():%Y-%m-%d %H:%M}",
+             f"- 结论：{len(results) - len(missing)}/{len(results)} 项已兑现"
+             + (f"；缺 {len(missing)} 项" if missing else ""), ""]
+    for r in results:
+        mark = {True: "✅", False: "❌", None: "➖"}.get(r["kept"], "➖")
+        lines.append(f"- {mark} [{r.get('kind') or '设定'}] {r.get('item')}"
+                     + (f"（关键词「{r['keyword']}」）" if r.get("keyword") else "（无验收词，人工核对）"))
+    try:
+        with open(os.path.join(pdir, "25-改编保真清单.md"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+    if log:
+        log(f"📜 保真清单验收：{len(results) - len(missing)}/{len(results)} 项兑现"
+            + (f"，缺 {len(missing)} 项（见 25-改编保真清单.md）" if missing else ""))
+    return {"total": len(results), "missing": [r["item"] for r in missing]}

@@ -379,6 +379,13 @@ def write_chapter(ctx, book_key="", chapter_no=0):
     if ddir:
         dblock = ("\n【交付预检处置指令（上一稿命中以下禁止项被打回，本稿必须全部消除，否则视为无效交稿）】\n"
                   + "\n".join(f"- {s}" for s in ddir) + "\n")
+    # v4.33.9：世界观红线 + 全书口癖账本（写前注入）
+    wb = ctx.get("world_banned") or []
+    wblock = ""
+    if wb:
+        wblock = ("\n【世界观红线（这些事物不存在于本书世界，出现即为穿帮，本章严禁）】"
+                  + "、".join(str(w) for w in wb) + "\n")
+    lblock = str(ctx.get("lexicon_note") or "")
     if ctx.get("continuation"):
         user_p = (
             f"{bblock}"
@@ -390,7 +397,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
             f"{banblock}{hookblock}"
             f"{cont}\n"
             f"{p5}\n"
-            f"{qblock}{fblock}{dblock}\n"
+            f"{qblock}{fblock}{dblock}{wblock}{lblock}\n"
             f"现在续写第 {ctx['chapter_no']} 章。这是承接前文的续写章：请严格消化上一章结尾的语态与悬念，"
             f"自然推进剧情，可引入新的转折/冲突/角色（须符合人物性格与既定设定），严禁重复已写情节；"
             f"严守人物性格一致性，结尾必留钩子。输出章节文件内容。"
@@ -407,7 +414,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
         f"{banblock}{hookblock}"
         f"{cont}\n"
         f"{p5}\n"
-        f"{qblock}{fblock}{dblock}\n"
+        f"{qblock}{fblock}{dblock}{wblock}{lblock}\n"
         f"现在写第 {ctx['chapter_no']} 章「{ctx['chapter_title']}」。严格按该章在大纲中的规划（核心事件/承接/钩子/出场人物/场景）创作。"
         f"输出章节文件内容。"
     )
@@ -852,7 +859,8 @@ def chapter_review(ch_body, cfg, context="", key="", chapter_no=0):
                  '输出 JSON：{"scores":{"结构":0-10,"因果可信":0-10,"人物":0-10,"连续性":0-10,"语言":0-10,"读者体验":0-10},'
                  '"weak":["最弱维度名1","最弱维度名2","最弱维度名3"],'
                  '"evidence":[{"dimension":"维度名","quote":"必须引用本章原文一句","why":"为何扣分"}],'
-                 '"verdict":"一句话本章质量判断与最该修的点"}。'
+                 '"verdict":"一句话本章质量判断与最该修的点",'
+                 '"conflicts":["本章与前文矛盾的数值/事实、未登记的专有名词、复述前情的段落，每条一句话并注明位置；没有则空数组"]}。'
                  'evidence 至少 2 条，quote 必须是原文片段，不得编造。只输出 JSON。')
         user_p = f"待审章节（第 ? 章，只评它）：\n{ch_body[:9000]}"
         reviewer_skills = agent_skills_block("reviewer", cfg, "P4")
@@ -894,7 +902,9 @@ def chapter_review(ch_body, cfg, context="", key="", chapter_no=0):
              output=("最弱 " + "、".join(_weak)) if _weak else "已评",
              ms=int((time.perf_counter() - _t0) * 1000))
         return {"scores": scores, "weak": _weak,
-                "evidence": ev, "verdict": (out.get("verdict") or "").strip()[:200]}
+                "evidence": ev, "verdict": (out.get("verdict") or "").strip()[:200],
+                "conflicts": [str(c)[:160] for c in (out.get("conflicts") or [])
+                              if isinstance(c, str) and c.strip()][:6]}
     except Exception as e:
         _evt(_k, "reviewer", phase="warn", title=_evt_title, chapter=chapter_no,
              output=f"审校失败：{str(e)[:80]}", ms=int((time.perf_counter() - _t0) * 1000))

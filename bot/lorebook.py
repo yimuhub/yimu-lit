@@ -48,12 +48,16 @@ def _from_table(text: str) -> list[dict]:
         name = row.get("名称") or row.get("术语") or row.get("设定") or ""
         if not name:
             continue
+        # v4.33.9：别名列——「别名：铁甲、纹角犀」→ N12 实体漂移检测的数据源
+        alias_raw = row.get("别名") or ""
+        aliases = [a.strip() for a in re.split(r"[、,，/;；]", alias_raw) if a.strip()]
         out.append({"name": name,
                     "def": row.get("定义") or row.get("说明") or "",
                     "first": row.get("首次出现") or row.get("首次") or "",
                     "known": row.get("已知") or "",
                     "truth": row.get("真相") or "",
-                    "plan": row.get("揭示计划") or row.get("揭示") or ""})
+                    "plan": row.get("揭示计划") or row.get("揭示") or "",
+                    "alias": aliases})
     return out
 
 
@@ -70,8 +74,20 @@ def entries(proj_path: str) -> list[dict]:
         name, known, truth = _clean(m.group(1)), _clean(m.group(2)), _clean(m.group(3) or "")
         if name and name not in merged:
             merged[name] = {"name": name, "def": "", "first": "", "known": known,
-                            "truth": truth, "plan": ""}
+                            "truth": truth, "plan": "", "alias": []}
     return list(merged.values())
+
+
+def entity_aliases(proj_path: str) -> dict[str, list[str]]:
+    """canonical → 别名列表（含与其他词条冲突的别名），供 delivery_gate N12 使用。"""
+    out: dict[str, list[str]] = {}
+    for e in entries(proj_path):
+        names = [e.get("name") or ""]
+        names += [a for a in (e.get("alias") or []) if a]
+        al = [a for a in names if a and a != e.get("name")]
+        if al:
+            out[e["name"]] = al
+    return out
 
 
 def _bigrams(s: str) -> set[str]:

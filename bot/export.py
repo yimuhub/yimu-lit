@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import glob
 import html
+import json
 import io
 import os
 import re
@@ -88,10 +89,33 @@ def delivery_report(proj) -> dict:
     _plan_files = [f for f in glob.glob(os.path.join(proj.path, "*计划.json"))
                    if os.path.basename(f) != "02-写作计划.json"]
     kind = "mini" if _plan_files and not (plan.get("chapters") or []) else "novel"
-    return delivery_gate.check_delivery(novel_chapters(proj),
-                                        title=plan.get("novelName") or proj.name,
-                                        kind=kind,
-                                        profile=plan.get("deliveryProfile") or None)
+    # v4.33.9：N12 实体漂移接数据源——圣经「别名」列 → delivery_gate（此前该规则无人传参=死代码）
+    _aliases = {}
+    try:
+        from . import lorebook as _lore
+        _aliases = _lore.entity_aliases(proj.path)
+    except Exception:
+        _aliases = {}
+    rep = delivery_gate.check_delivery(novel_chapters(proj),
+                                       title=plan.get("novelName") or proj.name,
+                                       kind=kind,
+                                       profile=plan.get("deliveryProfile") or None)
+    if _aliases and kind == "novel":
+        _extra = delivery_gate.check_novel(novel_chapters(proj),
+                                           title=plan.get("novelName") or proj.name,
+                                           entity_aliases=_aliases,
+                                           profile=plan.get("deliveryProfile") or None)
+        _have = {json.dumps(f, ensure_ascii=False, sort_keys=True) for f in rep["findings"]}
+        for f in _extra["findings"]:
+            if f["code"] == "N12" and json.dumps(f, ensure_ascii=False, sort_keys=True) not in _have:
+                rep["findings"].append(f)
+        rep["counts"]["warn"] = sum(1 for f in rep["findings"] if f["severity"] == "warn")
+        rep["counts"]["block"] = sum(1 for f in rep["findings"] if f["severity"] == "block")
+        rep["blocking_count"] = sum(1 for f in rep["findings"] if f["severity"] == "block"
+                                    and f["code"] in delivery_gate.spec.profile(rep.get("profile")).get("block_on_export", ()))
+        rep["ready"] = rep["blocking_count"] == 0
+        rep["summary"] = f"{rep['counts']['block']} 项禁止项 / {rep['counts']['warn']} 项告警"
+    return rep
 
 
 def release_export_block(plan: dict) -> tuple[bool, str]:

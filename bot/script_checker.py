@@ -83,26 +83,41 @@ def guess_era(text: str) -> str:
     return ""
 
 
-def forbidden_terms(era: str) -> list[str]:
-    """该时代禁止出现的词；未知/虚拟时代返回空表（不做拦截，避免误伤）。"""
+def forbidden_terms(era: str, extra: list[str] | None = None) -> list[str]:
+    """该时代禁止出现的词；未知/虚拟时代返回空表（不做拦截，避免误伤）。
+    v4.33.9：extra = 项目级世界观红线（config.world_rules.banned_terms）——
+    架空/自定义时代词表判不出时代也能拦（原始部落的打火机、修仙界的无人机）。"""
     era = (era or "").strip()
+    out: list[str] = []
     if era == "ancient":
-        return list(MODERN_TERMS)
-    if era == "republic":
-        return list(STRONG_MODERN_TERMS)
-    if era == "modern":
-        return list(ANCIENT_TERMS)
-    return []
+        out = list(MODERN_TERMS)
+    elif era == "republic":
+        out = list(STRONG_MODERN_TERMS)
+    elif era == "modern":
+        out = list(ANCIENT_TERMS)
+    for t in (extra or []):
+        t = str(t).strip()
+        if t and t not in out:
+            out.append(t)
+    return out
 
 
-def scan(text: str, era: str) -> list[dict]:
+def project_world_rules(cfg: dict | None) -> dict:
+    """从项目 config 读世界观红线：{"era": 可选覆盖, "banned_terms": [...]}。"""
+    wr = (cfg or {}).get("world_rules") if isinstance((cfg or {}).get("world_rules"), dict) else {}
+    era = str(wr.get("era") or "").strip()
+    terms = [str(t).strip() for t in (wr.get("banned_terms") or []) if str(t).strip()]
+    return {"era": era, "banned_terms": terms}
+
+
+def scan(text: str, era: str, extra: list[str] | None = None) -> list[dict]:
     """扫描违规词：同一 term 合并计数，snippet 取首次命中前后 18 字。"""
     s = text or ""
     if not s.strip():
         return []
     low = s.lower()
     hits: list[tuple[int, dict]] = []
-    for term in forbidden_terms(era):
+    for term in forbidden_terms(era, extra):
         pos = _spans(low, term)
         if not pos:
             continue
@@ -113,10 +128,10 @@ def scan(text: str, era: str) -> list[dict]:
     return [h for _, h in hits]
 
 
-def check_text(text: str, era: str) -> dict:
-    """单段文本校验：{"ok", "issues", "era"}。era 为空时直接放行。"""
+def check_text(text: str, era: str, extra: list[str] | None = None) -> dict:
+    """单段文本校验：{"ok", "issues", "era"}。era 为空且无项目红线时直接放行。"""
     era = (era or "").strip()
-    issues = scan(text, era) if era else []
+    issues = scan(text, era, extra) if (era or extra) else []
     return {"ok": not issues, "issues": issues, "era": era}
 
 

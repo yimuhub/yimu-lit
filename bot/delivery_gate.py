@@ -18,8 +18,15 @@ from . import delivery_spec as spec
 
 RE_LINE = re.compile(r"(?m)^\s*([\u4e00-\u9fa5A-Za-z0-9·]{1,14})\s*[：:]\s*(.+)$")
 RE_SCENE = re.compile(r"(?m)^\s*\*{0,2}(?:场|第)\s*\d+\s*场?\s*[：:]\s*(?:内\s*/\s*外|内外|内景|外景|内|外)?\s*([^*\n]+)")
+RE_SCENE_NO = re.compile(r"(?m)^\s*\*{0,2}(?:场|第)\s*(\d+)\s*场?\s*[：:]")
 RE_CHAPTER_NUM = re.compile(r"第\s*\d+\s*章")
 RE_TITLE_CLAIM = re.compile(r"([十百千万亿\d]+)\s*(?:只|头|个|名|位)?\s*([\u4e00-\u9fff]{2,6})")
+# 数值口径：进度分数（4/5、27/100000）与百分比，仅在出现进度语义提示词时计入
+RE_FRACTION = re.compile(r"(\d{1,7})\s*[/／]\s*(\d{1,7})")
+RE_PERCENT = re.compile(r"(\d{1,3})\s*[%％]")
+PROGRESS_HINTS = ("收服", "进度", "契约", "收集", "任务", "签到", "吞噬")
+RE_PAREN_ACTION = re.compile(r"(?m)^\s*[（(][^\n]*")
+RE_BRACK_ACTION = re.compile(r"(?m)^\s*【[^\n]*")
 TAIL_OK = set("。！？!?…．”’\"')）】》」』>~-—*`|")
 TAIL_BAD = set("，,、；;：:")
 TIME_WORDS = ("白天", "夜晚", "夜", "日", "晨", "清晨", "黄昏", "傍晚", "深夜",
@@ -117,16 +124,24 @@ def _spoken_chars(text: str) -> int:
 
 # ---------------------------------------------------------------- 章节级
 
-# 落盘前三查只管「污染类」禁止项（N01 非中文残留 / N02 元信息泄漏）。
+# 落盘前三查只管「污染类」禁止项（N01 非中文残留 / N02 元信息泄漏 /
+# N15 世界观违禁物——调用方传项目红线词表才启用）。
 # N03 半句截断由字数保障体系的末尾续写补足流程处理，不在此拦截。
-PURITY_BLOCK_CODES = ("N01", "N02")
+PURITY_BLOCK_CODES = ("N01", "N02", "N15")
 
 
-def chapter_purity_blocks(text: str, *, title: str = "", chapter_no: int = 0) -> list[dict]:
-    """写章热路径用：只返回会污染正文的禁止项（N01/N02），命中即应回灌重写。"""
-    return [f for f in check_chapter(text, title=title, chapter_no=chapter_no,
-                                     profile="universal")
-            if f["severity"] == "block" and f["code"] in PURITY_BLOCK_CODES]
+def chapter_purity_blocks(text: str, *, title: str = "", chapter_no: int = 0,
+                          banned_terms: list | None = None) -> list[dict]:
+    """写章热路径用：只返回会污染正文的禁止项（N01/N02/N15），命中即应回灌重写。"""
+    out = [f for f in check_chapter(text, title=title, chapter_no=chapter_no,
+                                    profile="universal")
+           if f["severity"] == "block" and f["code"] in PURITY_BLOCK_CODES]
+    for t in (banned_terms or []):
+        t = str(t).strip()
+        if t and t in (text or ""):
+            out.append(_finding("N15", f"第{chapter_no}章" if chapter_no else "正文",
+                                f"违禁物「{t}」出现在正文"))
+    return out
 
 
 def check_chapter(text: str, *, title: str = "", chapter_no: int = 0,
@@ -172,6 +187,62 @@ def check_chapter(text: str, *, title: str = "", chapter_no: int = 0,
 
 
 # ---------------------------------------------------------------- 全书级
+
+_RE_MEASURE_AFTER = re.compile(r"\s*[斤个只块杯天年米公里份小时元亩位名句话页层批trips]")
+
+
+def _progress_window(text: str, pos: int, width: int = 14) -> str:
+    lo, hi = max(0, pos - width), min(len(text), pos + width)
+    return text[lo:hi]
+
+
+def _is_quantity_fraction(text: str, m: "re.Match") -> bool:
+    """3/4 斤、2/3 杯这类数量分数不是进度口径，排除。"""
+    tail = text[m.end(): m.end() + 3]
+    return bool(_RE_MEASURE_AFTER.match(tail))
+
+
+def numeric_findings(rows: list[dict]) -> list[dict]:
+    """N13 数值口径冲突（确定性、零状态）：
+    1) 口径打架——同一部作品里「进度类分数 a/b」出现多个不同分母；
+    2) 数值回退——同一分母下分子变小，或进度百分比明显回退（≥10 个点）。
+    只统计带进度语义提示词（收服/进度/契约…）上下文的数值，避免误伤普通数字。"""
+    out: list[dict] = []
+    fracs: list[tuple[int, int, int, str]] = []   # (章号, a, b, snippet)
+    pcts: list[tuple[int, int, str]] = []
+    for c in rows:
+        n = c.get("n") or 0
+        no = int(n) if str(n).isdigit() else 0
+        text = c.get("text") or ""
+        for m in RE_FRACTION.finditer(text):
+            if _is_quantity_fraction(text, m):
+                continue
+            if any(h in _progress_window(text, m.start()) for h in PROGRESS_HINTS):
+                fracs.append((no, int(m.group(1)), int(m.group(2)),
+                              _progress_window(text, m.start()).strip()))
+        for m in RE_PERCENT.finditer(text):
+            if any(h in _progress_window(text, m.start()) for h in PROGRESS_HINTS):
+                pcts.append((no, int(m.group(1)), _progress_window(text, m.start()).strip()))
+    dens = sorted({b for _, _, b, _ in fracs})
+    if len(dens) > 1:
+        ex = [f"{a}/{b}(第{n}章)" for n, a, b, _ in fracs if b in dens[1:]][:4]
+        out.append(_finding("N13", "全书",
+                            f"进度分母口径打架：{dens}，例：{', '.join(ex)}"))
+    by_den: dict[int, tuple[int, int]] = {}   # 分母 -> (最大分子, 章号)
+    for no, a, b, _ in sorted(fracs):
+        prev = by_den.get(b)
+        if prev and a < prev[0]:
+            out.append(_finding("N13", f"第{no}章",
+                                f"进度回退：{a}/{b} 早于第{prev[1]}章的 {prev[0]}/{b}"))
+        by_den[b] = (max(a, prev[0] if prev else 0), prev[1] if prev and prev[0] >= a else no)
+    best = None
+    for no, v, _ in sorted(pcts):
+        if best and v < best[0] - 10:
+            out.append(_finding("N13", f"第{no}章",
+                                f"进度回退：{v}% 早于第{best[1]}章的 {best[0]}%"))
+        best = (v, no) if not best or v >= best[0] else best
+    return out
+
 
 def check_novel(chapters: list[dict], *, book_title: str = "", claim_term: str = "",
                 entity_aliases: dict | None = None, profile: str = "novel_submission") -> dict:
@@ -237,6 +308,9 @@ def check_novel(chapters: list[dict], *, book_title: str = "", claim_term: str =
                 if a and a != canonical and a in all_text:
                     findings.append(_finding("N12", "全书", f"「{canonical}」被写成「{a}」"))
 
+    # N13 数值口径冲突
+    findings.extend(numeric_findings(rows))
+
     hook_total = len(rows)
     hook_miss = sum(1 for f in findings if f["code"] == "N08")
     metrics = {"chapters": len(rows),
@@ -246,6 +320,17 @@ def check_novel(chapters: list[dict], *, book_title: str = "", claim_term: str =
 
 
 # ---------------------------------------------------------------- 集级
+
+# 场（scene）级适用的禁止项：剧本引擎逐场写作，行级污染检查（S01/S02/S03/S11/N02/N03）
+# 对单场有效；S04 集预算 / S10 集钩子 / S14 场号唯一是「整集」口径，只在 check_episode 用。
+SCENE_SAFE_BLOCK_CODES = ("S01", "S02", "S03", "S11", "N02", "N03")
+
+
+def scene_block_findings(text: str, *, scene_no: int = 0) -> list[dict]:
+    """单场定稿前的行级污染检查（不套整集预算/钩子口径）。"""
+    return [f for f in check_episode(text, ep_no=scene_no)
+            if f["severity"] == "block" and f["code"] in SCENE_SAFE_BLOCK_CODES]
+
 
 def check_episode(text: str, *, ep_no: int = 0, profile: str = "universal") -> list[dict]:
     loc = f"第{ep_no}集" if ep_no else "剧本"
@@ -286,6 +371,19 @@ def check_episode(text: str, *, ep_no: int = 0, profile: str = "universal") -> l
         if a[0] != b[0] and a[1] and a[1].rstrip("。！？!?…") == b[1].rstrip("。！？!?…"):
             out.append(_finding("S09", loc, f"相邻两行不同角色说同一句：{a[0]} / {b[0]}「{a[1][:24]}」"))
             break
+
+    # S15 动作句写进台词：无括号的纯动作短语开头的台词行（「林野：后退一步。」）
+    acts = [(sp, ln) for sp, ln in lines
+            if ln.startswith(spec.ACTION_LINE_STARTS) and _cn(ln) <= 12
+            and not any(q in ln for q in ("「", "“", '"'))]
+    if acts:
+        out.append(_finding("S15", loc, f"{len(acts)} 行动作写进台词，例：{acts[0][0]}：{acts[0][1][:20]}"))
+
+    # S14 场次编号重复：同一集内两个相同编号的场标题
+    nos = [int(m.group(1)) for m in RE_SCENE_NO.finditer(body)]
+    dup = sorted({n for n in nos if nos.count(n) > 1})
+    if dup:
+        out.append(_finding("S14", loc, f"场号重复：{dup[:5]}"))
 
     head = body[:int(spec.threshold("open_conflict_chars", profile))]
     tail = body[-int(spec.threshold("tail_hook_chars", profile)):]
@@ -347,6 +445,15 @@ def check_script(episodes: list[dict], *, assets: dict | None = None,
         kinds.update(_heading_kinds(e.get("text") or ""))
     if len(kinds) > 1:
         findings.append(_finding("S05", "全剧", f"混用 {len(kinds)} 种场标题：{', '.join(sorted(kinds))}"))
+
+    # S13 括号体系混用：全角（）动作行与方头【】动作行并存
+    has_paren = any(RE_PAREN_ACTION.search(e.get("text") or "") for e in rows)
+    has_brack = any(RE_BRACK_ACTION.search(e.get("text") or "") for e in rows)
+    if has_paren and has_brack:
+        findings.append(_finding("S13", "全剧", "（）与【】两种括号体系混用"))
+
+    # N13 数值口径冲突
+    findings.extend(numeric_findings(rows))
 
     # S06 出片资产与镜头字段
     if assets is not None:

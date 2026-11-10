@@ -26,7 +26,7 @@ import os
 import re
 import threading
 
-from . import llm, medium, script_checker, skillkit, express
+from . import llm, medium, script_checker, skillkit, express, delivery_gate, lexicon_ledger, checkup
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -327,6 +327,10 @@ def _era_of(cfg: dict) -> str:
     era = str((cfg or {}).get("setting_era") or "").strip()
     if era in script_checker.ERA_LABELS:
         return era
+    # v4.33.9：项目级世界观红线可显式指定时代（config.world_rules.era）
+    _wr_era = script_checker.project_world_rules(cfg)["era"]
+    if _wr_era in script_checker.ERA_LABELS:
+        return _wr_era
     genre = str((cfg or {}).get("genre") or "")
     for word, code in _GENRE_ERA.items():
         if word in genre:
@@ -355,6 +359,35 @@ def _world_block(cfg: dict) -> str:
         lines.append("本作禁止出现：" + "、".join(terms))
     lines.append("违反上述设定的描写一律视为无效，必须改写。")
     return "\n".join(lines)
+
+
+def _world_extra(cfg: dict) -> list[str]:
+    """项目级世界观违禁物（config.world_rules.banned_terms）。"""
+    return script_checker.project_world_rules(cfg)["banned_terms"]
+
+
+def _scene_delivery_retry(sc: dict, no, text: str, extra: str, cfg: dict, log) -> str:
+    """v4.33.9：场定稿前过统一交付门禁（S01/S02/S03/S11/N02 等禁止项），
+    命中即带处置指令重生成一次；仍命中由体检/导出闸兜底。"""
+    try:
+        no_i = int(no) if str(no).isdigit() else 0
+    except (TypeError, ValueError):
+        no_i = 0
+    blocks = delivery_gate.scene_block_findings(text, scene_no=no_i)
+    if not blocks:
+        return text
+    log(f"⚠️ 第 {no} 场交付门禁命中 {', '.join(f['code'] for f in blocks[:3])}，带指令重生成一次…")
+    retry = gen_scene_body(sc, extra + "\n\n【交付门禁处置指令（上一稿命中以下禁止项被打回，必须全部消除）】\n"
+                           + "\n".join(f"- {d}" for d in delivery_gate.rewrite_directives(blocks)), cfg)
+    if not retry.strip():
+        log(f"⚠️ 第 {no} 场重生成失败，保留原稿交由体检/导出闸处理")
+        return text
+    left = delivery_gate.scene_block_findings(retry, scene_no=no_i)
+    if not left:
+        log(f"✅ 第 {no} 场重生成后通过交付门禁")
+        return retry
+    log(f"⚠️ 第 {no} 场重生成后仍命中 {', '.join(f['code'] for f in left[:3])}，保留原稿")
+    return text
 
 
 def _era_feedback(issues: list[dict]) -> str:
@@ -1142,11 +1175,13 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
                         sc3["error"] = "本场生成为空（已重试一次）"
                         proj.save_plan(plan3)
                 continue
-            check = script_checker.check_text(text, era)
+            check = script_checker.check_text(text, era, _world_extra(cfg))
             if not check["ok"]:
                 retry = gen_scene_body(sc, extra + "\n\n" + _era_feedback(check["issues"]), cfg)
                 if retry.strip():
                     text = retry
+            # v4.33.9：统一交付门禁（S01/S02/S03/S11/N02），命中带指令重生成一次
+            text = _scene_delivery_retry(sc, no, text, extra, cfg, proj.log)
             if not _write_body_guarded(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"),
                                        text.strip() + "\n", proj, no):
                 continue        # 保住更长的原稿，且不把它降级成短稿完成态
@@ -1157,6 +1192,10 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
                 sc2["wordCount"] = len(re.findall(r"[\u4e00-\u9fff]", text))
                 proj.save_plan(plan2)
             done_by_me += 1
+            try:
+                lexicon_ledger.record(proj.path, no, text)   # v4.33.9：口癖账本记账
+            except Exception:
+                pass
             proj.log(f"✅ 第 {no}/{total} 场完成（{sc2['wordCount']} 字）")
 
     threads = [threading.Thread(target=_worker, args=(w + 1,), daemon=True) for w in range(n_workers)]
@@ -1184,6 +1223,15 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
             else:
                 plan["status"] = "completed"
                 plan.setdefault("meta", {})["stage"] = "S7"
+                # v4.33.9：改编剧全集完成 → 保真清单验收（缺项留档 25-改编保真清单.md）
+                if plan.get("adaptedFrom"):
+                    try:
+                        from . import drama_adapter as _da
+                        _fr = _da.verify_fidelity(proj.path, plan, log=proj.log)
+                        if _fr:
+                            plan.setdefault("adaptation", {})["fidelityCheck"] = _fr
+                    except Exception as _e:
+                        proj.log(f"⚠️ 保真清单验收失败（不影响交付）：{_e}")
         else:
             plan["status"] = "in_progress"
         proj.save_plan(plan)
@@ -1298,14 +1346,16 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
                     cur["wordCount"] = 0
                 proj.save_plan(latest)
             continue
-        check = script_checker.check_text(text, era)
+        check = script_checker.check_text(text, era, _world_extra(cfg))
         if not check["ok"]:
             terms = "、".join(it["term"] for it in check["issues"][:8])
             proj.log(f"⚠️ 第 {no} 场时代校验未过（{terms}），带反馈重生成一次…")
             retry = gen_scene_body(sc, extra + "\n\n" + _era_feedback(check["issues"]), cfg)
             if retry.strip():
                 text = retry
-                check = script_checker.check_text(text, era)
+                check = script_checker.check_text(text, era, _world_extra(cfg))
+        # v4.33.9：统一交付门禁（S01/S02/S03/S11/N02），命中带指令重生成一次
+        text = _scene_delivery_retry(sc, no, text, extra, cfg, proj.log)
         if not check["ok"]:
             sc["warn"] = check["issues"]
             terms = "、".join(it["term"] for it in check["issues"][:8])
@@ -1319,6 +1369,26 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
         sc["wordCount"] = len(re.findall(r"[\u4e00-\u9fff]", text))
         done += 1
         proj.save_plan(plan)
+        # v4.33.9：口癖账本记账 + 每 10 场阶段体检（确定性、零 LLM）
+        try:
+            lexicon_ledger.record(proj.path, no, text)
+        except Exception:
+            pass
+        if str(no).isdigit() and int(no) % 10 == 0:
+            try:
+                _bd = proj.body_dir()
+                _rows = []
+                for _sc in sorted((proj.plan().get("scenes") or []), key=lambda x: x.get("no") or 0):
+                    _fp2 = os.path.join(_bd, _sc.get("fileName") or "")
+                    if _fp2 and os.path.exists(_fp2):
+                        _rows.append({"n": _sc.get("no"), "title": _sc.get("slug") or _sc.get("title") or "",
+                                      "text": open(_fp2, encoding="utf-8").read()})
+                    if len(_rows) >= 10:
+                        break
+                if _rows:
+                    checkup.stage_checkup(proj, _rows, kind="script")
+            except Exception as _e:
+                proj.log(f"⚠️ 阶段体检失败（不影响创作）：{_e}")
 
     # v1.2.2：全部场次完成 → 状态 completed（否则一直 in_progress，用户以为没写完）
     if done and done >= len(scenes):
