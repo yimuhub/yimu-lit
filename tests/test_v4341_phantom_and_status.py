@@ -12,7 +12,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from fastapi.testclient import TestClient
 
 import app as appmod
 from bot import livejob, security, supervisor, writer
@@ -120,11 +119,8 @@ def test_apply_title_without_planning_starts_writing(tmp_path, monkeypatch):
 # ---------- 修复E：系统停不再冒充用户暂停 ----------
 
 def _mk_writable_proj(tmp_path, total=3):
-    proj = _mk_proj(tmp_path, name="批量停测试", total=total, status="in_progress",
+    return _mk_proj(tmp_path, name="批量停测试", total=total, status="in_progress",
                     meta={"planning_running": False})
-    for i in range(1, total + 1):   # 章卡补全（_ensure_card_planned 需要）
-        pass
-    return proj
 
 
 def test_budget_stop_is_not_user_pause(tmp_path):
