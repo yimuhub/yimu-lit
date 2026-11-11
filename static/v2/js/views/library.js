@@ -835,7 +835,7 @@ export function renderLibrary(container, ctx) {
   }
 
   function gridCard(item) {
-    const meta = statusMeta(item.state, item.status_label);
+    const meta = statusMeta(item.state, item.status_label, item.running);   // v4.34.0：补 running 参数（v4.33.6 漏改的两处，缺参会误显示创作中）
     const pct = progressOf(item);
     const unit = MEDIUM_UNITS[item.medium || 'novel'] || '章';
     const card = h('div', { class: 'lib-card', dataset: { key: item.key } });
@@ -911,7 +911,7 @@ export function renderLibrary(container, ctx) {
   }
 
   function listRow(item) {
-    const meta = statusMeta(item.state, item.status_label);
+    const meta = statusMeta(item.state, item.status_label, item.running);   // v4.34.0：补 running 参数（v4.33.6 漏改的两处，缺参会误显示创作中）
     const pct = progressOf(item);
     const unit = MEDIUM_UNITS[item.medium || 'novel'] || '章';
     const row = h('div', { class: 'lib-row', dataset: { key: item.key } });

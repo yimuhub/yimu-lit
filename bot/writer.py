@@ -637,6 +637,49 @@ def pause_book(key):
     p.log("⏸ 已请求暂停（在下一检查点停，停在当前进度，可点「▶继续」恢复）")
     return True
 
+def stop_creation(key, reason: str = "已出书，创作停止"):
+    """v4.34.0 状态规则统一收口：出书/成书后必须彻底停止创作。
+
+    - supervisor.stop：停看护线程，防止体检 tick 再次自动拉起（省 token、降并发）；
+    - livejob.finish：清掉实时作业登记，前端不再显示「正在创作中」；
+    - pause_book 语义落盘：写线程在下一检查点自停（现有唯一安全停止手段，
+      不强杀线程、不新增并发）；
+    - 账面归位：正文已齐 → completed（成书）；未齐 → paused（保留断点）。
+    """
+    out = {"stopped": False, "state": ""}
+    try:                                   # 局部导入：supervisor 反向依赖 writer
+        from . import supervisor as _sv
+        _sv.stop(key)
+    except Exception:
+        pass
+    try:
+        from . import livejob
+        livejob.finish(key, ok=True, detail=reason)
+    except Exception:
+        pass
+    try:
+        p = Project(_project_dir(key), key)
+        plan = p.plan() or {}
+        if plan:
+            try:
+                _done = done_chapters(plan, p.path)
+            except Exception:
+                _done = 0
+            _total = len(plan.get("chapters") or [])
+            plan.setdefault("meta", {})["paused"] = True
+            plan["status"] = "completed" if (_total and _done >= _total) else "paused"
+            p.save_plan(plan)
+            if plan["status"] == "completed":
+                journal.update(p.path, status="done", note=reason)
+            else:
+                journal.update(p.path, status="paused", note=reason)
+            out["stopped"] = True
+            out["state"] = plan["status"]
+            p.log(f"🛑 {reason}（正文 {_done}/{_total}，创作流程已停止）")
+    except Exception:
+        pass
+    return out
+
 def resume_plan(key) -> dict:
     """「继续」到底会从哪儿接着跑 —— 供回复文案与规划器使用。
 
@@ -701,6 +744,20 @@ def resume_book(key, batch_size=None) -> bool:
         return False
     if plan.get("status") == "completed":
         p.log("ℹ️ 该作品已完成，无需继续（想加章请用「续写」）")
+        return False
+    # v4.34.0 状态规则：正文已齐就绝不启动写作线程——哪怕账面状态还没归位。
+    # 「继续」只在存在明确待写章节时有意义；顺手把账面归位成 completed，
+    # 消除「100% 已完成却显示创作中」的账面残留。
+    try:
+        _done = done_chapters(plan, p.path)
+    except Exception:
+        _done = 0
+    _total = len(plan.get("chapters") or [])
+    if _total and _done >= _total:
+        plan["status"] = "completed"
+        plan.setdefault("meta", {})["paused"] = False
+        p.save_plan(plan)
+        p.log(f"✅ 全书正文已齐（{_done}/{_total}），账面归位为已完成，不重复启动创作")
         return False
     plan.setdefault("meta", {})["paused"] = False
     plan["status"] = "in_progress"
@@ -3960,6 +4017,11 @@ def run_release_gate(key, cfg_over=None):
         latest_meta = latest.get("meta") or {}
         latest_meta.update(meta)
         latest["meta"] = latest_meta
+        # v4.34.0 状态规则：审核（放行门禁）通过即成书——此前只写 meta.released，
+        # plan.status 若因故不是 completed（中途崩溃被 recover_stale_book 复位等），
+        # 这本书会永远停在运行态账面。
+        if latest_meta.get("released") and latest.get("status") != "completed":
+            latest["status"] = "completed"
         proj.save_plan(latest)
     meta = latest_meta
     _write_gate_report(proj, before, final, meta["released"], pl, len(gate_results), gate_results, cancelled=cancelled)

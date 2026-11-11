@@ -171,7 +171,10 @@ function chip(label, active, onClick, { title = '' } = {}) {
   return btn;
 }
 
-export function openWizard(ctx, preset = {}) {
+/* v4.34.0：新增 onClosed 回调——X/Esc/遮罩/取消/创建成功任何一条关闭路径
+   都会经 openModal 的 onClose 触发（此前只有「取消」「创建成功」走被包装的
+   modal.close，其余路径关闭后外层单例句柄不清理，导致再点「新建作品」无响应）。 */
+export function openWizard(ctx, preset = {}, { onClosed } = {}) {
   const state = store.get();
   const model = {
     step: 1,
@@ -315,6 +318,7 @@ export function openWizard(ctx, preset = {}) {
   const body = h('div', { class: 'wiz-body' });
   const footer = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', width: '100%' } });
 
+  let destroyed = false;
   const modal = openModal({
     title: '新建作品',
     subtitle: '先对齐体裁与规模，再把参考与文风交给一幕·YIMU 神笔。创建后可以随时调整规划。',
@@ -322,15 +326,14 @@ export function openWizard(ctx, preset = {}) {
     footer,
     size: 'lg',
     className: 'wizard',
-    initialFocus: null
+    initialFocus: null,
+    /* v4.34.0：统一走 onClose 收口（右上角 X、点遮罩、Esc、底部取消、创建成功
+       五条路径全部覆盖），不再依赖包装 modal.close 属性。 */
+    onClose: () => {
+      destroyed = true;
+      if (typeof onClosed === 'function') onClosed();
+    }
   });
-
-  let destroyed = false;
-  const origClose = modal.close;
-  modal.close = () => {
-    destroyed = true;
-    origClose();
-  };
 
   /* 空态返回 hidden 元素而不是 null：Element.append(null) 会把 "null" 当文本渲染。 */
   function errorBanner() {
@@ -659,6 +662,13 @@ export function openWizard(ctx, preset = {}) {
       if (Array.isArray(val) && !val.length) continue;
       params[f.key] = val;
     }
+    /* v4.34.0：第一步的写作风格与题材 craft key 一并进第二步——此前
+       style/style_id/genre_key 不是 schema 字段，这里发不出去，后端无从读取，
+       「选定的写作风格和分类 AI 生成读不到」即由此而来。 */
+    if (v.genre_key) params.genre_key = v.genre_key;
+    const resolved = resolvedStyle();
+    if (resolved) params.style = resolved;
+    if (model.styleId) params.style_id = model.styleId;
     return params;
   }
   /* v4.12.1：AI 自动生成按钮——点击后根据文体和已有信息生成标题/方向 */

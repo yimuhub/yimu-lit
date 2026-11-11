@@ -27,6 +27,10 @@ _LOCK = threading.RLock()
 _ACTIVE: dict[str, dict] = {}
 # 完成后保留一小段时间，供前端最后一次轮询拿到「已完成 / 失败原因」再自行收起
 _FINISHED_TTL = 180
+# v4.34.0：未结束行的活性超时——登记后引擎崩溃、或「读状态→begin」竞态导致
+# 没人收口的行（此前永驻内存 → 该书永远显示「正在创作中」，直到重启进程）。
+# 正常作业每章/每阶段都会 update 刷新心跳；30 分钟无心跳只能说明行已泄漏。
+_ACTIVE_TTL = 1800
 
 
 def _norm(key) -> str:
@@ -118,7 +122,14 @@ def get(key) -> dict:
         row = _ACTIVE.get(k)
         if not row:
             return {}
-        if row.get("finished") and now - float(row.get("ended_at") or 0) > _FINISHED_TTL:
+        if row.get("finished"):
+            if now - float(row.get("ended_at") or 0) > _FINISHED_TTL:
+                _ACTIVE.pop(k, None)
+                return {}
+        elif now - float(row.get("updated_at") or row.get("started_at") or 0) > _ACTIVE_TTL:
+            # v4.34.0：长时间无心跳的未结束行视为泄漏（引擎死亡/收口竞态），自动过期。
+            # 泄漏行的 close 竞态收不回「finished」，TTL 只对 finished 生效的旧逻辑
+            # 会让它永驻内存、把这本书钉死在「正在创作中」。
             _ACTIVE.pop(k, None)
             return {}
         out = dict(row)

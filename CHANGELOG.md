@@ -2,6 +2,46 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.34.0 — 状态规则落地与四项功能修复
+
+用户实测四个长期病灶的集中修复，并把**状态规则**写死为代码与测试：
+
+### 状态规则（本次核心）
+
+- **出书即停止**：整本导出（`/api/export`、`/api/export/save`）触发 `writer.stop_creation`——
+  看护线程退出、作业登记收口、写线程下一检查点自停、账面归位（正文齐→completed，
+  未齐→paused）。不再显示「正在创作中」，省 token、降并发。
+- **审核通过即成书**：放行门禁 `released` 时若账面不是 completed 强制归位。
+- **不再自动恢复**：supervisor 停滞自愈分支移除——创作停滞一律停止等指令，
+  仅明确操作指令（点「继续」/明确改写某章）才重新进入创作中。
+- **正文已齐不启动**：`resume_book` 加闸，done≥total 直接归位 completed 拒绝启动。
+- **前端兜底**：三态按钮 `creativeToggleState` 对 completed 直接返回 idle；
+  作品库两处状态章补传 running 参数（v4.33.6 漏改）。
+
+### 四项功能修复
+
+- **新建作品无响应**（长期问题）：向导单例 `wizardModal` 只在被包装的 close 上清空，
+  而 X/Esc/遮罩三条高频关闭路径走 `openModal` 内部 close——关闭后句柄残留，
+  此后所有「新建作品」入口在守卫处静默 return。改走 `onClosed` 回调统一收口；
+  顺修 rightpanel 弹窗 register/unregister 用两个不同字面量导致 modalStack 脏 entry
+  （Esc 失灵的元凶）与两处裸 `?.remove()`。
+- **生成参数失效**：`/api/ai-generate` 题材映射是旧 8 词词表，16 词题材 13 个退化成
+  「网络」——改走 `skillkit._genre_key` 归一；前端补发 `style/style_id/genre_key`，
+  第一步选定的写作风格终于进第二步；剧本模板补 `{genre_desc}` 槽位、form_map 与
+  `script_writer.FORMS` 同源；随机维度块从「必须严格围绕」降级为前提下发散。
+- **默认大模型不同步**：设置页 5 条写路径（全局默认/设默认供应商/启停/删除/编辑模型列表）
+  保存后统一走 `ctx.refreshModels()`（补即时重绘）；改全局默认时解除会话级 `ui.model`
+  覆盖；回首页自动解除「本轮使用的模型」残留；顺修 session.js 模型回退链
+  （`o.default` 字段不存在，永远显示第一条供应商）。
+- **100% 已完成仍显示创作中**：script_writer 起手无条件置 writing、空跑后继承它
+  （已实测命中 3 个 100% 剧本项目）——全完成早退、收尾按实际归位；livejob 未结束行
+  加 30 分钟活性超时（三种泄漏自愈）；`/api/status` 不再把账面 state 强改成
+  in_progress；对话回复只对真实 running 的书说「正在创作中」；
+  改编 `mark_pipeline` 挪进 try（此前异常时 `_PIPELINE_COUNT` 永久泄漏）。
+
+测试：新增 `tests/test_v4340_status_rules.py` 7 例；`test_v4260_supervisor.py`
+停滞自愈两例改写为「不再自动恢复」断言。全量 859 通过。
+
 ## v4.33.9 — 全书账本与语义门禁：口癖账本、数值口径、复述前情、剧本同闸
 
 v4.33.8 把「污染类」问题关进了闸门，本版治剩余的**语义类与跨章类**病灶——

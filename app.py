@@ -234,7 +234,9 @@ def chat(session_id, message, key=None, digest=None):
         proj = _get_project(s["project"])
         if proj:
             st = proj.status()
-            if st.get("running") or st["state"] == "in_progress":
+            # v4.34.0：只有此刻真的有引擎在跑才算「正在创作中」——账面 in_progress
+            # 是历史状态（中断/待继续），completed 是成书，都不能再对用户说正在创作。
+            if st.get("running") and st["state"] not in ("completed", "paused"):
                 if re.search(r"进度|继续|怎么样|状态|status", msg) or len(msg) < 6:
                     return f"📖 《{st['name']}》正在创作中：第 {st['done']}/{st['total']} 章，已写 {st['words']} 字。" \
                            f"完成前你可以随时问我「进度」。"
@@ -3934,9 +3936,11 @@ def api_status(key: str):
     # v4.33.1：作业登记在跑 = 创作中。有些引擎（尤其改编）不是通过 Session 的
     # proj.running 启动的，只信 status 会让按钮在真正写作时仍显示「继续」，
     # 用户以为没反应就反复点，反而起多条线程。
+    # v4.34.0：不再把账面 state 强改成 in_progress——running（此刻有活）与
+    # state（账面进度）是两回事；completed 的书即便撞上泄漏的 livejob 行
+    # （已被活性超时兜底）也不该被改写成「创作中」。
     if livejob.is_active(key):
         st["running"] = True
-        st["state"] = "in_progress" if st.get("state") in ("", None, "missing", "unknown", "writing") else st.get("state")
     st["events"] = proj.events[-15:]
     st["path"] = proj.path
     st["has_book"] = os.path.exists(os.path.join(proj.path, f"成书-{st.get('name', key)}.md"))
@@ -4650,6 +4654,19 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
     return data, media, ext, title
 
 
+def _export_settle(key: str, frm: int, to: int):
+    """v4.34.0 状态规则：整本导出即「出书」——出书后必须彻底停止创作流程
+    （写线程下一检查点自停、看护线程退出、作业登记收口、账面归位），
+    不再显示「正在创作中」，避免 token 浪费与并发增加。
+    章节范围导出（frm/to 任一非 0）不算出书，不影响创作。"""
+    if int(frm or 0) or int(to or 0):
+        return
+    try:
+        writer.stop_creation(key, reason="已出书（整本导出），创作流程已停止")
+    except Exception:
+        pass
+
+
 @app.get("/api/export")
 def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0):
     """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。
@@ -4660,6 +4677,7 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: in
         data, media, ext, title = _export_build(key, fmt, frm, to, force)
     except _ExportError as e:
         return JSONResponse({"error": e.msg}, status_code=e.status)
+    _export_settle(key, frm, to)
     fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
     disp = f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname + '.' + ext)}"
     return Response(data, media_type=media, headers={"Content-Disposition": disp})
@@ -4685,6 +4703,7 @@ def _save_payload(kind: str, payload: dict):
         frm = int(p.get("frm") or 0)
         to = int(p.get("to") or 0)
         data, _media, ext, title = _export_build(key, fmt, frm, to, int(p.get("force") or 0))
+        _export_settle(key, frm, to)   # v4.34.0：整本导出即出书 → 停止创作流程
         return data, f"{_safe_export_name(title)}.{ext}", ext
     if kind == "diagnostics":
         text, scope = _build_diagnostics_text(p)
@@ -6305,16 +6324,19 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
             ch_by_no[int(c.get("chapterNumber"))] = c
         except (TypeError, ValueError):
             continue
-    writer.mark_pipeline(new_key_base, True)   # 全程「创作中」，不是只有分镜阶段
     total_eps = len(outline)
     # 续跑时从「已完成」起算：断点续跑第 8 集不能把进度条从 7/50 打回 0/50
     finished_eps = sum(
         1 for sc in by_no.values()
         if sc.get("status") == "completed"
         and os.path.exists(_adapt_scene_body_path(pdir, sc)))
-    livejob.update(new_key_base, phase="writing", total=total_eps, done=finished_eps,
-                   detail=f"全书 {total_eps} 集，已完成 {finished_eps} 集，开始/继续逐集写作…")
+    # v4.34.0：mark_pipeline 挪进 try——此前它在 try 外，6317 前抛异常时
+    # finally 不执行，_PIPELINE_COUNT 永久 ≥1、livejob 行永久 active，
+    # 这本书从此钉死在「创作中」，/api/continue 防重入守卫也永远短路。
     try:
+        writer.mark_pipeline(new_key_base, True)   # 全程「创作中」，不是只有分镜阶段
+        livejob.update(new_key_base, phase="writing", total=total_eps, done=finished_eps,
+                       detail=f"全书 {total_eps} 集，已完成 {finished_eps} 集，开始/继续逐集写作…")
         run_outline = ([ep for ep in outline if ep["no"] in set(only_episodes)]
                        if only_episodes is not None else outline)
         for ep in run_outline:
@@ -6644,14 +6666,37 @@ async def api_thesis_part(key: str, part: str = "final"):
     return {"key": key, "part": part, "text": text}
 
 
+# v4.34.0：向导 AI 生成的题材描述——键为 skillkit 归一 key，覆盖 16 词题材表。
+# 「悬疑/刑侦」「历史/民国」「现言」「古言/宫斗」等复合词经 _genre_key 归一后命中。
+_AI_GENRE_DESCS = {
+    "mystery": "悬疑推理，节奏紧凑，层层剥茧",
+    "xuanhuan": "玄幻修真，宏大世界观，升级体系",
+    "romance": "都市言情，细腻情感，人物羁绊",
+    "scifi": "硬科幻设定，未来推演",
+    "history": "历史/民国，权谋博弈",
+    "urban": "都市生活，职场或情感",
+    "wuxia": "武侠江湖，恩怨情仇",
+    "horror": "恐怖/灵异，心理惊悚",
+    "xianxia": "仙侠修仙，渡劫飞升",
+    "military": "军旅战争，热血报国",
+    "workplace": "职场行业，商战沉浮",
+}
+
+
 @app.post("/api/ai-generate")
 def api_ai_generate(payload: dict):
-    """v4.15.1：向导「AI 自动生成」——按体裁+模式+已选参数定制 prompt，随机种子保证每次不同。"""
+    """v4.15.1：向导「AI 自动生成」——按体裁+模式+已选参数定制 prompt，随机种子保证每次不同。
+    v4.34.0：修复第一步参数失效——①题材归一改走 skillkit._genre_key（此前 8 词旧词表
+    精确匹配，16 词题材 13 个退化成「网络」）；②补读前端 style/style_id/genre_key，
+    第一步选定的写作风格终于进第二步；③剧本模板补 {genre_desc} 槽位、form_map 与
+    script_writer.FORMS 同源（此前有幽灵键 animation、缺 short/stage/opera/comic_drama）；
+    ④随机维度块降级为「前提下的发散」，不再以「必须严格围绕」压制题材/基调/风格。"""
     medium = str(payload.get("medium") or "novel")
     field = str(payload.get("field") or "title")   # title 或 idea
     hint = str(payload.get("hint") or "")           # 用户已输入的线索
     # v4.15.1：从 payload 提取已选参数（题材/基调/视角/模式等），喂给 AI 定制生成
     genre = str(payload.get("genre") or "")
+    genre_key = str(payload.get("genre_key") or "")
     tone = str(payload.get("tone") or "")
     perspective = str(payload.get("perspective") or "")
     mode = str(payload.get("mode") or "")
@@ -6660,25 +6705,31 @@ def api_ai_generate(payload: dict):
     ktype = str(payload.get("ktype") or "")
     template = str(payload.get("template") or "")
     form = str(payload.get("form") or "")
+    # v4.34.0：第一步的写作风格（风格维度覆盖 + 蒸馏风格卡）
+    style_obj = payload.get("style") if isinstance(payload.get("style"), dict) else {}
+    style_id = str(payload.get("style_id") or "")
+
+    # v4.34.0：题材描述表——键为 skillkit 归一 key（与向导下发 novel_genre_options 同源），
+    # 未命中回落用户原文，绝不再退化成「网络」。
+    def _genre_desc() -> str:
+        g = genre or genre_key
+        if not g:
+            return ""
+        try:
+            key = skillkit._genre_key(g)
+        except Exception:
+            key = ""
+        return _AI_GENRE_DESCS.get(key) or f"「{g}」题材"
 
     # 每个文体专属的生成指令模板（比旧版更细，结合体裁+模式）
     templates = {
         "novel": {
-            "genre_map": {
-                "悬疑": "悬疑推理，节奏紧凑，层层剥茧",
-                "玄幻": "玄幻修真，宏大世界观，升级体系",
-                "言情": "都市言情，细腻情感，人物羁绊",
-                "科幻": "硬科幻设定，未来推演",
-                "历史": "历史架空，权谋博弈",
-                "都市": "都市生活，职场或情感",
-                "武侠": "武侠江湖，恩怨情仇",
-                "恐怖": "恐怖氛围，心理惊悚",
-            },
             "gen": "为这部{genre_desc}小说起一个有辨识度的书名，并写一句话故事概念（谁/想要什么/被什么挡住）",
         },
         "script": {
-            "gen": "为这部{form_desc}剧本起一个剧名，并写一句话故事概念（核心冲突 + 视觉钩子）",
-            "form_map": {"film": "电影", "series": "剧集", "short_drama": "短剧", "animation": "动画"},
+            "gen": "为这部{genre_desc}{form_desc}剧本起一个剧名，并写一句话故事概念（核心冲突 + 视觉钩子）",
+            # v4.34.0：与 script_writer.FORMS 同源（电影长片/剧集/短片/舞台剧/戏曲/AI短剧/AI漫剧/自定义）
+            "form_map": {k: v.get("label", k) for k, v in script_writer.FORMS.items()},
         },
         "poetry": {
             "gen": "为这首诗词起一个诗题，并写创作方向（意象 + 情感基调 + 韵脚建议）",
@@ -6712,8 +6763,10 @@ def api_ai_generate(payload: dict):
 
     # 替换模板中的占位符
     if medium == "novel":
-        base = base.replace("{genre_desc}", tpl["genre_map"].get(genre, "网络"))
+        base = base.replace("{genre_desc}", _genre_desc() or "网络")
     elif medium == "script":
+        # v4.34.0：剧本题材此前被读入但模板无槽位，100% 丢失——现在拼回。
+        base = base.replace("{genre_desc}", f"{genre}题材" if genre else "")
         base = base.replace("{form_desc}", tpl["form_map"].get(form, "影视剧本"))
     elif medium == "children":
         base = base.replace("{ctype}", tpl["ctype_map"].get(ctype, "儿童故事"))
@@ -6726,15 +6779,25 @@ def api_ai_generate(payload: dict):
 
     # 已选参数附加到 prompt（不传时 AI 会自由发挥）
     extras = []
+    if genre and medium not in ("novel", "script"):
+        extras.append(f"题材：{genre}")
     if tone: extras.append(f"基调：{tone}")
     if perspective: extras.append(f"视角：{perspective}")
     if mode: extras.append(f"创作模式：{mode}")
+    if style_obj:
+        parts = [f"{k}：{v}" for k, v in style_obj.items() if str(v or "").strip()]
+        if parts: extras.append("写作风格（必须遵循）：" + "，".join(parts))
+    if style_id:
+        sp = _style_prompt_of(style_id)
+        if sp: extras.append(f"文风技法参考：{sp[:300]}")
     if extras:
         base += "。" + "，".join(extras)
 
     hint_p = f"\n用户已输入的线索（在此基础上发散，不要照抄）：{hint}" if hint.strip() else ""
     # v4.15.4：结构化随机——每次从维度池抽 2-3 个硬约束，强制输出方向不同。
     # 此前只拼一串数字种子，模型直接忽略 → 每次输出趋同。
+    # v4.34.0：措辞从「必须严格围绕以下维度创作」降级为「前提下发散」——
+    # 原措辞不含任何用户参数却优先级最高，题材/基调/风格全被它稀释。
     import random
     _DIMS = {
         "主角身份": ["落魄的外卖员", "退休刑警", "天才少女", "中年下岗工人", "海归精英", "乡村教师",
@@ -6746,12 +6809,12 @@ def api_ai_generate(payload: dict):
         "情绪基调": ["冷峻克制", "温暖治愈", "荒诞幽默", "悲怆厚重", "轻快明亮", "悬疑紧张"],
     }
     _picked = random.sample(list(_DIMS.keys()), k=3)
-    _rand_block = "；".join(f"{k}必须围绕「{random.choice(_DIMS[k])}」展开" for k in _picked)
+    _rand_block = "；".join(f"{k}可从「{random.choice(_DIMS[k])}」一类取材" for k in _picked)
     _seed = f"随机批次号：{random.randint(100000, 999999)}（同批次内容禁止重复）"
 
     out = llm.chat_json([{"role": "user", "content":
         f"{base}。{hint_p}\n"
-        f"硬性随机约束（必须严格围绕以下维度创作，每次都不同）：{_rand_block}。\n{_seed}\n"
+        f"在上述题材、基调与风格的前提下展开创作，另用以下维度保证每次输出各不相同（不得与上述设定冲突）：{_rand_block}。\n{_seed}\n"
         '输出 JSON：{"title":"标题/题目","idea":"一句话概念或方向(50-100字)"}。只输出 JSON。'}],
         stage="planning", temperature=1.0, use_cache=False)
     return {"ok": True, "title": (out or {}).get("title", ""), "idea": (out or {}).get("idea", "")}

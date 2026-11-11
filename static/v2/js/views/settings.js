@@ -479,11 +479,11 @@ export function renderSettings(container, ctx) {
     try {
       await api.globalModelSet({ provider_id: providerId, model: m });
       await loadProviders();
-      /* v4.30.0：同步顶栏/作品页的默认模型显示 */
-      try {
-        const mo = await api.modelOptions();
-        if (mo) patch('models', { default_provider: mo.default_provider, options: mo.options || [] });
-      } catch { /* 忽略 */ }
+      /* v4.34.0：统一走 ctx.refreshModels（末尾会重绘顶栏）；同时解除会话级
+         ui.model 覆盖——此前「本轮选择」一旦点过就永久优先，改全局默认后
+         创作页右上角永远显示旧模型。 */
+      await ctx.refreshModels?.();
+      patchUi({ model: null, providerId: null });
       const opt = sel.options[sel.selectedIndex];
       toast(`全局默认模型已设为 ${opt ? opt.textContent : `${providerId} · ${m}`}`, { tone: 'success', duration: 2200 });
     } catch (err) {
@@ -605,6 +605,9 @@ export function renderSettings(container, ctx) {
     try {
       await api.setDefaultProvider(p.id);
       await loadProviders();
+      /* v4.34.0：默认供应商变化会联动全局默认模型——刷新 store 并解除本轮覆盖 */
+      await ctx.refreshModels?.();
+      patchUi({ model: null, providerId: null });
       toast(`已把 ${p.name} 设为默认`, { tone: 'success', duration: 1800 });
     } catch (err) {
       toast(errorText(err, '设置默认失败'), { tone: 'danger' });
@@ -615,6 +618,7 @@ export function renderSettings(container, ctx) {
     try {
       await api.setProviderActive(p.id, p.active === false);
       await loadProviders();
+      await ctx.refreshModels?.();   // v4.34.0：active 集合变化影响 model_options
     } catch (err) {
       toast(errorText(err, '操作失败'), { tone: 'danger' });
     }
@@ -645,6 +649,7 @@ export function renderSettings(container, ctx) {
     try {
       await api.removeProvider(p.id);
       await loadProviders();
+      await ctx.refreshModels?.();   // v4.34.0：供应商被删后全局默认可能变更
       toast('已删除', { duration: 1600 });
     } catch (err) {
       toast(errorText(err, '删除失败'), { tone: 'danger' });
@@ -860,6 +865,9 @@ export function renderSettings(container, ctx) {
               else await api.addProvider(payload);
               modal.close();
               await loadProviders();
+              /* v4.34.0：模型列表改动可能触发后端重置 default_model（旧默认不在新列表时
+                 取 models[0]）——刷新 store，创作页右上角才不会显示旧模型 */
+              await ctx.refreshModels?.();
               toast(existing ? '已保存' : '已添加供应商', { tone: 'success', duration: 1800 });
             } catch (err) {
               toast(errorText(err, '保存失败'), { tone: 'danger' });

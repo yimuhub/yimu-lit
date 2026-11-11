@@ -179,12 +179,10 @@ const ctx = {
     loadCss(`/v2/css/settings.css?v=${CSS_V}`);
     const mod = await import('./views/wizard.js');
     if (wizardModal) return wizardModal;
-    wizardModal = mod.openWizard(ctx, preset);
-    const inner = wizardModal.close;
-    wizardModal.close = () => {
-      wizardModal = null;
-      inner();
-    };
+    /* v4.34.0：清空 wizardModal 改走 onClosed 回调——此前只包装返回对象的
+       close 属性，而 X/Esc/遮罩三条关闭路径走 ui.openModal 内部 close，
+       绕过包装，句柄不清理导致此后「新建作品」点了没反应。 */
+    wizardModal = mod.openWizard(ctx, preset, { onClosed: () => { wizardModal = null; } });
     return wizardModal;
   },
   openSettings(tab = '') {
@@ -251,11 +249,15 @@ const ctx = {
     syncShell(store.get(), true);
   },
   /* v4.30.0：模型选项/全局默认变更后刷新 store——此前 state.models 只在启动时
-     拉一次，设置里切默认模型后作品右上角永远显示旧模型 */
+     拉一次，设置里切默认模型后作品右上角永远显示旧模型。
+     v4.34.0：patch 后立即 syncShell 强制重绘顶栏（此前要等下次路由切换才生效）。 */
   async refreshModels() {
     try {
       const m = await api.modelOptions();
-      if (m) patch('models', { default_provider: m.default_provider, options: m.options || [] });
+      if (m) {
+        patch('models', { default_provider: m.default_provider, options: m.options || [] });
+        syncShell(store.get(), true);
+      }
     } catch { /* 网络失败保留旧值 */ }
   },
   onMediumChange(medium) {
@@ -1103,6 +1105,14 @@ async function ensureWork(key) {
 function onRoute(route) {
   const prev = store.get();
   const key = route.name === 'work' || route.name === 'bench' ? route.key : '';
+
+  /* v4.34.0：回到首页意味着开始新一轮创作——解除「本轮使用的模型」覆盖。
+     否则顶栏芯片的一次选择会静默污染之后所有新书的创建请求与模型显示，
+     设置里改了全局默认也不生效。 */
+  if (route.name === 'welcome' && (prev.ui.model || prev.ui.providerId)) {
+    patchUi({ model: null, providerId: null });
+    syncShell(store.get(), true);
+  }
 
   if (key !== prev.currentKey) {
     loadedKey = '';

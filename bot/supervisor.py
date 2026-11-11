@@ -478,28 +478,15 @@ def tick_once(key: str) -> dict:
 
     running = _engine_running(key, med)
 
-    # ① 停滞自愈：计划说在写、实际没有引擎在跑 → 断点恢复（预算内 + 最小间隔）
+    # ① 停滞上报：计划说在写、实际没有引擎在跑。
+    # v4.34.0 状态规则：不再自动断点恢复——「正在创作中」只允许由明确的操作指令
+    # （点「继续」/明确要求改写某一章）触发，其余情况一律停止，避免 token 浪费
+    # 与无谓并发。看护线程随之退出；用户点「继续」时由入口重新拉起。
     if not running:
-        b = _budget(key, plan)
-        resumes = [t for t in (b.get("resumes") or []) if time.time() - float(t) < _RESUME_WINDOW]
-        if len(resumes) >= _RESUME_BUDGET:
-            _evt(key, "warn", "创作停滞，但自动恢复预算已用完（24h 内 3 次）",
-                 output="请手动点「继续」；若反复停滞请到「系统日志」看原因")
-            out.update({"action": "budget_exhausted"})
-            return out
-        # v4.26.1b：撤销「30 分钟恢复冷却」——实测有害：服务重启后注册表必然为空
-        # （引擎真的没在跑），冷却却把必要的恢复也拦住，书会卡死到冷却过期。
-        # 防双开已由「3 次/24h 预算 + 引擎真实状态判据」覆盖，冷却纯冗余。
-        ok = _dispatch_resume(key, med, pdir)
-        if ok:
-            _budget_add(key, plan, med, pdir, "resumes", "x")
-            _evt(key, "start", "检测到创作中断，已自动断点恢复",
-                 output="（服务重启/线程意外退出都会被我接住——不用你盯着）")
-            out.update({"action": "auto_resume"})
-        else:
-            _evt(key, "warn", "检测到创作停滞，自动恢复失败",
-                 output="请手动点「继续」，或查看系统日志")
-            out.update({"action": "resume_failed"})
+        _evt(key, "warn", "创作停滞，等待你的指令",
+             output="已按状态规则停止自动恢复；需要继续时点「继续」，或明确要求改写某一章")
+        stop(key)
+        out.update({"action": "stalled"})
         return out
 
     # ② 常规体检（线程活着才做；极速模式闸门内部会跳质量派活）

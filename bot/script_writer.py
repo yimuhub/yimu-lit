@@ -1276,6 +1276,15 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
     world = _world_block(cfg)
     total = len(scenes)
 
+    # v4.34.0：全部场次早已完成时不再进入 writing——此前起手无条件置 "writing"，
+    # 空跑一轮（所有场次早已 completed）后 done==0 分支继承它，账面永久卡在运行态，
+    # 界面永远显示「创作中」（已实测命中：多个 100% 完成的剧本项目 status=writing）。
+    if scenes and all(sc.get("status") == "completed" for sc in scenes):
+        plan["status"] = "completed"
+        plan.setdefault("meta", {})["stage"] = "S7"
+        proj.save_plan(plan)
+        proj.log("✅ 全部场次早已完成，本轮无需再写（不进入创作状态）")
+        return {"ok": True, "written": 0, "total": len(scenes), "already_done": True}
     plan["status"] = "writing"
     meta = plan.setdefault("meta", {})
     meta["stage"] = "S5"
@@ -1391,11 +1400,18 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
                 proj.log(f"⚠️ 阶段体检失败（不影响创作）：{_e}")
 
     # v1.2.2：全部场次完成 → 状态 completed（否则一直 in_progress，用户以为没写完）
+    # v4.34.0：done==0 不再继承本轮起手硬设的 "writing"——按实际进度归位：
+    # 全部场次已完成 → completed；仍有未写场次 → in_progress；其余保持既有状态。
     if done and done >= len(scenes):
         plan["status"] = "completed"
         plan.setdefault("meta", {})["stage"] = "S7"
-    else:
-        plan["status"] = "in_progress" if done else plan.get("status", "planning")
+    elif done:
+        plan["status"] = "in_progress"
+    elif scenes and all(sc.get("status") == "completed" for sc in scenes):
+        plan["status"] = "completed"
+        plan.setdefault("meta", {})["stage"] = "S7"
+    elif plan.get("status") == "writing":
+        plan["status"] = "in_progress"
     proj.save_plan(plan)
     proj.log(f"✅ 本轮写完 {done} 场")
     # v4.5.0：AI 短剧/漫剧 → 写完自动拆分镜头（后台线程，不阻塞收尾）

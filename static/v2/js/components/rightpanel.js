@@ -235,13 +235,20 @@ function _modalBox(title, bodyNode, opts = {}) {
   overlay.append(box);
   document.body.append(overlay);
   let closed = false;
+  /* v4.34.0：register/unregister 必须复用同一个 entry 对象——此前各建一个新
+     字面量，unregisterOverlay 的 indexOf 永远找不到，rp-modal 关闭后 modalStack
+     留下永久脏 entry，Esc 关最顶层会命中死 entry 直接 no-op。 */
+  const entry = { close };
   function close() {
     if (closed) return;
     closed = true;
     overlay.remove();
-    unregisterOverlay({ close });
+    unregisterOverlay(entry);
   }
-  registerOverlay({ close });
+  registerOverlay(entry);
+  /* v4.34.0：把 close 挂在元素上，外部清理点（修复完成/并行改写取消等）改调
+     _rpClose 走正规注销，不再裸 ?.remove() 留下 modalStack 脏 entry。 */
+  overlay._rpClose = close;
   const first = box.querySelector('input, textarea, select, button:not(.rp-modal-close)');
   if (first) setTimeout(() => { try { first.focus(); } catch { /* ignore */ } }, 0);
   return overlay;
@@ -481,7 +488,8 @@ function showConsistencyIssue(ctx, issue) {
           toast(acts ? (isRewrite ? `已启动修复：${acts}（完成后状态页签自动更新）` : `修复完成：${acts}`) : '修复完成',
                 { tone: 'success', duration: 6000 });
           ctx.refreshState();
-          document.querySelector('.rp-modal-overlay')?.remove();
+          /* v4.34.0：走 _rpClose 正规注销，避免 modalStack 脏 entry 吃掉后续 Esc */
+          document.querySelector('.rp-modal-overlay')?._rpClose?.();
         } catch (err) { toast(errorText(err, '修复失败'), { tone: 'danger' }); }
       } }
     })
@@ -517,7 +525,7 @@ function showSkillDetail(ctx, skill, type) {
   _modalBox(`技能详情 · ${skill.name}`, body);
 }
 
-async function exportWork(key, fmt, label, name = '') {
+async function exportWork(ctx, key, fmt, label, name = '') {
   if (IS_MOCK) {
     toast(`演示模式不生成文件；正式环境会导出 ${label}`, { duration: 2600 });
     return;
@@ -529,6 +537,9 @@ async function exportWork(key, fmt, label, name = '') {
     if (r && r.cancelled) return;
     const where = r && r.saved ? `已保存到 ${r.saved}` : `${label} 已开始下载`;
     toast(where, { tone: 'success', duration: 3200 });
+    /* v4.34.0 状态规则：整本导出即「出书」，后端已停止创作流程并归位账面状态——
+       立即刷新 work，右侧状态与创作按钮同步收敛，不再残留「正在创作中」。 */
+    if (key && ctx && typeof ctx.refreshWork === 'function') ctx.refreshWork(key);
   } catch (err) {
     toast(errorText(err, '导出失败，请稍后重试'), { tone: 'danger', duration: 4000 });
   }
@@ -841,10 +852,10 @@ function mediumWorkPane(work, ctx) {
           popoverMenu(
             event.currentTarget,
             [
-              { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(work.key, 'docx', 'Word', work.name) },
-              { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(work.key, 'md', 'Markdown', work.name) },
-              { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(work.key, 'epub', 'EPUB', work.name) },
-              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(work.key, 'print', '打印版', work.name) }
+              { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(ctx, work.key, 'docx', 'Word', work.name) },
+              { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(ctx, work.key, 'md', 'Markdown', work.name) },
+              { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(ctx, work.key, 'epub', 'EPUB', work.name) },
+              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(ctx, work.key, 'print', '打印版', work.name) }
             ],
             { align: 'start', label: '导出整本' }
           );
@@ -1099,10 +1110,10 @@ function workPane(ctx) {
           popoverMenu(
             event.currentTarget,
             [
-              { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(work.key, 'docx', 'Word', work.name) },
-              { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(work.key, 'md', 'Markdown', work.name) },
-              { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(work.key, 'epub', 'EPUB', work.name) },
-              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(work.key, 'print', '打印版', work.name) }
+              { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(ctx, work.key, 'docx', 'Word', work.name) },
+              { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(ctx, work.key, 'md', 'Markdown', work.name) },
+              { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(ctx, work.key, 'epub', 'EPUB', work.name) },
+              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(ctx, work.key, 'print', '打印版', work.name) }
             ],
             { align: 'start', label: '导出整本' }
           );
@@ -1755,8 +1766,9 @@ async function openParallelRewrite(key, ctx) {
     h('button', { class: 'btn', type: 'button', text: '取消', on: { click: (ev) => {
       try { modal.close(); } catch {}
       // v4.17.5：精确移除自身所在 overlay（querySelector 取第一个可能移错层）
+      // v4.34.0：改走 _rpClose 正规注销，避免 modalStack 脏 entry
       const self = ev.currentTarget ? ev.currentTarget.closest('.rp-modal-overlay') : null;
-      (self || ev.target.closest('.rp-modal-overlay'))?.remove();
+      (self || ev.target.closest('.rp-modal-overlay'))?._rpClose?.();
     } } }),
     h('button', { class: 'btn btn-primary', type: 'button', text: '⚡ 开始并行改写', on: {
       click: async () => {

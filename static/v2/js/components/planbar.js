@@ -26,6 +26,11 @@ function creativeToggleState(work) {
   const running = Boolean(work && work.running);
   const paused = Boolean(work && work.paused);
   const st = String((work && work.state) || '');
+  /* v4.34.0 状态规则：账面已 completed（成书）绝不再显示「创作中」——此前只看
+     running 位，泄漏的作业登记或内存残留会让 100% 已完成的书挂着创作按钮。
+     重新进入创作只允许由明确操作指令（改写某章/加章续写）触发，那时 state
+     会先被写回运行态，这里不会拦住真正的创作。 */
+  if (st === 'completed') return 'idle';
   if (running && paused) return 'pausing';
   if (running) return 'running';
   if (paused || st === 'paused') return 'resume';

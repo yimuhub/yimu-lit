@@ -34,9 +34,13 @@ function shownChars(text) {
 function modelName(state) {
   const chosen = state.ui.model;
   if (chosen) return chosen;
-  const options = (state.models && state.models.options) || [];
-  const hit = options.find((o) => o && o.default) || options[0];
-  return (hit && (hit.label || hit.name || hit.id)) || '';
+  /* v4.34.0：修复回退链——active_model_options 返回的字段是
+     {id,name,models,default_model}，没有 default 字段，旧写法
+     options.find(o => o.default) 永远落空、显示第一条供应商而非默认供应商。 */
+  const models = state.models || {};
+  const options = models.options || [];
+  const hit = options.find((o) => o && o.id === models.default_provider) || options[0];
+  return (hit && (hit.default_model || hit.label || hit.name || hit.id)) || '';
 }
 
 function stageStates(stage) {

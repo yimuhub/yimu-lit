@@ -1,6 +1,6 @@
 """v4.26.0：总编辑 Agent 回归。
 
-覆盖：停滞自愈（预算内恢复/超预算转人工）、用户暂停绝不自动恢复、
+覆盖：停滞处理（v4.34.0 起不再自动恢复，一律停止等指令）、用户暂停绝不自动恢复、
 每章闸门（空章打回/未评分派评/低分派重写）、完稿终审、
 选书名停摆修复（采用→开写+确认回复）、自动化程度设置。
 """
@@ -60,9 +60,11 @@ def _clean(monkeypatch, tmp_path):
     writer._RUNNING_BOOKS.clear()
 
 
-# ---------- 停滞自愈 ----------
+# ---------- 停滞处理（v4.34.0 状态规则：不再自动恢复） ----------
 
-def test_stall_auto_resume_within_budget(monkeypatch, tmp_path):
+def test_stall_never_auto_resume(monkeypatch, tmp_path):
+    """v4.34.0：创作停滞时一律停止——只有用户明确操作指令（点「继续」等）
+    才重新进入创作中，看护线程不得自行拉起写作。"""
     proj = _mk_novel(tmp_path, done=3)
     monkeypatch.setattr(appmod, "_get_project", lambda k: proj if k == KEY else None)
     monkeypatch.setattr(writer, "PROJECTS_DIR", str(tmp_path))
@@ -71,24 +73,22 @@ def test_stall_auto_resume_within_budget(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor, "_dispatch_resume",
                         lambda k, med, pdir: called.setdefault("resumed", True) or True)
     r = supervisor.tick_once(KEY)
-    assert r["action"] == "auto_resume"
-    assert called.get("resumed")
-
-
-def test_stall_resume_budget_exhausted_asks_human(monkeypatch, tmp_path):
-    proj = _mk_novel(tmp_path, done=3)
-    _pl = proj.plan()
-    _now = __import__("time").time()
-    _pl.setdefault("meta", {})["supervisor"] = {"resumes": [_now - 60, _now - 120, _now - 180]}
-    with open(os.path.join(str(proj.path), "02-写作计划.json"), "w", encoding="utf-8") as f:
-        f.write(json.dumps(_pl, ensure_ascii=False))
-    monkeypatch.setattr(supervisor, "_load", lambda k: ("novel", str(proj.path), os.path.join(str(proj.path), "02-写作计划.json"), proj.plan()))
-    monkeypatch.setattr(writer, "pipeline_running", lambda k: False)
-    called = {}
-    monkeypatch.setattr(supervisor, "_dispatch_resume", lambda *a: called.setdefault("x", True) or True)
-    r = supervisor.tick_once(KEY)
-    assert r["action"] == "budget_exhausted"
+    assert r["action"] == "stalled"
     assert "resumed" not in called
+
+
+def test_stall_stops_watchdog(monkeypatch, tmp_path):
+    """v4.34.0：停滞上报后看护线程退出（stop 被调用），后续 tick 不再动作。"""
+    proj = _mk_novel(tmp_path, done=3)
+    monkeypatch.setattr(appmod, "_get_project", lambda k: proj if k == KEY else None)
+    monkeypatch.setattr(writer, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr(writer, "pipeline_running", lambda k: False)
+    monkeypatch.setattr(supervisor, "_dispatch_resume", lambda *a: True)
+    stopped = {}
+    monkeypatch.setattr(supervisor, "stop", lambda k: stopped.setdefault(k, True))
+    r = supervisor.tick_once(KEY)
+    assert r["action"] == "stalled"
+    assert stopped.get(KEY)
 
 
 def test_user_paused_never_auto_resume(monkeypatch, tmp_path):
