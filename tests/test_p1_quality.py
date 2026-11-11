@@ -80,9 +80,11 @@ def test_write_loop_pauses_on_budget(monkeypatch, tmp_path):
     assert "预算" in msg
     writer._pause_for_budget(proj, msg)
     plan = json.load(open(pdir / "02-写作计划.json", encoding="utf-8"))
-    assert plan["status"] == "paused"
-    assert plan["meta"]["paused"] is True
-    assert "预算" in plan["meta"]["budget_exceeded"]
+    # v4.34.1：预算耗尽是系统停，不再冒充用户暂停——账面留运行态（前端显示待继续），
+    # 原因进 meta.budget_stopped（旧键 budget_exceeded 已废）。
+    assert plan["status"] == "in_progress"
+    assert not plan["meta"].get("paused")
+    assert "预算" in plan["meta"]["budget_stopped"]
 
 
 def test_structured_trace_has_no_prompt(monkeypatch, tmp_path):

@@ -955,6 +955,10 @@ def resume_project(key: str, batch_size=None) -> ScriptProject | None:
     if (plan.get("meta") or {}).get("paused"):
         proj.log("⏸ 该剧本处于暂停状态（时代设定冲突），处理后再继续")
         return proj
+    # v4.34.1：恢复是明确指令，清掉上一轮的「系统停」标记
+    plan.setdefault("meta", {})
+    for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
+        plan["meta"].pop(_flag, None)
     # v4.15.0：batch_size 从 cfg 取（未传参时）
     if batch_size is None:
         batch_size = cfg.get("batch_size", "1")
@@ -1098,6 +1102,9 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
     rounds=每岗位写几轮（总量=岗位数×轮数，写满即停）；启动时清残留暂停位。"""
     _p0 = proj.plan() or {}
     _p0.setdefault("meta", {})["paused"] = False
+    # v4.34.1：继续是明确指令，清掉上一轮的「系统停」标记
+    for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
+        _p0.get("meta", {}).pop(_flag, None)
     if _p0.get("status") == "paused":
         _p0["status"] = "in_progress"
     proj.save_plan(_p0)
@@ -1309,8 +1316,15 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
     done = 0
     for sc in scenes:
         if _limit is not None and done >= _limit:
-            proj.log(f"⏸ 本批已写 {done} 场（batch={_limit}），停在当前进度。说「再写N场」或「写完全部」继续。")
-            plan = proj.plan(); plan["status"] = "paused"; plan["meta"] = meta; proj.save_plan(plan)
+            proj.log(f"📦 本批已写 {done} 场（batch={_limit}），停在当前进度。说「再写N场」或「写完全部」继续。")
+            # v4.34.1：批量停是「写完一批的正常停」，不是用户暂停——不置 meta.paused
+            # （总编辑不再误报「你点的暂停」），账面留运行态（running=False → 显示待继续）。
+            plan = proj.plan()
+            _m = plan.setdefault("meta", {})
+            _m.pop("paused", None)
+            _m["batch_stopped"] = True
+            plan["status"] = "in_progress"
+            proj.save_plan(plan)
             return {"ok": True, "written": done, "total": len(scenes), "batch_stopped": True}
         # v4.24.7：暂停检查点——每场开写前检查暂停位（此前缺失：极速/批量模式下
         # 点「暂停」后仍一口气写完所有场次，「暂停」形同虚设）

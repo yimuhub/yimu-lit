@@ -346,7 +346,10 @@ def chat(session_id, message, key=None, digest=None):
                 return f"⚠️ 书名应用失败：{res.get('error')}"
             s["project"] = res["key"]
             s["state"] = "writing"
-            _start_bg(s["project"])
+            # v4.34.1：规划在途时 _apply_title 已置 title_picked（后台线程规划完自动
+            # 开写），这里不得再抢跑 start_writing——否则双线程在同一本书上打架。
+            if not res.get("started"):
+                _start_bg(s["project"])
             return (f"✅ 书名《{res['name']}》确定，阶段3 疯狂创作已启动（{plan['totalChapters']}章）。\n"
                     f"技能规定创作全程无需确认，我边写边报进度。完成后可在右侧「作品」里下载成书。")
     # ---- 兜底（按当前状态给上下文提示，不再一律退回首页文案）----
@@ -518,22 +521,34 @@ def _apply_title(key, title):
     # 此前只改目录名不启动创作（真正开写的 /api/pick-title 前端这条链路从不调用）——
     # 引导创建的书选完书名永远停在 awaiting_title。现在检测到待选书名状态：
     # 清标记 → 启动创作 → 对话流写入确认回复（总编辑随即接手汇报分工）。
+    # v4.34.1 幻影双书根治：规划仍在途（/api/create 后台线程 planning_running=True）
+    # 时绝不在这里抢跑开写——否则新写作线程与后台规划线程在同一本书上双规划打架，
+    # 后台线程规划完还会把 awaiting_title 状态盖回来。改置 meta.title_picked，
+    # 由后台线程规划完自动开写（app.py _bg 收尾已配合同款分支）。
     started = False
     try:
         _med2, _fp2, _plan2 = writer._plan_of(target)
         if _plan2 and (_plan2.get("meta") or {}).get("awaiting_title"):
-            _plan2.setdefault("meta", {})["awaiting_title"] = False
-            _plan2["status"] = "in_progress"
-            atomic_write_json(_fp2, _plan2)
-            started = writer.start_writing(proj, batch_size=((_plan2.get("config") or {}).get("batch_size")))
-            try:
-                from bot.v2api import _save_chat_msg
-                _save_chat_msg(proj, "assistant",
-                               f"✅ 已收到，将以《{title}》进行创作，现在马上安排创作——总编辑已接手，"
-                               f"规划师/作家/审稿人各就各位，进度会在本对话全程汇报。",
-                               {"type": "note"})
-            except Exception:
-                pass
+            _meta2 = _plan2.setdefault("meta", {})
+            _meta2["awaiting_title"] = False
+            # v4.34.1：在途判据用 livejob（/api/create _bg 规划线程 begin/finish 登记）
+            # ——骨架 meta.planning_running 会被 create_project 的整体写盘抹掉，不可靠。
+            if livejob.is_active(key) or livejob.is_active(new_key):
+                _meta2["title_picked"] = True
+                atomic_write_json(_fp2, _plan2)
+                started = True
+            else:
+                _plan2["status"] = "in_progress"
+                atomic_write_json(_fp2, _plan2)
+                started = writer.start_writing(proj, batch_size=((_plan2.get("config") or {}).get("batch_size")))
+                try:
+                    from bot.v2api import _save_chat_msg
+                    _save_chat_msg(proj, "assistant",
+                                   f"✅ 已收到，将以《{title}》进行创作，现在马上安排创作——总编辑已接手，"
+                                   f"规划师/作家/审稿人各就各位，进度会在本对话全程汇报。",
+                                   {"type": "note"})
+                except Exception:
+                    pass
     except Exception:
         pass
     return {"ok": True, "key": new_key, "name": title, "started": bool(started)}
@@ -1679,6 +1694,8 @@ def api_create(payload: dict):
     learn.record_book(_st.get("题材", ""), _st.get("金手指", ""), _st.get("节奏", ""), _st.get("语言", ""))
     def _bg():
         plan_path = os.path.join(pdir, "02-写作计划.json")
+        livejob.begin(base, kind="planning", worker_label="规划师",
+                      detail="正在生成人物档案/大纲/文风…")   # v4.34.1：规划在途的可靠信号
         try:
             cfg2 = workflow.fill_defaults(cfg)   # 内部含 LLM 调用，必须留在后台线程
             n = int((cfg2.get("defaults") or {}).get("title_count", 8))
@@ -1700,12 +1717,35 @@ def api_create(payload: dict):
                 # v4.20.0：开书第一批也要遵守「一次写几张」设置（此前漏传 → 第一批直接全写完）
                 writer.start_writing(proj, batch_size=(plan.get("config") or {}).get("batch_size"))
             else:
-                meta["title_candidates"] = cands
-                meta["awaiting_title"] = True
-                meta["planning_running"] = False
-                plan["meta"] = meta
-                plan["status"] = "awaiting_title"
-                proj.save_plan(plan)
+                # v4.34.1 幻影双书根治：规划期间用户可能已在对话里选完书名（目录已被
+                # _apply_title rename 走）。跟随改名（Project._follow_rename）后这里
+                # proj 已指向新目录；重读磁盘计划判断现状：
+                #   · 书已开写（明确指令已生效）→ 绝不用 awaiting_title 覆盖真实状态；
+                #   · 用户已选书名（meta.title_picked）→ 规划完直接开写，不再停留等待。
+                plan = proj.plan() or plan
+                meta = plan.get("meta") or {}
+                if str(plan.get("status")) in ("in_progress", "writing", "validating", "completed") or \
+                        (writer.done_chapters(plan, proj.path) if plan.get("chapters") else 0) > 0:
+                    meta["planning_running"] = False
+                    meta["awaiting_title"] = False
+                    plan["meta"] = meta
+                    proj.save_plan(plan)   # 只关掉规划标志，状态/章卡一概不碰
+                elif meta.get("title_picked"):
+                    meta["title_candidates"] = cands
+                    meta["awaiting_title"] = False
+                    meta["planning_running"] = False
+                    plan["meta"] = meta
+                    plan["status"] = "in_progress"
+                    proj.save_plan(plan)
+                    proj.log("✅ 规划就绪（书名已选定），自动开始创作")
+                    writer.start_writing(proj, batch_size=(plan.get("config") or {}).get("batch_size"))
+                else:
+                    meta["title_candidates"] = cands
+                    meta["awaiting_title"] = True
+                    meta["planning_running"] = False
+                    plan["meta"] = meta
+                    plan["status"] = "awaiting_title"
+                    proj.save_plan(plan)
         except Exception as e:
             print(f"[bg] 小说创建失败: {e}", flush=True)
             try:
@@ -1715,6 +1755,8 @@ def api_create(payload: dict):
                 atomic_write_json(plan_path, pl)
             except Exception:
                 pass
+        finally:
+            livejob.finish(base, ok=True, detail="规划线程结束")   # v4.34.1：收口登记
     _th.Thread(target=_bg, daemon=True).start()
     return {"project": base, "pid": base, "key": base,
             "awaiting_title": bool(not title), "async": True,
@@ -1756,6 +1798,7 @@ def api_sample():
             "chapters": len(plan.get("chapters") or [])}
 
 # ---------- v0.2：作品库管理 + 审查后重写 ----------
+_ZOMBIE_SWEPT = False   # v4.34.1：幻影目录清扫每进程一次（/api/library 触发）
 _REWRITING = {}  # key -> {"running":bool,"result":dict}
 
 def _start_rewrite(key, chapters=None, dimensions=None, max_rounds=6):
@@ -1825,6 +1868,16 @@ def api_library(sort: str = "updated", order: str = "desc", genre: str = "",
         view = "archived"
     if view not in ("active", "archived", "trash"):
         view = "active"
+
+    # v4.34.1：清扫「改名后复活」的幻影目录（一个任务两本书的历史损伤）。
+    # 每进程只扫一次；rename_map 里别名源目录与目标并存的残留按安全条件清理。
+    global _ZOMBIE_SWEPT
+    if not _ZOMBIE_SWEPT:
+        _ZOMBIE_SWEPT = True
+        try:
+            writer.sweep_rename_zombies()
+        except Exception:
+            pass
 
     everything = writer.library_all(include_archived=True)
     if view == "archived":

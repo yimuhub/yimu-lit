@@ -117,8 +117,35 @@ class Project:
         self.running = False
         self.lock = threading.RLock()   # v0.6 B：并行写作下保护 02-写作计划.json 读改写
 
+    def _follow_rename(self):
+        """v4.34.1：跟随目录改名（幻影双书根治的核心一环）。
+
+        /api/create 的后台规划线程握着旧路径的独立 Project 实例跑 1-3 分钟；
+        期间用户选完书名，_apply_title/pick_title 把目录 os.rename 走了——
+        线程下一次写盘（plan/save_plan/log）会把旧目录原样复活，规划跑完后
+        留下一本 awaiting_title 的 0 字幻影，用户看到「一个任务变成两本书」。
+        这里在每个写盘入口前检测：旧路径已消失且旧 key 在 rename_map 里有
+        新家 → 本实例整体重定向，后续读写全部落到新目录。"""
+        try:
+            p = self.path
+            if p and os.path.isdir(p):
+                return
+            old_key = os.path.basename(p or "")
+            if not old_key:
+                return
+            new_key = resolve_key(old_key)
+            if new_key == old_key:
+                return
+            new_path = safe_join(PROJECTS_DIR, new_key, label="作品 key")
+            if os.path.isdir(new_path):
+                self.path = new_path
+                self.name = new_key.split("-", 2)[-1] if "-" in new_key else new_key
+        except Exception:
+            pass   # 重定向失败按旧路径继续（与既有行为一致）
+
     def log(self, msg):
         with self.lock:
+            self._follow_rename()
             line = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}"
             self.events.append(line)
             if len(self.events) > 200:
@@ -146,7 +173,10 @@ class Project:
         """
         p = os.path.join(self.path, "02-写作计划.json")
         if not os.path.exists(p):
-            return None
+            self._follow_rename()   # v4.34.1：改名后旧路径读不到 → 跟随到新家
+            p = os.path.join(self.path, "02-写作计划.json")
+            if not os.path.exists(p):
+                return None
         try:
             with open(p, encoding="utf-8") as f:
                 data = json.load(f)
@@ -155,6 +185,7 @@ class Project:
         return data if isinstance(data, dict) else None
 
     def save_plan(self, plan):
+        self._follow_rename()   # v4.34.1：改名后写盘跟随到新家，绝不复活旧目录
         plan["updatedAt"] = datetime.datetime.now().isoformat()
         # v4.33.7：新建作品盖章交付规格；已有作品只在首次写盘时盖章，不追溯。
         try:
@@ -542,11 +573,13 @@ def budget_blocked(proj) -> str:
 
 
 def _pause_for_budget(proj, msg: str) -> None:
+    # v4.34.1：预算耗尽是系统停，不是用户暂停——不置 meta.paused（总编辑不再
+    # 误报「你点的暂停」），用 meta.budget_stopped 携带原因，界面显示「待继续」。
     plan = proj.plan() or {}
     meta = plan.setdefault("meta", {})
-    meta["paused"] = True
-    meta["budget_exceeded"] = msg
-    plan["status"] = "paused"
+    meta.pop("paused", None)
+    meta["budget_stopped"] = msg
+    plan["status"] = "in_progress"
     proj.save_plan(plan)
     proj.log("💰 " + msg)
 
@@ -615,6 +648,65 @@ def resolve_key(key: str) -> str:
     """解析别名（一层跳转即可——改名链会写成直达）。解析不到返回原 key。"""
     m = _load_rename_map()
     return m.get(key, key)
+
+
+def sweep_rename_zombies() -> list:
+    """v4.34.1：清扫「改名后复活」的幻影目录（历史损伤一次性修复）。
+
+    rename_map 的语义是 os.rename——改名成功后旧目录不应存在。别名源目录仍然
+    存在 = 旧版本「在途线程写盘复活旧目录」的残留：同一本书被规划了两遍，
+    用户看到「一个任务变成两本书」（一本真书 + 一本 0 字的任务描述书）。
+
+    处置（保守）：
+    · 目标目录存在 + 残留目录账面非 completed + 磁盘 0 个完成章 → 物理删除；
+    · 残留有正文（罕见）→ 改名 .zombie- 前缀隔离，交人工处理，绝不静默删正文。
+    返回被清理/隔离的目录名列表。"""
+    import shutil as _shutil
+    removed = []
+    m = _load_rename_map()
+    if not m:
+        return removed
+    for old_key, new_key in list(m.items()):
+        try:
+            if old_key == new_key:
+                continue
+            old_dir = os.path.join(PROJECTS_DIR, old_key)
+            new_dir = os.path.join(PROJECTS_DIR, new_key)
+            if not os.path.isdir(old_dir) or not os.path.isdir(new_dir):
+                continue   # 旧目录不存在（正常）或目标不存在（不是别名残留）
+            try:
+                plan = json.load(open(os.path.join(old_dir, "02-写作计划.json"),
+                                      encoding="utf-8"))
+            except Exception:
+                plan = {}
+            plan = plan if isinstance(plan, dict) else {}
+            if str(plan.get("status") or "") == "completed":
+                continue   # 账面已完结的书绝不自动动
+            done = 0
+            for c in (plan.get("chapters") or []):
+                fp = str(c.get("filePath") or "")
+                if fp and os.path.exists(os.path.join(old_dir, fp)):
+                    done += 1
+            if done == 0:
+                _shutil.rmtree(old_dir, ignore_errors=True)
+                removed.append(old_key)
+            else:
+                quarantine = os.path.join(PROJECTS_DIR, f".zombie-{old_key}")
+                try:
+                    os.rename(old_dir, quarantine)
+                    removed.append(os.path.basename(quarantine))
+                except Exception:
+                    pass
+        except Exception:
+            continue
+    if removed:
+        try:
+            journal_log = os.path.join(ROOT, "data", "zombie_sweep.log")
+            with open(journal_log, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.datetime.now().isoformat()} swept: {removed}\n")
+        except Exception:
+            pass
+    return removed
 
 
 def _project_dir(key):
@@ -760,6 +852,9 @@ def resume_book(key, batch_size=None) -> bool:
         p.log(f"✅ 全书正文已齐（{_done}/{_total}），账面归位为已完成，不重复启动创作")
         return False
     plan.setdefault("meta", {})["paused"] = False
+    # v4.34.1：清掉各种「系统停」标记——继续是明确指令，上一轮的停机原因不再生效
+    for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
+        plan["meta"].pop(_flag, None)
     plan["status"] = "in_progress"
     p.save_plan(plan)
     # v4.15.0：batch_size 从 cfg 取
@@ -3002,12 +3097,18 @@ def _write_loop(proj: Project, batch_size=None):
                         workflow.plan_drift_check(proj, plan.get("config") or {}, wrote)
                     except Exception:
                         pass
-                    proj.log(f"⏸ 本批已写 {wrote} 章（batch={batch_limit}），停在当前进度。说「再写N章」或「写完全部」继续。")
-                    plan2 = proj.plan(); plan2["status"] = "paused"
-                    plan2.setdefault("meta", {})["paused"] = True   # 与循环后 is_paused 检查同一口径
+                    proj.log(f"📦 本批已写 {wrote} 章（batch={batch_limit}），停在当前进度。说「再写N章」或「写完全部」继续。")
+                    # v4.34.1：批量停是「写完一批的正常停」，不是用户暂停——此前置
+                    # meta.paused=True 与用户暂停不可区分，总编辑会说「你点的暂停」，
+                    # 界面也显示已暂停。现在 status 留在运行态（running=False → 前端
+                    # 显示「待继续」），用 meta.batch_stopped 标记真实原因。
+                    plan2 = proj.plan(); plan2["status"] = "in_progress"
+                    _m2 = plan2.setdefault("meta", {})
+                    _m2.pop("paused", None)
+                    _m2["batch_stopped"] = True
                     proj.save_plan(plan2)
-                    journal.update(_pdir, status="paused", note=f"本批写完 {wrote} 章")
-                    journal.remember(_pdir, "system", f"本批已写 {wrote} 章后暂停，进度已存档")
+                    journal.update(_pdir, status="paused", note=f"本批写完 {wrote} 章，等待下一步指令")
+                    journal.remember(_pdir, "system", f"本批已写 {wrote} 章后停下（按每批章数设置），进度已存档")
                     _skeleton_refresh(os.path.basename(proj.path))
                     return
             _msg = budget_blocked(proj)
@@ -3031,8 +3132,12 @@ def _write_loop(proj: Project, batch_size=None):
                 if is_paused(proj):
                     break
         if _plan_blocked:
-            plan = proj.plan(); plan["status"] = "paused"
-            plan.setdefault("meta", {})["paused"] = True
+            # v4.34.1：规划卡停是系统停，不是用户暂停——不置 meta.paused（总编辑
+            # 不再误报「你点的暂停」），用 meta.plan_blocked 标记真实原因。
+            plan = proj.plan(); plan["status"] = "in_progress"
+            _mb = plan.setdefault("meta", {})
+            _mb.pop("paused", None)
+            _mb["plan_blocked"] = True
             proj.save_plan(plan)
             proj.log("⏸ 因规划不全暂停：上面的章卡缺本章目标/冲突，补齐后点「继续」即可接着写")
             journal.update(_pdir, status="paused", stage="plan_blocked",

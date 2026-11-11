@@ -461,9 +461,31 @@ def tick_once(key: str) -> dict:
     cfg = plan.get("config") or {}
     out = {"action": "none"}
 
+    # v4.34.1：三种「系统停」先于暂停判定——它们不是用户暂停，文案必须如实。
+    if meta.get("batch_stopped"):
+        _evt(key, "info", "本批已写完，按每批章数设置停下",
+             output="说「再写N章」「写完全部」或点「继续」接着写；我不会自动续跑")
+        stop(key)
+        out.update({"action": "batch_done", "why": "batch_stopped"})
+        return out
+    if meta.get("plan_blocked"):
+        _evt(key, "warn", "章卡不全（缺本章目标/冲突），写作已停下",
+             output="补齐规划后点「继续」即可接着写；我不会在缺规划时硬写")
+        stop(key)
+        out.update({"action": "standby", "why": "plan_blocked"})
+        return out
+    if meta.get("budget_stopped"):
+        _evt(key, "warn", "token 预算用尽，写作已停下",
+             output=str(meta.get("budget_stopped"))[:160] + "；调整预算后点「继续」")
+        stop(key)
+        out.update({"action": "standby", "why": "budget_stopped"})
+        return out
+
     if meta.get("paused"):
-        _evt(key, "warn", "创作已暂停（你点的暂停），总编辑待命",
-             output="点「继续」我会重新上岗；暂停期间绝不自动恢复", )
+        # v4.34.1：去掉「（你点的暂停）」——批量停/预算停等系统停历史上也写这个
+        # 标志，无法反查是谁停的；只说事实，不替用户认领动作。
+        _evt(key, "warn", "创作已暂停，总编辑待命",
+             output="点「继续」我会重新上岗；暂停期间绝不自动恢复")
         stop(key)
         out.update({"action": "standby", "why": "paused"})
         return out

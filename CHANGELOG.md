@@ -2,6 +2,49 @@
 
 > 各版本完整说明见 GitHub Releases 页面；此处为精简沿革。v2.4 之后逐版说明在 Releases。
 
+## v4.34.1 — 幻影双书根治 + 系统停不再冒充用户暂停
+
+用户实拍复现并定位的两个高频痛点，全部闭环修复：
+
+### 幻影双书：一个任务变成两本书
+
+**完整根因链**（同一秒创建的两个目录 + rename_map 实锤）：对话开书 → `/api/create`
+后台规划线程（独立 Project 实例，1-3 分钟）→ 用户在对话里选完书名 → `_apply_title`
+os.rename 目录 + 立即 start_writing → 后台规划线程仍握旧路径继续写盘，
+**旧目录被原样复活**并跑完自己的规划，留下一本 awaiting_title 的 0 字幻影；
+改名瞬间两条规划管线还在同一本书上打架。
+
+四层修复：
+
+- **Project 跟随改名**：`plan()/save_plan()/log()` 入口检测旧路径消失且在
+  rename_map 有新家 → 实例整体重定向，在途线程的所有读写落到新目录，
+  旧目录绝不复活（`writer.Project._follow_rename`）。
+- **在途不抢跑**：`_apply_title` 末尾的开写守卫改判 livejob 在途信号
+  （`/api/create` 规划线程 begin/finish 登记；骨架的 planning_running 会被
+  create_project 整体写盘抹掉，不可靠）——在途时只置 `meta.title_picked`，
+  由规划线程收尾自动开写，消除双规划；规划已结束维持 v4.26.0 直接开写。
+- **规划线程收尾守卫**：书已开写（用户明确指令已生效）→ 只清规划标志，
+  绝不用 awaiting_title 覆盖真实状态；title_picked → 规划完即开写。
+- **僵尸清扫**：`writer.sweep_rename_zombies()`——rename_map 别名源目录与
+  目标并存的残留（历史损伤），0 完成章自动删除、有正文隔离 `.zombie-`
+  前缀交人工，绝不静默删正文；`/api/library` 首次调用即清，老幻影自愈。
+
+### 系统停不再说「你点的暂停」
+
+批量停（batch=1 写完一批）、预算停、章卡卡停都是**系统停**，此前一律置
+`meta.paused=True`，总编辑对用户说「创作已暂停（**你点的暂停**）」，界面显示
+已暂停——用户没点过暂停，被撒谎。
+
+- 批量停/预算停/规划卡停改为：账面留 `in_progress`（running=False → 界面显示
+  **待继续**），真实原因记入 `meta.batch_stopped / budget_stopped / plan_blocked`；
+- supervisor 新增三个如实分支（「本批已写完」「预算用尽」「章卡不全」）；
+  暂停文案删去「（你点的暂停）」——无法反查谁停的，只说事实；
+- `resume_book` / 剧本恢复路径统一清系统停标记；
+- 剧本批量停同款修复。
+
+测试：新增 `tests/test_v4341_phantom_and_status.py` 11 例；`test_p1_quality`
+预算停断言随新语义更新。全量 870 通过。
+
 ## v4.34.0 — 状态规则落地与四项功能修复
 
 用户实测四个长期病灶的集中修复，并把**状态规则**写死为代码与测试：
