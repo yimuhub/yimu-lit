@@ -69,7 +69,7 @@ def test_stop_creation_marks_completed_when_body_full(monkeypatch, tmp_path):
 
 
 def test_stop_creation_pauses_when_body_partial(monkeypatch, tmp_path):
-    proj = _mk_novel(tmp_path, status="in_progress", done=3, total=5)
+    _mk_novel(tmp_path, status="in_progress", done=3, total=5)
     monkeypatch.setattr(writer, "PROJECTS_DIR", str(tmp_path))
     r = writer.stop_creation(KEY, reason="测试出书")
     assert r["stopped"] is True
