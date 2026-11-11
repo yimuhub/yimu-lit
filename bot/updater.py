@@ -31,7 +31,10 @@ REPO = "yimuhub/yimu-lit"
 RUNTIME_DIR = os.path.join(DATA_ROOT, "runtime")
 STAGING_DIR = os.path.join(DATA_ROOT, "runtime_staging")
 #: 允许从更新包覆盖的路径（白名单——用户数据绝不在此列）
-WHITELIST = ("bot", "static", "skillkit", "VERSION", "config.example.json", "requirements.txt")
+#: v4.34.0：补 "app.py"——launcher 的 FrozenImporter 让路本来就覆盖 app 模块，
+#: 但白名单漏了它，接口层（/api/*）的修复永远到不了已装客户端，每次改
+#: app.py 都被迫重装。launcher._bootstrap_overlay 已验证 overlay 层的 app 可加载。
+WHITELIST = ("bot", "static", "skillkit", "app.py", "VERSION", "config.example.json", "requirements.txt")
 
 
 def overlay_active() -> bool:

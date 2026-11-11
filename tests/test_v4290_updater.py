@@ -39,6 +39,7 @@ def _make_zip(tmp_path, version="9.9.9", with_bad_dep=False):
     (root / "bot" / "paths.py").write_text("DATA_ROOT = RESOURCE_ROOT = '.'", encoding="utf-8")
     (root / "VERSION").write_text(version, encoding="utf-8")
     (root / "config.example.json").write_text("{}", encoding="utf-8")
+    (root / "app.py").write_text("# app entry", encoding="utf-8")
     (root / "static" / "index.html").write_text("x", encoding="utf-8")
     (root / "requirements.txt").write_text(
         _real_requirements() + ("some-new-package\n" if with_bad_dep else ""), encoding="utf-8")
@@ -59,7 +60,10 @@ def test_extract_whitelist_and_validate(tmp_path):
     st = tmp_path / "staging"
     st.mkdir()
     n = updater._extract_whitelist(str(zp), str(st))
-    assert n == 6   # bot/static/skillkit/VERSION/config.example.json/requirements.txt
+    # v4.34.0：app.py 入白名单（launcher 对 app 模块让路已验证）——接口层修复
+    # 不再需要重装客户端
+    assert n == 7   # bot/static/skillkit/app.py/VERSION/config.example.json/requirements.txt
+    assert (st / "app.py").exists()
     updater._validate_staging(str(st))
     # 用户数据字段绝不进 overlay 白名单
     assert not (st / "projects").exists()
