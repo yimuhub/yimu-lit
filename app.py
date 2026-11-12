@@ -1060,7 +1060,12 @@ def _chat_attached(s, proj, msg):
                 st2 = proj.status()
                 return (f"📖 《{name}》正在创作中：第 {st2['done']}/{st2['total']} 章，"
                         f"说「进度」随时可查。")
-            if writer.resume_book(key):
+            # v4.34.2：start_writing_all（「写完全部」「一直写下去」「不要停」）必须把 all
+            # 真正传给写作循环。此前这里只换文案不换参数——resume_book 拿不到 batch_size
+            # 就回落到 plan.config.batch_size（开书时常见值是 1），于是界面写着「全章批量
+            # 模式」，实际写完一章就按批停。文案与行为正好相反，用户以为指令没生效。
+            _bs_all = "all" if intent == "start_writing_all" else None
+            if writer.resume_book(key, batch_size=_bs_all):
                 st2 = proj.status()
                 if intent != "start_writing_all":
                     _bs = str((proj.plan().get("config") or {}).get("batch_size") or "1")
@@ -1069,7 +1074,7 @@ def _chat_attached(s, proj, msg):
                     else:
                         _extra = "（连续模式）"
                 else:
-                    _extra = "（全章批量模式）"
+                    _extra = "（全章批量模式，中途不停）"
                 return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
             return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
 

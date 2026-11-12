@@ -3028,9 +3028,21 @@ def _write_loop(proj: Project, batch_size=None):
     _set_book_running(_bk, True)
     proj.running = True
     mark_pipeline(_bk, True)   # v4.26.0：小说主链路也纳入 mark_pipeline 收口（总编辑上下车）
+    # v4.34.2：实时作业登记必须由写作循环自己收口。此前 /api/continue 先 livejob.begin()
+    # 登记「正在继续写作」，而这里退出时只清 running / mark_pipeline，从不 finish——
+    # 于是每点一次「继续」，就留一条永远「未结束」的登记，前端按
+    # `data.running || (job && !job.finished)` 判定，整本书会一直显示「创作中」，
+    # 直到 30 分钟活性超时才自愈。用户看到的就是「明明停了却一直说在创作」。
+    try:
+        from . import livejob as _lj
+    except Exception:      # 埋点模块缺失不该影响写作
+        _lj = None
+    _stop_note = ""        # 收口说明（写进实时作业登记，前端据此说「为什么停」）
+    _stop_ok = True
     try:
         plan = _ensure_writable_plan(proj)
         if not plan:
+            _stop_note, _stop_ok = "没有可写的章节（规划缺失或章节已全部完成）", False
             return
         plan["status"] = "in_progress"
         proj.save_plan(plan)
@@ -3109,6 +3121,7 @@ def _write_loop(proj: Project, batch_size=None):
                     proj.save_plan(plan2)
                     journal.update(_pdir, status="paused", note=f"本批写完 {wrote} 章，等待下一步指令")
                     journal.remember(_pdir, "system", f"本批已写 {wrote} 章后停下（按每批章数设置），进度已存档")
+                    _stop_note = f"本批已写 {wrote} 章（按每批 {batch_limit} 章），停在当前进度"
                     _skeleton_refresh(os.path.basename(proj.path))
                     return
             _msg = budget_blocked(proj)
@@ -3125,9 +3138,18 @@ def _write_loop(proj: Project, batch_size=None):
                 _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3)
                 wrote += 1
                 _p_now = proj.plan() or {}
-                journal.progress(_pdir, done=sum(1 for c in (_p_now.get("chapters") or [])
-                                                 if c.get("status") == "completed"),
+                _done_now = sum(1 for c in (_p_now.get("chapters") or [])
+                                if c.get("status") == "completed")
+                journal.progress(_pdir, done=_done_now,
                                  current=ch["chapterNumber"], stage="writing")
+                # v4.34.2：每章一次心跳——登记里的 updated_at 不刷新的话，一写几小时的
+                # 长批次会被 livejob 的 30 分钟活性超时判成「泄漏行」提前抹掉。
+                if _lj is not None:
+                    try:
+                        _lj.update(_bk, detail=f"正在写第 {ch['chapterNumber']} 章",
+                                   done=_done_now, total=_total_ch)
+                    except Exception:
+                        pass
                 _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：每写完一章即刷新写作骨架
                 if is_paused(proj):
                     break
@@ -3143,6 +3165,7 @@ def _write_loop(proj: Project, batch_size=None):
             journal.update(_pdir, status="paused", stage="plan_blocked",
                            note="章卡缺目标/冲突，已暂停")
             journal.remember(_pdir, "system", "因章卡不全暂停（不是模型故障）")
+            _stop_note, _stop_ok = "章卡不全（缺本章目标/冲突），已停下等补规划", False
             _skeleton_refresh(os.path.basename(proj.path))
             return
         if is_paused(proj):
@@ -3150,6 +3173,7 @@ def _write_loop(proj: Project, batch_size=None):
             proj.log("⏸ 已暂停（停在当前进度，点「▶继续」恢复；也可「⏹ 停止」）")
             journal.update(_pdir, status="paused", note="人工暂停，进度已存档")
             journal.remember(_pdir, "system", "写作已暂停，点继续可从中断处接着写")
+            _stop_note = f"已暂停，停在当前进度（已完成 {wrote} 章）"
             _skeleton_refresh(os.path.basename(proj.path))
             return
         # v4.20 C3：完结收尾前最后一轮规划师校准（纠偏指引会注入校验轮里失败章的重写；失败不阻断完结）
@@ -3163,12 +3187,14 @@ def _write_loop(proj: Project, batch_size=None):
         _validate_and_finish(proj)
         journal.finish(_pdir, "done", note="全书完成")
         journal.remember(_pdir, "system", "全书写作完成")
+        _stop_note = f"全书写作完成（本轮写 {wrote} 章）"
         _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：全书写完 → 刷新写作骨架
     except llm.BudgetExceeded as e:
         _pause_for_budget(proj, str(e))
         # 保留为「可续跑」状态（不能 finish，否则「继续」查不到任务档案）
         journal.update(proj.path, status="paused", stage="interrupted",
                        note=f"预算用尽：{str(e)[:80]}")
+        _stop_note, _stop_ok = f"token 预算用尽：{str(e)[:60]}", False
     except Exception as e:
         proj.log(f"💥 写作异常中断（说「继续」可续写）：{e}")
         _evt(os.path.basename(proj.path), "system", phase="warn", title="写作异常中断",
@@ -3180,9 +3206,20 @@ def _write_loop(proj: Project, batch_size=None):
         journal.update(proj.path, status="paused", stage="interrupted",
                        note=f"上游/异常中断：{str(e)[:80]}")
         journal.remember(proj.path, "system", f"写作异常中断：{str(e)[:100]}（草稿已保存，可继续）")
+        _stop_note, _stop_ok = f"写作异常中断：{type(e).__name__}", False
     finally:
         _sem.release()
         proj.running = False
+        # v4.34.2：实时作业登记先收口（与 /api/continue 的 livejob.begin 对称），再下车——
+        # mark_pipeline 下车时也会兜底 finish，但它只会说「本轮已结束」；先收口才能把
+        # 「本批已写 N 章」「章卡不全」「预算用尽」这类真实原因留给前端。
+        # 顺序反了就会被兜底文案盖掉。
+        if _lj is not None:
+            try:
+                if _lj.is_active(_bk):
+                    _lj.finish(_bk, ok=_stop_ok, detail=_stop_note or "本轮已结束")
+            except Exception:
+                pass
         _set_book_running(os.path.basename(proj.path), False)
         mark_pipeline(os.path.basename(proj.path), False)   # v4.26.0：对称下车
 

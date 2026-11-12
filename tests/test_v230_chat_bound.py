@@ -75,7 +75,7 @@ def test_attached_continue_resumes(env, monkeypatch):
     called = {}
     assert env.plan()["status"] == "in_progress"   # 真实场景：状态残留 + 线程已死
     monkeypatch.setattr(appmod.writer, "resume_book",
-                        lambda key: called.setdefault("key", key) or True)
+                        lambda key, batch_size=None: called.setdefault("key", key) or True)
     r = appmod.chat("s2", "继续", KEY)
     assert called["key"] == KEY and "继续创作" in r
 
