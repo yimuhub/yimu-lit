@@ -32,6 +32,9 @@ a = Analysis(
         "bot.longform", "bot.export", "bot.platforms", "bot.model_rules",
         "bot.wordguard", "bot.slop_checker", "bot.purity", "bot.context",
         "bot.journal", "bot.chatsum", "bot.ingest", "bot.state",
+        # v4.36.0：形态标尺 / 工艺体检 / 写前事实卡（均为函数内 import，显式登记防漏打）
+        "bot.taste", "bot.craft_check", "bot.factcard",
+        "bot.delivery_gate", "bot.delivery_spec",
     ] + wv_hidden,
     excludes=["pytest", "tkinter"],
     noarchive=False,

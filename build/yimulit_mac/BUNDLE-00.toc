@@ -1,0 +1,3 @@
+([('YiMuLit',
+   '/Users/shanziya/Documents/yimu-lit/dist/YiMuLit',
+   'EXECUTABLE')],)
