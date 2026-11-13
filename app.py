@@ -4551,16 +4551,29 @@ def api_download(key: str):
     try:
         data, name = _build_download(key)
     except _ExportError as e:
-        return JSONResponse({"error": e.msg}, status_code=e.status)
+        return JSONResponse(e.body(), status_code=e.status)
     disp = f"attachment; filename=\"novel.md\"; filename*=UTF-8''{quote(name + '.md')}"
     return Response(data, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": disp})
 
 class _ExportError(Exception):
-    def __init__(self, msg, status=400):
+    """导出失败。v4.35.0：带结构化 code/extra，前端据此弹「强制导出 / 重写低分章」
+    ——此前只回一句 error 文案，用户看到「成书未过放行门禁」却没有任何出口，
+    被闸门永久卡在导出页（《复仇太妃》实拍）。"""
+
+    def __init__(self, msg, status=400, code="", extra=None):
         super().__init__(msg)
         self.msg = msg
         self.status = status
+        self.code = code
+        self.extra = extra or {}
+
+    def body(self) -> dict:
+        d = {"error": self.msg}
+        if self.code:
+            d["code"] = self.code
+        d.update(self.extra)
+        return d
 
 
 def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0):
@@ -4633,13 +4646,42 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
         pass
     _ok, _msg = _dg.export_ready(_rep, enforcement=_enforce)
     if not _ok:
-        raise _ExportError(_msg, 409)
+        # v4.35.0：禁止项明细随错误一起回给前端——用户要看到「哪几章、什么问题」，
+        # 而不是一句「交付未就绪」。
+        _blocks = [f for f in (_rep.get("findings") or []) if f.get("severity") == "block"]
+        raise _ExportError(_msg, 409, "not_ready", {
+            "blocking": len(_blocks),
+            "findings": [{k: f.get(k) for k in ("code", "name", "location", "detail")}
+                         for f in _blocks[:20]],
+        })
     # v4.33.8 未达标不放行：放行门禁已跑且未放行的盖章作品，整书导出默认拦截；
     # force=1 可带「未放行初稿」标注取阅——绝不静默把 59 分当定稿交付。
     _rel_block, _rel_msg = export_mod.release_export_block(plan)
-    if _rel_block and _enforce == "enforcing" and not (frm or to):
+    # v4.35.0：标注条件与 enforcement 解耦。此前写的是 `_enforce == "enforcing"`，
+    # 而 force=1 恰好把 _enforce 降级成 advisory —— 于是「强制导出」既绕过闸门、
+    # 又顺手跳过了书名标注，导出的稿子冒充定稿（标注从上线起就没生效过）。
+    if _rel_block and _stamped and not (frm or to):
         if not force:
-            raise _ExportError(_rel_msg, 409)
+            # v4.35.0：把「差多少、差在哪」变成结构化数据，前端据此弹
+            # 「强制导出 / 重写低评分章节」——此前只有一句文案，作者被闸门卡死。
+            _fq0 = (plan.get("meta") or {}).get("final_quality")
+            _pl0 = ((plan.get("config") or {}).get("validation") or {}).get("pass_line") or 80
+            try:
+                _pl0 = int(_pl0)
+            except (TypeError, ValueError):
+                _pl0 = 80
+            try:
+                _below0 = len([x for x in writer.per_chapter_scores(proj)
+                               if isinstance(x.get("score"), (int, float)) and x["score"] < _pl0])
+            except Exception:
+                _below0 = 0
+            raise _ExportError(_rel_msg, 409, "not_released", {
+                "final_quality": _fq0,
+                "pass_line": _pl0,
+                "below": _below0,
+                "chapters": len(chapters),
+                "title": title,
+            })
         _fq = (plan.get("meta") or {}).get("final_quality")
         title = f"{title}（未放行初稿{_fq if _fq is not None else ''}分）"
     # v4.27.3：章节范围过滤（闭区间；0=不限）——docx/epub/print 都吃 chapters，
@@ -4688,7 +4730,14 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
                 md.append("")
             data = "\n".join(md).encode("utf-8")
         else:
-            data = export_mod.markdown(proj).encode("utf-8")
+            # v4.35.0：force 导出会在书名后加「（未放行初稿x分）」，而 markdown(proj)
+            # 自己取 plan.novelName 拼题头——两处不一致时以 title 为准，别让
+            # 「未放行」标注只在 Word 里出现、Markdown 冒充定稿。
+            _md = export_mod.markdown(proj)
+            _origin = plan.get("novelName") or proj.name
+            if title != _origin:
+                _md = _md.replace(f"# {_origin}", f"# {title}", 1)
+            data = _md.encode("utf-8")
         media, ext = "text/markdown; charset=utf-8", "md"
     elif fmt == "docx":
         if not blocks and chapters:
@@ -4734,7 +4783,7 @@ def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: in
     try:
         data, media, ext, title = _export_build(key, fmt, frm, to, force)
     except _ExportError as e:
-        return JSONResponse({"error": e.msg}, status_code=e.status)
+        return JSONResponse(e.body(), status_code=e.status)
     _export_settle(key, frm, to)
     fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
     disp = f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname + '.' + ext)}"
@@ -4810,7 +4859,7 @@ def api_save(payload: dict):
     try:
         data, fname, ext = _save_payload(kind, payload)
     except _ExportError as e:
-        return JSONResponse({"error": e.msg}, status_code=e.status)
+        return JSONResponse(e.body(), status_code=e.status)
     return _save_bytes_to_dialog(data, fname, ext)
 
 
@@ -4823,7 +4872,7 @@ def api_export_save(payload: dict):
     try:
         data, fname, ext = _save_payload("export", payload)
     except _ExportError as e:
-        return JSONResponse({"error": e.msg}, status_code=e.status)
+        return JSONResponse(e.body(), status_code=e.status)
     return _save_bytes_to_dialog(data, fname, ext)
 
 @app.get("/api/agents")

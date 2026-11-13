@@ -303,6 +303,94 @@ function enc(value) {
   return encodeURIComponent(String(value == null ? '' : value));
 }
 
+/* v4.35.0：导出被闸门拦下时的恢复弹窗。
+   以前后端只回一句「成书未过放行门禁（35.5 分 < 达标线 80）」，界面当成普通
+   错误 toast 掉，作者在导出页没有任何出口——既导不出，也不知道该去改哪
+   （《复仇太妃》实拍：31 万字写完，卡在导出上无路可走）。现在把两条路摆出来：
+   · 强制导出：带 force=1，内容完整，书名标注「未放行初稿」；
+   · 重写低评分章节：直接调 /api/rewrite-parallel，按低分章逐章返工。
+   返回 'force' | 'rewrite' | ''（取消）。 */
+async function offerExportRecovery(info = {}, key = '') {
+  const [{ openModal }, { h }] = await Promise.all([import('./ui.js'), import('./dom.js')]);
+  return new Promise((resolve) => {
+    let done = false;
+    const blocked = info.code === 'not_ready';
+    const fq = info.final_quality != null ? info.final_quality : '?';
+    const pl = info.pass_line != null ? info.pass_line : 80;
+    const below = info.below || 0;
+    const findings = Array.isArray(info.findings) ? info.findings : [];
+
+    const settle = (value) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+      modal.close();
+    };
+
+    const body = h('div', { class: 'confirm-body' });
+    if (blocked) {
+      body.append(h('div', {
+        text: `本书有 ${findings.length || info.blocking || 0} 项禁止项（正文硬伤），交付闸门不放行整书导出。`
+      }));
+      body.append(h('div', {
+        class: 'warn-note',
+        text: '常见的有：非中文字符残留、元信息泄漏（正文里写了「第几章」）、半句截断。修完这些才能当定稿交付。'
+      }));
+      if (findings.length) {
+        const wrap = h('div', { style: { marginTop: '10px', maxHeight: '240px', overflow: 'auto' } });
+        const list = h('ul', { style: { margin: '0', paddingLeft: '18px', lineHeight: '1.7', fontSize: '13px' } });
+        findings.slice(0, 12).forEach((f) => {
+          list.append(h('li', {
+            text: `${f.location || ''} · ${f.name || ''}${f.detail ? '：' + f.detail : ''}`
+          }));
+        });
+        wrap.append(list);
+        body.append(wrap);
+      }
+    } else {
+      body.append(h('div', {
+        text: `本书最终质量 ${fq} 分，低于放行线 ${pl} 分${below ? `（${below} 章未达标）` : ''}。`
+      }));
+      body.append(h('div', {
+        class: 'warn-note',
+        text: '强制导出：内容完整，书名会标注「未放行初稿」，适合先拿稿校对。重写：自动按低分章返工，完成后可再导出。'
+      }));
+    }
+
+    const footer = h(
+      'div',
+      { style: { display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end', flexWrap: 'wrap' } },
+      h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => settle('') } }),
+      h('button', {
+        class: 'btn',
+        type: 'button',
+        text: blocked ? '重写相关章节' : '重写低评分章节',
+        on: { click: () => settle('rewrite') }
+      }),
+      h('button', {
+        class: 'btn btn-primary',
+        type: 'button',
+        text: '强制导出',
+        dataset: { autofocus: '' },
+        on: { click: () => settle('force') }
+      })
+    );
+
+    const modal = openModal({
+      title: blocked ? '交付未就绪：有禁止项' : '评分不足，是否强制导出？',
+      body,
+      footer,
+      size: 'md',
+      onClose: () => {
+        if (!done) {
+          done = true;
+          resolve('');
+        }
+      }
+    });
+  });
+}
+
 export const api = {
   capabilities: () => request('/api/capabilities', { timeout: 8000 }),
   status: (key) => request('/api/status', { query: { key } }),
@@ -493,9 +581,14 @@ export const api = {
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
   restoreChapter: (key, n, id) => request('/api/chapter/restore', { ...jsonBody({ key, n, id }), timeout: 60000 }),
 
-  exportUrl(key, fmt = 'docx', frm = 0, to = 0) {
-    /* v4.27.3：frm/to 章节范围（0=不限），侧栏「导出」弹窗选章用 */
-    return joinUrl('/api/export', { key, fmt, ...(frm || to ? { frm, to } : {}) });
+  exportUrl(key, fmt = 'docx', frm = 0, to = 0, force = 0) {
+    /* v4.27.3：frm/to 章节范围（0=不限），侧栏「导出」弹窗选章用
+       v4.35.0：force=1 是「未放行也导出」的显式通道，由恢复弹窗触发 */
+    return joinUrl('/api/export', {
+      key, fmt,
+      ...(frm || to ? { frm, to } : {}),
+      ...(force ? { force: 1 } : {})
+    });
   },
 
   /* v4.31.0：安全下载——fetch + blob，服务端报错时抛 ApiError 走 toast；
@@ -564,11 +657,50 @@ export const api = {
     return undefined;
   },
 
-  /* v4.32.0 作品导出；v4.32.2 起统一委托 saveAny，行为不变。 */
-  async exportWork(key, fmt, { name = '', frm = 0, to = 0 } = {}) {
-    return this.saveAny('export', { key, fmt, frm, to }, {
-      fallback: () => this.download(this.exportUrl(key, fmt, frm, to), name ? `${name}.${fmt}` : 'export')
-    });
+  /* v4.32.0 作品导出；v4.32.2 起统一委托 saveAny，行为不变。
+     v4.35.0：被交付闸门/放行门禁拦下时不再直接抛错，而是弹「强制导出 /
+     重写低评分章节」——四端（作品库右键、章节工作台、侧栏、剧本台）的导出
+     调用点因此全部自动获得出口，不必各写一遍。 */
+  async exportWork(key, fmt, { name = '', frm = 0, to = 0, force = false } = {}) {
+    const payload = { key, fmt, frm, to, ...(force ? { force: 1 } : {}) };
+    try {
+      return await this.saveAny('export', payload, {
+        fallback: () => this.download(this.exportUrl(key, fmt, frm, to, force),
+                                      name ? `${name}.${fmt}` : 'export')
+      });
+    } catch (err) {
+      const info = err && err.payload;
+      const code = info && info.code;
+      const recoverable = code === 'not_released' || code === 'not_ready';
+      if (force || !recoverable) throw err;
+
+      const choice = await offerExportRecovery(info, key);
+      if (choice === 'force') return this.exportWork(key, fmt, { name, frm, to, force: true });
+      if (choice === 'rewrite') {
+        const { toast } = await import('./ui.js');
+        /* 禁止项点名了具体章（「第7章」），就只重写这些章；评分不足则交给后端
+           按达标线挑低分章，不要把没问题的章一起返工。 */
+        const wanted = [...new Set((Array.isArray(info.findings) ? info.findings : [])
+          .map((f) => {
+            const m = String(f.location || '').match(/第\s*(\d+)\s*章/);
+            return m ? Number(m[1]) : null;
+          })
+          .filter((n) => Number.isFinite(n)))];
+        try {
+          const r = await api.rewriteParallel({
+            key,
+            ...(wanted.length ? { chapters: wanted } : {}),
+            ...(info.pass_line ? { target: info.pass_line } : {})
+          });
+          toast((r && r.msg) || '已开始重写低评分章节', { tone: 'success', duration: 4600 });
+        } catch (err2) {
+          toast((err2 && err2.message) || '启动重写失败，请稍后重试', { tone: 'danger', duration: 4600 });
+        }
+        return { cancelled: true };
+      }
+      /* 取消：调用方按 cancelled 静默，不再叠一层「导出失败」的红字 */
+      return { cancelled: true };
+    }
   },
 
   /* 版本与更新检查 */

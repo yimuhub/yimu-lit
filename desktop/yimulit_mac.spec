@@ -5,6 +5,9 @@ from PyInstaller.utils.hooks import collect_all
 
 ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
+with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as _f:
+    _VER = _f.read().strip() or "0.0.0"
+
 wv_datas, wv_bins, wv_hidden = collect_all("webview")
 
 a = Analysis(
@@ -60,6 +63,10 @@ app = BUNDLE(
         # 并有两道 plutil 红线守卫。
         "CFBundleName": "一幕神笔",
         "CFBundleDisplayName": "一幕神笔",
+        # v4.35.0：版本号必须写进 plist——此前没有这两项，PyInstaller 默认填
+        # 0.0.0，Finder「显示简介」和「检查更新」读到的都是 0.0.0。
+        "CFBundleShortVersionString": _VER,
+        "CFBundleVersion": _VER,
         "NSLocalNetworkUsageDescription": "一幕神笔在本机启动创作服务，需要访问本地网络（127.0.0.1）。",
         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
     },
