@@ -380,6 +380,19 @@ def create_project(cfg, titles, pdir=None, name=None):
     避免“接口返回 key A、后台却创建目录 B”的双项目问题。
     """
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    cfg = dict(cfg or {})
+    # v4.36.0：形态（连载 / 出版）决定结构参数。用户在开书向导里没选就按连载走——
+    # 平台历史项目全是连载形态，不能让升级改变老用户的行为。
+    try:
+        from . import taste as _taste
+        if not str(cfg.get("form") or "").strip():
+            cfg["form"] = _taste.DEFAULT_FORM
+        if not cfg.get("chapters"):
+            cfg["chapters"] = _taste.chapter_count_of(cfg)
+        if not cfg.get("min_words_per_chapter"):
+            cfg["min_words_per_chapter"] = _taste.chapter_words_of(cfg)
+    except Exception:
+        pass
     name = re.sub(r'[\\/:*?"<>|\s]+', "", name or titles[0]["title"]) or "未命名"
     if not pdir:
         pdir = os.path.join(PROJECTS_DIR, f"{ts}-{name}")
@@ -2297,6 +2310,38 @@ def _missing_chapter_nos(proj, plan) -> list:
             out.append(c.get("chapterNumber"))
     return out
 
+def _record_craft_blocks(proj, no, findings):
+    """把本章未清零的硬伤记进 plan.meta.craft_blocks，供交付闸门与 UI 读取。"""
+    try:
+        with proj.lock:
+            plan = proj.plan() or {}
+            meta = plan.setdefault("meta", {})
+            cb = meta.setdefault("craft_blocks", {})
+            cb[str(no)] = [{"gate": f.get("gate"), "layer": f.get("layer"),
+                            "message": str(f.get("message") or "")[:200],
+                            "evidence": str(f.get("evidence") or "")[:160]}
+                           for f in findings[:6]]
+            if len(cb) > 300:
+                for k in sorted(cb, key=lambda x: int(x) if str(x).isdigit() else 0)[:-300]:
+                    cb.pop(k, None)
+            proj.save_plan(plan)
+    except Exception:
+        pass
+
+
+def _clear_craft_blocks(proj, no):
+    """本章硬伤已清零：从记录里移除（避免旧记录一直挂在交付报告上）。"""
+    try:
+        with proj.lock:
+            plan = proj.plan() or {}
+            cb = ((plan.get("meta") or {}).get("craft_blocks") or {})
+            if str(no) in cb:
+                cb.pop(str(no), None)
+                proj.save_plan(plan)
+    except Exception:
+        pass
+
+
 def _write_chapter(proj, ch, min_words, max_retries):
     no = ch["chapterNumber"]
     proj.log(f"✍️ 开始第{no}章「{ch['title']}」")
@@ -2322,6 +2367,16 @@ def _write_chapter(proj, ch, min_words, max_retries):
         if plan0:
             proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
+    # v4.36.0：本章事实卡（零 token、确定性）。把「谁能出场 / 该兑现什么 / 能新增几个专名」
+    # 在写之前钉死——这是「写前契约」，而不是写完再查。
+    try:
+        from . import factcard as _factcard
+        _fc = _factcard.build(proj, no, ctx.get("cfg") or {}, card=ctx.get("longform_card"))
+        if _fc:
+            ctx["factcard"] = _fc
+            ctx["factcard_text"] = _factcard.render(_fc)
+    except Exception:
+        ctx["factcard_text"] = ""
     # v4.24.0：极速模式是**本书级**开关。只问 express.on()，不在这里拼 cfg 条件。
     _expr = express.on(ctx.get("cfg") or {})
     # v4.33.9：世界观红线 + 全书口癖账本（写前注入，零 LLM）
@@ -2396,6 +2451,40 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # v4.8.0：模型若自带「# 第NN章 …」题头行则剥掉——规范题头由本函数统一写入，避免双题头
     body = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body.lstrip(), count=1) \
         if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body.lstrip()) else body
+    # v4.36.0：工艺闸门——写后立刻做确定性体检（零 token）。
+    # 能自愈的（复读/元信息泄漏/数数穿帮/格式污染）当场修掉；
+    # 修不了的（半句截断、禁出场人物）记档并告警，交给重写或作者处理。
+    try:
+        from . import craft_check as _cc
+        _cfg_now = ctx.get("cfg") or {}
+        _fnd = _cc.check_chapter(body, n=no, cfg=_cfg_now)
+        _blk = [x for x in _fnd if x.get("severity") == "block"]
+        if _blk:
+            _new, _applied = _cc.autofix(body, _blk)
+            if _applied:
+                body = _new
+                proj.log(f"🧹 第{no}章工艺自愈：{'、'.join(_applied)}")
+                _fnd = _cc.check_chapter(body, n=no, cfg=_cfg_now)
+                _blk = [x for x in _fnd if x.get("severity") == "block"]
+        # 事实回查：禁出场人物 / 人名漂移（需要写前事实卡）。
+        # 注意它必须无条件跑——不能挂在「已有工艺硬伤」的分支里，
+        # 否则稿子字数/格式都干净、只是写死了已退场人物的章节会整条漏检。
+        try:
+            from . import factcard as _fcmod
+            _ff = _fcmod.validate(ctx.get("factcard") or {}, body, no)
+            _blk += [{"gate": x["code"], "layer": "A", "severity": "block",
+                      "chapter": no, "message": x["message"], "evidence": x["evidence"]}
+                     for x in _ff if x.get("level") == "block"]
+        except Exception:
+            pass
+        if _blk:
+            proj.log(f"⚠️ 第{no}章仍有 {len(_blk)} 项硬伤："
+                     + "；".join(str(x.get("message"))[:44] for x in _blk[:3]))
+            _record_craft_blocks(proj, no, _blk)
+        else:
+            _clear_craft_blocks(proj, no)
+    except Exception:
+        pass
     _save_draft(proj, no, body)      # 首段落地即存档：之后的任何中断都能接着写
     fp = _chapter_file_path(proj, ch)
     if os.path.exists(fp):

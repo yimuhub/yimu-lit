@@ -115,6 +115,20 @@ def delivery_report(proj) -> dict:
                                     and f["code"] in delivery_gate.spec.profile(rep.get("profile")).get("block_on_export", ()))
         rep["ready"] = rep["blocking_count"] == 0
         rep["summary"] = f"{rep['counts']['block']} 项禁止项 / {rep['counts']['warn']} 项告警"
+    # v4.36.0：报告里说清「拿什么标准衡量」——形态（连载/出版）+ 平台真实基准。
+    # 基准数据来自 bot.taste.BENCHMARKS（带 as_of），不是拍脑袋的经验值。
+    if kind == "novel":
+        try:
+            from . import taste as _taste
+            _cfg = plan.get("config") or {}
+            _form = _taste.form_of(_cfg)
+            rep["form"] = _form
+            rep["form_label"] = _taste.FORMS[_form]["label"]
+            rep["benchmark"] = _taste.benchmark_note(
+                _cfg.get("platform") or plan.get("platform") or "")
+            rep["notes"].extend(_taste.report_notes(_cfg))
+        except Exception:
+            pass
     return rep
 
 

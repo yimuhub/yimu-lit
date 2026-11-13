@@ -1634,6 +1634,23 @@ def api_create(payload: dict):
         cfg["penname"] = str(payload["penname"]).strip()[:40]
     if payload.get("agents"):
         cfg["agents"] = payload["agents"] if isinstance(payload["agents"], list) else [payload["agents"]]
+    # v4.36.0：作品形态（serial 连载 / book 出版）。它决定章数、章长、节奏纪律、
+    # 伏笔回收率与结局是否必须闭合；不写进 cfg 的话，后面所有形态相关判定都会回落到连载。
+    if payload.get("form"):
+        try:
+            from bot import taste as _taste
+            _fm = _taste.normalize(payload["form"])
+            cfg["form"] = _fm
+            _sp = _taste.spec(_fm, cfg)
+            if not payload.get("min_words_per_chapter"):
+                cfg["min_words_per_chapter"] = int(_sp["default_chapter_words"])
+            # 出版型没显式选章数时，用形态默认章数（45），别把连载的 300 章套上去
+            if not payload.get("total_chapters") and _fm == _taste.FORM_BOOK:
+                payload = dict(payload)
+                payload["total_chapters"] = int(_sp["default_chapters"])
+                payload.pop("scale", None)
+        except Exception:
+            pass
     idea = (payload.get("idea") or "").strip()
     # v4.15.7 重大修复：原逻辑 title 覆盖 theme——书名「拟人E2E-百万字」这类标签
     # 会把用户的一句话简介挤掉，大纲阶段 LLM 拿着书名自由发挥（实测整个世界观跑偏成
@@ -4639,6 +4656,20 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
     _stamped = bool(plan.get("deliverySpecVersion"))
     _enforce = "enforcing" if (_stamped and not (frm or to) and not force) else "advisory"
     _rep = _dg.check_delivery(chapters, title=title, kind=_kind, profile=_declared)
+    # v4.36.0：报告开头先说标尺（形态 + 平台基准），再看禁止项。
+    _taste_info = {}
+    if _kind == "novel":
+        try:
+            from bot import taste as _taste
+            _tcfg = plan.get("config") or {}
+            _tform = _taste.form_of(_tcfg)
+            _taste_info = {"form": _tform, "form_label": _taste.FORMS[_tform]["label"],
+                           "benchmark": _taste.benchmark_note(
+                               _tcfg.get("platform") or plan.get("platform") or "")}
+            _rep.setdefault("notes", []).extend(_taste.report_notes(_tcfg))
+            _rep.update(_taste_info)
+        except Exception:
+            _taste_info = {}
     try:
         with open(os.path.join(proj.path, "22-交付就绪报告.md"), "w", encoding="utf-8") as _f:
             _f.write(_dg.report_markdown(_rep))
@@ -4653,6 +4684,7 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
             "blocking": len(_blocks),
             "findings": [{k: f.get(k) for k in ("code", "name", "location", "detail")}
                          for f in _blocks[:20]],
+            **_taste_info,
         })
     # v4.33.8 未达标不放行：放行门禁已跑且未放行的盖章作品，整书导出默认拦截；
     # force=1 可带「未放行初稿」标注取阅——绝不静默把 59 分当定稿交付。
@@ -4681,6 +4713,7 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
                 "below": _below0,
                 "chapters": len(chapters),
                 "title": title,
+                **_taste_info,
             })
         _fq = (plan.get("meta") or {}).get("final_quality")
         title = f"{title}（未放行初稿{_fq if _fq is not None else ''}分）"

@@ -312,6 +312,17 @@ export function openWizard(ctx, preset = {}, { onClosed } = {}) {
         if ('batch_size' in v) v.batch_size = 'all';
       }
       render();
+    },
+    /* v4.36.0：作品形态决定规模档位。选「出版型」自动切到 45 章档——
+       20 万字以内的三幕结构才是出版形态；连载型的 300 章规模套在出版上，
+       会得到一个「每章都要留钩、结局又不能留钩」的四不像。 */
+    form: (token) => {
+      const v = values();
+      if ('scale' in v) {
+        if (sameToken(token, 'book')) v.scale = 'book';
+        else if (v.scale === 'book') v.scale = '1m';
+      }
+      render();
     }
   };
 

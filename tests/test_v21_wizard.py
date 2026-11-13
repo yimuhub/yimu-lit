@@ -48,6 +48,9 @@ ALLOWED_KEYS = {
         "batch_size",   # v4.15.0：批量写作（写N章/场后停在当前进度）
         "penname",   # v4.15.1：作者笔名（写入 plan.config.penname）
         "express",   # v4.24.0：极速模式（bot/express.on() 读 cfg.express；小说由 mode=express 归一而来）
+        # v4.36.0：作品形态（连载/出版）。taste.form_of 读 cfg.form 决定结构模板、
+        # 章长、闸门层级；app._create_novel_project 会据此写默认章数与单章字数。
+        "form",
     },
     "script": {
         # script_writer.create_project 读 form/entryPath/idea/notes/scenes/pages/episodes/title

@@ -362,8 +362,18 @@ _EXPRESS_MODES = (
     {"value": "standard", "label": "标准", "desc": "逐阶段审校与打磨，慢但成品度高。", "icon": "check"},
     {"value": "express", "label": "极速", "desc": "不评分、不重写，一口气写完；产出初稿。", "icon": "zap"},
 )
+# v4.36.0：作品形态。这是比「创作模式」更靠前的一次选择——它决定全书的结构参数
+# （章数、章长、开篇要求、章尾是否必须留钩、伏笔回收率、结局是否必须闭合），
+# 而创作模式只决定「先规划还是先写」。形态选错，后面所有节奏参数都是错的。
+_NOVEL_FORMS = (
+    {"value": "serial", "label": "连载型", "desc": "按章追更，每章留钩、爽点密集。默认 200 章 × 2800 字。",
+     "icon": "refresh"},
+    {"value": "book", "label": "出版型", "desc": "整本完结交付，三幕结构、伏笔全回收、结局闭合。默认 45 章 × 4200 字。",
+     "icon": "book"},
+)
 # 规模快捷项：fill = 该档的章数目标（与前端 DEFAULT_CHAPTERS、longform.resolve_scale 一致）
 _NOVEL_SCALE = (
+    {"value": "book", "label": "出版", "desc": "约 20 万字 / 45 章", "fill": 45},
     {"value": "short", "label": "短篇", "desc": "约 30 万字", "fill": 100},
     {"value": "1m", "label": "百万字", "desc": "约 100 万字", "fill": 300},
     {"value": "3m", "label": "三百万字", "desc": "约 300 万字", "fill": 900},
@@ -380,6 +390,14 @@ _NOVEL_SECTIONS = {
         _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True,
            effect="express",
            hint="极速模式：不评分、不重写，一口气写完全部章节，产出初稿（保留章卡与前情摘要，一致性不打折）。"),
+        # v4.36.0：形态紧随其后——它决定章数/章长/节奏/结局的整套参数。
+        # 没有抢首位是因为首位被极速入口的可见性门禁占着（见上），
+        # 而第二项同样在首屏，用户不会漏看；两者也不冲突（极速 + 出版是合法组合）。
+        _f("form", "作品形态", "cards", options=_NOVEL_FORMS, default="serial", required=True,
+           effect="form",
+           hint="连载型：读者按章决定明天还来不来，所以每章结尾要有钩子、每两章要有一个爽点；"
+                "出版型：读者整本买断，所以要三幕结构、伏笔全回收、结局必须闭合——"
+                "出版型不必每章硬拗悬念，那会让稿子显得做作。"),
         _f("platform", "发布平台", "chips", options_from="platforms", default="", effect="platform",
            when={"field": "mode", "not_in": ["express"]},
            hint="选平台带入该站的分类习惯与更新节奏，创作不受限制。"),

@@ -357,6 +357,19 @@ async function offerExportRecovery(info = {}, key = '') {
       }));
     }
 
+    /* v4.36.0：先摆标尺，再谈问题。作者要知道自己被拿什么标准衡量，
+       否则下面那串禁止项只像挑刺。形态与平台基准都由后端 bot.taste 给出。 */
+    if (info.form_label || info.benchmark) {
+      const yard = h('div', { style: { marginTop: '10px', fontSize: '12.5px', opacity: '0.85' } });
+      if (info.form_label) {
+        yard.append(h('div', { text: `验收口径：${info.form_label}（连载看每章留人与否，出版看整本是否立住）` }));
+      }
+      if (info.benchmark) {
+        yard.append(h('div', { text: info.benchmark }));
+      }
+      body.append(yard);
+    }
+
     const footer = h(
       'div',
       { style: { display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end', flexWrap: 'wrap' } },

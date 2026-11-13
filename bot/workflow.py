@@ -138,16 +138,43 @@ def gen_characters(cfg):
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
 def gen_outline(cfg, book_key=""):
-    sys_p = (
-        "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
-        "参考 plot-structures.md 选一种经典结构。大纲必须人物驱动、冲突递进、每章有钩子。\n"
-        "v4.25.0 商业连载纪律：大纲开头必须有「## 故事承诺」一节——读者为什么点开/前十章如何初步兑现/"
-        "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
-        "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果），不许只把敌人换成更高境界。\n"
-        "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|悬念钩子|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
-        "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
-        "章节数 = 配置里的 chapters。只输出 markdown。"
-    )
+    # v4.36.0：出版型与连载型的结构模板不同，不能共用一套「每章都要钩子」的提示。
+    # 连载读者按章投票，出版读者整本买断——前者要钩子密度，后者要结构闭合。
+    _is_book, _struct, _disc = False, "", ""
+    try:
+        from . import taste as _t
+        _is_book = _t.form_of(cfg) == _t.FORM_BOOK
+        _struct = _t.structure_template(cfg)
+        _disc = _t.writing_discipline(cfg)
+    except Exception:
+        pass
+    if _is_book:
+        sys_p = (
+            "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成，形态是**出版型**"
+            "（整本完结后交付：实体/电子书/影视改编）。大纲必须人物驱动、冲突递进、主线闭合。\n"
+            + _struct + "\n" + _disc + "\n"
+            "v4.25.0 内核：大纲开头必须有「## 故事承诺」一节——读者为什么打开这本书/前十章如何初步兑现/"
+            "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
+            "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果）。\n"
+            "**出版型特别注意**：全书要有明确的中点反转与「一无所有」低谷；"
+            "不要在章末强行制造悬念（那是连载手法），每章按场景/时间/视角自然收束；"
+            "所有 A 级伏笔必须在结尾前回收。\n"
+            "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|章节落点|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
+            "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
+            "章节数 = 配置里的 chapters。只输出 markdown。"
+        )
+    else:
+        sys_p = (
+            "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
+            "参考 plot-structures.md 选一种经典结构。大纲必须人物驱动、冲突递进、每章有钩子。\n"
+            "v4.25.0 商业连载纪律：大纲开头必须有「## 故事承诺」一节——读者为什么点开/前十章如何初步兑现/"
+            "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
+            "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果），不许只把敌人换成更高境界。\n"
+            + ((_struct + "\n" + _disc + "\n") if (_struct or _disc) else "")
+            + "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|悬念钩子|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
+            "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
+            "章节数 = 配置里的 chapters。只输出 markdown。"
+        )
     user_p = (f"小说配置：{json.dumps(cfg, ensure_ascii=False)}\n"
               f"【技能模板】\n{skill.guide('outline-template')[:2000]}\n"
               f"【情节结构方法摘录】\n{skill.guide('plot-structures')[:2800]}\n"
@@ -209,6 +236,16 @@ def _writing_system(ctx):
         # v4.25.0：商业连载纪律——因果链合法推动方式 + 爽点五条件 + 单章任务底线
         "【因果与爽点纪律】\n" + skill.guide("causality-and-satisfaction")[:1500],
     ]
+    # v4.36.0：形态纪律（连载 / 出版）——由 bot.taste 统一生成，避免两套提示词漂移。
+    # 连载要「每章留钩、爽点密集」，出版要「结构闭合、不必每章硬拗悬念」，
+    # 用同一段提示词写两种形态，必然一头不讨好。
+    try:
+        from . import taste as _taste
+        _disc = _taste.writing_discipline(cfg)
+        if _disc:
+            parts.append(_disc)
+    except Exception:
+        pass
     if no and no <= 3:
         parts.append("【黄金三章门（本章在前 3 章）】\n" + skill.golden3()[:800])
     if ctx.get("longform_card"):
@@ -285,6 +322,9 @@ def _longform_block(ctx):
     """长篇内核：本章章卡 + 权威状态 + 连续性警告 + 参考资料（缺失自动省略）。"""
     from . import longform as _lf
     parts = []
+    # 事实卡放在最前：它是「写前契约」，优先级高于章卡（章卡讲写什么，事实卡讲什么是事实）
+    if ctx.get("factcard_text"):
+        parts.append(str(ctx["factcard_text"])[:1600])
     card = ctx.get("longform_card")
     if isinstance(card, dict) and (card.get("goal") or card.get("conflict") or card.get("turn")):
         parts.append("【本章章卡（最高优先级：只写卡内事件，不提前消费后续剧情）】\n"

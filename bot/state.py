@@ -239,13 +239,98 @@ def _norm_issue(raw, chapter: int = 0) -> dict:
             "chapter": chapter, "status": "open"}
 
 
+# 这些键是状态库的顶层结构名，绝不可能是一个人名。
+# 实测有项目的 characters 里混进了 locations / items / foreshadowing / timeline——
+# 模型返回的 state_delta.characters 里带了子结构，合并时被当成人物写了进去。
+_NOT_CHARACTER = {
+    "characters", "locations", "items", "factions", "foreshadowing", "timeline",
+    "rules", "chapter_summaries", "issues", "metrics", "threads", "chapter",
+    "state_delta", "summary", "beats", "foreshadow_ops", "quality_signals",
+}
+
+
+def _clean_person_name(name: str) -> str:
+    """去掉人物名里的括注：「沈清漪（主角）」→「沈清漪」。
+
+    00-人物档案里的人物条目经常带角色注释，旧正则 `[^\\n，,。:：]{1,12}` 会把
+    括号一起吞进名字，于是状态库里同时存在「沈清漪（主角）」和「沈清漪」两条，
+    查重、生死判定、称谓对照全部失效。
+    这里用「截断到第一个左括号」而不是成对匹配——档案里确实存在
+    「李承乾（重要配角/关键盟」这种括号没闭合的写法。
+    """
+    nm = re.sub(r"[（(].*$", "", str(name or ""))
+    nm = re.sub(r"[）)]", "", nm)
+    nm = re.sub(r"\s{2,}", " ", nm).strip(" ·・.、-—")
+    return nm[:24]
+
+
+def _is_person_key(name: str) -> bool:
+    nm = (name or "").strip()
+    if not nm or len(nm) > 24:
+        return False
+    if nm.lower() in _NOT_CHARACTER:
+        return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z]", nm))
+
+
+_PLACEHOLDER_VALUES = {
+    "", "-", "--", "—", "n/a", "none", "null", "无", "暂无", "未知", "待定",
+    "已登记", "已出场", "已记录",
+}
+
+
+def _is_placeholder(v) -> bool:
+    """字段值是否属于「填了等于没填」的占位值。
+
+    模型经常先吐一条 `{"status": "已登记"}` 占位、后面再吐真实状态；
+    合并同名人物时若按「先到先得」，占位值会把真实信息永久挡掉。
+    """
+    if v is None or v is False or v == 0:
+        return True
+    if isinstance(v, str):
+        return v.strip().lower() in _PLACEHOLDER_VALUES
+    if isinstance(v, (list, dict, tuple)):
+        return len(v) == 0
+    return False
+
+
 def _normalize_state(raw) -> dict:
     """把任意输入修成合法状态；未知字段保留但只做浅层清洗。"""
     st = empty_state()
     if not isinstance(raw, dict):
         return st
     for name, fields in _pairs(raw.get("characters")):
-        st["characters"][name] = _norm_character(fields)
+        nm = _clean_person_name(name)
+        if not _is_person_key(nm) or not isinstance(fields, dict):
+            continue
+        f = _norm_character(fields)
+        cur = st["characters"].get(nm)
+        if cur:
+            # 同名（含去括注后同名）合并：别名/知情合并，其余字段取「更具体」的一方。
+            # 注意这里不能用「先到先得」——「沈清漪（主角）」常带着 `已登记` 这种
+            # 占位值先入表，会把后面真正描述状态的 `已执掌尚宫司` 挡在门外。
+            for k in ("aliases", "knowledge"):
+                cur[k] = _uniq(list(cur.get(k) or []) + list(f.get(k) or []))
+            if f.get("relations"):
+                rel = dict(cur.get("relations") or {})
+                rel.update(f["relations"])
+                cur["relations"] = rel
+            # 首次/最近出场章号取极值：这两项是区间端点，不能按「后到覆盖」处理
+            for k, pick in (("first_seen", min), ("last_seen", max)):
+                a = cur.get(k)
+                b = f.get(k)
+                if isinstance(a, int) and a > 0 and isinstance(b, int) and b > 0:
+                    cur[k] = pick(a, b)
+            for k, v in f.items():
+                if k in ("aliases", "knowledge", "relations"):
+                    continue
+                if _is_placeholder(v):
+                    continue
+                if _is_placeholder(cur.get(k)):
+                    cur[k] = v
+            st["characters"][nm] = cur
+        else:
+            st["characters"][nm] = f
     for name, fields in _pairs(raw.get("locations")):
         st["locations"][name] = _norm_location(fields)
     for name, fields in _pairs(raw.get("items")):
@@ -255,7 +340,20 @@ def _normalize_state(raw) -> dict:
     st["rules"] = _uniq(raw.get("rules"))
     st["threads"] = [t for t in _list(raw.get("threads")) if isinstance(t, dict)]
     for fid, fields in _pairs(raw.get("foreshadowing")):
-        st["foreshadowing"][fid] = _norm_foreshadow(fields)
+        key = str(fid or "").strip()
+        # 老解析器把 markdown 对齐行当成了数据行，存量里有 key=`:---` 的垃圾条目。
+        # id 必须含有文字，纯符号/纯分隔符一律丢弃。
+        if not key or len(key) > 60 or not re.search(r"[\u4e00-\u9fffA-Za-z]", key):
+            continue
+        if set(key) <= set("-:| "):
+            continue
+        f = _norm_foreshadow(fields)
+        # 存量迁移：老账本从未写过 importance（实测 479 条全空），
+        # 而「A 级伏笔必须回收」这类检查依赖该字段。空值一律补 B，
+        # 只有描述里明确写了「核心/A 级」的才升到 A——不做推测性提升。
+        if not f.get("importance"):
+            f["importance"] = "A" if re.search(r"A\s*级|核心", f.get("description") or "") else "B"
+        st["foreshadowing"][key] = f
     for item in _list(raw.get("timeline")):
         it = _norm_timeline_item(item)
         if it:
@@ -313,8 +411,13 @@ def load(pdir: str) -> dict:
         elif isinstance(led, list):
             items = led
         for fid, fields in _pairs(items):
-            if fid not in st["foreshadowing"]:
-                st["foreshadowing"][fid] = _norm_foreshadow(fields)
+            key = str(fid or "").strip()
+            # 旧账本里同样可能残留 markdown 对齐行（key=`:---`）；
+            # 只补缺不覆盖，所以这里不挡住的话它会绕过 _normalize_state 一直存在。
+            if not key or len(key) > 60 or not re.search(r"[\u4e00-\u9fffA-Za-z]", key):
+                continue
+            if key not in st["foreshadowing"]:
+                st["foreshadowing"][key] = _norm_foreshadow(fields)
     except Exception:
         pass
     return st
@@ -353,6 +456,97 @@ def save(pdir: str, state: dict) -> dict:
         return st
     _sync_ledger(pdir, st)
     return st
+
+
+# ---------- 账本校准 ----------
+
+# 「描述」被错存成章号的典型形态：`第4章`、`第5-6章`、`12`
+_DESC_IS_CHAPTER_RE = re.compile(r"^第?\s*\d{1,4}\s*(?:[-–—~～]\s*\d{1,4})?\s*章?$")
+
+
+def repair_from_ledger(pdir: str) -> dict:
+    """用 `10-线索账本.md` 校准状态库里的伏笔（零 token，可重复执行）。
+
+    典型用途：修掉历史项目里「description=第4章」「due_from=due_to=同一个数」
+    「importance 全空」这三类脏数据。只填空缺与明显错误的字段，
+    **不覆盖**已经写好的描述，避免把模型后来补充的细节冲掉。
+    """
+    st = load(pdir)
+    ledger = _parse_clue_ledger(_read(pdir, "10-线索账本.md"))
+    fixed = 0
+    details = []
+    for fid, lf in ledger.items():
+        cur = st["foreshadowing"].get(fid)
+        if not isinstance(cur, dict):
+            st["foreshadowing"][fid] = dict(lf)
+            fixed += 1
+            details.append(f"{fid}: 新增（账本有、状态库无）")
+            continue
+        desc = str(cur.get("description") or "").strip()
+        patch = {}
+        if not desc or _DESC_IS_CHAPTER_RE.match(desc) or len(desc) <= 4:
+            new_desc = str(lf.get("description") or "").strip()
+            if new_desc and new_desc != desc:
+                patch["description"] = new_desc
+        if not cur.get("due_from") and lf.get("due_from"):
+            patch["due_from"] = lf["due_from"]
+        # 老解析把 due_from / due_to 赋成同一个数，区间被拍平成单点；
+        # 账本里是「第5-6章」时，把 due_to 补回真实的窗口右端。
+        cur_to = _int(cur.get("due_to"), 0)
+        lib_to = _int(lf.get("due_to"), 0)
+        if lib_to > cur_to > 0:
+            patch["due_to"] = lib_to
+        elif not cur_to and lib_to:
+            patch["due_to"] = lib_to
+        if not cur.get("setup_chapter") and lf.get("setup_chapter"):
+            patch["setup_chapter"] = lf["setup_chapter"]
+        if not cur.get("importance"):
+            patch["importance"] = lf.get("importance") or "B"
+        if patch:
+            cur.update(patch)
+            fixed += 1
+            details.append(f"{fid}: 修正 {', '.join(patch)}")
+    if fixed:
+        st = save(pdir, st)
+    return {"ledger_items": len(ledger), "state_items": len(st["foreshadowing"]),
+            "fixed": fixed, "details": details[:20]}
+
+
+# ---------- 有效伏笔 ----------
+
+def effective_foreshadow(state: dict) -> dict:
+    """只返回「有信息量」的伏笔：有描述，或有到期章。
+
+    真实项目里 479 条伏笔有 447 条既无描述、也无到期章——它们是抽取失败留下的
+    空壳（模型给了 id 没给内容）。这些空壳会让「共 479 条、413 条 open」这类统计
+    严重失真，也会稀释 UI 上的可信度。统计与展示一律走本函数。
+    """
+    out = {}
+    for fid, f in ((state or {}).get("foreshadowing") or {}).items():
+        if not isinstance(f, dict):
+            continue
+        desc = str(f.get("description") or "").strip()
+        if not desc and not _int(f.get("due_from")) and not _int(f.get("due_to")):
+            continue
+        out[fid] = f
+    return out
+
+
+def prune_foreshadow(pdir: str, dry_run: bool = True) -> dict:
+    """归档「空壳伏笔」（既无描述也无到期章）。默认只统计，不写盘。
+
+    不做自动删除：这些条目虽然没信息量，但属于作者项目数据。
+    UI 提供入口、作者确认后再执行 dry_run=False。
+    """
+    st = load(pdir)
+    allf = st.get("foreshadowing") or {}
+    keep = effective_foreshadow(st)
+    dead = [k for k in allf if k not in keep]
+    if not dry_run and dead:
+        st["foreshadowing"] = {k: v for k, v in allf.items() if k in keep}
+        st = save(pdir, st)
+    return {"total": len(allf), "effective": len(keep), "prunable": len(dead),
+            "sample": dead[:10], "applied": (not dry_run) and bool(dead)}
 
 
 # ---------- 锁 ----------
@@ -477,6 +671,41 @@ def _merge_foreshadow(cur: dict, fields: dict, chapter: int) -> dict:
     return _norm_foreshadow(out, chapter)
 
 
+def _fg_bigrams(text: str) -> set:
+    s = re.sub(r"[\s，。！？、,.!?:：；;“”‘’（）()《》\-—_…]+", "", text or "")
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _fg_similar(a: str, b: str) -> float:
+    """两段伏笔描述的 2-gram Jaccard 相似度；用于识别「同一件信物换个说法」。"""
+    A, B = _fg_bigrams(a), _fg_bigrams(b)
+    if not A or not B:
+        return 0.0
+    return len(A & B) / max(1, len(A | B))
+
+
+# 单章允许新增的伏笔条数上限。原实现一章最多接受 20 条 op，且 id 由模型自拟，
+# 于是一件信物换三种说法就变成三条记录——本书 479 条存量伏笔里 413 条 open、
+# importance 全空，账本因此失去意义。这里从入账侧收口。
+_MAX_NEW_FORESHADOW_PER_CHAPTER = 4
+_FG_MERGE_THRESHOLD = 0.55
+
+
+def _pick_foreshadow_key(base: dict, fid: str, fields: dict) -> str:
+    """决定这次 op 应该落到哪个 id：命中已有的同名，或语义相近的既有条目。"""
+    if fid in base:
+        return fid
+    desc = _str((fields or {}).get("description") or fid, 300)
+    best, best_s = None, 0.0
+    for eid, ef in (base.get("foreshadowing") or {}).items():
+        s = _fg_similar(desc, _str((ef or {}).get("description"), 300))
+        if s > best_s:
+            best, best_s = eid, s
+    if best and best_s >= _FG_MERGE_THRESHOLD:
+        return best
+    return fid
+
+
 def merge_state_delta(state: dict, delta: dict) -> dict:
     """纯函数：返回合并后的新状态，绝不修改传入对象。"""
     base = _normalize_state(copy.deepcopy(state) if isinstance(state, dict) else {})
@@ -485,8 +714,13 @@ def merge_state_delta(state: dict, delta: dict) -> dict:
     chapter = _int(delta.get("chapter") or delta.get("_chapter"), 0)
 
     for name, fields in _pairs(delta.get("characters")):
-        base["characters"][name] = _merge_character(
-            base["characters"].get(name) or {}, fields, chapter)
+        nm = _clean_person_name(name)
+        # 模型返回的 state_delta.characters 里有时夹带 locations / items 这类子结构，
+        # 直接合并会把它们变成"人物"，进而污染称谓对照与生死判定。
+        if not _is_person_key(nm) or not isinstance(fields, dict):
+            continue
+        base["characters"][nm] = _merge_character(
+            base["characters"].get(nm) or {}, fields, chapter)
 
     for name, fields in _pairs(delta.get("locations")):
         cur = copy.deepcopy(base["locations"].get(name) or {})
@@ -532,9 +766,25 @@ def merge_state_delta(state: dict, delta: dict) -> dict:
             if k not in ("id", "name"):
                 cur[k] = _str(v, 600) if not isinstance(v, (dict, list)) else v
 
+    created = 0
     for fid, fields in _pairs(delta.get("foreshadowing")):
-        base["foreshadowing"][fid] = _merge_foreshadow(
-            base["foreshadowing"].get(fid) or {}, fields, chapter)
+        if not fid:
+            continue
+        key = _pick_foreshadow_key(base["foreshadowing"], fid, fields)
+        merged = _merge_foreshadow(base["foreshadowing"].get(key) or {}, fields, chapter)
+        if key not in base["foreshadowing"]:
+            if created >= _MAX_NEW_FORESHADOW_PER_CHAPTER:
+                # 超出上限的新增直接丢弃并留痕——宁可少登记，也不能让账本被稀释
+                base["issues"].append(_norm_issue({
+                    "detail": f"第{chapter}章新增伏笔「{_str(fid, 40)}」超出单章上限"
+                              f"（{_MAX_NEW_FORESHADOW_PER_CHAPTER} 条），未入账",
+                    "chapter": chapter, "level": "info"}, chapter))
+                continue
+            created += 1
+        # importance 兜底：模型经常不填，空值会让「A 级伏笔必须回收」这类检查失效
+        if not merged.get("importance"):
+            merged["importance"] = "B"
+        base["foreshadowing"][key] = merged
 
     for item in _list(delta.get("timeline")):
         it = _norm_timeline_item(item)
@@ -910,26 +1160,132 @@ def _summary_from_text(text: str) -> str:
     return body[:600]
 
 
+def _ledger_cells(line: str) -> list:
+    """把一行 markdown 表格拆成去格式的单元格。"""
+    return [re.sub(r"^[*`\s]+|[*`\s]+$", "", c) for c in
+            (line or "").strip().strip("|").split("|")]
+
+
+def _is_ledger_header(cells: list) -> bool:
+    """判断这一行是表头还是数据行。
+
+    老实现用 `startswith(("---",))` 跳对齐行，但真实账本的对齐行是 `:---`
+    （左对齐写法），首格为 `:---`，于是 479 条里混进了 key=":---" 的垃圾条目。
+    这里改成按「整格是否只由 - : 空格组成」判定，两种写法都能跳过。
+    """
+    if not cells:
+        return False
+    if all(set(c) <= set("-: ") for c in cells if c):
+        return False                      # 对齐行/分隔行，交给调用方跳过
+    joined = "".join(cells)
+    head_cell = (cells[0] or "").upper()
+    looks_id = bool(re.fullmatch(r"L?\d+", head_cell)) or bool(re.match(r"^第?\d+章", head_cell))
+    return (not looks_id) and bool(re.search(r"(ID|编号|线索|伏笔|名称|描述)", joined))
+
+
+def _ledger_col(header: list, *keys, exclude=()) -> int:
+    """按列名关键字定位列下标；按 keys 顺序给优先级，exclude 里的下标不参与。"""
+    for k in keys:
+        for i, h in enumerate(header):
+            if i in exclude:
+                continue
+            if k in (h or ""):
+                return i
+    return -1
+
+
+def _chapter_range(raw) -> tuple:
+    """从「第5-6章」「第 12 章（真相揭示）」里取 (due_from, due_to)。
+
+    老实现把 `due_from` 和 `due_to` 都赋成同一个数字，窗口被拍平，
+    `foreshadow_due()` 的「窗口内到期」永远只剩一个点，逾期判断也失真。
+    """
+    s = str(raw or "")
+    m = re.search(r"(\d+)\s*(?:[-–—~～至到]\s*(\d+))?\s*章", s)
+    if m:
+        a = int(m.group(1))
+        b = int(m.group(2)) if m.group(2) else a
+        return (min(a, b), max(a, b))
+    nums = [int(x) for x in re.findall(r"\d+", s)]
+    if nums:
+        return (min(nums[0], nums[-1]), max(nums[0], nums[-1]))
+    return (0, 0)
+
+
 def _parse_clue_ledger(text: str) -> dict:
-    """尽力解析 10-线索账本 Markdown 表格；解析不出返回空（不阻断迁移）。"""
+    """解析 10-线索账本 Markdown 表格（按表头定位列，不假设列序）。
+
+    为什么要按表头：各项目的账本列序不同，老实现硬编码 `cells[2]` 当描述，
+    而真实账本第 3 列是「首次出现(章)」，于是 479 条伏笔的 description 全变成了
+    「第4章」这种章号，`importance` 从来没有被解析过（全为空），
+    `foreshadow_due()` 又对没有到期章的条目直接跳过——整本账本等于空转。
+
+    解析不出返回空 dict（不阻断迁移）；任何单行异常都跳过该行，不影响其他行。
+    """
     out = {}
+    header = None
     for line in (text or "").splitlines():
-        if not line.lstrip().startswith("|"):
+        raw = line.strip()
+        if not raw.startswith("|"):
             continue
-        cells = [re.sub(r"[*`]", "", c).strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 2 or not cells[0]:
+        cells = _ledger_cells(raw)
+        if not cells or not any(cells):
             continue
-        if cells[0].startswith(("ID", "---", "线索", "编号")) or set(cells[0]) <= {"-", " "}:
+        if all(set(c) <= set("-: ") for c in cells if c):
+            continue                       # 对齐行
+        if _is_ledger_header(cells):
+            header = cells
             continue
-        fid = cells[0][:40]
-        desc = cells[2] if len(cells) > 2 and cells[2] else (cells[1] if len(cells) > 1 else "")
-        nums = [int(x) for x in re.findall(r"\d+", " ".join(cells[1:]))]
-        due = int(re.findall(r"\d+", cells[5])[0]) if len(cells) > 5 and re.findall(r"\d+", cells[5]) else (
-            nums[1] if len(nums) > 1 else (nums[0] if nums else 0))
-        status = _norm_status(cells[-1]) if cells else "open"
+
+        def _get(idx, cells=cells):
+            return cells[idx] if 0 <= idx < len(cells) else ""
+
+        if header:
+            id_i = _ledger_col(header, "ID", "编号")
+            name_i = _ledger_col(header, "线索", "伏笔", "名称", exclude=(id_i,))
+            desc_i = _ledger_col(header, "真实含义", "描述", "内容", "手法", exclude=(id_i, name_i))
+            setup_i = _ledger_col(header, "首次", "埋设", "起始")
+            due_i = _ledger_col(header, "兑现", "回收", "揭晓")
+            status_i = _ledger_col(header, "状态")
+            imp_i = _ledger_col(header, "重要", "级别", "等级")
+            fid = _get(id_i).strip()
+            name = _get(name_i).strip()
+            desc = _get(desc_i).strip()
+            setup_raw, due_raw = _get(setup_i), _get(due_i)
+            status_raw, imp_raw = _get(status_i), _get(imp_i)
+        else:
+            # 无表头的旧格式：保持「第一列是 ID」的老约定，但不再猜位列
+            fid = cells[0].strip()
+            name = cells[1].strip() if len(cells) > 1 else ""
+            desc = cells[2].strip() if len(cells) > 2 else ""
+            rest = " ".join(cells[1:])
+            setup_raw = due_raw = rest
+            status_raw = cells[-1] if len(cells) > 1 else ""
+            imp_raw = ""
+
+        if not fid or not re.match(r"^[A-Za-z\u4e00-\u9fff]?\d*[A-Za-z\u4e00-\u9fff]?\d*$", fid):
+            continue                        # 明显不是 ID 的行（杂项/说明）
+        if fid in out:                      # 同一 ID 重复登记：保留信息更全的一条
+            prev = out[fid]
+            if len(prev.get("description") or "") >= len((name + desc).strip()):
+                continue
+        setup_from, setup_to = _chapter_range(setup_raw)
+        due_from, due_to = _chapter_range(due_raw)
+        if not due_from and setup_to:
+            due_from = due_to = setup_to
+        text_desc = "｜".join(x for x in (name, desc) if x and x != name[:0])
+        imp = ""
+        m_imp = re.search(r"([ABC])\s*级|(核心|重要|次要)", str(imp_raw or ""))
+        if m_imp:
+            imp = (m_imp.group(1) or {"核心": "A", "重要": "B", "次要": "C"}.get(m_imp.group(2), "B")).upper()
+        if not imp:
+            imp = "A" if re.search(r"A\s*级|核心", text_desc) else "B"
         out[fid] = _norm_foreshadow({
-            "description": desc[:300], "setup_chapter": nums[0] if nums else 0,
-            "due_from": due, "due_to": due, "status": status,
+            "description": (text_desc or name or fid)[:300],
+            "setup_chapter": setup_from or 0,
+            "due_from": due_from, "due_to": due_to,
+            "status": _norm_status(status_raw),
+            "importance": imp,
         })
     return out
 
@@ -942,12 +1298,16 @@ def rebuild_from_project(pdir: str, plan: dict, chapter_texts=None) -> dict:
 
     chars_text = _read(pdir, "00-人物档案.md")
     names = []
-    for m in re.finditer(r"(?:^|\n)\s*#{1,6}\s*人物[:：]\s*([^\n，,。:：]{1,12})", chars_text):
+    # 排除括号：档案里的条目常写成「## 人物：沈清漪（主角）」，
+    # 旧正则会把「（主角）」一起吃进名字，造成同名双份记录。
+    for m in re.finditer(r"(?:^|\n)\s*#{1,6}\s*人物[:：]\s*([^\n，,。:：（）()]{1,12})", chars_text):
         names.append(m.group(1).strip())
-    for m in re.finditer(r"主角[:：]\s*\**([^*\n，,。;；]{1,10})", chars_text):
+    for m in re.finditer(r"主角[:：]\s*\**([^*\n，,。;；（）()]{1,10})", chars_text):
         names.append(m.group(1).strip())
     for name in _uniq(names)[:30]:
-        st["characters"][name] = _norm_character({"status": "已登记"}, 0)
+        nm = _clean_person_name(name)
+        if _is_person_key(nm) and nm not in st["characters"]:
+            st["characters"][nm] = _norm_character({"status": "已登记"}, 0)
 
     st["foreshadowing"].update(_parse_clue_ledger(_read(pdir, "10-线索账本.md")))
 

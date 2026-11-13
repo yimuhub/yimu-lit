@@ -45,16 +45,69 @@ def _finding(code: str, location: str, detail: str) -> dict:
             "location": location, "detail": detail}
 
 
+# 工艺体检（craft_check）的闸门号 → 交付标准的禁止项号。
+# 两个体系分开维护：craft_check 面向写作时的即时体检（带原文证据），
+# delivery_spec 面向交付判定（带档位与处置动作），这里做一次映射，避免规则写两遍。
+_CRAFT_TO_CODE = {
+    "C01": "N03",   # 半句截断
+    "C02": "N16",   # 章内复读
+    "C03": "N02",   # 元信息泄漏
+    "C04": "N02",   # 过程产物残留
+    "C05": "N17",   # 计数穿帮
+    "C06": "N18",   # 排版符号污染
+}
+
+
+def _craft_findings(text: str, n) -> list[dict]:
+    """跑工艺硬伤检查并映射成交付标准 finding；每章每类只出一条，避免报告爆炸。"""
+    try:
+        from . import craft_check
+        raw = craft_check.hard_findings(text or "", n=int(n) if str(n).isdigit() else 0)
+    except Exception:
+        return []
+    loc = f"第{n}章" if n else "全书"
+    out, seen = [], set()
+    for f in raw:
+        code = _CRAFT_TO_CODE.get(f.get("gate"))
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        detail = f.get("message") or ""
+        if f.get("evidence"):
+            detail += f"｜证据：{str(f['evidence'])[:60]}"
+        out.append(_finding(code, loc, detail))
+    return out
+
+
 def _latin_hits(text: str) -> list[str]:
     return [w for w in spec.RE_LATIN_TOKEN.findall(text or "")
             if w.upper() not in spec.LATIN_ALLOW]
 
 
+# 元信息词分两档（v4.36.0）：
+#   强信号 —— 只可能来自创作流程（本章概要/字数统计/审稿意见…），出现即判 N02；
+#   弱信号 —— 日常叙事也合法：系统流小说里「系统核心自检报告弹出来了」、
+#             游戏流里「评分：S」都是故事内设定，判成元信息泄漏会误伤整个题材。
+#             这类只记 N19 告警，不阻断交付，交给人确认。
+_META_WEAK = ("评分", "得分", "百分制", "自检")
+
+# 弱信号词只有作为**字段标签**出现时才算泄漏：行首「本章评分：九十五分。」
+# 是评分表残留（v4.33.7 的原始事故），而「系统核心自检报告弹出来了」是叙事。
+_WEAK_LABEL_RE = re.compile(
+    r"(?m)^\s*(?:本章|全文|整体|总分)?\s*(" + "|".join(_META_WEAK) + r")\s*[：:｜|]")
+
+
 def _meta_hits(text: str) -> list[str]:
     found = []
+    _t0 = text or ""
+    _m = _WEAK_LABEL_RE.search(_t0)
+    _labelled = _m.group(1) if _m else ""
     for w in spec.META_LEAK:
-        if w in (text or ""):
-            found.append(w)
+        if w not in _t0:
+            continue
+        if w in _META_WEAK and w != _labelled:
+            continue           # 叙事里出现的歧义词留给 N19，不阻断
+        found.append(w)
     # 「章节号元引用」只扫叙述与台词正文：集头/场头/标题行里出现「第N章/第N集」是
     # 改编集名与场景结构的合法写法（如「# 第1集：试炼」「**场2：外 山道 晨**」），先剥离再扫
     _t = _RE_STRUCT_LINE.sub("", text or "")
@@ -65,6 +118,17 @@ def _meta_hits(text: str) -> list[str]:
         except re.error:
             continue
     return found
+
+
+def _meta_weak_hits(text: str) -> list[str]:
+    """歧义元信息词（评分/得分/自检…）：只提示，不阻断。
+
+    已被判成「字段标签」（N02）的那个词不再重复报 N19。
+    """
+    _t = text or ""
+    _m = _WEAK_LABEL_RE.search(_t)
+    _labelled = _m.group(1) if _m else ""
+    return [w for w in _META_WEAK if w != _labelled and w in _t]
 
 
 # 结构性标题行：markdown 标题 / 整行加粗（集头·场头）/ 场标题行 / [内 外] 场景 slug
@@ -156,6 +220,9 @@ def check_chapter(text: str, *, title: str = "", chapter_no: int = 0,
     meta = _meta_hits(body)
     if meta:
         out.append(_finding("N02", loc, f"命中 {len(meta)} 类：{', '.join(meta[:6])}"))
+    weak = _meta_weak_hits(body)
+    if weak:
+        out.append(_finding("N19", loc, f"出现「{', '.join(weak[:4])}」，请确认是故事内设定用语"))
     bad, why = _tail_state(body)
     if bad:
         out.append(_finding("N03", loc, why))
@@ -250,9 +317,18 @@ def check_novel(chapters: list[dict], *, book_title: str = "", claim_term: str =
     rows = [c for c in (chapters or []) if isinstance(c, dict)]
     for c in rows:
         n = c.get("n") or 0
-        findings.extend(check_chapter(c.get("text") or "", title=c.get("title") or "",
-                                      chapter_no=int(n) if str(n).isdigit() else 0,
-                                      profile=profile))
+        _base = check_chapter(c.get("text") or "", title=c.get("title") or "",
+                              chapter_no=int(n) if str(n).isdigit() else 0,
+                              profile=profile)
+        _craft = _craft_findings(c.get("text") or "", n)
+        if _craft:
+            # 工艺闸门给的条目带原文证据，比 check_chapter 的「命中 N 类」更有用；
+            # 同章同编号只留带证据的那条，否则「阻断 N 项」会因重复计数虚高
+            # （《入赘三年》实拍：40 章元信息泄漏被记成 49 项）。
+            _drop = {f["code"] for f in _craft}
+            _base = [f for f in _base if f["code"] not in _drop]
+        findings.extend(_base)
+        findings.extend(_craft)
 
     # N06 模板化开篇：首句高相似占比
     opens = [_first_para(c.get("text") or "")[:60] for c in rows]
@@ -401,6 +477,9 @@ def check_episode(text: str, *, ep_no: int = 0, profile: str = "universal") -> l
     meta = _meta_hits(body)
     if meta:
         out.append(_finding("N02", loc, f"命中 {len(meta)} 类：{', '.join(meta[:6])}"))
+    _weak = _meta_weak_hits(body)
+    if _weak:
+        out.append(_finding("N19", loc, f"出现「{', '.join(_weak[:4])}」，请确认是台词内设定用语"))
     bad, why = _tail_state(body)
     if bad:
         out.append(_finding("N03", loc, why))
@@ -509,6 +588,7 @@ def _report(kind: str, profile: str, findings: list[dict], metrics: dict) -> dic
                        "info": counts.get("info", 0)},
             "metrics": metrics, "blocking_count": len(blocking),
             "ready": len(blocking) == 0,
+            "notes": [],
             "summary": f"{counts.get('block', 0)} 项禁止项 / {counts.get('warn', 0)} 项告警"}
 
 
@@ -553,13 +633,17 @@ def rewrite_directives(findings: list[dict]) -> list[str]:
 
 
 def report_markdown(report: dict) -> str:
-    lines = ["# 交付就绪报告", "",
-             f"- 规格版本：{report.get('spec_version')}",
-             f"- 交付档位：{report.get('profile')}（{report.get('enforcement')}）",
-             f"- 结论：{report.get('summary')}；禁止项阻断 {report.get('blocking_count')} 项",
-             f"- 指标：{report.get('metrics')}", "",
-             "| 编号 | 级别 | 位置 | 问题类型 | 命中口径 |",
-             "| :--- | :--- | :--- | :--- | :--- |"]
+    head = ["# 交付就绪报告", "",
+            f"- 规格版本：{report.get('spec_version')}",
+            f"- 交付档位：{report.get('profile')}（{report.get('enforcement')}）"]
+    # v4.36.0：标尺说明（形态 + 平台基准）。放在结论前，作者先知道「拿什么标准衡量我」，
+    # 再看那一串禁止项——否则报告读起来只像挑刺。
+    notes = [f"- 标尺：{n}" for n in (report.get("notes") or []) if n]
+    lines = head + notes + [
+        f"- 结论：{report.get('summary')}；禁止项阻断 {report.get('blocking_count')} 项",
+        f"- 指标：{report.get('metrics')}", "",
+        "| 编号 | 级别 | 位置 | 问题类型 | 命中口径 |",
+        "| :--- | :--- | :--- | :--- | :--- |"]
     for f in report.get("findings", [])[:200]:
         detail = str(f["detail"]).replace("|", "/")[:110]
         lines.append(f"| {f['code']} | {f['severity']} | {f['location']} | {f['name']} | {detail} |")

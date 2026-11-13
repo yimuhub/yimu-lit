@@ -1559,8 +1559,16 @@ def _apply_foreshadow_ops(delta: dict, ops: list, n: int) -> None:
             continue
         action = _text(op.get("action") or op.get("op"), 20).lower()
         fields = {}
-        if _text(op.get("description"), 600):
-            fields["description"] = _text(op.get("description"), 600)
+        # 描述兜底：模型给伏笔起名时常用 name / text / desc，而不是 description。
+        # 老实现只认 description，导致状态库里 447 条伏笔「有 id、没描述」——
+        # 账本看起来有 479 条，实际可读、可兑现校验的不到一成。
+        for _k in ("description", "desc", "text", "detail", "name", "title"):
+            _v = _text(op.get(_k), 600)
+            if _v and _v != fid:
+                fields["description"] = _v
+                break
+        if "description" not in fields and fid:
+            fields["description"] = fid
         for key in ("due_from", "due_to", "importance", "notes"):
             if op.get(key) not in (None, ""):
                 fields[key] = op.get(key)
@@ -1589,16 +1597,36 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
 
     out = {}
     if text.strip() and _llm_on(cfg2):
+        # 已登记伏笔清单：让模型「复用 id」而不是每章另起一个名字。
+        # 这是账本膨胀的直接成因——同一件信物被写成三条记录，逾期检查随即失效。
+        known_fg = []
+        try:
+            _st = state_mod.load(getattr(proj, "path", "") or "")
+            for _fid, _f in list(state_mod.effective_foreshadow(_st).items())[:24]:
+                _desc = _text((_f or {}).get("description"), 40)
+                _status = _text((_f or {}).get("status"), 10) or "open"
+                if _status == "open":
+                    known_fg.append(f"{_fid}={_desc}")
+        except Exception:
+            known_fg = []
+        _known_block = ("已登记且未兑现的伏笔（本章若推进/兑现它们，**必须原样复用 id**）：\n"
+                        + ("；".join(known_fg) if known_fg else "（暂无）") + "\n")
         system = ("你是长篇小说的连续性编辑。只从给定正文提取事实，不补充、不推断未出现的设定。"
                   "只输出严格 JSON。")
         user = (
             f"第{n}章《{card.get('title') or f'第{n}章'}》。\n"
             f"卷目标：{_text((v or {}).get('goal'), 200)}\n弧目标：{_text((a or {}).get('goal'), 200)}\n"
+            + _known_block +
             "请提取：summary(200-400字，只写本章发生的事)、beats(3-6条情节节拍)、"
             "state_delta(人物/地点/物品/势力的状态变化，只写正文明确出现的)、"
-            "foreshadow_ops(伏笔埋设/兑现/放弃；action=setup|pay|drop，id 自拟稳定短名)、"
+            "foreshadow_ops(伏笔埋设/兑现/放弃；action=setup|pay|drop)、"
             "issues(本章暴露的连续性问题)、quality_signals(score 0-100、hook、pacing、"
             "tension 1-10 紧张度、emotion 2-4字主导情绪、hook_type 断章钩子类型五选一：危机/谜题/情感/反转/抉择)。\n"
+            "foreshadow_ops 的硬纪律：\n"
+            "  · id 用 2-6 字稳定短名，不含章号、不含动作词；\n"
+            "  · 若本章涉及上面清单里的伏笔，复用它的 id，不要新建；\n"
+            "  · 每条必须带 importance（A=贯穿全书的主线谜团 / B=支线 / C=氛围细节）；\n"
+            "  · 单章新增不超过 2 条，宁缺毋滥：不是每个道具都是伏笔。\n"
             "JSON 结构：{\"summary\":\"\",\"beats\":[],\"state_delta\":{\"characters\":{},"
             "\"locations\":{},\"foreshadowing\":{},\"timeline\":[]},"
             "\"foreshadow_ops\":[],\"issues\":[],\"quality_signals\":{}}\n"
@@ -1945,8 +1973,10 @@ def plan_digest(proj) -> dict:
     if not flat_words:
         flat_words = _int(st["metrics"].get("words"), 0)
     due = state_mod.foreshadow_due(st, max(1, done), lookahead=15)
-    open_n = sum(1 for f in st["foreshadowing"].values() if f.get("status") == "open")
-    paid_n = sum(1 for f in st["foreshadowing"].values() if f.get("status") == "paid")
+    # 统计只算「有效伏笔」：空壳条目（无描述、无到期章）会让 open 数虚高十倍
+    _eff = state_mod.effective_foreshadow(st)
+    open_n = sum(1 for f in _eff.values() if f.get("status") == "open")
+    paid_n = sum(1 for f in _eff.values() if f.get("status") == "paid")
     issues = state_mod.validate(st)[:5]
     if len(due["overdue"]) >= 3:
         issues.append(f"{len(due['overdue'])} 条伏笔逾期未兑现")
