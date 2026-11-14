@@ -404,7 +404,7 @@ function renderChapterCard(msg, handlers = {}) {
 
 export function renderAssistantMessage(msg, handlers = {}) {
   const assistant = h('div', { class: 'msg msg-assistant', dataset: { id: msg.id } });
-  assistant.append(h('div', { class: 'msg-avatar', html: icon('quill', 14) }));
+  assistant.append(h('div', { class: 'msg-avatar', html: '<img class="logo-img" src="/v2/assets/logo.png" alt="一幕神笔">' }));
   const main = h('div', { class: 'msg-main' });
 
   const head = h('div', { class: 'msg-head' });

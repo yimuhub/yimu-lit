@@ -226,7 +226,7 @@ export function mountChatFloat({ getContext, onApplied, root } = {}) {
     h(
       'div',
       { class: 'cf-title' },
-      h('span', { class: 'cf-title-ico', html: icon('quill', 14) }),
+      h('span', { class: 'cf-title-ico', html: '<img class="logo-img" src="/v2/assets/logo.png" alt="一幕神笔">' }),
       h('span', { class: 'cf-title-text', text: '对话改稿' })
     ),
     recordsBtn,
@@ -332,7 +332,7 @@ export function mountChatFloat({ getContext, onApplied, root } = {}) {
       'aria-controls': panelId,
       on: { click: () => openPanel() }
     },
-    h('span', { class: 'cf-fab-ico', html: icon('quill', 17) }),
+    h('span', { class: 'cf-fab-ico', html: '<img class="logo-img" src="/v2/assets/logo.png" alt="一幕神笔">' }),
     h('span', { class: 'cf-fab-label', text: '对话改稿' })
   );
 

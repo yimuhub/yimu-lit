@@ -37,7 +37,7 @@ export function renderWelcome(container, ctx) {
   const hero = h(
     'div',
     { class: 'hero-head' },
-    h('div', { class: 'hero-mark', html: icon('quill', 20) }),
+    h('div', { class: 'hero-mark', html: '<img class="logo-img" src="/v2/assets/logo.png" alt="一幕神笔">' }),
     h('h1', { class: 'hero-title', text: '把念头，写成故事' }),
     h('p', {
       class: 'hero-sub',

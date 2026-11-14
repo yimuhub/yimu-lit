@@ -363,7 +363,7 @@ export function renderSidebar(container, ctx) {
   const brand = h(
     'a',
     { class: 'brand', href: '#/welcome', 'aria-label': '一幕·YIMU 神笔创作台首页' },
-    h('span', { class: 'brand-mark', html: icon('quill', 15) }),
+    h('span', { class: 'brand-mark', html: '<img class="logo-img" src="/v2/assets/logo.png" alt="一幕神笔">' }),
     h(
       'span',
       { class: 'brand-copy' },

@@ -148,7 +148,7 @@ export function createChatView({ ctx, composer, handlers = {} } = {}) {
     };
     const guide = MEDIUM_GUIDE[medium] || MEDIUM_GUIDE.novel;
     empty.append(
-      h('div', { class: 'hero-mark', html: icon('quill', 20) }),
+      h('div', { class: 'hero-mark', html: '<img class="logo-img" src="/v2/assets/logo.png" alt="一幕神笔">' }),
       h('h2', { text: guide.title }),
       h('p', { text: guide.hint })
     );
