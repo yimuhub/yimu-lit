@@ -697,7 +697,7 @@ def fix_chapter(ch_body, action, ctx):
     rewriter_skills = agent_skills_block("rewriter", cfg, "P4")
     if rewriter_skills:
         sys_p += "\n\n" + rewriter_skills
-    user_p = f"修复指令：{action}\n\n待修章节：\n{ch_body[:9000]}"
+    user_p = f"修复指令：{action}\n\n待修章节（全文，禁止以缺页为由要求补发）：\n{ch_body[:60000]}"
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="review", agent="rewriter")
 
@@ -736,7 +736,7 @@ def deslop_chapter(ch_body, ctx, max_findings=15, key="", chapter_no=0):
     if deslopper_skills:
         sys_p += "\n\n" + deslopper_skills
     user_p = ("【定点诊断（按行定位，行号为准）】\n" + "\n".join(flines) +
-              f"\n\n【重复高频 2-gram】{top_txt}\n\n待修章节：\n{ch_body[:9000]}")
+              f"\n\n【重复高频 2-gram】{top_txt}\n\n待修章节（全文，禁止以缺页为由要求补发）：\n{ch_body[:60000]}")
     try:
         cleaned = llm.chat([{"role": "system", "content": sys_p},
                             {"role": "user", "content": user_p}], cfg=cfg, stage="review", agent="deslopper")
@@ -1077,7 +1077,7 @@ def guided_rewrite(ch_body, requirements, constraints, cfg):
         sys_p += "\n\n" + rewriter_skills
     user_p = (f"【重写要求（必须逐条落实）】\n{requirements}\n\n"
               f"【全书约束（人物/设定/大纲/连续性，须保持不冲突）】\n{constraints[:6000]}\n\n"
-              f"【待重写原章】\n{ch_body[:9000]}")
+              f"【待重写原章（全文，禁止以缺页为由要求补发）】\n{ch_body[:60000]}")
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="review", agent="rewriter")
 

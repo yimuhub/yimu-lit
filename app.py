@@ -1130,9 +1130,12 @@ def _chat_attached(s, proj, msg):
             _bw = max(100, min(50000, int(_bw)))
             writer.supersede_rewrites(key)
             writer.clear_pause(key)
+            _repair = writer.repair_corrupted_chapters(proj, _bw)
             _shorts = writer.short_chapters(proj, _bw)
             if not _shorts:
-                return f"✅ 按正文实测，没有少于 {_bw} 字的章节，无需重写。"
+                _extra = (f"另外已从版本库还原 {len(_repair['repaired'])} 章被写成说明文字的原稿。"
+                          if _repair.get("repaired") else "")
+                return f"✅ 按正文实测，没有少于 {_bw} 字的章节，无需重写。{_extra}"
             _chs = [x["ch"] for x in _shorts]
             if brief_data:
                 _persist_brief(proj, _brief_for_rewrite(brief_data, _chs), msg, kind="rewrite")

@@ -334,6 +334,119 @@ def _clean_chapter_text(text, fallback_title=""):
     """
     return purity.chapter_text(text, fallback_title=fallback_title)
 
+
+# v4.38.3：模型把「请补发原文」这类说明文字当成章节正文写回磁盘，造成整章丢失。
+# 所有「候选稿写盘」路径统一过这两道闸：说明文字/空稿/篇幅塌陷一律拒绝。
+_META_HEADS = (
+    "当前诊断", "目前这份", "当前稿件", "当前贴出", "当前收到", "目前收到", "目前提供",
+    "当前待修", "当前正文", "当前章节", "当前粘贴", "当前提供的", "目前提供的", "目前收到的",
+    "已确认本次修订", "已按", "可以按这份", "收到。", "本次修订按", "本次按", "请补充",
+    "请直接粘贴", "请补发", "请继续粘贴", "无法可靠", "无法百分之百", "不能可靠地",
+)
+_META_MARKS = (
+    "请补充", "请直接粘贴", "请补发", "请继续粘贴", "无法可靠", "无法百分之百",
+    "不能可靠地", "我会按", "我将按", "可以按这份", "当前诊断", "目前这份", "当前稿件",
+    "当前贴出", "当前收到", "目前收到", "目前提供", "尚未收到", "当前待修", "当前正文",
+    "当前章节", "当前粘贴", "本次修订按", "已确认本次修订", "诊断单", "修改意见",
+    "定位问题", "信息缺", "无法执行整章", "后续正文缺失", "原文并不完整",
+)
+
+
+def looks_like_model_note(text):
+    """是不是模型写给用户的说明/追问，而不是小说正文。
+
+    判据故意保守：有规范章题或「## 本章概要」开头的按正文处理；只有「## 章节备注」
+    没有正文的（取文后不足 200 汉字）仍判坏稿。"""
+    s = (text or "").strip()
+    if not s:
+        return True
+    from bot import wordguard
+    if re.search(r"^#{1,3}\s*第\s*\d+\s*章", s) or s.startswith("## 本章概要"):
+        return wordguard.cn_len(_clean_chapter_text(s)) < 200
+    if any(s[:120].startswith(h) for h in _META_HEADS):
+        return True
+    return sum(1 for m in _META_MARKS if m in s) >= 2
+
+
+def rewrite_reject_reason(orig, cand):
+    """候选稿能不能覆盖原章：'' 表示可以；否则返回拒绝原因。"""
+    if not cand or not cand.strip():
+        return "候选稿为空"
+    if looks_like_model_note(cand):
+        return "候选稿是模型说明文字，不是正文"
+    n_new = len(re.sub(r"\s+", "", cand))
+    n_old = len(re.sub(r"\s+", "", orig or ""))
+    if n_old and n_new < max(400, int(n_old * 0.6)):
+        return f"篇幅塌陷（{n_new}/{n_old}）"
+    return ""
+
+
+def restore_best_version(proj, ch_no, min_words=3000):
+    """从版本库取最近一份「不是说明文字」的稿子；优先 ≥ min_words，否则取最长的一份。"""
+    from bot import wordguard
+    best = None
+    for v in versions.list_versions(proj.path, int(ch_no)):   # 新→旧
+        try:
+            t = versions.read_version(proj.path, int(ch_no), v["id"])
+        except Exception:
+            continue
+        if looks_like_model_note(t):
+            continue
+        cw = wordguard.cn_len(_clean_chapter_text(t))
+        if cw >= int(min_words):
+            return t, cw, v["ts"]
+        if best is None or cw > best[1]:
+            best = (t, cw, v["ts"])
+    return best or (None, 0, None)
+
+
+def repair_corrupted_chapters(proj, min_words=3000):
+    """把磁盘上被写成「模型说明文字」的章节从版本库还原（作者原稿优先）。
+
+    v4.38.3：此前的定向重写把超长章节截到 9000 字符再交给模型，模型回「请补发原文」，
+    这段说明被当正文写盘——全书 62 章因此只剩几百字说明。这里一次性还原，
+    还原前把坏稿也留一份快照，全过程可回退。"""
+    from bot import wordguard
+    plan = proj.plan() or {}
+    repaired, skipped = [], []
+    for c in plan.get("chapters") or []:
+        n = int(c.get("chapterNumber") or 0)
+        fp = os.path.join(proj.path, c.get("filePath") or "")
+        if not n or not c.get("filePath") or not os.path.exists(fp):
+            continue
+        try:
+            cur = open(fp, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if not looks_like_model_note(cur):
+            continue
+        cur_w = wordguard.cn_len(_clean_chapter_text(cur))
+        txt, w, ts = restore_best_version(proj, n, min_words=min_words)
+        if not txt or w <= cur_w:
+            skipped.append({"ch": n, "words": cur_w})
+            continue
+        versions.snapshot(proj.path, n, cur, label="坏稿备份")
+        atomic_write_text(fp, txt)
+        repaired.append({"ch": n, "before_words": cur_w, "after_words": w, "version": ts})
+        try:
+            c["wordCount"] = int(w)
+            c["wordCountPass"] = int(w) >= int(min_words)
+        except Exception:
+            pass
+    if repaired:
+        try:
+            proj.save_plan(plan)
+        except Exception:
+            pass
+        proj.log(f"♻️ 已从版本库还原 {len(repaired)} 章被写成说明文字的原稿："
+                 + "、".join(f"第{r['ch']}章" for r in repaired[:12])
+                 + ("…" if len(repaired) > 12 else ""))
+    if skipped:
+        proj.log(f"⚠️ 仍有 {len(skipped)} 章找不到可还原的正文："
+                 + "、".join(f"第{s['ch']}章" for s in skipped[:12]))
+    return {"repaired": repaired, "skipped": skipped}
+
+
 def _cfg_defaults():
     try:
         return json.load(open(os.path.join(ROOT, "config.json"), encoding="utf-8")).get("defaults", {}) or {}
@@ -2297,11 +2410,14 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
             ds = workflow.deslop_chapter(orig_body, {"cfg": plan.get("config") or {}},
                                          key=_bkey(proj), chapter_no=ch_no)
             _ds_clean = purity.sanitize_chapter(ds.get("cleaned") or "") if ds.get("cleaned") else ""
-            if _ds_clean and _ds_clean.strip() and _ds_clean != orig_body:
+            _ds_why = rewrite_reject_reason(orig_body, _ds_clean) if (_ds_clean and _ds_clean != orig_body) else ""
+            if _ds_clean and _ds_clean.strip() and _ds_clean != orig_body and not _ds_why:
                 atomic_write_text(fp, _ds_clean)
                 proj.log(f"🧹 第{ch_no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
                 orig_body = _ds_clean
                 base_score = score_chapter(proj, ch_no) or base_score
+            elif _ds_why and _ds_clean != orig_body:
+                proj.log(f"↩️ 第{ch_no}章 deslop 结果被拒（{_ds_why}），保留原稿")
         except Exception:
             pass
     try:
@@ -2338,11 +2454,9 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
         new = _clean_chapter_text(new or "")
         if not new or not new.strip():
             break   # 重写产出为空：无材料可保留，继续轮次只会重复失败
-        # 长度塌陷直接判失败：截断/丢段的新稿再高分也不是原章
-        _n_new = len(re.sub(r"\s+", "", new))
-        _n_old = len(re.sub(r"\s+", "", body))
-        if _n_new < max(400, int(_n_old * 0.6)):
-            proj.log(f"↩️ 第{ch_no}章重写稿仅 {_n_new} 字（原 {_n_old}），判为截断，保留原章")
+        _why = rewrite_reject_reason(body, new)
+        if _why:
+            proj.log(f"↩️ 第{ch_no}章重写稿被拒（{_why}），保留原章")
             break
         versions.snapshot(proj.path, ch_no, body, label="重写前")
         _guard_set(proj, ch_no, body, new)
@@ -3181,10 +3295,13 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
             new = re.sub(r"```[a-zA-Z]*\n?", "", workflow.fix_chapter(old, act.get("action", ""), {"cfg": cfg})).strip()
             # v4.22.1：审稿修复稿也过净化——只留四段结构，修复说明/评分不落盘
             new = purity.sanitize_chapter(new) if new else ""
-            if new.strip():
+            _why = rewrite_reject_reason(old, new)
+            if not _why:
                 versions.snapshot(proj.path, cno, old, label="审稿修复前")
                 atomic_write_text(fp, new)
                 fixed += 1
+            else:
+                proj.log(f"↩️ 第{cno}章审稿修复被拒（{_why}），保留原稿")
         if fixed:
             book_text = _book()
             review = workflow.five_role_review(book_text, cfg, l1["findings"], key=_bkey(proj)) or {}
@@ -4347,10 +4464,24 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
         body = open(fp, encoding="utf-8").read()
     except OSError as e:
         return {"ch": ch_no, "kept": False, "note": f"读取失败：{e}"}
+    restored = False
+    if looks_like_model_note(body):
+        # 坏稿（模型说明文字）不能拿去扩写：先还原版本库里的原稿
+        txt, w, ts = restore_best_version(proj, ch_no, min_words=int(target_words))
+        if txt:
+            versions.snapshot(proj.path, ch_no, body, label="坏稿备份")
+            atomic_write_text(fp, txt)
+            proj.log(f"♻️ 第{ch_no}章原稿是模型说明文字，已从版本库还原 {w} 字"
+                     + (f"（{ts}）" if ts else ""))
+            body = txt
+            restored = True
+        else:
+            return {"ch": ch_no, "kept": False, "note": "原稿是模型说明文字，版本库没有可还原的正文"}
     before_words = wordguard.cn_len(_clean_chapter_text(body))
     if before_words >= int(target_words):
-        return {"ch": ch_no, "kept": False, "before_words": before_words,
-                "after_words": before_words, "note": "已达字数"}
+        return {"ch": ch_no, "kept": restored, "before_words": before_words,
+                "after_words": before_words,
+                "note": "已从版本库还原原稿（已达字数）" if restored else "已达字数"}
     base_score = None
     try:
         base_score = score_chapter(proj, ch_no)
@@ -4371,12 +4502,15 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
             break
         cand = _clean_chapter_text(cand or "")
         cn = wordguard.cn_len(cand)
-        if not cand.strip() or cn <= cur_w + 80:
+        if not cand.strip() or looks_like_model_note(cand) or cn <= cur_w + 80:
             break
         cur, cur_w = cand, cn
         if cur_w >= int(target_words * 0.98):
             break
     if cur_w <= before_words + 80:
+        if restored:
+            return {"ch": ch_no, "kept": True, "before_words": before_words,
+                    "after_words": before_words, "note": "已从版本库还原原稿"}
         return {"ch": ch_no, "kept": False, "before_words": before_words,
                 "after_words": before_words, "note": "扩写没有增加有效字数"}
     _guard_set(proj, ch_no, body, cur)
@@ -4417,6 +4551,10 @@ def run_short_expand(key, chapters=None, below_words=3000, workers=2):
     """按「正文少于 below_words」逐章补足。可被「继续」复用，也支持新指令取代。"""
     import concurrent.futures as _cf
     proj = Project(_project_dir(key), key)
+    try:
+        repair_corrupted_chapters(proj, min_words=int(below_words))
+    except Exception as e:
+        proj.log(f"⚠️ 坏稿还原失败（继续补字）：{e}")
     my_gen = int(_RW_GEN.get(key) or 0)
     _RW_CANCEL.discard(key)
     chapters = sorted({int(c) for c in (chapters or [])
@@ -4534,13 +4672,11 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
                 reqs.append(_db)
         new = workflow.guided_rewrite(orig, "\n".join(reqs), cons, cfg)
         new = _clean_chapter_text(new or "")
-        if not new.strip():
-            if p: p.update(status="done", ok=False, new_words=0)
-            continue
-        if len(re.sub(r"\s+", "", new)) < max(400, int(len(re.sub(r"\s+", "", orig)) * 0.6)):
+        _why = rewrite_reject_reason(orig, new)
+        if _why:
             if p: p.update(status="reverted", ok=False, orig_words=len(orig), new_words=len(new),
-                           note="新稿明显截断/缺段 → 保留原稿")
-            proj.log(f"↩️ 第{n}章重写稿明显短于原章，判为截断，保留原稿")
+                           note=f"{_why} → 保留原稿")
+            proj.log(f"↩️ 第{n}章重写稿被拒（{_why}），保留原稿")
             continue
         # ---- v0.7 R3：逐章『保留更好』守护：写新稿→逐章评分→新稿分低于该章原分则回滚原稿（绝不把书改差）----
         # v4.38.1：原章必须先有真实基线分（不能拿别的正文的旧分冒充）；评不出来就不冒进，保留原稿。
