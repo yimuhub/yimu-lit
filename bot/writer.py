@@ -383,10 +383,20 @@ def rewrite_reject_reason(orig, cand):
     return ""
 
 
+def _ends_clean(text):
+    """正文是否收在一句完整的话上（历史稿常被截断在半句）。"""
+    c = _clean_chapter_text(text or "").rstrip()
+    if not c or "</text>" in c:
+        return False
+    if c.endswith("补写缺失内容。"):
+        return False
+    return c[-1] in "。！？…”』」）"
+
+
 def restore_best_version(proj, ch_no, min_words=3000):
-    """从版本库取最近一份「不是说明文字」的稿子；优先 ≥ min_words，否则取最长的一份。"""
+    """从版本库取最近一份「不是说明文字」的稿子；优先 ≥ min_words、且结尾完整。"""
     from bot import wordguard
-    best = None
+    cands = []
     for v in versions.list_versions(proj.path, int(ch_no)):   # 新→旧
         try:
             t = versions.read_version(proj.path, int(ch_no), v["id"])
@@ -395,11 +405,16 @@ def restore_best_version(proj, ch_no, min_words=3000):
         if looks_like_model_note(t):
             continue
         cw = wordguard.cn_len(_clean_chapter_text(t))
-        if cw >= int(min_words):
-            return t, cw, v["ts"]
-        if best is None or cw > best[1]:
-            best = (t, cw, v["ts"])
-    return best or (None, 0, None)
+        cands.append((t, cw, v["ts"], _ends_clean(t)))
+    for c in cands:
+        if c[1] >= int(min_words) and c[3]:
+            return c[0], c[1], c[2]
+    for c in cands:
+        if c[1] >= int(min_words):
+            return c[0], c[1], c[2]
+    clean = [c for c in cands if c[3]]
+    pool = clean or cands
+    return max(pool, key=lambda c: c[1])[:3] if pool else (None, 0, None)
 
 
 def restore_longer_version(proj, ch_no, cur_words, target_words):
@@ -408,6 +423,8 @@ def restore_longer_version(proj, ch_no, cur_words, target_words):
     v4.38.5：全书有一批章节被截断成半句（如第 10 章停在「后面跟」），
     再让模型扩写只会被要求「补发原文」。版本库里通常保留了截断前的完整稿，
     直接还原比重新生成更稳。只有当前稿不足目标、且历史稿明显更长时才还原。
+    v4.38.6：只还原「收在完整句子」上的历史稿——半句截断的旧稿宁可不用，
+    让当前完整短稿去扩写，避免把完整的 2880 字换成半句的 4730 字。
     """
     from bot import wordguard
     need = max(int(target_words), int(int(cur_words) * 1.15))
@@ -416,7 +433,7 @@ def restore_longer_version(proj, ch_no, cur_words, target_words):
             t = versions.read_version(proj.path, int(ch_no), v["id"])
         except Exception:
             continue
-        if looks_like_model_note(t):
+        if looks_like_model_note(t) or not _ends_clean(t):
             continue
         cw = wordguard.cn_len(_clean_chapter_text(t))
         if cw >= need:
@@ -4536,7 +4553,9 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
         cand = _clean_chapter_text(cand or "")
         cn = wordguard.cn_len(cand)
         if not cand.strip() or looks_like_model_note(cand) or cn <= cur_w + 80:
-            break
+            # 模型偶尔只回一版等长改写；别一次失败就收工，换一轮再试
+            proj.log(f"⚠️ 第{ch_no}章补字第{_ + 1}轮没有增字（{cn}/{cur_w}），重试")
+            continue
         cur, cur_w = cand, cn
         if cur_w >= int(target_words * 0.98):
             break

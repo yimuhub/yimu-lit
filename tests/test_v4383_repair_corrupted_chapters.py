@@ -108,7 +108,7 @@ def test_expand_restored_long_version_needs_no_llm(tmp_path, monkeypatch):
 
 def test_truncated_short_chapter_restores_longer_version(tmp_path, monkeypatch):
     truncated = "# 第1章 交易\n\n## 正文\n" + "短" * 1200 + "后面跟"
-    complete = "# 第1章 交易\n\n## 正文\n" + "完整" * 1600
+    complete = "# 第1章 交易\n\n## 正文\n" + "完整" * 1600 + "。"
     plan = _plan(str(tmp_path), {1: truncated})
     proj = _Proj(str(tmp_path), plan)
     versions.snapshot(str(tmp_path), 1, complete, label="完整稿")
@@ -122,6 +122,27 @@ def test_truncated_short_chapter_restores_longer_version(tmp_path, monkeypatch):
     assert r["after_words"] >= 3000
 
 
+def test_truncated_long_version_is_not_restored(tmp_path, monkeypatch):
+    current = "# 第1章 交易\n\n## 正文\n" + "短" * 1200 + "。"
+    truncated_old = "# 第1章 交易\n\n## 正文\n" + "旧" * 4000 + "半句"
+    plan = _plan(str(tmp_path), {1: current})
+    proj = _Proj(str(tmp_path), plan)
+    versions.snapshot(str(tmp_path), 1, truncated_old, label="截断旧稿")
+    monkeypatch.setattr(writer, "score_chapter", lambda _p, _n: 80)
+    monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})
+    called = {}
+
+    def fake_expand(body, ctx, min_words=3000, current_words=0):
+        called["yes"] = True
+        return "# 第1章 交易\n\n## 正文\n" + "扩" * 3200 + "。"
+
+    monkeypatch.setattr(writer.workflow, "expand_chapter", fake_expand)
+    r = writer.expand_short_chapter(proj, 1, target_words=3000)
+    assert called.get("yes")
+    assert r["kept"] is True
+    assert "旧" * 100 not in open(os.path.join(str(tmp_path), "01.md"), encoding="utf-8").read()
+
+
 def test_expand_keeps_small_score_dip(tmp_path, monkeypatch):
     plan = _plan(str(tmp_path), {1: "# 第1章 交易\n\n## 正文\n" + "原" * 1200})
     proj = _Proj(str(tmp_path), plan)
@@ -133,6 +154,26 @@ def test_expand_keeps_small_score_dip(tmp_path, monkeypatch):
                         "# 第1章 交易\n\n## 正文\n" + "扩" * 3200)
     r = writer.expand_short_chapter(proj, 1, target_words=3000)
     assert r["kept"] is True
+
+
+def test_expand_retries_after_no_growth_round(tmp_path, monkeypatch):
+    body = "# 第1章 交易\n\n## 正文\n" + "原" * 2800
+    plan = _plan(str(tmp_path), {1: body})
+    proj = _Proj(str(tmp_path), plan)
+    calls = []
+
+    def fake_expand(cur, ctx, min_words=3000, current_words=0):
+        calls.append(1)
+        if len(calls) == 1:
+            return cur                       # 模型第一轮只回等长改写
+        return "# 第1章 交易\n\n## 正文\n" + "扩" * 3300
+
+    monkeypatch.setattr(writer, "score_chapter", lambda _p, _n: 80)
+    monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})
+    monkeypatch.setattr(writer.workflow, "expand_chapter", fake_expand)
+    r = writer.expand_short_chapter(proj, 1, target_words=3000)
+    assert len(calls) == 2
+    assert r["kept"] is True and r["after_words"] >= 3000
 
 
 def test_fix_chapter_sends_full_chapter_body(monkeypatch):
