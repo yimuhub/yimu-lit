@@ -43,6 +43,11 @@ _GREETING_REPLY = (
     "· 继续创作：打开作品后说「继续」「把第3章重写一下」「节奏再紧一点」；\n"
     "· 查进度：随时问「进度」；导出在作品面板的「导出」按钮。")
 
+def _journal_pdirs() -> list[str]:
+    """任务档案对账要的是完整目录；writer._project_dirs() 只给目录名。"""
+    return [os.path.join(writer.PROJECTS_DIR, d) for d in writer._project_dirs()]
+
+
 @asynccontextmanager
 async def _lifespan(_app):
     syslog_mod.log_event("system", "服务启动", {"version": version.current(), "platform": f"{os.name}/{sys.platform}"},
@@ -59,7 +64,9 @@ async def _lifespan(_app):
         # v4.23.0：任务档案启动对账——进程被上游断流/关机杀掉时来不及写「已暂停」，
         # 档案会永远停在 running，「继续」因此不肯接手。启动一次，全部改标为可续跑。
         try:
-            k = journal.reconcile_all(writer._project_dirs())
+            # _project_dirs() 返回的是目录名，对账必须传完整路径；
+            # 传名字会让任务档案读不到，僵尸任务永远停在 running。
+            k = journal.reconcile_all(_journal_pdirs())
             if k:
                 print(f"[recover] 已将 {k} 个中断任务标记为可继续", flush=True)
         except Exception as e:

@@ -233,6 +233,18 @@ def test_reconcile_all_counts(tmp_path, monkeypatch):
     assert journal.reconcile_all(dirs) == 0      # 幂等
 
 
+def test_startup_reconcile_uses_full_project_paths(tmp_path, monkeypatch):
+    """启动对账必须传完整路径；只传目录名会读不到任务档案，僵尸任务永远 running。"""
+    d = tmp_path / "book"
+    d.mkdir()
+    journal.begin(str(d), "score", "补评分", params={"chapters": [1]}, total=1)
+    monkeypatch.setattr(writer, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr(writer, "_project_dirs", lambda: ["book"])
+    assert appmod._journal_pdirs() == [str(d)]
+    assert journal.reconcile_all(appmod._journal_pdirs()) == 1
+    assert journal.current_task(str(d))["status"] == "paused"
+
+
 # ---------------------------------------------------------------- 接口层
 
 def test_resume_endpoint_reports_kind(tmp_path, monkeypatch):
