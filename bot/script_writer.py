@@ -215,6 +215,16 @@ def _safe(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "", name or "")[:40] or "未命名"
 
 
+def _maybe_final_review(proj, plan) -> None:
+    """全部场次完成 → 自动成书终审（字数 → 分件评分 → 全篇校验）。异常静默。"""
+    try:
+        if (plan or {}).get("status") == "completed":
+            from . import final_review as _fr
+            _fr.auto(os.path.basename(proj.path))
+    except Exception:
+        pass
+
+
 _BODY_KEEP_CHARS = 800      # 旧稿达到这个字数就算「合格正文」，不许被短稿顶掉
 
 
@@ -1243,6 +1253,7 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
             plan["status"] = "in_progress"
         proj.save_plan(plan)
         proj.log(f"⚡ 并行分场齐写结束：{done}/{total} 场完成")
+        _maybe_final_review(proj, plan)   # v4.38.0：全部完成后自动成书终审
         # AI 短剧/漫剧自动分镜
         try:
             if cfg.get("form") in ("short_drama", "comic_drama") and not (plan.get("meta") or {}).get("storyboard_done"):
@@ -1428,6 +1439,7 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
         plan["status"] = "in_progress"
     proj.save_plan(plan)
     proj.log(f"✅ 本轮写完 {done} 场")
+    _maybe_final_review(proj, plan)   # v4.38.0：全部完成后自动成书终审
     # v4.5.0：AI 短剧/漫剧 → 写完自动拆分镜头（后台线程，不阻塞收尾）
     try:
         if cfg.get("form") in ("short_drama", "comic_drama") and not (plan.get("meta") or {}).get("storyboard_done"):

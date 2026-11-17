@@ -454,6 +454,12 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
     plan["meta"]["verdict"] = report.get("verdict") or plan["meta"].get("verdict") or ""
     proj.save_plan(plan)
     proj.log("✅ 定稿完成")
+    # v4.38.0：完成后自动成书终审（字数 → 评分/重写 → 格律与逻辑校验）
+    try:
+        from . import final_review as _fr
+        _fr.auto(os.path.basename(proj.path))
+    except Exception:
+        pass
 
 
 def resume_project(key: str) -> PoetryProject | None:

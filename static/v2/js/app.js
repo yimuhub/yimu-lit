@@ -28,7 +28,7 @@ import { renderSession } from './views/session.js';
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
    缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
    tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
-const CSS_V = '325';
+const CSS_V = '327';
 
 const els = {
   app: document.getElementById('app'),
@@ -885,15 +885,23 @@ function startLive(key) {
     patch('work', (w) => {
       if (!w) return w;
       const prog = data.progress || {};
+      const _paused = Boolean(data.paused) || Boolean(data.activity && data.activity.status === 'paused');
       return {
         ...w,
         /* v4.33.1：作业登记在跑也算「创作中」——有些引擎准备素材时 status 还是 false，
-           只信 status 会让按钮在启动阶段被误判成「继续」 */
-        running: Boolean(data.running || (job && !job.finished)),
-        paused: Boolean(data.paused),
+           只信 status 会让按钮在启动阶段被误判成「继续」。
+           v4.38.0：任务档案已暂停时优先信档案，陈旧的 job 不得把按钮顶回「创作中」。 */
+        running: !_paused && Boolean(data.running || (job && !job.finished)),
+        paused: _paused,
         done: prog.done != null ? prog.done : w.done,
         total: prog.total != null ? prog.total : w.total,
-        phase: data.phase || w.phase
+        phase: data.phase || w.phase,
+        /* v4.38.0：状态条的唯一事实源——任务档案说了算，切书回来仍显示
+           「正在写第 N 章 / 全书终审中 / 已暂停」，不再退回旧章节。 */
+        activity: data.activity || w.activity || null,
+        journal: data.journal || w.journal || null,
+        current_chapter: data.current_chapter != null ? data.current_chapter : w.current_chapter,
+        stage: data.stage || w.stage || ''
       };
     });
     /* v4.33.1：旧逻辑用「数组长度」判断有没有新日志——固定返回最后 8 行时长度恒等，
@@ -1102,6 +1110,31 @@ async function ensureWork(key) {
   }
 }
 
+/* v4.38.0：按作品暂存对话区。
+   切书时 onRoute 会 resetChat()，此前步骤卡/实时输出/刚完成的章节卡全部丢失，
+   切回来只剩历史章节卡。这里在切走前把「已稳定的对话内容」按 key 暂存，
+   切回时先恢复，再与后端历史合并（历史是权威，但不是全部）。
+   只暂存已完成的步骤卡与消息；正在流式的卡由后端 stream_state 续传，避免重复。 */
+const _chatCache = new Map();
+const CHAT_CACHE_BOOKS = 12;
+function _stashChat() {
+  const s = store.get();
+  const key = s.currentKey;
+  const msgs = (s.chat && s.chat.messages) || [];
+  if (!key || !msgs.length) return;
+  _chatCache.set(key, msgs.filter((m) => !(m && m.stream && m.step && m.step.streaming)).slice(-400));
+  while (_chatCache.size > CHAT_CACHE_BOOKS) {
+    const oldest = _chatCache.keys().next().value;
+    if (oldest === key) break;
+    _chatCache.delete(oldest);
+  }
+}
+function _restoreChat(key) {
+  const cached = key && _chatCache.get(key);
+  if (!cached || !cached.length) return;
+  patch('chat', { messages: cached.slice() });
+}
+
 function onRoute(route) {
   const prev = store.get();
   const key = route.name === 'work' || route.name === 'bench' ? route.key : '';
@@ -1117,7 +1150,9 @@ function onRoute(route) {
   if (key !== prev.currentKey) {
     loadedKey = '';
     stopLive();
+    _stashChat();
     resetChat();
+    _restoreChat(key);
     store.set({
       currentKey: key,
       workMedium: mediumOf(key),

@@ -1577,3 +1577,72 @@
 
 /* v4.26.1 总编辑岗位徽标 */
 .step-ava-supervisor { background: var(--accent-soft-2); color: var(--accent-ink); }
+
+/* v4.38.0 创作状态条：切书/刷新后仍显示「此刻在做什么」（任务档案驱动的真实进度） */
+.session-activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-soft-2);
+  background: var(--accent-soft-1, rgba(120, 90, 255, 0.06));
+  color: var(--ink-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.session-activity.is-paused {
+  border-color: var(--line-soft, rgba(0, 0, 0, 0.08));
+  background: var(--hover, rgba(0, 0, 0, 0.03));
+  color: var(--ink-caption);
+}
+
+.session-activity.is-review {
+  border-color: var(--warn-border, rgba(240, 160, 40, 0.35));
+  background: var(--warn-soft, rgba(240, 160, 40, 0.07));
+}
+
+.session-activity .sa-text {
+  color: var(--ink-primary);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-activity.is-paused .sa-text {
+  color: var(--ink-secondary);
+}
+
+.session-activity .sa-meta {
+  margin-left: auto;
+  color: var(--ink-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.session-activity .sa-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-dimmed);
+}
+
+.session-activity .sa-spinner {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid var(--accent-soft-2);
+  border-top-color: var(--accent, #6c5ce7);
+  animation: sa-spin 0.9s linear infinite;
+}
+
+.session-activity.is-review .sa-spinner {
+  border-top-color: var(--warn-label, #c98416);
+}
+
+@keyframes sa-spin {
+  to { transform: rotate(360deg); }
+}

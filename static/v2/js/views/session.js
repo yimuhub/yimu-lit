@@ -204,12 +204,55 @@ export function renderSession(container, ctx = {}) {
                   tokens: item.tokens == null ? null : Number(item.tokens),
                   quality: item.quality == null ? null : Number(item.quality),
                   ts: String(item.completedAt || '')
-                }
+                },
+                // 章节卡归位用「首次完成时刻」，重写不改变它
+                __sortTs: _chFirst.get(item.no) ?? (item.ts || 0)
               };
             }
-            return base;
+            return { ...base, __sortTs: item.ts || 0 };
           });
-          return { ...cs, messages: msgs };
+          /* v4.38.0：历史是权威，但不是全部。
+             旧逻辑整份替换 messages —— 后台正在写作时，已经上屏的步骤卡、
+             实时流卡、刚完成的章卡会被一次历史刷新抹掉，用户看到的就是
+             「切回来只剩章节卡 / 详细工作内容没了」。现在改成合并：
+             ① 历史消息与章节卡保留（章节卡去重后历史版优先，带评分/tokens）；
+             ② 本次会话的步骤卡（kind==='step' / stream / step-live-*）全部保留；
+             ③ 历史里还没有的本地消息（刚发出、刚落盘慢半拍）也保留；
+             ④ 按真实时间戳交错排序，步骤卡回到它发生的时刻。 */
+          const existing = Array.isArray(cs.messages) ? cs.messages : [];
+          const histCh = new Set(msgs.filter((m) => m.chapter != null).map((m) => Number(m.chapter)));
+          const histSig = new Set(
+            msgs.filter((m) => m.chapter == null)
+              .map((m) => `${m.role}|${String(m.content || '').trim()}`)
+          );
+          const nowSec = Date.now() / 1000;
+          const kept = [];
+          for (const m of existing) {
+            if (!m) continue;
+            if (m.kind === 'step' || m.stream || /^step-live-/.test(String(m.id || ''))) {
+              kept.push(m);
+              continue;
+            }
+            if (m.chapter != null) {
+              if (histCh.has(Number(m.chapter))) continue;   // 历史章卡更全（评分/tokens）
+              kept.push({ ...m, __sortTs: m.__sortTs ?? nowSec });
+              continue;
+            }
+            if (histSig.has(`${m.role}|${String(m.content || '').trim()}`)) continue;
+            kept.push(m);
+          }
+          const sortTs = (m) => {
+            if (m.__sortTs != null) return m.__sortTs;
+            if (m.ts) return m.ts;
+            if (m.step && m.step.ts) return Number(m.step.ts) || nowSec;
+            if (m.chapterMeta && m.chapterMeta.ts) return Number(m.chapterMeta.ts) || nowSec;
+            const ca = m.created_at ? Date.parse(m.created_at) : 0;
+            return ca ? ca / 1000 : nowSec;
+          };
+          const merged = [...msgs, ...kept].map((m, i) => ({ ...m, __ord: i }));
+          merged.sort((a, b) => (sortTs(a) - sortTs(b)) || (a.__ord - b.__ord));
+          for (const m of merged) delete m.__ord;
+          return { ...cs, messages: merged };
         });
       }
     } catch (e) {
@@ -305,47 +348,94 @@ export function renderSession(container, ctx = {}) {
   function paintBanner() {
     const state = store.get();
     if (state.currentKey !== mountKey) return;
-    const sig = `${Boolean(state.work)}|${state.workError || ''}`;
+    /* v4.38.0：状态条的唯一事实源是服务端 activity（任务档案）。
+       切书回来第一帧就能看到「正在写第 30 章 · 写作中」，不用等步骤流。 */
+    const work = state.work || null;
+    const act = (work && work.activity) || null;
+    const running = Boolean(work && work.running);
+    const paused = Boolean((work && work.paused) || (act && act.paused));
+    const phase = (work && work.phase) || '';
+    const sig = JSON.stringify({
+      h: Boolean(work),
+      e: state.workError || '',
+      r: running,
+      p: paused,
+      ph: phase,
+      a: act && act.text,
+      c: work && work.current_chapter,
+      d: work && work.done,
+      t: work && work.total,
+      w: work && (work.total_words || work.words)
+    });
     if (sig === bannerSig) return;
     bannerSig = sig;
     bannerSlot.textContent = '';
 
-    if (state.work) return;
-    const row = h('div', { class: state.workError ? 'msg-error' : 'session-loading' });
-    if (state.workError) {
-      row.setAttribute('role', 'alert');
-      row.append(
-        h('span', { html: icon('alert', 15) }),
-        h(
-          'div',
-          { class: 'err-main' },
-          h('strong', { text: '作品没有加载出来' }),
-          h('div', { text: state.workError })
-        ),
-        h(
-          'div',
-          { class: 'err-actions' },
-          h('button', {
-            class: 'err-btn',
-            type: 'button',
-            text: '重新加载',
-            on: {
-              click: () => {
-                if (ctx.refreshWork) ctx.refreshWork();
-                else location.reload();
+    if (!work) {
+      const row = h('div', { class: state.workError ? 'msg-error' : 'session-loading' });
+      if (state.workError) {
+        row.setAttribute('role', 'alert');
+        row.append(
+          h('span', { html: icon('alert', 15) }),
+          h(
+            'div',
+            { class: 'err-main' },
+            h('strong', { text: '作品没有加载出来' }),
+            h('div', { text: state.workError })
+          ),
+          h(
+            'div',
+            { class: 'err-actions' },
+            h('button', {
+              class: 'err-btn',
+              type: 'button',
+              text: '重新加载',
+              on: {
+                click: () => {
+                  if (ctx.refreshWork) ctx.refreshWork();
+                  else location.reload();
+                }
               }
-            }
-          })
-        )
-      );
-    } else {
-      row.setAttribute('aria-live', 'polite');
-      row.append(
-        h('span', { class: 'skeleton', style: { width: '18px', height: '18px', borderRadius: '6px' } }),
-        h('span', { class: 'skeleton skeleton-line', style: { width: '38%' } }),
-        h('span', { class: 'hint-text', text: '正在加载作品…' })
-      );
+            })
+          )
+        );
+      } else {
+        row.setAttribute('aria-live', 'polite');
+        row.append(
+          h('span', { class: 'skeleton', style: { width: '18px', height: '18px', borderRadius: '6px' } }),
+          h('span', { class: 'skeleton skeleton-line', style: { width: '38%' } }),
+          h('span', { class: 'hint-text', text: '正在加载作品…' })
+        );
+      }
+      bannerSlot.append(row);
+      return;
     }
+
+    const reviewing = phase === 'reviewing' || (act && act.kind === 'review');
+    const actText = (act && act.text) || '';
+    if (!running && !paused && !reviewing && !actText) return;
+
+    const text = paused
+      ? (actText || `已暂停${work.current_chapter ? ` · 第 ${work.current_chapter} 章` : ''}`)
+      : (actText
+        || (reviewing ? '正在全书终审' : (work.current_chapter ? `正在写第 ${work.current_chapter} 章` : '正在创作')));
+    const meta = [];
+    if (!actText && work.current_chapter) meta.push(`第 ${work.current_chapter} 章`);
+    if (!paused && work.total) meta.push(`${work.done || 0}/${work.total}`);
+    const words = Number(work.total_words || work.words || 0);
+    if (words > 0) meta.push(`${(words / 10000).toFixed(1)} 万字`);
+    if (paused) meta.push('点「▶ 继续」接着写');
+
+    const row = h('div', {
+      class: `session-activity${paused ? ' is-paused' : ''}${reviewing ? ' is-review' : ''}`,
+      role: 'status',
+      'aria-live': 'polite'
+    });
+    row.append(
+      h('span', { class: paused ? 'sa-icon' : 'sa-spinner', html: paused ? icon('pause', 12) : '' }),
+      h('span', { class: 'sa-text', text }),
+      meta.length ? h('span', { class: 'sa-meta', text: meta.join(' · ') }) : null
+    );
     bannerSlot.append(row);
   }
 
@@ -927,9 +1017,17 @@ export function renderSession(container, ctx = {}) {
       }
       /* v4.21.7：回放批次跳过「章内过程」事件（chapter>0）——同一章所有 Agent 的
          思考/工作/产出已收进章节完成卡的「本章过程」下拉，不再散落刷屏；
-         实时创作批次不受影响（保持当前逐步展示形式）。 */
+         实时创作批次不受影响（保持当前逐步展示形式）。
+         v4.38.0：但「当前正在做的那一章」必须回放——切书回来若把它也过滤掉，
+         用户就只剩历史章节卡、看不到详细工作内容。章号以任务档案/实时流为准。 */
       if (replayBatch && Number(it.chapter || 0) > 0) {
-        return false;
+        const actCh = Number(
+          (state.work && (state.work.current_chapter
+            || (state.work.activity && state.work.activity.current)))
+          || (state.stream && state.stream.chapter)
+          || 0
+        );
+        if (Number(it.chapter) !== actCh) return false;
       }
       return true;
     });

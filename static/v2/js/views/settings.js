@@ -1373,13 +1373,13 @@ export function renderSettings(container, ctx) {
         model.dirty = true;
         paintQuality();
       }),
-      /* v4.26.0：总编辑自动化程度 */
+      /* v4.37.0：原「总编辑自动化程度」改名——对话里的总编辑是 chief，这里控制的是后台值班监制 */
       h('div', { class: 'set-row' },
         h('div', { class: 'set-row-copy' },
-          h('div', { class: 'set-row-title', text: '总编辑自动化程度' }),
+          h('div', { class: 'set-row-title', text: '值班监制自动化程度' }),
           h('div', { class: 'set-row-desc', text: '「标准」：停滞自愈/低分重写/补评分/超期坑巡检全自动，结构级重规划先生成提案等你确认；「全自动」：低风险重规划提案也自动应用（结构级仍会找你确认）。' })
         ),
-        h('div', { class: 'set-control' }, h('div', { class: 'segmented', role: 'group', 'aria-label': '总编辑自动化程度' },
+        h('div', { class: 'set-control' }, h('div', { class: 'segmented', role: 'group', 'aria-label': '值班监制自动化程度' },
           h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': s.supervisor_autonomy === 'auto' ? 'false' : 'true', text: '标准', on: {
             click: () => { model.settings.supervisor_autonomy = 'guarded'; model.dirty = true; paintQuality(); } } }),
           h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': s.supervisor_autonomy === 'auto' ? 'true' : 'false', text: '全自动', on: {

@@ -57,6 +57,7 @@ KIND_LABEL = {
     "deslop": "去味",
     "export": "导出",
     "plan": "规划",
+    "review": "全书终审",
 }
 
 

@@ -482,6 +482,12 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
     plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", polished))
     proj.save_plan(plan)
     proj.log("✅ 定稿完成")
+    # v4.38.0：定稿后自动成书终审（字数 → 评分/重写 → 全篇校验）
+    try:
+        from . import final_review as _fr
+        _fr.auto(os.path.basename(proj.path))
+    except Exception:
+        pass
     return proj
 
 
@@ -590,6 +596,12 @@ def resume_project(key: str) -> ProseProject | None:
     plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", polished))
     proj.save_plan(plan)
     proj.log("✅ 定稿完成")
+    # v4.38.0：定稿后自动成书终审（字数 → 评分/重写 → 全篇校验）
+    try:
+        from . import final_review as _fr
+        _fr.auto(os.path.basename(proj.path))
+    except Exception:
+        pass
     return proj
 
 

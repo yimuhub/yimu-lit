@@ -1,11 +1,15 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
 import json, os, re, datetime, threading, queue, time
-from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express, delivery_gate, lexicon_ledger, checkup
+from . import (workflow, skill, continuity, llm, versions, steps, purity, journal,
+               express, delivery_gate, lexicon_ledger, checkup, final_review)
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 from .paths import DATA_ROOT as ROOT, DATA_ROOT as DATA_ROOT_N
 PROJECTS_DIR = os.path.join(ROOT, "projects")
+
+#: v4.38.0 写作期立即重写线：只有「硬不合格」在章后立刻改；60–80 留到全书终审
+_EARLY_REWRITE_LINE = 60
 
 def _skeleton_refresh(key):
     """v0.9.0：刷新该书『17-写作骨架.md』（纯文件聚合，不花 LLM）。失败不影响主流程。"""
@@ -1234,6 +1238,15 @@ def _book_skills_into(cfg, plan):
     return cfg
 
 
+def _director_brief(proj, chapter=None):
+    """v4.37.0：把总编辑工作单渲染成写作用提示块；没有/失败返回空串。"""
+    try:
+        from . import brief
+        return brief.render_block(proj.path, "writer", chapter=chapter)
+    except Exception:
+        return ""
+
+
 def _build_ctx(proj, ch):
     """v2：优先用分层上下文编译器（章卡/状态库/伏笔/预算/参考资料）；
     任何异常都退回旧版拼装，保证老项目与弱环境仍可写。"""
@@ -1262,6 +1275,7 @@ def _build_ctx(proj, ch):
             except Exception:
                 pass
             ctx["queue_note"] = ""
+            ctx["director_brief"] = _director_brief(proj, ch.get("chapterNumber"))
             return ctx
         except Exception as e:
             try:
@@ -1358,6 +1372,7 @@ def _build_ctx_legacy(proj, ch):
             ctx["blueprint"] = (ctx.get("blueprint") or "") + "\n\n## 写作骨架（总体状态，动手前先读）\n" + _sk.strip()
     except Exception:
         pass
+    ctx["director_brief"] = _director_brief(proj, ch.get("chapterNumber"))
     return ctx
 
 # ---------- v0.6 B：总架构（蓝图）+ 并行章节创作 ----------
@@ -2109,7 +2124,8 @@ def score_chapter(proj, ch_no):
         # v4.21.0：key/chapter_no 为 chapter_review 新增可选埋点参数；
         # 旧签名/测试替身不识别时回落旧调用（保证评分主流程永不被埋点破坏）。
         r = workflow.chapter_review(body, cfg, _ctx_txt,
-                                    key=os.path.basename(proj.path), chapter_no=ch_no)
+                                    key=os.path.basename(proj.path), chapter_no=ch_no,
+                                    director=_director_brief(proj, ch_no))
     except TypeError:
         r = workflow.chapter_review(body, cfg, _ctx_txt)
     total = workflow.score_dimensions(r.get("scores")) if r else None
@@ -2183,6 +2199,9 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
         fix = "\n".join(f"【第{ch_no}章·主攻】提升【{w}】维度" for w in weak[:3])
         if extra_dims:
             fix += "\n【审稿问题（逐条落实）】\n" + "\n".join(f"- {d}" for d in extra_dims[:6])
+        _db = _director_brief(proj, ch_no)
+        if _db:
+            fix += "\n" + _db
         try:
             ctx = _build_ctx(proj, ch)
         except Exception:
@@ -2793,8 +2812,13 @@ def _write_chapter(proj, ch, min_words, max_retries):
         elif _cfg_defaults().get("chapter_quality", True):
             try:
                 _d = _cfg_defaults()
-                proj.log(f"📊 第{no}章逐章评分（低于达标线 {_pass_line()} 自动局部重写，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
-                fin = _auto_rewrite_chapter(proj, no, skip_deslop=True)
+                # v4.38.0：写作期只对「硬不合格」（<60）立即重写；60–80 分不在这里动，
+                # 等成书终审用全书总评分决定是否值得改（见 bot/final_review.py）。
+                proj.log(f"📊 第{no}章逐章评分（低于 {_EARLY_REWRITE_LINE} 分立即局部重写，"
+                         f"60–{final_review.POLICY['defer']} 分留到全书终审再判，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
+                fin = _auto_rewrite_chapter(proj, no, skip_deslop=True,
+                                            pass_line=_EARLY_REWRITE_LINE,
+                                            max_rounds=int(_d.get("max_ch_rounds", 2)))
                 _st = ((proj.plan().get("meta") or {}).get("chapter_scores", {}).get(str(no), {}).get("status"))
                 proj.log(f"📊 第{no}章 {fin if fin is not None else '?'} 分（{_st}）")
             except Exception as e:
@@ -2882,13 +2906,24 @@ def _validate_and_finish(proj):
             plan = proj.plan()
     # 分层编辑审稿（可配关；report=出修订记录，autofix=有界重写 high 项）
     val = _cfg_defaults().get("validation") or {}
-    if val.get("enabled", True) and not _expr:
+    _fr_cfg = _cfg_defaults().get("final_review")
+    _fr_on = True if not isinstance(_fr_cfg, dict) else bool(_fr_cfg.get("enabled", True))
+    if not _expr and (val.get("enabled", True) or _fr_on):
         try:
-            res = _run_layered(proj, val.get("mode", "report"), int(val.get("max_fix_rounds", 2)))
-            proj.log(f"📝 五角色审校 + 确定性引擎：百分制 {res.get('total')}（达标 {'是' if res.get('pass') else '否'}），"
-                     f"autofix {res.get('fixed', 0)} 处 → 14-质量报告.md / 13-修订记录.md")
+            # v4.38.0：成书终审按作者定的顺序一次跑完——
+            # ①字数 → ②评分（<60 立即改，60–80 待定）→ ③全书校验。
+            # 它内部会调用 _run_layered 写 13/14 报告，并额外写 15-成书终审.md。
+            res = final_review.run_novel(proj, trigger="auto")
+            if res.get("ok"):
+                proj.log(f"🧾 成书终审：字数补足 {res['words']['fixed']} 章；"
+                         f"全书总评 {res['book']['total']}（结构"
+                         f"{'可接受' if res['book']['structure_ok'] else '需处理'}）；"
+                         f"60–80 分章节裁决 {res['deferred_decision']} → 15-成书终审.md")
+            else:
+                proj.log(f"⚠️ 成书终审未完成：{res.get('error') or '未知原因'}")
         except Exception as e:
-            proj.log(f"⚠️ 分层审稿失败（不影响成书）：{e}")
+            proj.log(f"⚠️ 成书终审失败（不影响成书）：{e}")
+        plan = proj.plan() or plan   # 终审可能补字数/重写章节：重新读盘再编译
 
     # v4.32.2：成书 = 所有正文文件齐备。此刻把「状态与磁盘分叉」一次性对账：
     # 总编辑看护打回的 pending、校验轮标 failed 都只改状态不删文件，而下面
@@ -2934,9 +2969,11 @@ def _validate_and_finish(proj):
     # 放行门禁：成书后自动（后台线程）带要求重写到 ≥达标线，不阻断成书；已放行则跳过
     # v0.7：一键完稿驱动时由 ⑤ 统一门控，此处不再二次触发（避免同书 6 轮冗余 LLM）
     # v4.24.0：极速模式不触发放行门禁——它本质是「全书重写到 90 分」，与极速模式互相矛盾
-    if _cfg_defaults().get("release_gate", True) and not _expr \
-            and not ((plan.get("meta") or {}).get("released")) \
-            and not one_shot_driving(os.path.basename(proj.path)):
+    # v4.38.0：成书终审已按 60/80/75 政策做完评分与有界重写；旧门禁会把 60–80 的章
+    # 无差别重写到 90，正好推翻作者刚定的策略——默认不再自动触发（手动 /api/release 仍可用）。
+    if (_cfg_defaults().get("release_gate", True) and not _fr_on and not _expr
+            and not ((plan.get("meta") or {}).get("released"))
+            and not one_shot_driving(os.path.basename(proj.path))):
         _gkey = os.path.basename(proj.path)
         threading.Thread(target=lambda: run_release_gate(_gkey), daemon=True).start()
         proj.log("🔓 成书后自动触发放行门禁（后台定向重写到 ≥ 达标线，约几分钟）…")
@@ -3970,6 +4007,7 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
     import concurrent.futures as _cf
     proj = Project(_project_dir(key), key)
     plan = proj.plan()
+    _RW_CANCEL.discard(key)   # v4.37.0：新 job 清旧取消标记
     pass_line = _pass_line()
     # 低分章：未指定时取全部低于达标线的章（有评分的）
     if not chapters:
@@ -4007,6 +4045,8 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
                 llm.book(key, "rewrite")
                 if is_paused(proj):
                     return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
+                if key in _RW_CANCEL:
+                    return {"ch": ch_no, "kept": False, "delta": 0, "note": "已取消"}
                 # v4.21.9：改写消耗计入该章 token 账本 + 过程并入本章创作活动流
                 llm.set_chapter(ch_no)
                 _evt(key, "rewriter", phase="start", title=f"定向重写第{ch_no}章", chapter=ch_no,
@@ -4118,6 +4158,10 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
         reqs += [f"【第{n}章】{r}" for r in next((c["requirements"] for c in brief["chapters"] if c["chapter"] == n), [])]
         if dimensions:
             reqs += [f"【重点维度】{d}" for d in dimensions]      # R2：只带所选维度
+        if not any("总编辑工作单" in str(d) for d in (dimensions or [])):
+            _db = _director_brief(proj, n)
+            if _db:
+                reqs.append(_db)
         new = workflow.guided_rewrite(orig, "\n".join(reqs), cons, cfg)
         new = _clean_chapter_text(new or "")
         if not new.strip():

@@ -206,7 +206,9 @@ def test_write_loop_sets_running_flag(tmp_path, monkeypatch):
 def test_book_live_counts_oneshot_as_running():
     """一键完稿期间 /api/book-live 也要报 running=true。"""
     src = _read("app.py")
-    m = re.search(r'"running": bool\(st\.get\("running"\)[^)]*\)[^,]*', src)
+    m = re.search(r'_running = bool\(st\.get\("running"\)[\s\S]*?\)', src)
     assert m, "找不到 /api/book-live 的 running 判定"
     assert "osh" in m.group(0), \
         "一键完稿（one_shot）未计入 running → 极速/一键完稿时按钮显示成「继续」而非「创作中」"
+    assert '"running": _running' in src, \
+        "/api/book-live 返回体未使用 _running（档案暂停覆盖会失效）"

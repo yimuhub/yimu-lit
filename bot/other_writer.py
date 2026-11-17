@@ -241,3 +241,9 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan["status"] = "completed"
     proj.save_plan(plan)
     proj.log(f"✅ 定稿完成：约 {meta.get('words', 0)} 字 → {F_FINAL}")
+    # v4.38.0：定稿后自动成书终审（字数 → 分件评分/重写 → 全篇校验）
+    try:
+        from . import final_review as _fr
+        _fr.auto(os.path.basename(proj.path))
+    except Exception:
+        pass

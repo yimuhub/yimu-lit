@@ -23,8 +23,11 @@ AGENTS = {
     "title":    {"label": "拟题师", "stage": None,       "desc": "书名/标题生成"},
     "deslopper": {"label": "去味师", "stage": "review",   "desc": "AI 腔定点改写（slop 报告 → 最小改法逐条修）"},
     "editor":    {"label": "总编",   "stage": "review",   "desc": "全书终审/跨章一致性/红线扫描"},
-    # v4.26.0：总编辑——统领创作全程的监制岗（bot/supervisor.py 看护线程），对整体负责到交成品
-    "supervisor": {"label": "总编辑", "stage": None,      "desc": "统领全程：停滞自愈/质量闸门/坑账盯梢/完稿终审，每个决定在对话流汇报"},
+    # v4.37.0：总编辑——作者在对话里唯一直接对话的人（bot/chief.py）。先理解作者的话，
+    # 再翻译成各岗位能执行的工作单；不靠关键词映射。
+    "chief":     {"label": "总编辑", "stage": "planning", "desc": "读懂作者的话 → 翻译成写作/改写/审稿/规划的工作单，统一分流"},
+    # v4.26.0：值班监制——统领创作全程的后台看护岗（bot/supervisor.py），对整体负责到交成品
+    "supervisor": {"label": "值班监制", "stage": None,    "desc": "后台看护：停滞自愈/质量闸门/坑账盯梢/完稿终审，每个决定在对话流汇报"},
     # v4.12.4：非小说文体专属岗位（每个文体至少 1 个写作 + 1 个审校）
     "script_writer":    {"label": "编剧",     "stage": "writing", "desc": "写场次/对白/动作行；竖屏短剧与分镜"},
     "script_checker":   {"label": "审剧人",   "stage": "review",  "desc": "剧本时代/人物在场/场号连续性体检"},

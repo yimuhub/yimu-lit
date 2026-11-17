@@ -19,6 +19,8 @@ from bot import export as export_mod
 from bot import purity, journal, express
 from bot import livejob
 from bot import audit as audit_mod
+from bot import brief as brief_mod
+from bot import chief as chief_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 # v4.28.0：双根路径——ROOT 语义保留为「资源根」（static/samples，桌面版随应用包只读）；
@@ -237,11 +239,12 @@ def chat(session_id, message, key=None, digest=None):
             # v4.34.0：只有此刻真的有引擎在跑才算「正在创作中」——账面 in_progress
             # 是历史状态（中断/待继续），completed 是成书，都不能再对用户说正在创作。
             if st.get("running") and st["state"] not in ("completed", "paused"):
-                if re.search(r"进度|继续|怎么样|状态|status", msg) or len(msg) < 6:
+                if re.search(r"进度|怎么样|状态|status", msg):
                     return f"📖 《{st['name']}》正在创作中：第 {st['done']}/{st['total']} 章，已写 {st['words']} 字。" \
                            f"完成前你可以随时问我「进度」。"
-                return "正在疯狂创作中（阶段3 无需确认，技能规定一口气写完）。\n" \
-                       f"当前进度 {st['done']}/{st['total']} 章，说「进度」查看，或发新主题开新作品。"
+                # v4.37.0：创作中也能像跟总编辑说话一样下指令、聊稿、改要求，
+                # 不再用「正在疯狂创作中」把作者挡在门外。
+                return _chat_attached(s, proj, msg)
         # 已完成 → 允许新主题
     # ---- v2.3.0：会话已绑定本书（attached）：一切消息按「这本书」路由，绝不误起新书 ----
     if s["state"] == "attached" and s.get("project"):
@@ -797,9 +800,199 @@ def _chat_group_llm(s, context, question, at_names, name):
     header = f"👥 群聊讨论（{len(at_names)} 位 Agent 参与）\n问题：{question}\n"
     return header + "\n\n".join(replies)
 
+
+# ══════════ v4.37.0：总编辑工作单 / 结构提案执行器 ══════════
+_MED_OF_PREFIX = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesis",
+                  "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}
+
+
+def _med_of_key(key):
+    return _MED_OF_PREFIX.get(str(key or "")[:2], "novel")
+
+
+def _persist_brief(proj, brief_data, source_text, kind="directive"):
+    """把总编辑翻译好的工作单落盘。失败返回 {}，不影响主链路。"""
+    try:
+        pdir = getattr(proj, "path", "") or ""
+        return brief_mod.add(pdir, brief_data or {}, source_text=source_text, kind=kind) if pdir else {}
+    except Exception:
+        return {}
+
+
+def _brief_for_rewrite(brief_data, chapters):
+    """一次性改写要求不能悄悄变成全书长期政策：没给范围就锁到本次重写的章号上。"""
+    b = dict(brief_data or {})
+    _chs = sorted({int(x) for x in (chapters or []) if str(x).strip().isdigit()})
+    if not b.get("scope"):
+        b["scope"] = "chapters"
+        b["chapters"] = _chs
+    elif b.get("scope") == "chapters" and not b.get("chapters"):
+        b["chapters"] = _chs
+    return b
+
+
+def _exec_directive(proj, key, msg, brief_data):
+    b = dict(brief_data or {})
+    b.setdefault("scope", "book")
+    if not b.get("goal"):
+        b["goal"] = msg[:400]
+    if _med_of_key(key) != "novel":
+        # 非小说没有章节队列，保存工作单后立刻走改稿通道
+        _persist_brief(proj, b, msg)
+        from bot import assist as _assist_mod
+        try:
+            res = _assist_mod.assist(key, _med_of_key(key), msg)
+        except Exception as e:
+            return f"⚠️ 改稿请求失败：{e}"
+        if res and res.get("ok"):
+            return res.get("text") or "已处理。"
+        return (res or {}).get("text") or "这条要求我没能落到稿子上，请再说具体一点。"
+    item = _persist_brief(proj, b, msg)
+    if not item:
+        if writer.queue_msg(key, msg):
+            return "这条我记下了，会并入接下来的创作。"
+        return "⚠️ 这条要求没能存下来（写作计划缺失？），请检查这本书是否完整。"
+    scope, chs = item.get("scope"), item.get("chapters") or []
+    if scope == "next":
+        lines = brief_mod.render_lines(item)
+        if writer.queue_msg(key, "；".join(lines) or msg, immediate=True):
+            brief_mod.set_status(getattr(proj, "path", ""), item["id"], "done")
+            return "记下了。下一章会按这个写，不用你再提醒。"
+        return "记下了，但当前没法排进下一章（写作计划缺失），后续章节会按它执行。"
+    if scope == "chapters":
+        return (f"我记到第{'、'.join(map(str, chs))}章的工作单上了。"
+                f"要我现在就按这个改这一{'章' if len(chs) == 1 else '几章'}吗？")
+    return "记下了。从接下来这一章起，写作、改写、审稿都会按这个要求执行。"
+
+
+def _exec_show_briefs(proj, key):
+    try:
+        items = brief_mod.open_items(getattr(proj, "path", "") or "")
+    except Exception:
+        items = []
+    if not items:
+        return "现在没有挂着的工作单。你直接把要求说出来，我会先理解，再翻译成团队能执行的指令。"
+    lines = [f"📋 当前生效 {len(items)} 张工作单（新→旧）："]
+    for i, x in enumerate(items[:12], 1):
+        lines.append(f"{i}. {brief_mod.render_one(x)}")
+    if len(items) > 12:
+        lines.append(f"…另有 {len(items) - 12} 张较早的工作单。")
+    return "\n".join(lines)
+
+
+def _exec_revoke_briefs(proj, params):
+    pdir = getattr(proj, "path", "") or ""
+    try:
+        items = brief_mod.open_items(pdir)
+    except Exception:
+        items = []
+    if not items:
+        return "现在没有生效中的工作单，不用撤。"
+    target = None
+    idx = params.get("index")
+    if idx not in (None, ""):
+        try:
+            i = int(idx) - 1
+            if 0 <= i < len(items):
+                target = items[i]
+        except (TypeError, ValueError):
+            pass
+    if target is None and params.get("chapter") not in (None, ""):
+        try:
+            ch = int(params["chapter"])
+        except (TypeError, ValueError):
+            ch = None
+        if ch:
+            target = next((x for x in items if x.get("scope") == "chapters"
+                           and ch in (x.get("chapters") or [])), None)
+            if target is None:
+                return f"第{ch}章没有挂着章级工作单（全书要求不会被单章撤销）。"
+    if target is None:
+        target = items[0]
+    if brief_mod.revoke(pdir, brief_ids=[target.get("id")]):
+        return f"撤掉了这条工作单：{brief_mod.render_one(target)}。之后写作、改写、评分都不再按它执行。"
+    return "⚠️ 撤销没成功（工作单文件可能被占用），请稍后再试。"
+
+
+def _exec_plan_change(proj, key, msg, params, brief_data):
+    if _med_of_key(key) != "novel":
+        return "结构调整目前只支持小说；这类文体可以直接说「第几段改成什么」，我让改稿师处理。"
+    if brief_data:
+        _persist_brief(proj, brief_data, msg, kind="plan")
+    scope = str(params.get("scope") or "window").strip().lower()
+    if scope not in ("book", "volume", "arc", "window", "chapter"):
+        scope = "window"
+    instruction = str(params.get("instruction") or msg).strip()[:4000]
+    try:
+        from bot import longform as _lf
+        prop = _lf.replan(proj, scope=scope, instruction=instruction, reason="author")
+    except Exception as e:
+        return f"⚠️ 结构重规划没跑起来：{e}"
+    if not prop:
+        return "⚠️ 这次没能生成结构提案，请稍后再试。"
+    _what = prop.get("summary") or "结构调整"
+    _aff = prop.get("affected_chapters") or []
+    _range = f"第{min(_aff)}–{max(_aff)}章" if _aff else "后续章节"
+    if prop.get("requires_past_rewrite"):
+        return (f"我按你的意思拟了一版结构调整：{_what}（涉及{_range}，含已写章节）。"
+                f"改动会动到成稿，先放在提案里——你说「按这个改」我再应用，并告诉你哪几章需要重写。")
+    try:
+        from bot import supervisor as _sup
+        auto = _sup.autonomy_mode() == "auto"
+    except Exception:
+        auto = False
+    if auto:
+        try:
+            res = _lf.apply_replan(proj, prop.get("id"), allow_past=False)
+        except Exception as e:
+            res = {"ok": False, "error": str(e)}
+        if res.get("ok"):
+            return f"结构调整已落实：{_what}（{_range}）。后面的章节会按新结构推进。"
+        return f"结构提案已生成：{_what}（{_range}），但自动应用没成功：{res.get('error')}。"
+    return (f"我按你的意思拟了一版结构调整：{_what}（{_range}）。"
+            f"提案已生成——你说「就按这个改」我就应用；不急着动就再放放。")
+
+
+def _exec_apply_proposal(proj, params):
+    try:
+        from bot import longform as _lf
+        props = _lf.list_proposals(proj, status="pending")
+        if not props:
+            return "现在没有待确认的结构提案。先说清你想怎么改，我来拟一版。"
+        prop = props[0]
+        res = _lf.apply_replan(proj, prop.get("id"), allow_past=bool(params.get("allow_past")))
+        if res.get("ok") is False:
+            err = str(res.get("error") or "")
+            if "allow_past" in err:
+                return ("这版提案会动到已经写完的章节。你确认要连成稿一起改的话，我就按它应用并安排重写；"
+                        "只想改后面的章节就说「只改没写的」。")
+            return f"⚠️ 提案没能应用：{err}"
+        _aff = res.get("applied_cards") or []
+        return ("✅ 已按提案调整结构"
+                + (f"（涉及第{'、'.join(map(str, _aff[:12]))}章）" if _aff else "")
+                + "。后面的写作会按新结构走。")
+    except Exception as e:
+        return f"⚠️ 应用提案失败：{e}"
+
+
+def _exec_cancel_task(key, params):
+    kind = str(params.get("kind") or "all").strip().lower()
+    stopped = []
+    if kind in ("rewrite", "all"):
+        try:
+            writer.cancel_rewrite(key)
+            stopped.append("改写")
+        except Exception:
+            pass
+    if not stopped:
+        return "评分任务没有单独的停止开关；它跑完当前章就结束，不会改动正文。"
+    return (f"已经让{'、'.join(stopped)}任务在下一个检查点停下——当前章可能还会写完，"
+            f"之后的章节不会再开新轮。")
+
+
 def _chat_attached(s, proj, msg):
-    """attached 分支路由：标题 > 继续 > 进度/状态 > 第N章局部重写 > 新建意图引导 > 即时指令。
-    章号重写必须排在新建意图之前：「第12章重新写一下」是改本书，不是开新书。"""
+    """attached 分支路由：待选书名/数字采纳 → @Agent → 总编辑理解并派活；
+    总编辑不可用时回退标题规则/规划器/NLU/即时队列。"""
     key = s["project"]
     plan = proj.plan() or {}
     st = proj.status()
@@ -823,9 +1016,6 @@ def _chat_attached(s, proj, msg):
     m = re.fullmatch(r"(?:采用|选|用|#)?\s*(\d{1,2})\s*[#号]?", msg) if s.get("title_candidates") else None
     if m:
         return _chat_title_cmd(s, key, "采用" + m.group(1))
-    # 1) 标题命令
-    if re.search(r"标题|书名|改名|换名|重命名", msg):
-        return _chat_title_cmd(s, key, msg)
     # ── v2.6.1：@Agent 群聊模式 ──
     # 消息以 @ 开头时，解析被 @ 的 Agent 列表，注入完整作品上下文后调用 LLM 群聊
     if msg.startswith("@"):
@@ -856,8 +1046,101 @@ def _chat_attached(s, proj, msg):
             return f"该书名序号不存在，请回复 1-{len(titles) or 5}，或直接说「改名为你想用的书名」。"
 
     # v4.22.0：意图分发抽成嵌套函数 _run —— 供「LLM 规划器」逐步调用（多步任务/任意表述）
-    def _run(intent, params):
+    def _run(intent, params, brief_data=None):
         params = params or {}
+        # v4.37.0：总编辑动作名与旧 planner/NLU 的 intent 名并存，先做等价映射
+        if intent == "discuss":
+            return None
+        if intent in ("report_status", "show_outline", "audit", "export", "new_project", "pause"):
+            intent = {"report_status": "query_status", "show_outline": "query_outline",
+                      "audit": "consistency_audit", "export": "export_book",
+                      "new_project": "new_project", "pause": "pause_writing"}[intent]
+
+        # 总编辑的「写」：count/mode 决定是接着写、批量写还是一次写完
+        if intent == "write":
+            _count = params.get("count")
+            _mode = str(params.get("mode") or "").strip().lower()
+            if _mode == "start":
+                return _run("start_writing", {})
+            if _mode == "resume_task":
+                return _run("resume_task", {"batch_size": _count})
+            _cs = str(_count if _count is not None else "").strip().lower()
+            if _cs in ("", "none", "continue", "next"):
+                return _run("resume_writing", {})
+            if _cs in ("all", "全部", "所有", "0"):
+                return _run("start_writing_all", {})
+            _m = re.search(r"\d+", _cs)
+            return _run("batch_writing", {"batch_size": _m.group() if _m else _cs})
+
+        if intent == "rewrite_chapters":
+            if _med_of_key(key) != "novel":
+                return "逐章重写目前只支持小说；这类文体可以直接说「把第几段改成什么」，我让改稿师处理。"
+            _raw_chs = params.get("chapters")
+            if not isinstance(_raw_chs, list):
+                _raw_chs = [_raw_chs] if _raw_chs not in (None, "") else []
+            _chs = sorted({int(x) for x in _raw_chs if str(x).strip().isdigit()})
+            if not _chs:
+                _one = _parse_chapter_no(msg)
+                _chs = [_one] if _one else []
+            if not _chs:
+                return "要改哪一章？告诉我章号，或者说说哪段不对劲，我来定位。"
+            if _REWRITING.get(key, {}).get("running"):
+                return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
+            _item = _persist_brief(proj, _brief_for_rewrite(brief_data, _chs), msg,
+                                   kind="rewrite") if brief_data else {}
+            _dims = brief_mod.render_lines(_item) if _item else [msg]
+            if _start_rewrite(key, chapters=_chs, dimensions=_dims):
+                if len(_chs) == 1:
+                    return (f"已安排第{_chs[0]}章局部重写"
+                            + ("，会按你刚说的验收标准逐条核对。" if _item else "，完成后状态 pane 可见。"))
+                return (f"已安排第{'、'.join(map(str, _chs))}章重写"
+                        + ("，会按你刚说的验收标准逐条核对。" if _item else "。"))
+            return "⚠️ 重写任务启动失败，请稍后再试。"
+
+        if intent == "rewrite_below":
+            _below = params.get("below")
+            try:
+                _below = int(float(str(_below).replace("分", ""))) if _below not in (None, "") else None
+            except (TypeError, ValueError):
+                _below = None
+            if _below:
+                return _run("rewrite_low_score",
+                            {"below": _below, "target": params.get("target")}, brief_data)
+            return _run("rewrite_all_below", {}, brief_data)
+
+        if intent == "score_chapters":
+            _chs = params.get("chapters") or []
+            if not isinstance(_chs, list):
+                _chs = [_chs]
+            _chs = sorted({int(x) for x in _chs if str(x).strip().isdigit()})
+            if not _chs:
+                return _run("score_all_unscored", {})
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 逐章评分暂支持小说；其他文体请在评分详情里处理。"
+            writer.start_task(
+                key, "score", f"给《{name}》第{'、'.join(map(str, _chs[:8]))}章评分", _chs,
+                per_chapter=lambda n, i: writer.score_chapter(proj, n))
+            return (f"📚 已开始给第{'、'.join(map(str, _chs[:8]))}章评分"
+                    f"{'…' if len(_chs) > 8 else ''}，完成后章节卡会显示质量分。")
+
+        if intent == "directive":
+            return _exec_directive(proj, key, msg, brief_data)
+
+        if intent == "revoke_briefs":
+            return _exec_revoke_briefs(proj, params)
+
+        if intent == "plan_change":
+            return _exec_plan_change(proj, key, msg, params, brief_data)
+
+        if intent == "apply_plan_proposal":
+            return _exec_apply_proposal(proj, params)
+
+        if intent == "cancel_task":
+            return _exec_cancel_task(key, params)
+
+        if intent == "show_briefs":
+            return _exec_show_briefs(proj, key)
+
         # query_status → 进度回复
         if intent == "query_status":
             mark = ("正在创作中" if st.get("running") else
@@ -877,11 +1160,7 @@ def _chat_attached(s, proj, msg):
         if intent == "rewrite_chapter":
             no = params.get("chapter_number") or _parse_chapter_no(msg)
             if no:
-                if _REWRITING.get(key, {}).get("running"):
-                    return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
-                if _start_rewrite(key, chapters=[no], dimensions=[msg]):
-                    return f"已安排第{no}章局部重写，完成后状态 pane 可见。"
-                return "⚠️ 重写任务启动失败，请稍后再试。"
+                return _run("rewrite_chapters", {"chapters": [no]}, brief_data)
 
         # pause_writing → 暂停
         if intent == "pause_writing":
@@ -939,6 +1218,8 @@ def _chat_attached(s, proj, msg):
                      if isinstance(p.get("score"), (int, float)) and p["score"] < int(_below)]
             if not _lows:
                 return f"✅ 没有低于 {_below} 分的章节（逐章分最低见「评分详情」），无需改写。"
+            if brief_data:
+                _persist_brief(proj, _brief_for_rewrite(brief_data, _lows), msg, kind="rewrite")
             if _PARA_RW_RUNNING.get(key, {}).get("running"):
                 return "⚠️ 该书已有改写任务在跑，请稍候。"
             _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
@@ -963,6 +1244,8 @@ def _chat_attached(s, proj, msg):
                      if isinstance(p.get("score"), (int, float)) and p["score"] < _pass]
             if not _lows:
                 return f"✅ 所有章节都达到 {_pass} 分达标线，没有需要重写的章节。"
+            if brief_data:
+                _persist_brief(proj, _brief_for_rewrite(brief_data, _lows), msg, kind="rewrite")
             _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
             # v4.23.0：统一入口——登记 + 跑 + 逐章记进度 + 收尾，全部交给 start_task
             writer.start_task(
@@ -1079,6 +1362,68 @@ def _chat_attached(s, proj, msg):
             return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
 
         return None   # 未命中任何分支
+
+    # ══════════ v4.37.0：总编辑中枢 —— 先真正理解，再决定说还是做 ══════════
+    # 作者只跟「一个人」说话：一句话里可能同时有聊天、评价、设定、改稿和进度询问。
+    # 规则/规划器只作为模型不可用时的兜底，能读懂时不再靠关键词映射。
+    def _exec_decision(decision):
+        acts = [a for a in (decision.get("actions") or []) if a.get("action") != "discuss"]
+        understanding = decision.get("understanding") or ""
+        try:
+            steps_mod.emit(key, "chief", "start" if acts else "done",
+                           title="理解并安排" if acts else "理解你的话",
+                           thinking=understanding,
+                           output="→".join(a.get("action") for a in acts) if acts else "")
+        except Exception:
+            pass
+        outs = []
+        for a in acts:
+            act, prm = a.get("action"), a.get("params") or {}
+            brf = a.get("brief") if isinstance(a.get("brief"), dict) else prm.get("brief")
+            try:
+                r = _run(act, prm, brf)
+            except Exception as e:
+                r = f"⚠️ 这一步没做成（{act}）：{e}"
+            if r:
+                outs.append(r)
+        try:
+            steps_mod.emit(key, "chief", "done", title="已安排" if acts else "已回复",
+                           thinking=understanding,
+                           output="；".join(x[:80] for x in outs)[:400])
+        except Exception:
+            pass
+        reply = str(decision.get("reply") or "").strip()
+        if not outs:
+            return reply
+        return (reply + "\n\n" if reply else "") + "\n\n".join(outs)
+
+    _decision = None
+    try:
+        _hist = chief_mod.recent_history(proj.path)
+        # v2api 在调用 chat() 前已把本条用户消息落盘；喂给总编辑时去掉重复的当前句
+        if _hist and _hist[-1].get("role") == "user" \
+                and str(_hist[-1].get("content") or "").strip() == msg:
+            _hist = _hist[:-1]
+        _cctx = chief_mod.build_context(proj, st, key,
+                                        digest=s.get("digest") or "", history=_hist)
+        _cctx["running_rewrite"] = bool(_REWRITING.get(key, {}).get("running")) \
+            or bool(_PARA_RW_RUNNING.get(key, {}).get("running"))
+        _decision = chief_mod.deliberate(msg, _cctx)
+    except Exception:
+        _decision = None
+    if _decision:
+        try:
+            _trace("chief", sid=s.get("session", ""),
+                   understanding=(_decision.get("understanding") or "")[:100],
+                   actions=[a.get("action") for a in (_decision.get("actions") or [])],
+                   conf=_decision.get("confidence"))
+        except Exception:
+            pass
+        return _exec_decision(_decision)
+
+    # ── 兜底（总编辑不可用）：旧的规则标题命令 ──
+    if re.search(r"标题|书名|改名|换名|重命名", msg):
+        return _chat_title_cmd(s, key, msg)
 
     # ══════════ v4.22.0：Agent 规划器 —— 先理解自然语言，再自主执行 ══════════
     # 不再依赖写死的句式规则：把「用户原话 + 真实项目状态」交给 LLM 规划器，
@@ -2807,6 +3152,51 @@ def api_job(key: str):
     return {"ok": True, "key": key, "job": row}
 
 
+_JOURNAL_STAGE_LABEL = {
+    "planning": "规划中", "writing": "写作中", "expanding": "扩写中",
+    "scoring": "评分中", "rewriting": "重写中", "deslopping": "去 AI 味",
+    "verifying": "校验中", "reviewing": "全书终审中", "exporting": "导出中",
+    "plan_blocked": "等补规划", "interrupted": "已中断",
+}
+
+
+def _journal_view(pdir: str) -> dict:
+    """任务档案 → 前端状态条可直接显示的一句话（真实进度，不靠推断）。
+
+    v4.38.0：切书回来时「现在到底在做什么」必须来自存档事实：
+    journal 记录的是「哪个任务 / 第几章 / 哪个阶段 / 是否暂停」，
+    前端状态条与 /api/book-live 共用这一份，避免各入口各说各话。
+    """
+    try:
+        from bot import journal as _journal
+        view = _journal.summary(pdir)
+    except Exception:
+        return {}
+    act = view.get("active") or {}
+    if not act:
+        return {"journal": view}
+    stage = str(act.get("stage") or "")
+    stage_label = _JOURNAL_STAGE_LABEL.get(stage, stage)
+    cur = act.get("current")
+    paused = act.get("status") == "paused"
+    label = act.get("label") or act.get("kind") or "创作"
+    bits = [f"已暂停 · {label}" if paused else f"正在{label}"]
+    if cur:
+        bits.append(f"第 {cur} 章")
+    if stage_label and stage_label not in label:
+        bits.append(stage_label)
+    if act.get("total"):
+        bits.append(f"{act.get('done') or 0}/{act.get('total')}")
+    activity = {
+        "kind": act.get("kind"), "label": label, "title": act.get("title"),
+        "stage": stage, "stage_label": stage_label,
+        "current": cur, "done": act.get("done") or 0, "total": act.get("total"),
+        "paused": paused, "status": act.get("status"),
+        "text": " · ".join(bits),
+    }
+    return {"journal": view, "activity": activity}
+
+
 @app.get("/api/book-live")
 def api_book_live(key: str, request: Request):
     """v0.7 R4：对话区「本书在干什么」live 卡数据源（纯读、无 LLM、按书隔离）。
@@ -2833,13 +3223,28 @@ def api_book_live(key: str, request: Request):
     plan = proj.plan() or {}
     chs = plan.get("chapters") or []
     inprog = [c.get("chapterNumber") for c in chs if c.get("status") == "in_progress"]
-    cur_ch = (max(inprog) if inprog else min(st.get("done", 0) + 1, st.get("total", 0)))
+    # v4.38.0：当前章以任务档案为第一事实源——切书回来时计划里的 in_progress
+    # 可能滞后一整轮，档案里的 current 才是「此刻正在写第几章」。
+    jv = _journal_view(proj.path)
+    act = jv.get("activity") or {}
+    stream_info = steps_mod.stream_state(key, _q_int(request, "stream_offset"),
+                                         _q_int(request, "stream_think_offset"))
+    _act_ch = 0
+    try:
+        _act_ch = int(act.get("current") or 0)
+    except (TypeError, ValueError):
+        _act_ch = 0
+    _stream_ch = int(stream_info.get("chapter") or 0) if stream_info.get("active") else 0
+    cur_ch = (_act_ch or _stream_ch
+              or (max(inprog) if inprog else min(st.get("done", 0) + 1, st.get("total", 0))))
     par = _PARALLEL_RUNNING.get(key, {}).get("running")
     rw = _REWRITING.get(key, {}).get("running")
     rel = _RELEASE_RUNNING.get(key, {}).get("running")
     osh = _ONESHOT_RUNNING.get(key, {}).get("running")
     state = st.get("state")
-    if osh:
+    if act.get("kind") == "review":
+        phase = "reviewing"
+    elif osh:
         phase = "one_shot"
     elif par:
         phase = "parallel"
@@ -2867,12 +3272,26 @@ def api_book_live(key: str, request: Request):
         live = []
     if not live:
         live = (proj.events or [])[-8:]
+    _journal_running = bool(act.get("status") == "running")
+    _running = bool(st.get("running") or par or rw or rel or osh or _journal_running
+                    or livejob.is_active(key))
+    _paused = bool(st.get("paused"))
+    # v4.38.0：档案与按钮同源——档案已暂停就不再报 running，避免「已暂停」
+    # 状态条和「创作中」按钮同时出现。
+    if act.get("status") == "paused":
+        _running, _paused = False, True
+    elif act.get("status") == "running":
+        _running, _paused = True, False
     return {
         "key": key, "name": st.get("name"), "phase": phase, "state": state,
         "current_chapter": cur_ch,
+        # v4.38.0：活着的工作台状态（档案说真话）——前端状态条 + 「正在写第 N 章」
+        "activity": act,
+        "journal": jv.get("journal"),
+        "stage": act.get("stage") or "",
         "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0},
-        "running": bool(st.get("running") or par or rw or rel or osh or livejob.is_active(key)),
-        "paused": st.get("paused"), "parallel": bool(par), "rewriting": bool(rw), "releasing": bool(rel),
+        "running": _running,
+        "paused": _paused, "parallel": bool(par), "rewriting": bool(rw), "releasing": bool(rel),
         "live_log": live,
         "updated_at": int(time.time()),
         # v4.33.1：当前后台作业（谁在工作/做到哪一步）——前端据此渲染「正在工作」卡
@@ -2881,8 +3300,7 @@ def api_book_live(key: str, request: Request):
         # v4.24.16：stream_think_offset 透传——stream_state 早就设计了独立的思维链
         # 增量游标，但 HTTP 层从未接（B 支持的字段 A 不传），思维链每 1.5s 全量重发
         "steps": steps_mod.since(key, _q_int(request, "steps_cursor"), _q_int(request, "steps_limit")),
-        "stream": steps_mod.stream_state(key, _q_int(request, "stream_offset"),
-                                         _q_int(request, "stream_think_offset")),
+        "stream": stream_info,
     }
 
 
@@ -4019,6 +4437,25 @@ def api_status(key: str):
     st["events"] = proj.events[-15:]
     st["path"] = proj.path
     st["has_book"] = os.path.exists(os.path.join(proj.path, f"成书-{st.get('name', key)}.md"))
+    # v4.38.0：把任务档案的「此刻在做什么」随 status 一起下发——切书回来第一帧
+    # 就有真实的「正在写第 N 章 / 全书终审中 / 已暂停」，不用等 book-live 轮询。
+    _jv = _journal_view(proj.path)
+    if _jv:
+        st.update(_jv)
+        _act = _jv.get("activity") or {}
+        # v4.38.0：任务档案是「此刻」的最终事实——档案已暂停时，不再让陈旧的
+        # running 位/livejob 把界面顶成「创作中」（文案与按钮必须同源）。
+        if _act.get("status") == "paused":
+            st["running"] = False
+            st["paused"] = True
+        elif _act.get("status") == "running":
+            st["running"] = True
+            st["paused"] = False
+        if _act.get("current"):
+            try:
+                st["current_chapter"] = int(_act["current"])
+            except (TypeError, ValueError):
+                pass
     return st
 
 # ---------- v4.24.12：未完成章节直接用极速模式续写 ----------

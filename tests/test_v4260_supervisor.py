@@ -132,6 +132,22 @@ def test_unscored_chapter_dispatches_score(monkeypatch, tmp_path):
 
 
 def test_low_score_chapter_dispatches_rewrite(monkeypatch, tmp_path):
+    """v4.38.0：<60 立即重写；60–80 留给成书终审，监制不得在写作途中逐章改掉。"""
+    proj = _mk_novel(tmp_path, done=3)
+    monkeypatch.setattr(supervisor, "_load", lambda k: ("novel", str(proj.path), os.path.join(str(proj.path), "02-写作计划.json"), proj.plan()))
+    monkeypatch.setattr(writer, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr(writer, "pipeline_running", lambda k: True)
+    monkeypatch.setattr(writer, "per_chapter_scores",
+                        lambda proj: [{"ch": 3, "score": 55, "weak": ["结构"]}])
+    called = {}
+    monkeypatch.setattr(supervisor, "_dispatch_rewrite",
+                        lambda k, med, pdir, chs: called.setdefault("chs", chs) or True)
+    supervisor.tick_once(KEY)
+    assert called.get("chs") == [3]
+
+
+def test_deferred_score_waits_for_final_review(monkeypatch, tmp_path):
+    """60–80 分不派改写——等全书评完再裁决。"""
     proj = _mk_novel(tmp_path, done=3)
     monkeypatch.setattr(supervisor, "_load", lambda k: ("novel", str(proj.path), os.path.join(str(proj.path), "02-写作计划.json"), proj.plan()))
     monkeypatch.setattr(writer, "PROJECTS_DIR", str(tmp_path))
@@ -142,7 +158,7 @@ def test_low_score_chapter_dispatches_rewrite(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor, "_dispatch_rewrite",
                         lambda k, med, pdir, chs: called.setdefault("chs", chs) or True)
     supervisor.tick_once(KEY)
-    assert called.get("chs") == [3]
+    assert called.get("chs") is None
 
 
 # ---------- 完稿终审 ----------

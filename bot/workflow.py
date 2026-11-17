@@ -425,6 +425,9 @@ def write_chapter(ctx, book_key="", chapter_no=0):
     if wb:
         wblock = ("\n【世界观红线（这些事物不存在于本书世界，出现即为穿帮，本章严禁）】"
                   + "、".join(str(w) for w in wb) + "\n")
+    # v4.37.0：总编辑工作单（作者授意，优先级高于一般风格偏好）
+    _dr = (ctx.get("director_brief") or "").strip()
+    drblock = ("\n" + _dr + "\n") if _dr else ""
     lblock = str(ctx.get("lexicon_note") or "")
     if ctx.get("continuation"):
         user_p = (
@@ -437,7 +440,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
             f"{banblock}{hookblock}"
             f"{cont}\n"
             f"{p5}\n"
-            f"{qblock}{fblock}{dblock}{wblock}{lblock}\n"
+            f"{qblock}{fblock}{dblock}{drblock}{wblock}{lblock}\n"
             f"现在续写第 {ctx['chapter_no']} 章。这是承接前文的续写章：请严格消化上一章结尾的语态与悬念，"
             f"自然推进剧情，可引入新的转折/冲突/角色（须符合人物性格与既定设定），严禁重复已写情节；"
             f"严守人物性格一致性，结尾必留钩子。输出章节文件内容。"
@@ -454,7 +457,7 @@ def write_chapter(ctx, book_key="", chapter_no=0):
         f"{banblock}{hookblock}"
         f"{cont}\n"
         f"{p5}\n"
-        f"{qblock}{fblock}{dblock}{wblock}{lblock}\n"
+        f"{qblock}{fblock}{dblock}{drblock}{wblock}{lblock}\n"
         f"现在写第 {ctx['chapter_no']} 章「{ctx['chapter_title']}」。严格按该章在大纲中的规划（核心事件/承接/钩子/出场人物/场景）创作。"
         f"输出章节文件内容。"
     )
@@ -875,13 +878,14 @@ def score_dimensions(scores):
             weight += w
     return round(total, 1) if weight else 0
 
-def chapter_review(ch_body, cfg, context="", key="", chapter_no=0):
+def chapter_review(ch_body, cfg, context="", key="", chapter_no=0, director=""):
     """v0.5 M1：对**单章**做 5 角色百分制评分（评这一章而非整书）。
     返回 {"scores":{6维0-10}, "weak":[维度名×3], "verdict":"一句话"}；失败返回 {}。
     评的是"这一章在本书里是否达标"，吃 context（文风/人物/前后章）做参照。
     v4.20：路由到审稿人（reviewer）岗位；reviewer 被停用 → 返回 {}（调用方逐章评分得 None、
     自动重写自然跳过，绝不抛异常阻断写作）。
-    v4.21.0：key/chapter_no 供创作事件埋点（steps.emit，reviewer 岗），缺省安全降级。"""
+    v4.21.0：key/chapter_no 供创作事件埋点（steps.emit，reviewer 岗），缺省安全降级。
+    v4.37.0：director——总编辑工作单，作者的验收标准优先于通用 rubric。"""
     if _agent_disabled("reviewer"):
         return {}
     _k = _evt_key(key)
@@ -895,6 +899,7 @@ def chapter_review(ch_body, cfg, context="", key="", chapter_no=0):
                  "按 6 维打分（0-10）：结构/因果可信/人物/连续性/语言/读者体验。"
                  f"【题材craft】{genre_txt[:600]}\n【反AI腔(供语言维)】{skill.anti_slop()[:600]}\n"
                  + (f"【参照上下文(文风/人物/前后章)】\n{context[:4000]}\n" if context else "")
+                 + (f"\n{director[:2400]}\n" if director else "")
                  + "评分纪律：就事论事、按证据打分；找出最弱的 3 个维度。"
                  '输出 JSON：{"scores":{"结构":0-10,"因果可信":0-10,"人物":0-10,"连续性":0-10,"语言":0-10,"读者体验":0-10},'
                  '"weak":["最弱维度名1","最弱维度名2","最弱维度名3"],'

@@ -34,6 +34,8 @@ a = Analysis(
         "bot.journal", "bot.chatsum", "bot.ingest", "bot.state",
         # v4.36.0：形态标尺 / 工艺体检 / 写前事实卡（均为函数内 import，显式登记防漏打）
         "bot.taste", "bot.craft_check", "bot.factcard",
+        # v4.37.0：总编辑中枢 + 导演工作单
+        "bot.chief", "bot.brief",
         "bot.delivery_gate", "bot.delivery_spec",
     ] + wv_hidden,
     excludes=["pytest", "tkinter"],

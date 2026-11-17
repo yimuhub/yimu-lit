@@ -198,3 +198,10 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
     meta["stage"] = "F"
     proj.save_plan(plan)
     proj.log(done_msg)
+    # v4.38.0：定稿后自动成书终审（字数 → 分件评分/重写 → 全篇校验）
+    if plan.get("status") == "completed":
+        try:
+            from . import final_review as _fr
+            _fr.auto(os.path.basename(proj.path))
+        except Exception:
+            pass

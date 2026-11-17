@@ -1,10 +1,11 @@
-"""总编辑 Agent（v4.26.0）——每本书一个常驻监制看护线程。
+"""值班监制 Agent（v4.26.0，v4.37.0 更名）——每本书一个常驻监制看护线程。
 
 定位：不是「写得更快的作者」，是监制——对整本书的创作过程负责到交成品：
   看（确定性体检，0 token）：停滞/孤儿线程、每章评分与字数、空章、超期坑、大纲耗尽；
   判（决策规则写死，不摇摆）：下表全部确定性规则，LLM 只在被派活时参与；
   派（复用既有修复机制，自己不造引擎）：断点恢复 / 逐章评分 / 并行改写 / 扩写 / 巡检 / 重规划；
-  报（全程活动流可见）：以「总编辑」岗位在对话流发言，用户随时看得见它在干什么、为什么。
+  报（全程活动流可见）：以「值班监制」岗位在对话流发言，用户随时看得见它在干什么、为什么。
+  与作者对话的「总编辑」是 bot/chief.py：前台理解与派活；本模块是后台看护，不直接回话。
 
 自动化程度（config.defaults.supervisor_autonomy）：
   guarded（默认）：执行类修复全自动（恢复/评分/改写/扩写/巡检）；结构级重规划只生成提案等确认。
@@ -288,7 +289,14 @@ def _check_chapter_gate(key, med, pdir, plan, cfg) -> None:
         scores = {p.get("ch"): p for p in (_wr.per_chapter_scores(_wr.Project(pdir, key)) or [])}
     except Exception:
         pass
-    pass_line = _wr._pass_line()
+    # v4.38.0：值班监制只处理「立刻不及格」的章（<60）；60–80 留给成书终审，
+    # 等全书总评出来再决定改不改——否则监制会在写作途中把待定章逐章改掉，
+    # 与作者定的「60–80 等全书评价完再决定」直接冲突。
+    try:
+        from .final_review import POLICY as _FR_POLICY
+        pass_line = int(_FR_POLICY["immediate"])
+    except Exception:
+        pass_line = 60
     floor = max(1, int(plan.get("minWordsPerChapter") or 3000))
     budget = _budget(key, plan).get("rewrite") or {}
     for ch in sorted(done, key=lambda c: int(c.get("chapterNumber") or 0), reverse=True)[:3]:
@@ -321,8 +329,9 @@ def _check_chapter_gate(key, med, pdir, plan, cfg) -> None:
             if _dispatch_rewrite(key, med, pdir, [no]):
                 _budget_add(key, plan, med, pdir, "rewrite", no)
                 _evt(key, "start",
-                     f"第 {no} 章 {sc} 分（< 达标线 {pass_line}），已派 3 岗位定向重写",
-                     output="改写分必须高于原分，否则自动回滚原稿——质量只进不退", chapter=no)
+                     f"第 {no} 章 {sc} 分（< 立即重写线 {pass_line}），已派 3 岗位定向重写",
+                     output="改写分必须高于原分，否则自动回滚原稿——质量只进不退；"
+                            f"{pass_line}–80 分留待成书终审统一裁决", chapter=no)
                 return
 
 
@@ -484,7 +493,7 @@ def tick_once(key: str) -> dict:
     if meta.get("paused"):
         # v4.34.1：去掉「（你点的暂停）」——批量停/预算停等系统停历史上也写这个
         # 标志，无法反查是谁停的；只说事实，不替用户认领动作。
-        _evt(key, "warn", "创作已暂停，总编辑待命",
+        _evt(key, "warn", "创作已暂停，值班监制待命",
              output="点「继续」我会重新上岗；暂停期间绝不自动恢复")
         stop(key)
         out.update({"action": "standby", "why": "paused"})
@@ -562,7 +571,7 @@ def ensure(key: str):
         total = int(plan.get("totalChapters") or len(plan.get("scenes") or []) or 0)
         unit = {"script": "场", "poetry": "轮", "prose": "阶段"}.get(med, "章")
         mode = autonomy_mode()
-        _evt(key, "start", "总编辑已接手，统领本书创作到交成品",
+        _evt(key, "start", "值班监制已接手，看护本书创作到交成品",
              output=(f"全书约 {total or '?'} {unit}；达标线内自动重写、停滞自动恢复、坑账自动盯梢、"
                      f"完稿自动终审——重规划{'低风险自动应用' if mode == 'auto' else '会先给你确认'}。"
                      "过程中我做的每个决定都会在这里汇报。"))

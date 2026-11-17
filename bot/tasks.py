@@ -250,6 +250,32 @@ def _resume_plan(key, proj, task, left, batch_size=None):
             "text": f"接着上次没做完的补章卡，还剩 {len(left)} 章"}
 
 
+@runs("review")
+def _resume_review(key, proj, task, left, batch_size=None):
+    """成书终审：字数 → 评分/重写 → 全书校验。
+
+    终审的每一步都以磁盘与 meta 为准（字数按正文重数、评分按内容 sha 复用），
+    所以再次进入是**增量**的：已补足的字不再动、未改过的章不再重评。
+    跑完后走 _validate_and_finish 的成书编译，把中断时没来得及标完成的书收尾。
+    """
+    from . import writer
+
+    def _job():
+        try:
+            journal.update(proj.path, status="running", stage="reviewing")
+            writer._validate_and_finish(proj)
+            journal.finish(proj.path, "done", note="成书终审完成")
+            journal.remember(proj.path, "system", "成书终审续跑完成")
+        except Exception as e:
+            journal.update(proj.path, status="paused", stage="interrupted",
+                           note=f"成书终审中断：{str(e)[:80]}")
+            journal.remember(proj.path, "system", f"成书终审再次中断：{str(e)[:100]}")
+
+    _bg(_job)
+    return {"ok": True, "kind": "review",
+            "text": "接着上次没做完的成书终审（字数 → 评分重写 → 全书校验）"}
+
+
 @runs("export")
 def _resume_export(key, proj, task, left, batch_size=None):
     """导出是秒级任务，被打断说明进程重启了——直接说清楚，不必假装能续。"""

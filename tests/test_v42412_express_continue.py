@@ -332,9 +332,9 @@ def test_express_ignores_batch_size_in_script_writer():
 
 
 def test_express_skips_validation_and_rewrite():
-    """极速模式跳过失败章重写与五角色审校（初稿语义）。"""
+    """极速模式跳过失败章重写与全书审校（初稿语义）。"""
     src = open("bot/writer.py", encoding="utf-8").read()
-    assert "if val.get(\"enabled\", True) and not _expr:" in src
+    assert "if not _expr and (val.get(\"enabled\", True) or _fr_on):" in src
     assert "跳过失败章重写与全书审校" in src
 
 

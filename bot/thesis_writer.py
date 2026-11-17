@@ -445,6 +445,12 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
     plan["meta"] = meta
     proj.save_plan(plan)
     proj.log(f"✅ 论文定稿完成：约 {total_words} 字 → {F_FINAL}")
+    # v4.38.0：定稿后自动成书终审（字数 → 分章评分/重写 → 引用与全篇校验）
+    try:
+        from . import final_review as _fr
+        _fr.auto(os.path.basename(proj.path))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- 查询
