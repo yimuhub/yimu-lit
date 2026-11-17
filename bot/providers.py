@@ -11,6 +11,27 @@ import json, os, re, threading, httpx
 
 from .safeio import atomic_write_json
 
+
+def _sanitize_proxy_env():
+    """httpx 0.28.1 解析 NO_PROXY/no_proxy 里的带方括号 IPv6（[::1]）会抛
+    Invalid port: ':1]'，进程内所有模型调用随之失败（实测 macOS 默认环境即命中）。
+    去掉方括号语义不变（[::1] → ::1），在模块加载时一次性修正。"""
+    for name in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(name)
+        if not raw or "[" not in raw:
+            continue
+        parts = []
+        for item in raw.split(","):
+            s = item.strip()
+            if s.startswith("[") and s.endswith("]"):
+                s = s[1:-1]
+            if s:
+                parts.append(s)
+        os.environ[name] = ",".join(parts)
+
+
+_sanitize_proxy_env()
+
 from .paths import DATA_ROOT as ROOT
 PROVIDERS_FILE = os.path.join(ROOT, "providers.json")
 CONFIG_FILE = os.path.join(ROOT, "config.json")

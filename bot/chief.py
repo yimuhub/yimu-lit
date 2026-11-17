@@ -15,12 +15,15 @@
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
+import time
 
 from . import brief as _brief
 from . import planner as _planner
+from .paths import DATA_ROOT
 
 # ── 总编辑可派的动作（与 app.py `_run` / 执行器一一对应） ───────────────────
 
@@ -30,8 +33,13 @@ ACTIONS = {
         "params": {},
     },
     "report_status": {
-        "desc": "汇报进度、字数、评分、当前在做什么",
+        "desc": "汇报当前作品的进度、字数、评分、当前在做什么",
         "params": {},
+    },
+    "read_chat": {
+        "desc": "读取某部作品最近的对话内容（可以是另一本书）。作者说「读一下 X 最后交流了什么」"
+                "「看看 X 最近聊到哪」「X 的聊天记录」时用；不要凭记忆编造对话",
+        "params": {"project": "作者说的书名/关键词；不填=当前作品", "limit": "条数，默认 6"},
     },
     "show_outline": {
         "desc": "展示目录/大纲/章节列表",
@@ -162,6 +170,9 @@ scope 语义：
 11. 动作参数里的中文数字必须转成阿拉伯数字。
 12. 作者撤回/否定之前的要求（「刚才那条不算」「别按那个改了」）→ revoke_briefs，
     撤掉对应工作单；不要用一条相反的新工作单去叠旧单。
+13. 作者让你「读一下 / 看看 / 翻一下」某本书的聊天、交流、聊天记录（包括桌面端里的别的作品）
+    → read_chat(project=作者说的书名或关键词)。上下文里有「其他作品」清单，按名字匹配；
+    读不到就如实说没找到，绝不编造对话内容。只说当前作品时 project 留空。
 
 ## 输出格式（严格 JSON，不要 markdown 代码块，不要多余文字）
 {{
@@ -191,6 +202,148 @@ _MEDIUM_OF_PREFIX = {"s_": "script", "p_": "poetry", "e_": "prose", "t_": "thesi
 
 def _medium_of(key: str) -> str:
     return _MEDIUM_OF_PREFIX.get(str(key or "")[:2], "novel")
+
+
+_PLAN_FILES = ("02-写作计划.json", "剧本计划.json", "诗词计划.json", "散文计划.json",
+               "论文计划.json", "计划.json")
+_MEDIUM_LABEL = {"novel": "小说", "script": "剧本", "poetry": "诗词", "prose": "散文",
+                 "thesis": "论文", "children": "童书", "news": "新闻", "copy": "文案",
+                 "other": "其他"}
+
+
+def _project_name(pdir: str, key: str) -> str:
+    for fn in _PLAN_FILES:
+        p = os.path.join(pdir, fn)
+        if not os.path.exists(p):
+            continue
+        try:
+            d = json.load(open(p, encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for k in ("novelName", "title", "name", "projectName"):
+            if isinstance(d.get(k), str) and d[k].strip():
+                return d[k].strip()
+    base = os.path.basename(pdir or key)
+    m = re.match(r"^[a-z_]*\d{8}-\d{6}-(.+)$", base)
+    return (m.group(1) if m else base).strip("#_ ")
+
+
+def _chat_rows(pdir: str, limit: int = 60) -> list[dict]:
+    """该项目最近的对话行（跳过章节正文卡）。"""
+    p = os.path.join(pdir or "", "chat_log.jsonl")
+    if not p or not os.path.exists(p):
+        return []
+    rows = []
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            for line in f.readlines()[-400:]:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(d, dict) or (d.get("extra") or {}).get("type") == "chapter" \
+                        or d.get("type") == "chapter":
+                    continue
+                role = str(d.get("role") or "")
+                text = str(d.get("content") or "").strip()
+                if role in ("user", "assistant") and text:
+                    rows.append({"role": role, "text": text, "ts": d.get("ts")})
+    except OSError:
+        return []
+    return rows[-max(1, int(limit or 60)):]
+
+
+def list_projects(limit: int = 30) -> list[dict]:
+    """这台客户端上的全部作品（名字 + 最近一句对白），供总编辑跨书指代。"""
+    root = os.path.join(DATA_ROOT, "projects")
+    if not os.path.isdir(root):
+        return []
+    out = []
+    try:
+        names = [d for d in os.listdir(root) if not d.startswith(".")]
+    except OSError:
+        return []
+    for key in names:
+        pdir = os.path.join(root, key)
+        if not os.path.isdir(pdir):
+            continue
+        try:
+            mtime = os.path.getmtime(pdir)
+        except OSError:
+            mtime = 0
+        name = _project_name(pdir, key)
+        rows = _chat_rows(pdir, 6)
+        last = ""
+        if rows:
+            r = rows[-1]
+            last = ("作者：" if r["role"] == "user" else "总编辑：") + r["text"][:60].replace("\n", " ")
+        out.append({"key": key, "name": name, "medium": _medium_of(key),
+                    "mtime": mtime, "last": last})
+    out.sort(key=lambda x: x["mtime"], reverse=True)
+    return out[:max(1, int(limit or 30))]
+
+
+def _fmt_ts(ts) -> str:
+    try:
+        t = int(float(ts))
+    except (TypeError, ValueError):
+        return ""
+    return time.strftime("%m-%d %H:%M", time.localtime(t)) if t > 0 else ""
+
+
+def _clean_query(q: str) -> str:
+    s = re.sub(r"[《》〈〉「」『』\"'“”‘’\s]", "", str(q or ""))
+    for w in ("帮我","请","麻烦","读取一下","读一下","读一下","读取","看看","看一下","翻一下","查一下",
+              "我桌面端","桌面端","电脑端","客户端","本地","最后交流的内容","最后交流","最后聊的",
+              "最后聊天","最近交流","最近聊","聊天记录","交流内容","交流","聊天","内容是什么","内容",
+              "是什么","的","这本书","那本书","作品"):
+        s = s.replace(w, "")
+    return s.strip("的了")
+
+
+def read_last_chat(project: str = "", limit: int = 6,
+                   current_key: str = "", current_pdir: str = "") -> str:
+    """读取某部作品最近的对话。找不到就如实说，不编造。"""
+    try:
+        limit = max(1, min(int(limit or 6), 20))
+    except (TypeError, ValueError):
+        limit = 6
+    q = _clean_query(project)
+    target = None
+    cur_name = _project_name(current_pdir, current_key) if current_pdir else ""
+    if not q or (cur_name and (q in cur_name or cur_name in q)) \
+            or (current_key and current_key in str(project or "")):
+        target = {"key": current_key, "name": cur_name or current_key, "pdir": current_pdir}
+    else:
+        best, best_score = None, 0
+        for it in list_projects(60):
+            name = it["name"]
+            if q and (q in name or name in q):
+                score = min(len(q), len(name)) + (10 if q == name else 0)
+            else:
+                score = int(difflib.SequenceMatcher(None, q, name).ratio() * 10) \
+                    if len(q) >= 2 else 0
+                score = score if score >= 5 else 0
+            if score > best_score:
+                best, best_score = it, score
+        if best:
+            target = {"key": best["key"], "name": best["name"],
+                      "pdir": os.path.join(DATA_ROOT, "projects", best["key"])}
+    if not target or not target.get("pdir"):
+        names = "、".join(f"《{x['name']}》" for x in list_projects(12))
+        return (f"没找到你说的作品「{str(project or '').strip() or '当前作品'}」。"
+                + (f"这台客户端上现在有：{names}。" if names else "这台客户端上还没有作品。"))
+    rows = _chat_rows(target["pdir"], 60)
+    if not rows:
+        return f"《{target['name']}》还没有可读取的对话记录。"
+    tail = rows[-limit:]
+    lines = [f"《{target['name']}》最近的交流（最近 {len(tail)} 条，章节正文卡不在内）："]
+    for r in tail:
+        who = "作者" if r["role"] == "user" else "总编辑"
+        ts = _fmt_ts(r.get("ts"))
+        txt = r["text"].replace("\n", " ")
+        lines.append(f"· {ts + ' ' if ts else ''}{who}：{txt[:300]}{'…' if len(txt) > 300 else ''}")
+    return "\n".join(lines)
 
 
 def _chapter_rows(plan: dict) -> list[dict]:
@@ -312,6 +465,7 @@ def build_context(proj, st, key, digest: str = "", history=None) -> dict:
         ctx["characters"] = []
     ctx["outline_tail"] = _book_file(pdir, ("01-大纲.md", "02-大纲.md"))[-800:]
     ctx["open_briefs"] = _brief.open_items(pdir) if pdir else []
+    ctx["other_projects"] = [p for p in list_projects(20) if p.get("key") != key]
     ctx["recent_events"] = _recent_events(key)
     ctx["history"] = history if history is not None else recent_history(pdir)
     ctx["digest"] = digest or ""
@@ -357,6 +511,11 @@ def _context_text(ctx: dict) -> str:
     if ctx.get("pending_queue"):
         extra.append("- 尚未消化的即时指令：" + "；".join(str(x.get("text") or "")[:60]
                                                        for x in ctx["pending_queue"][:5]))
+    if ctx.get("other_projects"):
+        ps = [f"  · 《{p['name']}》（{_MEDIUM_LABEL.get(p.get('medium'), '')}）"
+              + (f" 最近：{p['last']}" if p.get("last") else "")
+              for p in ctx["other_projects"][:15]]
+        extra.append("- 这台客户端上的其他作品（作者可能让你跨书读取）：\n" + "\n".join(ps))
     if ctx.get("recent_events"):
         extra.append("- 团队最近动作：\n  " + "\n  ".join(f"  · {x}" for x in ctx["recent_events"]))
     if ctx.get("running_rewrite"):
@@ -393,6 +552,7 @@ def _norm_action(raw: dict) -> dict | None:
     # 模型偶尔把参数平铺在 action 对象上
     for k in ("chapters", "chapter", "count", "mode", "below", "target", "title",
               "scope", "instruction", "allow_past", "kind", "brief", "index",
+              "project", "limit",
               "goal", "must_keep", "must_change", "acceptance", "avoid"):
         if k in raw and k not in params:
             params[k] = raw[k]

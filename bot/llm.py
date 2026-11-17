@@ -3,11 +3,21 @@
 未带 cfg 时安全回落到默认 active 供应商，不破坏旧行为。
 """
 import json, os, sys, time, threading
+from urllib.parse import urlparse
 
 from .paths import DATA_ROOT
 import httpx
 from . import providers
 from .safeio import atomic_write_json, safe_join
+
+
+def _local_base(base_url: str) -> bool:
+    """本机网关一律不走环境代理：系统 NO_PROXY 含 IPv6 方括号时 httpx 会解析失败。"""
+    try:
+        host = (urlparse(base_url or "").hostname or "").lower()
+    except Exception:
+        return False
+    return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0") or host.startswith("127.")
 
 class LLMError(RuntimeError):
     pass
@@ -371,7 +381,8 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                     # 误杀还没真正发出的请求（fut.cancel 对已运行 future 无效，挂起请求
                     # 继续占坑，池被慢慢耗尽）。改为 future 实际开始执行后才起算。
                     started.set()
-                    with httpx.Client(timeout=timeout) as client:
+                    with httpx.Client(timeout=timeout,
+                                      trust_env=not _local_base(base)) as client:
                         return client.post(base + "/chat/completions",
                                            json=body, headers=headers)
                 _started = threading.Event()   # v4.28.0：经参数绑定（ruff B023，重试循环内闭包）
@@ -505,7 +516,8 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_th
         with _guard.acquire(prov):
             # wall-clock 守卫：httpx read-timeout 只管「两次读之间」，代理滴字节时靠逐帧 deadline 兜底
             _deadline = time.time() + timeout + 60
-            with httpx.Client(timeout=timeout) as client:
+            with httpx.Client(timeout=timeout,
+                              trust_env=not _local_base(base)) as client:
                 with client.stream("POST", base + "/chat/completions",
                                    json=body, headers=headers) as r:
                     if r.status_code != 200:

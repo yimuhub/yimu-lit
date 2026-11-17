@@ -306,6 +306,7 @@ def _score_pass(proj, plan, pol, changed, key) -> dict:
     reused = fresh = 0
     immediate, deferred, immediate_after = [], [], []
     deferred_scores: dict[int, float] = {}
+    scored: list[tuple[int, float]] = []
     chapters = plan.get("chapters") or []
     for ch in chapters:
         no = ch.get("chapterNumber") or 0
@@ -342,8 +343,20 @@ def _score_pass(proj, plan, pol, changed, key) -> dict:
             sc = None
         if sc is None:
             continue
+        scored.append((no, sc))
         if sc < pol["immediate"]:
             immediate.append(no)
+        elif sc < pol["defer"]:
+            deferred.append(no)
+            deferred_scores[no] = sc
+    # v4.38.1：严格按作者定的顺序——先把所有章评完，再动手改 <60；
+    # 不在评分途中边评边改，避免「第 5 章还没评就先重写第 3 章」的观感与顺序错乱。
+    if immediate:
+        _emit(key, "rewriter", f"② 评分已完成，开始重写低于 {pol['immediate']} 分的章节",
+              phase="start", output=f"{len(immediate)} 章",
+              thinking="先全部评分，再逐章立即重写；60–80 分仍等到全书校验后再裁决")
+    for no, sc in scored:
+        if sc < pol["immediate"]:
             _emit(key, "rewriter", f"第{no}章低于 {pol['immediate']} 分，立即重写", phase="start",
                   output=f"当前 {sc} 分", chapter=no)
             try:
@@ -355,9 +368,6 @@ def _score_pass(proj, plan, pol, changed, key) -> dict:
                           output=f"{sc} → {fin} 分", chapter=no)
             except Exception as e:
                 proj.log(f"⚠️ 终审第{no}章立即重写失败：{e}")
-        elif sc < pol["defer"]:
-            deferred.append(no)
-            deferred_scores[no] = sc
     deferred.sort()
     return {"immediate": immediate, "immediate_after": immediate_after,
             "deferred": deferred, "deferred_scores": deferred_scores,
@@ -878,10 +888,14 @@ def _rewrite_piece(proj, mod, med: str, p: dict, cfg: dict, pass_line: int) -> b
         return False
     if not new or len(new) < len(old) * 0.5:
         return False
-    # 提分才保留；LLM 评分有波动，没提分就当这次改写没发生
+    # 提分才保留；LLM 评分有波动，没提分就当这次改写没发生。
+    # v4.38.1：原稿没有基线分时先补评——评不出来就不写，绝不拿「没比较过」的稿子替换原文。
     try:
+        if old_score is None:
+            old_score = _rubric_score(old[:16000], med, cfg,
+                                      scope=p.get("title") or "").get("total")
         cand = _rubric_score(new[:16000], med, cfg, scope=p.get("title") or "").get("total")
-        if old_score is not None and (cand is None or float(cand) <= float(old_score)):
+        if cand is None or old_score is None or float(cand) <= float(old_score):
             return False
     except Exception:
         return False

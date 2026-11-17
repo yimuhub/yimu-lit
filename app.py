@@ -1051,6 +1051,12 @@ def _chat_attached(s, proj, msg):
         # v4.37.0：总编辑动作名与旧 planner/NLU 的 intent 名并存，先做等价映射
         if intent == "discuss":
             return None
+        if intent == "read_chat":
+            # v4.38.1：跨作品读取聊天记录——作者问「读一下某本书最后交流了什么」时，
+            # 总编辑直接读真实 chat_log，不凭记忆编造。
+            return chief_mod.read_last_chat(
+                str(params.get("project") or ""), limit=params.get("limit") or 6,
+                current_key=key, current_pdir=proj.path)
         if intent in ("report_status", "show_outline", "audit", "export", "new_project", "pause"):
             intent = {"report_status": "query_status", "show_outline": "query_outline",
                       "audit": "consistency_audit", "export": "export_book",

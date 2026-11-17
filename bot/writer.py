@@ -2150,6 +2150,90 @@ def score_chapter(proj, ch_no):
         proj.save_plan(plan)
     return total
 
+_RW_GUARD_FILE = "重写保护.json"
+_RW_GUARD_LOCK = threading.RLock()
+
+
+def _sha_text(t: str) -> str:
+    import hashlib
+    return hashlib.sha1((t or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _guard_path(proj) -> str:
+    return os.path.join(proj.path, _RW_GUARD_FILE)
+
+
+def _guard_load(proj) -> dict:
+    try:
+        with open(_guard_path(proj), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _guard_save(proj, d: dict) -> None:
+    with _RW_GUARD_LOCK:
+        try:
+            if d:
+                atomic_write_json(_guard_path(proj), d)
+            elif os.path.exists(_guard_path(proj)):
+                os.remove(_guard_path(proj))
+        except Exception:
+            pass
+
+
+def _guard_set(proj, no: int, orig: str, candidate: str) -> None:
+    """新稿落盘前记下「改前原文 + 新稿指纹」：评分中途崩溃也能还原。"""
+    d = _guard_load(proj)
+    d[str(int(no))] = {"orig": orig or "", "sha": _sha_text(candidate), "state": "scoring",
+                       "ts": int(time.time())}
+    _guard_save(proj, d)
+
+
+def _guard_drop(proj, no: int) -> None:
+    d = _guard_load(proj)
+    d.pop(str(int(no)), None)
+    _guard_save(proj, d)
+
+
+def recover_pending_rewrites(proj, ch_no=None) -> int:
+    """恢复上次「新稿已落盘、评分还没回来」时中断的章节：没验证过的稿子不留在书里。"""
+    d = _guard_load(proj)
+    if not d:
+        return 0
+    plan = proj.plan() or {}
+    chmap = {int(c.get("chapterNumber") or 0): c for c in (plan.get("chapters") or [])}
+    restored = 0
+    for k, ent in list(d.items()):
+        try:
+            no = int(k)
+        except (TypeError, ValueError):
+            d.pop(k, None)
+            continue
+        if ch_no and no != int(ch_no):
+            continue
+        orig = str(ent.get("orig") or "")
+        ch = chmap.get(no)
+        fp = os.path.join(proj.path, ch.get("filePath") or "") if ch else ""
+        cur = ""
+        try:
+            if fp and os.path.exists(fp):
+                cur = open(fp, encoding="utf-8").read()
+        except OSError:
+            cur = ""
+        if orig and cur and _sha_text(cur) == ent.get("sha"):
+            try:
+                atomic_write_text(fp, orig)
+                proj.log(f"🛟 第{no}章上次重写在评分中途中断，已还原改前原文")
+                restored += 1
+            except Exception:
+                continue   # 还原失败就保留标记，下次再试
+        d.pop(k, None)
+    _guard_save(proj, d)
+    return restored
+
+
 def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_dims=None, skip_deslop=False):
     """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。
     v4.20：skip_deslop=True 供 _write_chapter 在「去味必跑」拆出后复用（避免同章 deslop 两次）；
@@ -2165,6 +2249,7 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
     if not ch:
         return None
     fp = os.path.join(proj.path, ch.get("filePath", ""))
+    recover_pending_rewrites(proj, ch_no)   # 上次评分中途中断 → 先还原，绝不在坏稿上叠加
     # 先记一个基线分（原章），重写只保留「真的更高分」，避免 LLM 评分波动把章节改坏
     base_score = score_chapter(proj, ch_no)
     orig_body = open(fp, encoding="utf-8").read()
@@ -2214,27 +2299,41 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
         cfg = plan.get("config") or {}
         new = workflow.guided_rewrite(body, fix, cons, cfg)
         new = _clean_chapter_text(new or "")
-        if new and new.strip():
-            versions.snapshot(proj.path, ch_no, body, label="重写前")
-            atomic_write_text(fp, new)
+        if not new or not new.strip():
+            break   # 重写产出为空：无材料可保留，继续轮次只会重复失败
+        # 长度塌陷直接判失败：截断/丢段的新稿再高分也不是原章
+        _n_new = len(re.sub(r"\s+", "", new))
+        _n_old = len(re.sub(r"\s+", "", body))
+        if _n_new < max(400, int(_n_old * 0.6)):
+            proj.log(f"↩️ 第{ch_no}章重写稿仅 {_n_new} 字（原 {_n_old}），判为截断，保留原章")
+            break
+        versions.snapshot(proj.path, ch_no, body, label="重写前")
+        _guard_set(proj, ch_no, body, new)
+        atomic_write_text(fp, new)
+        try:
             sc2 = score_chapter(proj, ch_no)
-            if (sc2 is not None and sc is not None and sc2 > sc):
-                proj.log(f"🔁 第{ch_no}章 {sc}→{sc2}（提分，保留），按[{','.join(weak[:3])}]局部重写（第{rounds+1}/{max_rounds}轮）")
-                # v4.26.1 分数停滞止损：提分 <2 分视为模型能力已到顶（实测分数在 ±5 内随机震荡，
-                # 继续抽卡每轮白烧 ~2 万 token），接受当前版本直接前进。
-                if (sc2 - sc) < 2:
-                    proj.log(f"⏹ 第{ch_no}章提分不足（{sc}→{sc2}），止损接受，继续下一章")
-                    break
-            else:
-                atomic_write_text(fp, body)   # 没提分 → 还原原章，防改坏
-                sc2 = sc
-                proj.log(f"↩️ 第{ch_no}章重写未提分（{sc2}），已还原原章（防 LLM 波动改坏）")
-                # v4.26.1：未提分同样止损——还原后继续下一轮只是重新抽卡
+        except Exception:
+            sc2 = None   # 评分失败也要走还原分支，不能把没验证的稿子留在磁盘
+        if (sc2 is not None and sc is not None and sc2 > sc):
+            _guard_drop(proj, ch_no)
+            proj.log(f"🔁 第{ch_no}章 {sc}→{sc2}（提分，保留），按[{','.join(weak[:3])}]局部重写（第{rounds+1}/{max_rounds}轮）")
+            # v4.26.1 分数停滞止损：提分 <2 分视为模型能力已到顶（实测分数在 ±5 内随机震荡，
+            # 继续抽卡每轮白烧 ~2 万 token），接受当前版本直接前进。
+            if (sc2 - sc) < 2:
+                proj.log(f"⏹ 第{ch_no}章提分不足（{sc}→{sc2}），止损接受，继续下一章")
                 break
         else:
-            break   # 重写产出为空：无材料可保留，继续轮次只会重复失败
+            atomic_write_text(fp, body)   # 没提分 → 还原原章，防改坏
+            _guard_drop(proj, ch_no)
+            sc2 = sc
+            proj.log(f"↩️ 第{ch_no}章重写未提分（{sc2}），已还原原章（防 LLM 波动改坏）")
+            # v4.26.1：未提分同样止损——还原后继续下一轮只是重新抽卡
+            break
         rounds += 1
-    final = score_chapter(proj, ch_no)
+    try:
+        final = score_chapter(proj, ch_no)
+    except Exception:
+        final = base_score
     # 若最终分低于最初基线，还原到原章基线（保守：只进不退）
     if (final or 0) < (base_score or 0):
         atomic_write_text(fp, orig_body)
@@ -2871,6 +2970,10 @@ def _write_chapter(proj, ch, min_words, max_retries):
     llm.set_chapter(None)   # v2.9.0：本章结束，之后的审校/成书调用不再计入任何章
 
 def _validate_and_finish(proj):
+    try:
+        recover_pending_rewrites(proj)   # v4.38.1：终审前先把上次中断的重写还原
+    except Exception:
+        pass
     llm.book(os.path.basename(proj.path), "review")   # v0.3.x：五角色审校 token 归集
     plan = proj.plan()
     if not (plan.get("chapters") or []):
@@ -3163,6 +3266,10 @@ def _write_loop(proj: Project, batch_size=None):
         from . import livejob as _lj
     except Exception:      # 埋点模块缺失不该影响写作
         _lj = None
+    try:
+        recover_pending_rewrites(proj)   # v4.38.1：上次重写评分中断的章节先还原
+    except Exception:
+        pass
     _stop_note = ""        # 收口说明（写进实时作业登记，前端据此说「为什么停」）
     _stop_ok = True
     try:
@@ -4112,6 +4219,10 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     """执行『审查后定向重写』：把要求书逐条带进目标章重写，重评出前后对比，写 16-重写记录.md。
     v0.7 R2：逐章实时进度写 _RW_PROGRESS[key]（供 /api/rewrite-progress 轮询）+ 支持取消（_RW_CANCEL）。"""
     proj = Project(_project_dir(key), key)
+    try:
+        recover_pending_rewrites(proj)   # v4.38.1：上次评分中断的重写先还原
+    except Exception:
+        pass
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
     _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
     plan = proj.plan() or {}
@@ -4167,27 +4278,43 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
         if not new.strip():
             if p: p.update(status="done", ok=False, new_words=0)
             continue
+        if len(re.sub(r"\s+", "", new)) < max(400, int(len(re.sub(r"\s+", "", orig)) * 0.6)):
+            if p: p.update(status="reverted", ok=False, orig_words=len(orig), new_words=len(new),
+                           note="新稿明显截断/缺段 → 保留原稿")
+            proj.log(f"↩️ 第{n}章重写稿明显短于原章，判为截断，保留原稿")
+            continue
         # ---- v0.7 R3：逐章『保留更好』守护：写新稿→逐章评分→新稿分低于该章原分则回滚原稿（绝不把书改差）----
+        # v4.38.1：原章必须先有真实基线分（不能拿别的正文的旧分冒充）；评不出来就不冒进，保留原稿。
         before_sc = _pch_before(proj, n)
+        if before_sc is None:
+            try:
+                before_sc = score_chapter(proj, n)
+            except Exception:
+                before_sc = None
         versions.snapshot(proj.path, n, orig, label="定向重写前")
+        _guard_set(proj, n, orig, new)
         atomic_write_text(fp, new)
         new_sc = None
         try:
             new_sc = score_chapter(proj, n)          # 评新稿（读=新稿）
         except Exception:
             new_sc = None
-        reverted = bool(before_sc is not None and new_sc is not None and new_sc < before_sc)
-        if reverted:
-            atomic_write_text(fp, orig)      # 回滚原稿
+        keep = (before_sc is not None and new_sc is not None and new_sc >= before_sc)
+        if not keep:
+            atomic_write_text(fp, orig)      # 回滚原稿（没验证过 / 更差，一律不留）
+            _guard_drop(proj, n)
+            why = ("评分不可用" if new_sc is None else
+                   ("原章无基线分" if before_sc is None else f"新稿 {new_sc} < 原稿 {before_sc}"))
             if p: p.update(status="reverted", ok=False, orig_words=len(orig), new_words=len(new),
                            before=before_sc, after=before_sc, keep_better=True,
-                           note=f"新稿 {new_sc} < 原稿 {before_sc} → 保留原稿（守护）")
-            proj.log(f"🔒 第{n}章 保留更好守护：重写分 {new_sc} < 原分 {before_sc} → 已回滚原稿")
+                           note=f"{why} → 保留原稿（守护）")
+            proj.log(f"🔒 第{n}章 保留更好守护：{why} → 已回滚原稿")
             continue
+        _guard_drop(proj, n)
         changed.append({"chapter": n, "injected": reqs, "orig_words": len(orig), "new_words": len(new),
                         "kept_better": True, "before_score": before_sc, "after_score": new_sc})
         if p: p.update(status="done", ok=True, orig_words=len(orig), new_words=len(new),
-                       before=before_sc, after=new_sc, keep_better=not reverted)
+                       before=before_sc, after=new_sc, keep_better=True)
         _RW_PROGRESS[key]["done"] = len(changed)
     # 重评（保留：书级 before→after + 逐章 after）
     book = workflow.list_chapters_text(proj.path) or ""
