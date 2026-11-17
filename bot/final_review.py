@@ -849,10 +849,14 @@ def _other_score(proj, plan, mod, med, cfg, pol, key) -> dict:
             continue
         if val < pol["immediate"]:
             immediate.append(p["no"])
-            if _rewrite_piece(proj, mod, med, p, cfg, pol["immediate"]):
-                rewritten_immediate.append(p["no"])
         elif val < pol["defer"]:
             deferred.append(p["no"])
+    # v4.38.1：与小说同一顺序——先把每一件都评完，再统一改 <60
+    for p in pieces:
+        if int(p.get("no") or 0) not in immediate:
+            continue
+        if _rewrite_piece(proj, mod, med, p, cfg, pol["immediate"]):
+            rewritten_immediate.append(p["no"])
     return {"pieces": pieces, "immediate": immediate, "deferred": deferred,
             "rewritten_immediate": rewritten_immediate}
 
