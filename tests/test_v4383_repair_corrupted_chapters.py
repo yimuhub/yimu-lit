@@ -48,7 +48,7 @@ def test_looks_like_model_note_and_guard():
 
 
 def test_repair_restores_even_when_note_is_longer(tmp_path):
-    good = "# 第1章 原文\n\n## 正文\n" + "原" * 3200
+    good = "# 第1章 原文\n\n## 正文\n" + "原" * 3200 + "。"
     long_note = _NOTE + "\n- 说明行\n" * 800   # 长篇追问，字符数超过原稿
     plan = _plan(str(tmp_path), {1: long_note})
     proj = _Proj(str(tmp_path), plan)
@@ -59,8 +59,8 @@ def test_repair_restores_even_when_note_is_longer(tmp_path):
 
 
 def test_repair_restores_newest_good_version(tmp_path):
-    good_old = "# 第1章 旧稿\n\n## 正文\n" + "旧" * 3200
-    good_new = "# 第1章 新稿\n\n## 正文\n" + "新" * 3400
+    good_old = "# 第1章 旧稿\n\n## 正文\n" + "旧" * 3200 + "。"
+    good_new = "# 第1章 新稿\n\n## 正文\n" + "新" * 3400 + "。"
     plan = _plan(str(tmp_path), {1: _NOTE})
     proj = _Proj(str(tmp_path), plan)
     versions.snapshot(str(tmp_path), 1, good_old, label="更早")
@@ -76,7 +76,7 @@ def test_repair_restores_newest_good_version(tmp_path):
 
 
 def test_expand_restores_note_before_expanding(tmp_path, monkeypatch):
-    good = "# 第1章 交易\n\n## 正文\n" + "原" * 1000
+    good = "# 第1章 交易\n\n## 正文\n" + "原" * 1000 + "。"
     plan = _plan(str(tmp_path), {1: _NOTE})
     proj = _Proj(str(tmp_path), plan)
     versions.snapshot(str(tmp_path), 1, good, label="原稿")
@@ -84,7 +84,7 @@ def test_expand_restores_note_before_expanding(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})
     monkeypatch.setattr(writer.workflow, "expand_chapter",
                         lambda body, ctx, min_words=3000, current_words=0:
-                        "# 第1章 交易\n\n## 正文\n" + "扩" * 3200)
+                        "# 第1章 交易\n\n## 正文\n" + "扩" * 3200 + "。")
     r = writer.expand_short_chapter(proj, 1, target_words=3000)
     assert r["kept"] is True
     body = open(os.path.join(str(tmp_path), "01.md"), encoding="utf-8").read()
@@ -93,7 +93,7 @@ def test_expand_restores_note_before_expanding(tmp_path, monkeypatch):
 
 
 def test_expand_restored_long_version_needs_no_llm(tmp_path, monkeypatch):
-    good = "# 第1章 交易\n\n## 正文\n" + "原" * 3200
+    good = "# 第1章 交易\n\n## 正文\n" + "原" * 3200 + "。"
     plan = _plan(str(tmp_path), {1: _NOTE})
     proj = _Proj(str(tmp_path), plan)
     versions.snapshot(str(tmp_path), 1, good, label="原稿")
@@ -144,14 +144,14 @@ def test_truncated_long_version_is_not_restored(tmp_path, monkeypatch):
 
 
 def test_expand_keeps_small_score_dip(tmp_path, monkeypatch):
-    plan = _plan(str(tmp_path), {1: "# 第1章 交易\n\n## 正文\n" + "原" * 1200})
+    plan = _plan(str(tmp_path), {1: "# 第1章 交易\n\n## 正文\n" + "原" * 1200 + "。"})
     proj = _Proj(str(tmp_path), plan)
     scores = iter([72.0, 69.0])   # 降 3 分，属于评分波动，不应还原
     monkeypatch.setattr(writer, "score_chapter", lambda _p, _n: next(scores))
     monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})
     monkeypatch.setattr(writer.workflow, "expand_chapter",
                         lambda body, ctx, min_words=3000, current_words=0:
-                        "# 第1章 交易\n\n## 正文\n" + "扩" * 3200)
+                        "# 第1章 交易\n\n## 正文\n" + "扩" * 3200 + "。")
     r = writer.expand_short_chapter(proj, 1, target_words=3000)
     assert r["kept"] is True
 
@@ -166,7 +166,7 @@ def test_expand_retries_after_no_growth_round(tmp_path, monkeypatch):
         calls.append(1)
         if len(calls) == 1:
             return cur                       # 模型第一轮只回等长改写
-        return "# 第1章 交易\n\n## 正文\n" + "扩" * 3300
+        return "# 第1章 交易\n\n## 正文\n" + "扩" * 3300 + "。"
 
     monkeypatch.setattr(writer, "score_chapter", lambda _p, _n: 80)
     monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})

@@ -26,7 +26,7 @@ import json
 import os
 import re
 
-from . import craft_check, llm, medium, purity, steps, versions, wordguard, workflow
+from . import book_health, craft_check, llm, medium, purity, steps, versions, wordguard, workflow
 
 #: 作者定的评分策略（单节 / 全书都是百分制）
 POLICY = {
@@ -100,6 +100,13 @@ def run_novel(proj, policy: dict | None = None, trigger: str = "auto") -> dict:
     chapters = plan.get("chapters") or []
     if not chapters:
         return {"ok": False, "error": "没有章节可终审"}
+    # 终审是质量总出口：先体检并还原能还原的坏稿，再判断幂等——
+    # 否则「版本库里明明有好稿」也会被误判成无需处理。
+    try:
+        book_health.preflight(proj, "成书终审")
+    except Exception as e:
+        proj.log(f"⚠️ 终审前体检失败（不阻断终审）：{e}")
+    plan = proj.plan() or plan
     # 幂等：正文一字未变且上一轮已收尾 → 直接复用，不再烧 token
     _old = (plan.get("meta") or {}).get("final_review") or {}
     if _old.get("ok") and _old.get("book_sha") == _book_sha(proj, plan):
@@ -275,16 +282,19 @@ def _word_pass(proj, plan, key) -> dict:
                 pass
         wc3 = _cn(writer._clean_chapter_text(new_body))
         if wc3 > wc:
-            try:
-                versions.snapshot(proj.path, no, body, label="终审字数补足前")
-            except Exception:
-                pass
-            _write(fp, new_body.strip() + "\n")
-            ch["wordCount"] = wc3
+            gate = writer.book_health.save_chapter(
+                proj, no, new_body.strip() + "\n", label="终审字数补足前",
+                kind="expand", orig=body)
+            if not gate.get("ok"):
+                still.append(no)
+                _emit(key, "writer", f"第{no}章字数补足被门禁拦下",
+                      output=gate.get("reason") or "候选稿不合格", chapter=no, level="warn")
+                continue
+            ch["wordCount"] = gate.get("words") or wc3
             changed.append(no)
             fixed.append(no)
             _emit(key, "writer", f"第{no}章字数补足完成",
-                  output=f"{wc} → {wc3} 字（验收线 {floor}）", chapter=no)
+                  output=f"{wc} → {ch['wordCount']} 字（验收线 {floor}）", chapter=no)
         else:
             still.append(no)
             _emit(key, "writer", f"第{no}章字数补足未成功",

@@ -57,7 +57,7 @@ def test_expand_short_chapter_keeps_expansion(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})
     monkeypatch.setattr(writer.workflow, "expand_chapter",
                         lambda body, ctx, min_words=3000, current_words=0:
-                        "# 第1章\n\n" + "扩" * 3200)
+                        "# 第1章\n\n" + "扩" * 3200 + "。")
     r = writer.expand_short_chapter(proj, 1, target_words=3000)
     assert r["kept"] is True
     assert r["after_words"] > r["before_words"]
@@ -73,7 +73,7 @@ def test_expand_short_chapter_restores_on_score_drop(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})
     monkeypatch.setattr(writer.workflow, "expand_chapter",
                         lambda body, ctx, min_words=3000, current_words=0:
-                        "# 第1章\n\n" + "扩" * 3200)
+                        "# 第1章\n\n" + "扩" * 3200 + "。")
     r = writer.expand_short_chapter(proj, 1, target_words=3000)
     assert r["kept"] is False
     body = open(os.path.join(str(tmp_path), "01.md"), encoding="utf-8").read()

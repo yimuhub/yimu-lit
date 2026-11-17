@@ -73,6 +73,11 @@ ACTIONS = {
         "params": {"chapters": "[章号整数] 或 null"},
     },
     "audit": {"desc": "一致性巡检：找全书矛盾、盘点超期未收的伏笔", "params": {}},
+    "health_check": {
+        "desc": "全书体检：检查字数不足、结尾截断、被写成说明文字、文件缺失的章节，"
+                "并自动从版本库还原能还原的稿子；作者说「体检」「检查全书」「书稿有没有问题」时用",
+        "params": {},
+    },
     "set_title": {"desc": "改书名/标题", "params": {"title": "新书名"}},
     "directive": {
         "desc": "把作者的口味/要求记成工作单，之后写作、改写、审稿都按它执行；"
@@ -116,6 +121,8 @@ _ACTION_ALIASES = {
     "expand_short": "rewrite_short", "rewrite_short_chapters": "rewrite_short",
     "score": "score_chapters", "score_all_unscored": "score_chapters",
     "consistency_audit": "audit",
+    "health_check": "health_check", "check_book": "health_check", "book_health": "health_check",
+    "体检": "health_check", "书稿体检": "health_check", "全书检查": "health_check",
     "title": "set_title", "rename": "set_title",
     "style": "directive", "constraint": "directive", "set_style": "directive",
     "add_constraint": "directive", "creative_hint": "directive",

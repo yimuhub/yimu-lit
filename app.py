@@ -1057,6 +1057,33 @@ def _chat_attached(s, proj, msg):
             return chief_mod.read_last_chat(
                 str(params.get("project") or ""), limit=params.get("limit") or 6,
                 current_key=key, current_pdir=proj.path)
+        if intent == "health_check":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "体检目前针对小说章节；其他文体可以直接说「检查全文」走对应审校。"
+            try:
+                _rep = writer.book_health.preflight(proj, "作者手动体检")
+            except Exception as e:
+                return f"⚠️ 体检失败：{e}"
+            _a = _rep.get("audit") or {}
+            _rr = _rep.get("repair") or {}
+            _fixed = len(_rr.get("repaired") or [])
+            _left = {"字数不足": len(_a.get("short") or []),
+                     "结尾截断": len(_a.get("truncated") or []),
+                     "说明文字": len(_a.get("meta") or []),
+                     "缺文件": len(_a.get("missing") or [])}
+            _left = {k: v for k, v in _left.items() if v}
+            if not _fixed and not _left:
+                return f"✅ 《{name}》体检通过：{_a.get('total', 0)} 章正文完整，没有字数不足、截断或说明文字。"
+            _msg = f"🩺 《{name}》体检完成："
+            if _fixed:
+                _msg += f"已从版本库还原 {_fixed} 章；"
+            if _left:
+                _msg += "仍需处理 " + "、".join(f"{k} {v} 章" for k, v in _left.items()) + "。"
+                _msg += "说「把字数不足和结尾截断的章节补好」我就按原情节逐章补足/收尾。"
+            else:
+                _msg += "其余章节完整。"
+            return _msg
+
         if intent in ("report_status", "show_outline", "audit", "export", "new_project", "pause"):
             intent = {"report_status": "query_status", "show_outline": "query_outline",
                       "audit": "consistency_audit", "export": "export_book",
@@ -1130,24 +1157,33 @@ def _chat_attached(s, proj, msg):
             _bw = max(100, min(50000, int(_bw)))
             writer.supersede_rewrites(key)
             writer.clear_pause(key)
-            _repair = writer.repair_corrupted_chapters(proj, _bw)
+            _pf = {}
+            try:
+                _pf = writer.book_health.preflight(proj, "按字数重写", _bw)
+            except Exception:
+                pass
             _shorts = writer.short_chapters(proj, _bw)
-            if not _shorts:
-                _extra = (f"另外已从版本库还原 {len(_repair['repaired'])} 章被写成说明文字的原稿。"
-                          if _repair.get("repaired") else "")
-                return f"✅ 按正文实测，没有少于 {_bw} 字的章节，无需重写。{_extra}"
-            _chs = [x["ch"] for x in _shorts]
+            _cuts = list(((_pf.get("audit") or {}).get("truncated") or []))
+            if not _shorts and not _cuts:
+                _n_rep = len(((_pf.get("repair") or {}).get("repaired") or []))
+                _extra = (f"另外已从版本库还原 {_n_rep} 章被写成说明文字/半句截断的原稿。"
+                          if _n_rep else "")
+                return f"✅ 按正文实测，没有少于 {_bw} 字或结尾截断的章节，无需重写。{_extra}"
+            _chs = sorted({x["ch"] for x in _shorts} | {x["ch"] for x in _cuts})
             if brief_data:
                 _persist_brief(proj, _brief_for_rewrite(brief_data, _chs), msg, kind="rewrite")
             jid = _rw_claim(key)
             writer.start_task(
-                key, "rewrite", f"重写《{name}》正文少于 {_bw} 字的章节", _chs,
+                key, "rewrite", f"重写《{name}》字数不足/截断的章节", _chs,
                 batch=lambda todo: _rw_short_batch(key, todo, _bw, jid),
                 params={"mode": "expand_short", "below_words": int(_bw), "workers": 2})
-            _head = "、".join(str(x["ch"]) for x in _shorts[:8])
-            return (f"⚡ 已停掉之前的批量改写，只按你最新的要求执行：全书正文少于 {_bw} 字的有 "
-                    f"{len(_shorts)} 章（第 {_head}{'…' if len(_shorts) > 8 else ''} 章），"
-                    f"现在按原情节逐章补足，写完评分复核、明显降分就还原原稿。"
+            _head = "、".join(str(x) for x in _chs[:8])
+            _desc = f"正文少于 {_bw} 字的有 {len(_shorts)} 章"
+            if _cuts:
+                _desc += f"，另有 {len(_cuts)} 章字数够但结尾截断"
+            return (f"⚡ 已停掉之前的批量改写，只按你最新的要求执行：{_desc}（第 {_head}"
+                    f"{'…' if len(_chs) > 8 else ''} 章）。"
+                    f"现在按原情节逐章补足/收尾，写完评分复核、明显降分就还原原稿。"
                     f"这一批会自动跑完，不需要你说「继续」。")
 
         if intent == "score_chapters":
@@ -5138,6 +5174,13 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
     sproj = None
     if novel:
         title = plan.get("novelName") or proj.name
+        if not (frm or to):
+            # v4.39.0：整书导出前统一体检——坏稿/半句稿先从版本库还原，
+            # 保证交付文件里不会出现模型说明或半句截断。
+            try:
+                writer.book_health.preflight(proj, "导出前体检")
+            except Exception:
+                pass
         chapters = export_mod.novel_chapters(proj)
     elif is_script:
         sproj = script_writer.ScriptProject(proj.path, proj.name)
@@ -5731,25 +5774,24 @@ def _capture_edit_feedback(proj, n: int, before: str, after: str) -> None:
 
 
 def _apply_chapter_text(proj, n, text: str, label: str = "编辑前") -> int:
-    """写章节正文：先留版本快照，再原子落盘，最后同步词数与成书。返回汉字数。"""
+    """写章节正文：统一走 book_health 门禁（校验→快照→落盘→同步字数）。"""
     ch, plan = _chapter_entry(proj, n)
     if ch is None:
         raise ValueError("章节不存在")
     fp = _chapter_path(proj, ch)
     old = open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
+    res = writer.book_health.save_chapter(proj, n, text, label=label, kind="manual")
+    if not res.get("ok"):
+        raise ValueError(res.get("reason") or "正文写入被拒绝")
     if old != text:
-        versions.snapshot(proj.path, n, old, label=label)
-        atomic_write_text(fp, text)
         _capture_edit_feedback(proj, n, old, text)
-    words = len(re.findall(r"[\u4e00-\u9fff]", text))
+    words = int(res.get("words") or 0)
     with proj.lock:
         latest = proj.plan() or plan
         chs = latest.get("chapters") or []
         if not (1 <= n <= len(chs)):
             raise ValueError("章节不存在")
         target = chs[n - 1]
-        target["wordCount"] = words
-        target["editedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if text.strip() and target.get("status") != "completed":
             target["status"] = "completed"
         latest["totalWords"] = sum(int(c.get("wordCount") or 0) for c in chs)
