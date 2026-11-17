@@ -520,7 +520,9 @@ def expand_chapter(body, ctx, min_words=3000, current_words=0):
               f"请按 content-expansion.md 的扩充技巧（增加对话场景/人物内心/细节描写/环境氛围）"
               f"把正文扩写到不少于 {target} 字，保持情节走向、人物设定与断章钩子完全不变；"
               f"严禁注水、严禁缩写、严禁输出任何说明性文字，直接输出扩充后的完整章节正文"
-              f"（用正文契约标记框住，不要写本章概要与章节备注）。\n\n{body}")
+              f"（用正文契约标记框住，不要写本章概要与章节备注）。"
+              f"若原章末尾停在半句或场景未完，按现有情节把它写完，禁止要求补发原文、"
+              f"禁止只回一句说明。\n\n{body}")
     return llm.chat([{"role": "system", "content": _writing_system(ctx)},
                      {"role": "user", "content": user_p}], cfg=ctx.get("cfg"), stage="writing")
 

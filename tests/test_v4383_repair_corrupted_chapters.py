@@ -106,6 +106,35 @@ def test_expand_restored_long_version_needs_no_llm(tmp_path, monkeypatch):
     assert r["kept"] is True and "还原" in r["note"]
 
 
+def test_truncated_short_chapter_restores_longer_version(tmp_path, monkeypatch):
+    truncated = "# 第1章 交易\n\n## 正文\n" + "短" * 1200 + "后面跟"
+    complete = "# 第1章 交易\n\n## 正文\n" + "完整" * 1600
+    plan = _plan(str(tmp_path), {1: truncated})
+    proj = _Proj(str(tmp_path), plan)
+    versions.snapshot(str(tmp_path), 1, complete, label="完整稿")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("有完整历史稿时不应调扩写")
+
+    monkeypatch.setattr(writer.workflow, "expand_chapter", _boom)
+    r = writer.expand_short_chapter(proj, 1, target_words=3000)
+    assert r["kept"] is True and "还原" in r["note"]
+    assert r["after_words"] >= 3000
+
+
+def test_expand_keeps_small_score_dip(tmp_path, monkeypatch):
+    plan = _plan(str(tmp_path), {1: "# 第1章 交易\n\n## 正文\n" + "原" * 1200})
+    proj = _Proj(str(tmp_path), plan)
+    scores = iter([72.0, 69.0])   # 降 3 分，属于评分波动，不应还原
+    monkeypatch.setattr(writer, "score_chapter", lambda _p, _n: next(scores))
+    monkeypatch.setattr(writer, "_build_ctx", lambda _p, _c: {})
+    monkeypatch.setattr(writer.workflow, "expand_chapter",
+                        lambda body, ctx, min_words=3000, current_words=0:
+                        "# 第1章 交易\n\n## 正文\n" + "扩" * 3200)
+    r = writer.expand_short_chapter(proj, 1, target_words=3000)
+    assert r["kept"] is True
+
+
 def test_fix_chapter_sends_full_chapter_body(monkeypatch):
     seen = {}
 
@@ -119,3 +148,21 @@ def test_fix_chapter_sends_full_chapter_body(monkeypatch):
     writer.workflow.fix_chapter(long_body, "修一下", {"cfg": {}})
     assert long_body[-200:] in seen["user"]
     assert "禁止以缺页为由要求补发" in seen["user"]
+
+
+def test_failed_expand_chapter_is_not_marked_done(tmp_path, monkeypatch):
+    plan = _plan(str(tmp_path), {1: "# 第1章\n\n## 正文\n" + "短" * 500})
+    proj = _Proj(str(tmp_path), plan)
+    monkeypatch.setattr(writer, "Project", lambda *_a, **_k: proj)
+    monkeypatch.setattr(writer, "repair_corrupted_chapters",
+                        lambda *_a, **_k: {"repaired": [], "skipped": []})
+    monkeypatch.setattr(writer, "expand_short_chapter",
+                        lambda *_a, **_k: {"ch": 1, "kept": False,
+                                           "after_words": 500, "note": "扩写没有增加有效字数"})
+    marked = []
+    monkeypatch.setattr(writer.journal, "mark_chapter_done",
+                        lambda _path, ch, **_k: marked.append(ch))
+    monkeypatch.setattr(writer.llm, "book", lambda *_a, **_k: None)
+    writer.run_short_expand("k", [1], 3000, workers=1)
+    assert marked == []
+    assert any("补字未成功" in m for m in proj.logs)

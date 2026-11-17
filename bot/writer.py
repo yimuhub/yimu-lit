@@ -402,6 +402,28 @@ def restore_best_version(proj, ch_no, min_words=3000):
     return best or (None, 0, None)
 
 
+def restore_longer_version(proj, ch_no, cur_words, target_words):
+    """短章优先找回版本库里更完整的稿子（不改情节、不烧 token）。
+
+    v4.38.5：全书有一批章节被截断成半句（如第 10 章停在「后面跟」），
+    再让模型扩写只会被要求「补发原文」。版本库里通常保留了截断前的完整稿，
+    直接还原比重新生成更稳。只有当前稿不足目标、且历史稿明显更长时才还原。
+    """
+    from bot import wordguard
+    need = max(int(target_words), int(int(cur_words) * 1.15))
+    for v in versions.list_versions(proj.path, int(ch_no)):   # 新→旧
+        try:
+            t = versions.read_version(proj.path, int(ch_no), v["id"])
+        except Exception:
+            continue
+        if looks_like_model_note(t):
+            continue
+        cw = wordguard.cn_len(_clean_chapter_text(t))
+        if cw >= need:
+            return t, cw, v["ts"]
+    return None, 0, None
+
+
 def repair_corrupted_chapters(proj, min_words=3000):
     """把磁盘上被写成「模型说明文字」的章节从版本库还原（作者原稿优先）。
 
@@ -4481,6 +4503,14 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
         else:
             return {"ch": ch_no, "kept": False, "note": "原稿是模型说明文字，版本库没有可还原的正文"}
     before_words = wordguard.cn_len(_clean_chapter_text(body))
+    if before_words < int(target_words):
+        txt, w, ts = restore_longer_version(proj, ch_no, before_words, int(target_words))
+        if txt:
+            versions.snapshot(proj.path, ch_no, body, label="短稿备份")
+            atomic_write_text(fp, txt)
+            proj.log(f"♻️ 第{ch_no}章正文 {before_words} 字（疑似截断），"
+                     f"已还原版本库完整稿 {w} 字" + (f"（{ts}）" if ts else ""))
+            body, before_words, restored = txt, w, True
     if before_words >= int(target_words):
         return {"ch": ch_no, "kept": restored, "before_words": before_words,
                 "after_words": before_words,
@@ -4523,7 +4553,8 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
         after_score = score_chapter(proj, ch_no)
     except Exception:
         after_score = None
-    if base_score is not None and after_score is not None and after_score < base_score - 2:
+    if (base_score is not None and after_score is not None
+            and (after_score < base_score - 5 or (after_score < 60 <= base_score))):
         atomic_write_text(fp, body)
         _guard_drop(proj, ch_no)
         proj.log(f"↩️ 第{ch_no}章扩写后评分 {base_score}→{after_score}，已还原原章")
@@ -4572,7 +4603,7 @@ def run_short_expand(key, chapters=None, below_words=3000, workers=2):
     proj.log(f"📏 按字数补足：{len(chapters)} 章正文少于 {below_words} 字（{workers} 个岗位）")
 
     def _one(ch_no):
-        if _RW_GEN.get(key) != my_gen:
+        if int(_RW_GEN.get(key) or 0) != my_gen:
             return {"ch": ch_no, "kept": False, "note": "已被新指令取代"}
         if is_paused(proj):
             return {"ch": ch_no, "kept": False, "note": "已暂停"}
@@ -4587,14 +4618,18 @@ def run_short_expand(key, chapters=None, below_words=3000, workers=2):
             with proj.lock:
                 prog["done"] += 1
                 prog["results"].append(r)
-            journal.mark_chapter_done(proj.path, ch_no, total=len(chapters), stage="rewriting")
+            if (r.get("kept")
+                    or int(r.get("after_words") or 0) >= int(below_words)):
+                journal.mark_chapter_done(proj.path, ch_no, total=len(chapters), stage="rewriting")
+            else:
+                proj.log(f"⚠️ 第{ch_no}章补字未成功（{r.get('note') or '未达标'}），留在队列里")
             return r
         finally:
             llm.set_chapter(None)
 
     with _cf.ThreadPoolExecutor(max_workers=max(1, min(4, int(workers)))) as ex:
         list(ex.map(_one, chapters))
-    if _RW_GEN.get(key) == my_gen:
+    if int(_RW_GEN.get(key) or 0) == my_gen:
         prog["running"] = False
     results = prog.get("results") or []
     improved = sum(1 for r in results if r.get("kept"))
