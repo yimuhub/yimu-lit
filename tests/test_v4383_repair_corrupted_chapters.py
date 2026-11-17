@@ -39,11 +39,23 @@ _NOTE = ("当前诊断信息存在缺项，暂时无法可靠执行整章修订�
 def test_looks_like_model_note_and_guard():
     assert writer.looks_like_model_note(_NOTE) is True
     assert writer.looks_like_model_note("") is True
+    assert writer.looks_like_model_note("我可以按“只改指定位置、其余正文原样保留”的原则处理。") is True
     good = "# 第1章 交易\n\n## 章首引子\n引子。\n\n## 正文\n" + "陆沉" * 600
     assert writer.looks_like_model_note(good) is False
     assert writer.rewrite_reject_reason(good, _NOTE)
     assert writer.rewrite_reject_reason(good, "# 第1章\n\n" + "短" * 50)
     assert writer.rewrite_reject_reason(good, good) == ""
+
+
+def test_repair_restores_even_when_note_is_longer(tmp_path):
+    good = "# 第1章 原文\n\n## 正文\n" + "原" * 3200
+    long_note = _NOTE + "\n- 说明行\n" * 800   # 长篇追问，字符数超过原稿
+    plan = _plan(str(tmp_path), {1: long_note})
+    proj = _Proj(str(tmp_path), plan)
+    versions.snapshot(str(tmp_path), 1, good, label="原稿")
+    out = writer.repair_corrupted_chapters(proj, min_words=3000)
+    assert [r["ch"] for r in out["repaired"]] == [1]
+    assert "原" * 100 in open(os.path.join(str(tmp_path), "01.md"), encoding="utf-8").read()
 
 
 def test_repair_restores_newest_good_version(tmp_path):
