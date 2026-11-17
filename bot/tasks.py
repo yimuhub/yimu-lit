@@ -137,7 +137,11 @@ def resume(key, batch_size=None) -> dict:
 
 @runs("rewrite")
 def _resume_rewrite(key, proj, task, left, batch_size=None):
-    """批量重写：接着把剩下的章改完（并发数/轮数/目标分沿用上次的设定）。"""
+    """批量重写：接着把剩下的章改完（并发数/轮数/目标分沿用上次的设定）。
+
+    v4.38.2：保留任务类型（按分/按字数）——按字数的任务续跑时必须继续补字，
+    不能掉回按评分改写；同时先清暂停位，否则逐章检查点一进去就全部停住。
+    """
     if not left:
         return None
     from . import writer
@@ -148,6 +152,9 @@ def _resume_rewrite(key, proj, task, left, batch_size=None):
         return {"ok": True, "kind": "rewrite",
                 "text": "批量重写正在进行中，等它跑完即可（进度见右栏改写面板）"}
     params = task.get("params") if isinstance(task.get("params"), dict) else {}
+    mode = str(params.get("mode") or "").strip().lower()
+
+    writer.clear_pause(key)
 
     def _num(name, default):
         try:
@@ -162,14 +169,34 @@ def _resume_rewrite(key, proj, task, left, batch_size=None):
         target = int(target) if target is not None else None
     except (TypeError, ValueError):
         target = None
+    below_words = _num("below_words", 3000)
 
     def _job():
         try:
             journal.update(proj.path, status="running", stage="rewriting")
-            writer.run_parallel_rewrite(key, chapters=left, workers=workers,
-                                        max_rounds=rounds, target=target)
-            journal.finish(proj.path, "done", note=f"重写完成 {len(left)} 章")
-            journal.remember(proj.path, "system", f"批量重写续跑完成 {len(left)} 章")
+            if mode == "expand_short":
+                writer.run_short_expand(key, chapters=left, below_words=below_words, workers=2)
+            else:
+                writer.run_parallel_rewrite(key, chapters=left, workers=workers,
+                                            max_rounds=rounds, target=target)
+            # 暂停/取消时 run_* 会提前返回：按档案里的真实完成情况收尾，
+            # 还有剩章就保持 paused（可继续），不能谎报「完成」。
+            params2 = (journal.current_task(proj.path) or {}).get("params") or {}
+            done = set()
+            for x in params2.get("done_chapters") or []:
+                try:
+                    done.add(int(x))
+                except (TypeError, ValueError):
+                    continue
+            rest = [c for c in left if c not in done]
+            if rest:
+                head = "、".join(str(x) for x in rest[:6]) + ("…" if len(rest) > 6 else "")
+                journal.update(proj.path, status="paused", stage="partial",
+                               note=f"还剩 {len(rest)} 章（{head}）——点「继续」接着做")
+                journal.remember(proj.path, "system", f"重写续跑停下：还剩 {len(rest)} 章")
+            else:
+                journal.finish(proj.path, "done", note=f"重写完成 {len(left)} 章")
+                journal.remember(proj.path, "system", f"批量重写续跑完成 {len(left)} 章")
         except Exception as e:
             journal.update(proj.path, status="paused", stage="interrupted",
                            note=f"重写中断：{str(e)[:80]}")
@@ -177,6 +204,9 @@ def _resume_rewrite(key, proj, task, left, batch_size=None):
 
     _bg(_job)
     head = "、".join(str(x) for x in left[:6]) + ("…" if len(left) > 6 else "")
+    if mode == "expand_short":
+        return {"ok": True, "kind": "rewrite",
+                "text": f"接着补足正文少于 {below_words} 字的章节，还剩 {len(left)} 章（第 {head} 章）"}
     return {"ok": True, "kind": "rewrite",
             "text": f"接着上次没做完的批量重写，还剩 {len(left)} 章（第 {head} 章）"}
 

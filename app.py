@@ -1090,8 +1090,7 @@ def _chat_attached(s, proj, msg):
                 _chs = [_one] if _one else []
             if not _chs:
                 return "要改哪一章？告诉我章号，或者说说哪段不对劲，我来定位。"
-            if _REWRITING.get(key, {}).get("running"):
-                return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
+            writer.clear_pause(key)
             _item = _persist_brief(proj, _brief_for_rewrite(brief_data, _chs), msg,
                                    kind="rewrite") if brief_data else {}
             _dims = brief_mod.render_lines(_item) if _item else [msg]
@@ -1113,6 +1112,40 @@ def _chat_attached(s, proj, msg):
                 return _run("rewrite_low_score",
                             {"below": _below, "target": params.get("target")}, brief_data)
             return _run("rewrite_all_below", {}, brief_data)
+
+        if intent == "rewrite_short":
+            # v4.38.2：按「正文字数」重写短章——与按评分筛选彻底分开。
+            # 最新指令优先：先让旧批量改写失效，再按当前磁盘字数重算清单并立即开跑。
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 按字数重写目前只支持小说；其他文体请直接说「把第几段写到多少字」。"
+            _bw = params.get("below_words")
+            try:
+                _bw = int(float(str(_bw).replace("字", ""))) if _bw not in (None, "") else None
+            except (TypeError, ValueError):
+                _bw = None
+            if not _bw:
+                _m = (re.search(r"(?:低于|少于|不到|不足|小于)\s*(\d+)\s*字", msg)
+                      or re.search(r"(\d+)\s*字(?:以下|以内|之下)", msg))
+                _bw = int(_m.group(1)) if _m else 3000
+            _bw = max(100, min(50000, int(_bw)))
+            writer.supersede_rewrites(key)
+            writer.clear_pause(key)
+            _shorts = writer.short_chapters(proj, _bw)
+            if not _shorts:
+                return f"✅ 按正文实测，没有少于 {_bw} 字的章节，无需重写。"
+            _chs = [x["ch"] for x in _shorts]
+            if brief_data:
+                _persist_brief(proj, _brief_for_rewrite(brief_data, _chs), msg, kind="rewrite")
+            jid = _rw_claim(key)
+            writer.start_task(
+                key, "rewrite", f"重写《{name}》正文少于 {_bw} 字的章节", _chs,
+                batch=lambda todo: _rw_short_batch(key, todo, _bw, jid),
+                params={"mode": "expand_short", "below_words": int(_bw), "workers": 2})
+            _head = "、".join(str(x["ch"]) for x in _shorts[:8])
+            return (f"⚡ 已停掉之前的批量改写，只按你最新的要求执行：全书正文少于 {_bw} 字的有 "
+                    f"{len(_shorts)} 章（第 {_head}{'…' if len(_shorts) > 8 else ''} 章），"
+                    f"现在按原情节逐章补足，写完评分复核、明显降分就还原原稿。"
+                    f"这一批会自动跑完，不需要你说「继续」。")
 
         if intent == "score_chapters":
             _chs = params.get("chapters") or []
@@ -1170,8 +1203,11 @@ def _chat_attached(s, proj, msg):
 
         # pause_writing → 暂停
         if intent == "pause_writing":
+            _rw_on = bool(_REWRITING.get(key, {}).get("running")) \
+                or bool(_PARA_RW_RUNNING.get(key, {}).get("running"))
             if writer.pause_book(key):
-                return f"⏸ 已暂停《{name}》的创作，说「继续」即可恢复。"
+                _tail = "；正在跑的改写/补字会在本章结束后停下，剩余章节已存档（说「继续」接着做）" if _rw_on else ""
+                return f"⏸ 已暂停《{name}》的创作{_tail}。"
             return f"⚠️ 无法暂停《{name}》。"
 
         # query_outline → 大纲
@@ -1226,14 +1262,15 @@ def _chat_attached(s, proj, msg):
                 return f"✅ 没有低于 {_below} 分的章节（逐章分最低见「评分详情」），无需改写。"
             if brief_data:
                 _persist_brief(proj, _brief_for_rewrite(brief_data, _lows), msg, kind="rewrite")
-            if _PARA_RW_RUNNING.get(key, {}).get("running"):
-                return "⚠️ 该书已有改写任务在跑，请稍候。"
-            _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+            # v4.38.2：最新指令优先——不再因为旧 job 在跑就拒绝作者
+            writer.supersede_rewrites(key)
+            writer.clear_pause(key)
+            jid = _rw_claim(key)
             # v4.23.0：登记任务档案（以前这里漏登记 → 「继续」认不出这个任务，
             # 会掉去 resume_book 开写新章，把正在改写的书打断）
             writer.start_task(
                 key, "rewrite", f"重写《{name}》低于 {_below} 分的章节", _lows,
-                batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING, target=int(_tgt)),
+                batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING, target=int(_tgt), job=jid),
                 params={"below": int(_below), "target": int(_tgt)})
             return (f"⚡ 已启动按分改写：{_lows.__len__()} 章低于 {_below} 分"
                     f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章），{3} 个岗位并行改写，"
@@ -1252,12 +1289,14 @@ def _chat_attached(s, proj, msg):
                 return f"✅ 所有章节都达到 {_pass} 分达标线，没有需要重写的章节。"
             if brief_data:
                 _persist_brief(proj, _brief_for_rewrite(brief_data, _lows), msg, kind="rewrite")
-            _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+            writer.supersede_rewrites(key)
+            writer.clear_pause(key)
+            jid = _rw_claim(key)
             # v4.23.0：统一入口——登记 + 跑 + 逐章记进度 + 收尾，全部交给 start_task
             writer.start_task(
                 key, "rewrite", f"重写《{name}》未达标章节", _lows,
                 batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING,
-                                             workers=3, max_rounds=2),
+                                             workers=3, max_rounds=2, job=jid),
                 params={"workers": 3, "max_rounds": 2, "pass_line": _pass})
             return (f"⚡ 已启动重写全部未达标章节：共 {len(_lows)} 章"
                     f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章，均低于达标线 {_pass} 分），"
@@ -2172,24 +2211,31 @@ def api_sample():
 
 # ---------- v0.2：作品库管理 + 审查后重写 ----------
 _ZOMBIE_SWEPT = False   # v4.34.1：幻影目录清扫每进程一次（/api/library 触发）
-_REWRITING = {}  # key -> {"running":bool,"result":dict}
+_REWRITING = {}  # key -> {"running":bool,"job":id,"result":dict}
+_REWRITE_JOBS = {}  # key -> 当前定向改写 job id（旧 job 收尾不得覆盖新 job 状态）
 
-def _start_rewrite(key, chapters=None, dimensions=None, max_rounds=6):
+def _start_rewrite(key, chapters=None, dimensions=None, max_rounds=6, supersede=True):
     """v2.3.0：局部重写统一入口（/api/rewrite 端点与 attached 对话共用，不重复造轮子）。
-    已在跑则返回 False；否则后台线程跑 writer.run_guided_rewrite，状态进 _REWRITING 表。
+    已在跑则返回 False；supersede=True 时让旧 job 失效、立刻按新指令开跑。
     v4.24.16：检查+置位加注册表互斥（与 /api/parallel-write 同款 TOCTOU 修复）。"""
     with _RUNNING_REG_LOCK:
         if _REWRITING.get(key, {}).get("running"):
-            return False
-        _REWRITING[key] = {"running": True, "result": None}
+            if not supersede:
+                return False
+            writer.supersede_rewrites(key)
+        jid = uuid.uuid4().hex
+        _REWRITE_JOBS[key] = jid
+        _REWRITING[key] = {"running": True, "job": jid, "result": None}
 
     def _job():
         try:
             res = writer.run_guided_rewrite(key, chapters=chapters,
                                             dimensions=dimensions, max_rounds=max_rounds)
-            _REWRITING[key] = {"running": False, "result": res}
+            if _REWRITE_JOBS.get(key) == jid:
+                _REWRITING[key] = {"running": False, "job": jid, "result": res}
         except Exception as e:
-            _REWRITING[key] = {"running": False, "result": {"error": str(e)}}
+            if _REWRITE_JOBS.get(key) == jid:
+                _REWRITING[key] = {"running": False, "job": jid, "result": {"error": str(e)}}
     threading.Thread(target=_job, daemon=True).start()
     return True
 
@@ -2751,17 +2797,49 @@ def api_syslog_clear():
 # ---------- v4.19.0：会话级创作日志（原有 运行日志.txt / chat_log.jsonl）的统一说明见 /api/diagnostics ----------
 
 _PARA_RW_RUNNING: dict = {}
+_RW_JOBS: dict = {}          # key -> 当前改写 job id（旧 job 收尾时不得清掉新 job 的运行标志）
 
 
-def _rw_batch(key, todo, running_map, target=None, workers=3, max_rounds=2):
+def _rw_claim(key):
+    """登记一次新的改写 job，返回 job id。"""
+    jid = uuid.uuid4().hex
+    _RW_JOBS[key] = jid
+    _PARA_RW_RUNNING[key] = {"running": True, "job": jid, "started_at": int(time.time())}
+    return jid
+
+
+def _rw_release(key, jid, res):
+    """只允许 job 自己收尾——防止被取代的旧 job 把新 job 标成「没在跑」。"""
+    if _RW_JOBS.get(key) == jid:
+        _PARA_RW_RUNNING[key] = {"running": False, "job": jid, "result": res}
+
+
+def _rw_batch(key, todo, running_map, target=None, workers=3, max_rounds=2, job=None):
     """跑一批并行改写，并保证运行标志一定被清掉（异常时照样清，否则该书永远「在跑」）。"""
     try:
         res = writer.run_parallel_rewrite(key, chapters=todo, workers=workers,
                                           max_rounds=max_rounds, target=target)
-        running_map[key] = {"running": False, "result": res}
+        if job:
+            _rw_release(key, job, res)
+        else:
+            running_map[key] = {"running": False, "result": res}
         return res
     except Exception as e:
-        running_map[key] = {"running": False, "result": {"error": str(e)}}
+        if job:
+            _rw_release(key, job, {"error": str(e)})
+        else:
+            running_map[key] = {"running": False, "result": {"error": str(e)}}
+        raise
+
+
+def _rw_short_batch(key, todo, below_words, job):
+    """按字数补字批次；job id 保证被新指令取代后不会误清新任务的运行标志。"""
+    try:
+        res = writer.run_short_expand(key, chapters=todo, below_words=int(below_words), workers=2)
+        _rw_release(key, job, res)
+        return res
+    except Exception as e:
+        _rw_release(key, job, {"error": str(e)})
         raise
 
 

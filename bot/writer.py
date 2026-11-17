@@ -744,6 +744,9 @@ def pause_book(key):
     # 任务档案同步标暂停：即使写线程当时不在检查点上，「继续」也知道上次干到哪儿了
     journal.update(p.path, status="paused", note="已请求暂停")
     p.log("⏸ 已请求暂停（在下一检查点停，停在当前进度，可点「▶继续」恢复）")
+    # 进度面板同步反映暂停（线程要等当前章结束才真正退出，这期间不能再显示「正在跑」）
+    _RW_PROGRESS.get(key, {}).update(paused=True)
+    _PARA_RW_PROGRESS.get(key, {}).update(paused=True)
     return True
 
 def stop_creation(key, reason: str = "已出书，创作停止"):
@@ -926,12 +929,49 @@ def start_task(key, kind, title, chapters, per_chapter=None, batch=None, params=
     _params["chapters"] = todo
     task = journal.begin(p.path, kind, title, params=_params, total=len(todo))
     total = len(todo)
+    tid = task.get("id")
+
+    def _mine():
+        """当前活动任务还是不是本 job——旧 job 被新指令取代后绝不能再改档案。"""
+        t = journal.current_task(p.path)
+        return isinstance(t, dict) and t.get("id") == tid
+
+    def _left():
+        t = journal.current_task(p.path)
+        if not isinstance(t, dict) or t.get("id") != tid:
+            return []
+        params = t.get("params") if isinstance(t.get("params"), dict) else {}
+        done = set()
+        for x in params.get("done_chapters") or []:
+            try:
+                done.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        return [c for c in todo if c not in done]
+
+    def _close(partial_note="", force_done=False):
+        if not _mine():
+            return
+        left = _left()
+        if left and not force_done:
+            head = "、".join(str(x) for x in left[:6]) + ("…" if len(left) > 6 else "")
+            journal.update(p.path, status="paused", stage="partial",
+                           note=(partial_note or f"还剩 {len(left)} 章（{head}）——点「继续」接着做"))
+            journal.remember(p.path, "system", f"{title}：还剩 {len(left)} 章未完成，已存档")
+        else:
+            journal.finish(p.path, "done", note=f"{title}完成 {total} 章")
+            journal.remember(p.path, "system", f"{title}完成 {total} 章")
 
     def _job():
         try:
+            if not _mine():
+                return          # 还没开跑就被更新的指令取代
             journal.update(p.path, status="running", stage=kind)
             if callable(batch):
                 batch(todo)
+                # 批处理正常返回 = 它负责的章都处理过了；只有用户暂停/取消时
+                # 才保留剩余队列（此时逐章完成记录会告诉我们还剩哪些）。
+                _close(force_done=not is_paused(p) and key not in _RW_CANCEL)
             else:
                 # 「做完」的定义是**真的做完了**：失败的章不记 done，
                 # 这样「继续」会把它重新捡起来重试。
@@ -939,6 +979,8 @@ def start_task(key, kind, title, chapters, per_chapter=None, batch=None, params=
                 # 否则这本书永远收不了尾、用户每次点继续都在等同一章。
                 stuck = []
                 for i, n in enumerate(todo, 1):
+                    if not _mine():
+                        return  # 被新指令取代：立刻停手，不碰新任务的档案
                     try:
                         per_chapter(n, i)
                     except Exception as e:
@@ -952,18 +994,13 @@ def start_task(key, kind, title, chapters, per_chapter=None, batch=None, params=
                         continue
                     journal.clear_fail(p.path, n)
                     journal.mark_chapter_done(p.path, n, done=i, total=total, stage=kind)
-                if stuck:
-                    journal.update(p.path, status="paused", stage="partial",
-                                   note=f"{len(stuck)} 章没做完（第 {stuck[:6]}）——点「继续」重试这些章")
-                    journal.remember(p.path, "system",
-                                     f"{title}：{len(stuck)} 章未完成，已存档待续")
-                    return
-            journal.finish(p.path, "done", note=f"{title}完成 {total} 章")
-            journal.remember(p.path, "system", f"{title}完成 {total} 章")
+                _close(f"{len(stuck)} 章没做完（第 {stuck[:6]}）——点「继续」重试这些章"
+                       if stuck else "")
         except Exception as e:
-            journal.update(p.path, status="paused", stage="interrupted",
-                           note=f"{title}中断：{str(e)[:80]}")
-            journal.remember(p.path, "system", f"{title}中断：{str(e)[:100]}")
+            if _mine():
+                journal.update(p.path, status="paused", stage="interrupted",
+                               note=f"{title}中断：{str(e)[:80]}")
+                journal.remember(p.path, "system", f"{title}中断：{str(e)[:100]}")
 
     threading.Thread(target=_job, daemon=True).start()
     return {"ok": True, "task": task, "total": total}
@@ -4079,6 +4116,11 @@ def _top_targets(brief, max_rounds):
 # ---------- v0.7 R2：重写工作台 = 逐章实时进度 + 可取消（解决"点了重写没反应"）----------
 _RW_PROGRESS = {}   # key -> {running,started_at,total,done,cancelled,per_chapter:[{ch,status,before,after,orig_words,new_words,ok}],result}
 _RW_CANCEL = set()  # 请求取消的重写 key（逐章检查点生效）
+# v4.38.2：改写任务「代际」。作者下达新的改写范围时，旧 job 必须立刻失效——
+# 只靠 _RW_CANCEL 不行：新 job 启动时会清取消标记，旧 job 就又活了，
+# 于是出现「说继续，却接着改 250 多章旧队列」的局面。代际不匹配即停。
+_RW_GEN: dict = {}
+_RW_GEN_LOCK = threading.Lock()
 
 def rewrite_progress(key):
     """R2：返回该书重写 job 的实时逐章进度（纯读，供 /api/rewrite-progress 轮询）。"""
@@ -4089,6 +4131,40 @@ def cancel_rewrite(key):
     _RW_CANCEL.add(key)
     _RW_PROGRESS.get(key, {}).update(cancelled=True)
     return True
+
+def supersede_rewrites(key):
+    """让该书所有在跑的改写/扩写立刻失效，给「最新指令」腾位。
+
+    v4.38.2：作者说「前面的批量改写全部不要了，只按最新的来」时，系统必须
+    真的把旧 job 停掉，而不是只写一张工作单然后等旧 job 跑完。代际 +1 后，
+    旧 job 的每个检查点都会看到代际不匹配并自行退出；已落盘的章节保留。
+    """
+    with _RW_GEN_LOCK:
+        _RW_GEN[key] = int(_RW_GEN.get(key) or 0) + 1
+        gen = _RW_GEN[key]
+    _RW_PROGRESS.get(key, {}).update(cancelled=True, superseded=True, running=False)
+    _PARA_RW_PROGRESS.get(key, {}).update(running=False, superseded=True)
+    return gen
+
+def clear_pause(key) -> bool:
+    """清掉用户暂停位（「继续」/新指令自动执行时必须先清，否则逐章检查点一进去就停）。"""
+    try:
+        p = Project(_project_dir(key), key)
+        plan = p.plan() or {}
+        if not plan:
+            return False
+        plan.setdefault("meta", {})["paused"] = False
+        for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
+            plan["meta"].pop(_flag, None)
+        if plan.get("status") == "paused":
+            plan["status"] = "in_progress"
+            p.save_plan(plan)
+        else:
+            p.save_plan(plan)
+        journal.update(p.path, status="running")
+        return True
+    except Exception:
+        return False
 
 def _pset(key, **kw):
     _RW_PROGRESS.setdefault(key, {"running": True, "started_at": int(datetime.datetime.now().timestamp()),
@@ -4114,7 +4190,12 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
     import concurrent.futures as _cf
     proj = Project(_project_dir(key), key)
     plan = proj.plan()
-    _RW_CANCEL.discard(key)   # v4.37.0：新 job 清旧取消标记
+    with _RW_GEN_LOCK:
+        # v4.38.2：新 job 领取自己的代际；旧 job 因为代际不匹配会自行退出。
+        # 不再 discard(_RW_CANCEL)——那会把「上一批已取消」的语义也清掉。
+        _RW_GEN[key] = int(_RW_GEN.get(key) or 0) + 1
+        my_gen = _RW_GEN[key]
+    _RW_CANCEL.discard(key)
     pass_line = _pass_line()
     # 低分章：未指定时取全部低于达标线的章（有评分的）
     if not chapters:
@@ -4137,7 +4218,7 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
         pass
     prog = _PARA_RW_PROGRESS.setdefault(key, {"running": True, "done": 0, "total": len(chapters),
                                               "results": [], "started_at": int(time.time())})
-    prog.update({"running": True, "done": 0, "total": len(chapters), "results": []})
+    prog.update({"running": True, "done": 0, "total": len(chapters), "results": [], "paused": False})
     llm.book(key, "rewrite")
     sem = threading.Semaphore(max(1, int(workers)))
     proj.log(f"⚡ 多岗位并行改写：{len(chapters)} 个低分章（同时 {workers} 个岗位，每章 {max_rounds} 轮）")
@@ -4150,6 +4231,8 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
         with sem:
             try:
                 llm.book(key, "rewrite")
+                if _RW_GEN.get(key) != my_gen:
+                    return {"ch": ch_no, "kept": False, "delta": 0, "note": "已被新指令取代"}
                 if is_paused(proj):
                     return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
                 if key in _RW_CANCEL:
@@ -4205,7 +4288,8 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
 
     with _cf.ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
         list(ex.map(_one, chapters))
-    prog["running"] = False
+    if _RW_GEN.get(key) == my_gen:
+        prog["running"] = False
     results = prog.get("results") or []
     improved = sum(1 for r in results if r.get("kept"))
     total_delta = sum(r.get("delta") or 0 for r in results)
@@ -4213,6 +4297,169 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
              f"（未提分章节已全部回滚原稿，质量只进不退）")
     return {"ok": True, "results": results, "improved": improved,
             "total_delta": round(total_delta, 1), "msg": f"并行改写完成：{improved}/{len(results)} 章提分（其余已回滚原稿）"}
+
+
+def short_chapters(proj, below_words=3000):
+    """正文少于 below_words 的已完成章（按磁盘实测字数，不信计划里的旧 wordCount）。
+
+    v4.38.2：作者说「只改写字数少于 3000 字的章节」时，筛选必须按正文实测，
+    否则刚补过字/刚截断的章会被计划里的陈旧数字带错。
+    """
+    from bot import wordguard
+    out = []
+    try:
+        plan = proj.plan() or {}
+    except Exception:
+        return out
+    for c in plan.get("chapters") or []:
+        fp = os.path.join(proj.path, c.get("filePath") or "")
+        if not c.get("filePath") or not os.path.exists(fp):
+            continue
+        try:
+            body = open(fp, encoding="utf-8", errors="replace").read()
+            words = wordguard.cn_len(_clean_chapter_text(body))
+        except Exception:
+            continue
+        if words < int(below_words):
+            out.append({"ch": int(c.get("chapterNumber") or 0), "words": words,
+                        "title": c.get("title") or "", "file": fp})
+    return sorted(out, key=lambda x: x["ch"])
+
+
+def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
+    """把篇幅不足的章节扩写到 target_words，保持情节/人物不变。
+
+    v4.38.2：按字数重写和按评分重写是两件事——评分够但只有 300 字的章，
+    _auto_rewrite_chapter 会直接跳过。这里走扩充通道，并在写盘后评分复核：
+    分数明显下降就还原原章（与「改坏就用原来的」同一纪律）。
+    """
+    from bot import wordguard
+    plan = proj.plan() or {}
+    ch = next((c for c in (plan.get("chapters") or [])
+               if int(c.get("chapterNumber") or 0) == int(ch_no)), None)
+    if not ch or not ch.get("filePath"):
+        return {"ch": ch_no, "kept": False, "note": "章节不存在"}
+    fp = os.path.join(proj.path, ch["filePath"])
+    if not os.path.exists(fp):
+        return {"ch": ch_no, "kept": False, "note": "正文文件缺失"}
+    recover_pending_rewrites(proj, ch_no)
+    try:
+        body = open(fp, encoding="utf-8").read()
+    except OSError as e:
+        return {"ch": ch_no, "kept": False, "note": f"读取失败：{e}"}
+    before_words = wordguard.cn_len(_clean_chapter_text(body))
+    if before_words >= int(target_words):
+        return {"ch": ch_no, "kept": False, "before_words": before_words,
+                "after_words": before_words, "note": "已达字数"}
+    base_score = None
+    try:
+        base_score = score_chapter(proj, ch_no)
+    except Exception:
+        base_score = None
+    versions.snapshot(proj.path, ch_no, body, label="补字前")
+    try:
+        ctx = _build_ctx(proj, ch)
+    except Exception:
+        ctx = {}
+    cur, cur_w = body, before_words
+    for _ in range(max(1, int(max_rounds))):
+        try:
+            cand = workflow.expand_chapter(cur, ctx, min_words=int(target_words),
+                                           current_words=cur_w)
+        except Exception as e:
+            proj.log(f"⚠️ 第{ch_no}章扩写失败：{e}")
+            break
+        cand = _clean_chapter_text(cand or "")
+        cn = wordguard.cn_len(cand)
+        if not cand.strip() or cn <= cur_w + 80:
+            break
+        cur, cur_w = cand, cn
+        if cur_w >= int(target_words * 0.98):
+            break
+    if cur_w <= before_words + 80:
+        return {"ch": ch_no, "kept": False, "before_words": before_words,
+                "after_words": before_words, "note": "扩写没有增加有效字数"}
+    _guard_set(proj, ch_no, body, cur)
+    atomic_write_text(fp, cur)
+    after_score = None
+    try:
+        after_score = score_chapter(proj, ch_no)
+    except Exception:
+        after_score = None
+    if base_score is not None and after_score is not None and after_score < base_score - 2:
+        atomic_write_text(fp, body)
+        _guard_drop(proj, ch_no)
+        proj.log(f"↩️ 第{ch_no}章扩写后评分 {base_score}→{after_score}，已还原原章")
+        return {"ch": ch_no, "kept": False, "before_words": before_words,
+                "after_words": before_words, "before": base_score, "after": after_score,
+                "note": "扩写后质量下降，已还原"}
+    _guard_drop(proj, ch_no)
+    try:
+        plan2 = proj.plan() or {}
+        ch2 = next((c for c in (plan2.get("chapters") or [])
+                    if int(c.get("chapterNumber") or 0) == int(ch_no)), None)
+        if ch2 is not None:
+            ch2["wordCount"] = cur_w
+            ch2["wordCountPass"] = cur_w >= int(target_words)
+            proj.save_plan(plan2)
+    except Exception:
+        pass
+    proj.log(f"📏 第{ch_no}章补字 {before_words}→{cur_w} 字"
+             + (f"（评分 {base_score}→{after_score}）" if after_score is not None else ""))
+    _evt(os.path.basename(proj.path), "rewriter", phase="done",
+         title=f"补足第{ch_no}章篇幅", chapter=ch_no,
+         output=f"{before_words}→{cur_w} 字")
+    return {"ch": ch_no, "kept": True, "before_words": before_words,
+            "after_words": cur_w, "before": base_score, "after": after_score}
+
+
+def run_short_expand(key, chapters=None, below_words=3000, workers=2):
+    """按「正文少于 below_words」逐章补足。可被「继续」复用，也支持新指令取代。"""
+    import concurrent.futures as _cf
+    proj = Project(_project_dir(key), key)
+    my_gen = int(_RW_GEN.get(key) or 0)
+    _RW_CANCEL.discard(key)
+    chapters = sorted({int(c) for c in (chapters or [])
+                       if str(c).strip().isdigit()})
+    if not chapters:
+        return {"ok": True, "results": [], "msg": "没有需要补字的章节"}
+    prog = _PARA_RW_PROGRESS.setdefault(key, {"running": True, "done": 0, "total": len(chapters),
+                                              "results": [], "started_at": int(time.time())})
+    prog.update({"running": True, "done": 0, "total": len(chapters), "results": [],
+                 "paused": False, "mode": "expand_short", "below_words": int(below_words)})
+    llm.book(key, "rewrite")
+    proj.log(f"📏 按字数补足：{len(chapters)} 章正文少于 {below_words} 字（{workers} 个岗位）")
+
+    def _one(ch_no):
+        if _RW_GEN.get(key) != my_gen:
+            return {"ch": ch_no, "kept": False, "note": "已被新指令取代"}
+        if is_paused(proj):
+            return {"ch": ch_no, "kept": False, "note": "已暂停"}
+        if key in _RW_CANCEL:
+            return {"ch": ch_no, "kept": False, "note": "已取消"}
+        llm.book(key, "rewrite")
+        llm.set_chapter(ch_no)
+        try:
+            _evt(key, "rewriter", phase="start", title=f"补足第{ch_no}章篇幅", chapter=ch_no,
+                 thinking="正文不足目标字数，按原有情节扩写补足；写后评分复核，明显降分即还原")
+            r = expand_short_chapter(proj, ch_no, target_words=below_words)
+            with proj.lock:
+                prog["done"] += 1
+                prog["results"].append(r)
+            journal.mark_chapter_done(proj.path, ch_no, total=len(chapters), stage="rewriting")
+            return r
+        finally:
+            llm.set_chapter(None)
+
+    with _cf.ThreadPoolExecutor(max_workers=max(1, min(4, int(workers)))) as ex:
+        list(ex.map(_one, chapters))
+    if _RW_GEN.get(key) == my_gen:
+        prog["running"] = False
+    results = prog.get("results") or []
+    improved = sum(1 for r in results if r.get("kept"))
+    proj.log(f"📏 补字完成：{improved}/{len(results)} 章达到目标字数（未增字/降分的章已保留原稿）")
+    return {"ok": True, "results": results, "improved": improved,
+            "msg": f"补字完成：{improved}/{len(results)} 章已补足"}
 
 
 def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_over=None):
@@ -4224,6 +4471,9 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     except Exception:
         pass
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
+    with _RW_GEN_LOCK:
+        _RW_GEN[key] = int(_RW_GEN.get(key) or 0) + 1
+        _rw_gen = _RW_GEN[key]
     _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
     plan = proj.plan() or {}
     # v4.23.2：plan 可能不存在（目录在但计划文件缺失/损坏/刚创建还没规划）。
@@ -4244,6 +4494,15 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
                         "orig_words": None, "new_words": None, "ok": False} for n in targets])
     changed = []
     for n in targets:
+        if _RW_GEN.get(key) != _rw_gen:
+            _pset(key, running=False, cancelled=True, superseded=True,
+                  result={"cancelled": True, "superseded": True})
+            proj.log(f"⏹ 定向重写已被新指令取代（已写 {len(changed)} 章保留）")
+            return {"cancelled": True, "superseded": True}
+        if is_paused(proj):
+            _pset(key, running=False, paused=True, result={"paused": True})
+            proj.log(f"⏸ 定向重写已暂停（已写 {len(changed)} 章保留）")
+            return {"paused": True}
         if key in _RW_CANCEL:           # R2：取消检查点
             for p in _RW_PROGRESS[key]["per_chapter"]:
                 if p["status"] == "queued":

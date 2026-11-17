@@ -63,6 +63,11 @@ ACTIONS = {
         "desc": "重写不达标/低分章节；作者给了分数阈值就填 below，否则按系统达标线",
         "params": {"below": "整数或 null", "target": "目标分或 null"},
     },
+    "rewrite_short": {
+        "desc": "按篇幅重写：作者说「低于3000字的章节重写」「太短的章节补上」「字数不够的」时用。"
+                "这是按正文字数筛，不是按评分筛；和 rewrite_below 完全不同",
+        "params": {"below_words": "字数阈值，默认 3000"},
+    },
     "score_chapters": {
         "desc": "给章节评分；不带 chapters=补评所有未评分章",
         "params": {"chapters": "[章号整数] 或 null"},
@@ -107,6 +112,8 @@ _ACTION_ALIASES = {
     "pause_writing": "pause", "stop": "pause",
     "rewrite": "rewrite_chapters", "rewrite_chapter": "rewrite_chapters",
     "rewrite_low_score": "rewrite_below", "rewrite_all_below": "rewrite_below",
+    "rewrite_by_words": "rewrite_short", "rewrite_words": "rewrite_short",
+    "expand_short": "rewrite_short", "rewrite_short_chapters": "rewrite_short",
     "score": "score_chapters", "score_all_unscored": "score_chapters",
     "consistency_audit": "audit",
     "title": "set_title", "rename": "set_title",
@@ -159,20 +166,28 @@ scope 语义：
    → [score_chapters, rewrite_below, write(count=5)]
 5. **否定要接住。** 作者说「不行/换个思路/不是这个意思」时，先判断他否定的是哪一部分，
    调整工作单或方案，不要重复原方案。
-6. **作者给了具体分数阈值**（「低于60分」「60分以下」）→ rewrite_below(below=该阈值)；
-   没给分数（「未达标/不达标/质量不行」）→ rewrite_below，不要自己编造阈值。
-7. **点名章节 + 改动** → rewrite_chapters(chapters=[N]) 并在 brief 里写清改法；
+6. **分清「字数门槛」和「分数阈值」——这是两种完全不同的任务：**
+   - 作者说「低于3000字」「不到两千字的」「太短的章节」「字数不够的」「只有几百字的」→
+     rewrite_short(below_words=该字数)，按正文实测字数筛，**绝不能**当成评分阈值去 rewrite_below；
+   - 作者说「低于60分」「不达标/评分不够」→ rewrite_below(below=该分数)。
+   上下文里给了「少于3000字的章节」实测清单，按它判断规模，不要自己猜。
+7. **作者说「前面的任务不要了/只按最新的来/先停掉旧的再…」→ 同一轮 actions 里先
+   cancel_task(kind=rewrite)，紧接着派新动作**（如 rewrite_short），两步一次做完。
+   分解出来的步骤会自动连续执行到底，长任务在后台跑，**不要让作者再来说「继续」**。
+8. **点名章节 + 改动** → rewrite_chapters(chapters=[N]) 并在 brief 里写清改法；
    作者只是表达对某章的看法、没让改 → directive(scope=chapters) 记录，不立即重写。
-8. **结构问题**（卷拖、章序不对、大纲要重排）→ plan_change，把作者的话提炼成 instruction。
-9. **只有真的缺关键信息才问**（比如「改那章」但全文没有任何指代线索）。能合理推断的直接做，
+9. **结构问题**（卷拖、章序不对、大纲要重排）→ plan_change，把作者的话提炼成 instruction。
+10. **只有真的缺关键信息才问**（比如「改那章」但全文没有任何指代线索）。能合理推断的直接做，
    并在 reply 里说明你的判断。
-10. **不要编造项目里没有的事实**（章节号、分数、人物、情节）。不确定就看 context 或问。
-11. 动作参数里的中文数字必须转成阿拉伯数字。
-12. 作者撤回/否定之前的要求（「刚才那条不算」「别按那个改了」）→ revoke_briefs，
+11. **不要编造项目里没有的事实**（章节号、分数、人物、情节）。不确定就看 context 或问。
+12. 动作参数里的中文数字必须转成阿拉伯数字。
+13. 作者撤回/否定之前的要求（「刚才那条不算」「别按那个改了」）→ revoke_briefs，
     撤掉对应工作单；不要用一条相反的新工作单去叠旧单。
-13. 作者让你「读一下 / 看看 / 翻一下」某本书的聊天、交流、聊天记录（包括桌面端里的别的作品）
+14. 作者让你「读一下 / 看看 / 翻一下」某本书的聊天、交流、聊天记录（包括桌面端里的别的作品）
     → read_chat(project=作者说的书名或关键词)。上下文里有「其他作品」清单，按名字匹配；
     读不到就如实说没找到，绝不编造对话内容。只说当前作品时 project 留空。
+15. **暂停/继续要接对任务。** 作者说「暂停」→ pause；说「继续」→ write(mode=resume_task)。
+    reply 里必须说清这次继续的是**哪件事、哪些章**，不要用旧任务的进度冒充新要求。
 
 ## 输出格式（严格 JSON，不要 markdown 代码块，不要多余文字）
 {{
@@ -430,6 +445,31 @@ def _book_file(pdir: str, names) -> str:
     return ""
 
 
+def _short_chapter_nos(plan: dict, pdir: str, below: int = 3000) -> list:
+    """按磁盘正文字数找出篇幅不足的章（不信计划里的旧 wordCount）。"""
+    try:
+        from . import wordguard
+        from . import writer as _writer
+    except Exception:
+        return []
+    out = []
+    for c in (plan or {}).get("chapters") or []:
+        fp = os.path.join(pdir or "", c.get("filePath") or "")
+        if not c.get("filePath") or not os.path.exists(fp):
+            continue
+        try:
+            body = open(fp, encoding="utf-8", errors="replace").read()
+            words = wordguard.cn_len(_writer._clean_chapter_text(body))
+        except Exception:
+            continue
+        if words < int(below):
+            try:
+                out.append(int(c.get("chapterNumber") or 0))
+            except (TypeError, ValueError):
+                continue
+    return sorted(out)
+
+
 def build_context(proj, st, key, digest: str = "", history=None) -> dict:
     """采集总编辑做判断所需的真实状态（纯读，不调 LLM）。"""
     ctx = {}
@@ -451,6 +491,7 @@ def build_context(proj, st, key, digest: str = "", history=None) -> dict:
                      ("genre", "idea", "tone", "perspective", "protagonist", "theme", "chapters")
                      if cfg.get(k)}
     ctx["chapter_rows"] = _chapter_rows(plan)
+    ctx["short_chapters_3000"] = _short_chapter_nos(plan, pdir, 3000)
     try:
         from . import taste as _taste
         ctx["form"] = _taste.form_of(cfg)
@@ -501,6 +542,13 @@ def _context_text(ctx: dict) -> str:
         extra.append("- 章节账本（章号｜标题｜状态｜分数｜字数）：\n  " + "\n  ".join(head))
         if len(rows) > 60:
             extra.append(f"  …（另有 {len(rows) - 60} 章未展开）")
+    if ctx.get("short_chapters_3000"):
+        _sk = ctx["short_chapters_3000"]
+        extra.append(f"- **按正文实测**：少于 3000 字的章节共 {len(_sk)} 章"
+                     f"（第 {'、'.join(map(str, _sk[:20]))}{'…' if len(_sk) > 20 else ''} 章）。"
+                     f"作者说「低于N字/太短」时按字数筛（rewrite_short），不要按评分筛。")
+    else:
+        extra.append("- **按正文实测**：没有少于 3000 字的章节。")
     if ctx.get("outline_tail"):
         extra.append("- 大纲尾部：\n" + ctx["outline_tail"])
     if ctx.get("open_briefs"):
@@ -550,7 +598,7 @@ def _norm_action(raw: dict) -> dict | None:
         return None
     params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
     # 模型偶尔把参数平铺在 action 对象上
-    for k in ("chapters", "chapter", "count", "mode", "below", "target", "title",
+    for k in ("chapters", "chapter", "count", "mode", "below", "below_words", "target", "title",
               "scope", "instruction", "allow_past", "kind", "brief", "index",
               "project", "limit",
               "goal", "must_keep", "must_change", "acceptance", "avoid"):

@@ -4303,7 +4303,7 @@
    '/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site.py',
    'PYMODULE'),
   ('sitecustomize',
-   '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/vendor/shim/sitecustomize.py',
+   '/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/sitecustomize.py',
    'PYMODULE'),
   ('smtplib',
    '/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/smtplib.py',
