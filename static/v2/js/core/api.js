@@ -303,6 +303,27 @@ function enc(value) {
   return encodeURIComponent(String(value == null ? '' : value));
 }
 
+/* v4.41.0：导出修复闭环。启动补写/重写后轮询后台进度，任务结束自动重试导出，
+   避免作者陷入「导出→重写→再导出还是同一批问题」的循环。 */
+async function waitBackgroundRewrite(key, timeoutMs = 15 * 60 * 1000) {
+  const started = Date.now();
+  let sawRunning = false;
+  while (Date.now() - started < timeoutMs) {
+    let p = null;
+    try {
+      p = await api.rewriteParallelProgress(key);
+    } catch {
+      return null;
+    }
+    const running = !!(p && (p.rw_running || p.running));
+    if (running) sawRunning = true;
+    else if (sawRunning) return p;
+    else if (Date.now() - started > 6000) return p;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+  }
+  return null;
+}
+
 /* v4.35.0：导出被闸门拦下时的恢复弹窗。
    以前后端只回一句「成书未过放行门禁（35.5 分 < 达标线 80）」，界面当成普通
    错误 toast 掉，作者在导出页没有任何出口——既导不出，也不知道该去改哪
@@ -319,6 +340,7 @@ async function offerExportRecovery(info = {}, key = '') {
     const pl = info.pass_line != null ? info.pass_line : 80;
     const below = info.below || 0;
     const findings = Array.isArray(info.findings) ? info.findings : [];
+    const hasTruncated = blocked && findings.some((f) => f.code === 'N03');
 
     const settle = (value) => {
       if (done) return;
@@ -336,6 +358,12 @@ async function offerExportRecovery(info = {}, key = '') {
         class: 'warn-note',
         text: '常见的有：非中文字符残留、元信息泄漏（正文里写了「第几章」）、半句截断。修完这些才能当定稿交付。'
       }));
+      if (info.repaired) {
+        body.append(h('div', {
+          style: { marginTop: '8px', fontSize: '12.5px', opacity: '0.85' },
+          text: `本次导出已自动清理 ${info.repaired} 章标签/章题回显/章节号引用/排版残留，不用再重写这些章。`
+        }));
+      }
       if (findings.length) {
         const wrap = h('div', { style: { marginTop: '10px', maxHeight: '240px', overflow: 'auto' } });
         const list = h('ul', { style: { margin: '0', paddingLeft: '18px', lineHeight: '1.7', fontSize: '13px' } });
@@ -374,6 +402,12 @@ async function offerExportRecovery(info = {}, key = '') {
       'div',
       { style: { display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end', flexWrap: 'wrap' } },
       h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => settle('') } }),
+      ...(hasTruncated ? [h('button', {
+        class: 'btn',
+        type: 'button',
+        text: '补全截断章节并重试',
+        on: { click: () => settle('finish') }
+      })] : []),
       h('button', {
         class: 'btn',
         type: 'button',
@@ -564,6 +598,7 @@ export const api = {
   scoreProgress: (key) => request('/api/score/progress', { query: { key } }),
   rewriteParallel: (payload) => request('/api/rewrite-parallel', jsonBody(payload)),
   rewriteParallelProgress: (key) => request('/api/rewrite-parallel/progress', { query: { key } }),
+  exportFinish: (payload) => request('/api/export/finish', jsonBody(payload)),
   chapterScores: (key) => request('/api/chapter-scores', { query: { key } }),
 
   /* 技能库（#/skills）：树、单文件、统计、本书命中与注入预览 */
@@ -674,7 +709,7 @@ export const api = {
      v4.35.0：被交付闸门/放行门禁拦下时不再直接抛错，而是弹「强制导出 /
      重写低评分章节」——四端（作品库右键、章节工作台、侧栏、剧本台）的导出
      调用点因此全部自动获得出口，不必各写一遍。 */
-  async exportWork(key, fmt, { name = '', frm = 0, to = 0, force = false } = {}) {
+  async exportWork(key, fmt, { name = '', frm = 0, to = 0, force = false, retried = false } = {}) {
     const payload = { key, fmt, frm, to, ...(force ? { force: 1 } : {}) };
     try {
       return await this.saveAny('export', payload, {
@@ -689,25 +724,39 @@ export const api = {
 
       const choice = await offerExportRecovery(info, key);
       if (choice === 'force') return this.exportWork(key, fmt, { name, frm, to, force: true });
-      if (choice === 'rewrite') {
+      if (choice === 'finish' || choice === 'rewrite') {
         const { toast } = await import('./ui.js');
-        /* 禁止项点名了具体章（「第7章」），就只重写这些章；评分不足则交给后端
-           按达标线挑低分章，不要把没问题的章一起返工。 */
-        const wanted = [...new Set((Array.isArray(info.findings) ? info.findings : [])
+        const findings = Array.isArray(info.findings) ? info.findings : [];
+        const wanted = [...new Set(findings
+          .filter((f) => (choice === 'finish' ? f.code === 'N03' : true))
           .map((f) => {
             const m = String(f.location || '').match(/第\s*(\d+)\s*章/);
             return m ? Number(m[1]) : null;
           })
           .filter((n) => Number.isFinite(n)))];
+        let r = null;
         try {
-          const r = await api.rewriteParallel({
-            key,
-            ...(wanted.length ? { chapters: wanted } : {}),
-            ...(info.pass_line ? { target: info.pass_line } : {})
-          });
-          toast((r && r.msg) || '已开始重写低评分章节', { tone: 'success', duration: 4600 });
+          r = choice === 'finish'
+            ? await api.exportFinish({ key, chapters: wanted })
+            : await api.rewriteParallel({
+              key,
+              ...(wanted.length ? { chapters: wanted } : {}),
+              ...(info.pass_line ? { target: info.pass_line } : {})
+            });
+          toast((r && r.msg) || (choice === 'finish' ? '已开始补全截断章节' : '已开始重写相关问题章节'),
+                { tone: 'success', duration: 5200 });
         } catch (err2) {
-          toast((err2 && err2.message) || '启动重写失败，请稍后重试', { tone: 'danger', duration: 4600 });
+          toast((err2 && err2.message) || '启动修复失败，请稍后重试', { tone: 'danger', duration: 4600 });
+          return { cancelled: true };
+        }
+        if (!retried) {
+          const done = await waitBackgroundRewrite(key);
+          if (done) {
+            toast('修复任务已完成，正在重新检查并导出…', { tone: 'success', duration: 4200 });
+            return this.exportWork(key, fmt, { name, frm, to, retried: true });
+          }
+          toast('修复仍在后台进行；完成后再次点导出即可，已修好的章节不会重复报错。',
+                { tone: 'info', duration: 6000 });
         }
         return { cancelled: true };
       }

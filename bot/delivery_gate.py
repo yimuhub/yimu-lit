@@ -89,7 +89,7 @@ def _latin_hits(text: str) -> list[str]:
 #   弱信号 —— 日常叙事也合法：系统流小说里「系统核心自检报告弹出来了」、
 #             游戏流里「评分：S」都是故事内设定，判成元信息泄漏会误伤整个题材。
 #             这类只记 N19 告警，不阻断交付，交给人确认。
-_META_WEAK = ("评分", "得分", "百分制", "自检")
+_META_WEAK = ("评分", "得分", "百分制", "自检", "权重", "质量报告")
 
 # 弱信号词只有作为**字段标签**出现时才算泄漏：行首「本章评分：九十五分。」
 # 是评分表残留（v4.33.7 的原始事故），而「系统核心自检报告弹出来了」是叙事。
@@ -228,7 +228,9 @@ def check_chapter(text: str, *, title: str = "", chapter_no: int = 0,
         out.append(_finding("N03", loc, why))
 
     nums = RE_CHAPTER_NUM.findall(title or "")
-    if len(nums) > 1 or (nums and (title or "").strip().rstrip("：: ") == nums[0]):
+    # 只有标题里重复回显编号（「第204章 第204章」）才是缺陷；
+    # 书名/章名本来就只写「第204章」属于计划层命名简省，不能因此锁死整书导出。
+    if len(nums) > 1:
         out.append(_finding("N04", loc, f"标题「{title}」编号回显"))
 
     lo = spec.threshold("chapter_min_chars", profile)

@@ -36,7 +36,7 @@ a = Analysis(
         "bot.chief", "bot.brief",
         "bot.delivery_gate", "bot.delivery_spec",
         # v4.39.0 / v4.40.0：写盘门禁 + 正典体检 + 引擎对账 + 旧书整改 + 元件库
-        "bot.book_health", "bot.canon", "bot.engine_check", "bot.retrofit", "bot.elements",
+        "bot.book_health", "bot.canon", "bot.engine_check", "bot.retrofit", "bot.elements", "bot.export_repair",
     ] + wv_hidden,
     excludes=["pytest", "tkinter"],
     noarchive=False,

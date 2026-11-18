@@ -3034,6 +3034,45 @@ def api_rewrite_parallel_progress(key: str):
             "rw_running": prog.get("running", False)}
 
 
+@app.post("/api/export/finish")
+def api_export_finish(payload: dict):
+    """v4.41.0：导出被「半句截断（N03）」拦下时，走补写收尾而不是整章重写。
+
+    整章重写会把已经合格的章节再写一遍，评分没提高就被回滚，于是导出永远
+    看到同一份内容。截断章需要的是「接着写完整」，本端点复用按字数补足通道：
+    先还原版本库完整旧稿，没有旧稿才请模型续写收尾，写完评分复核。
+    """
+    key = str(payload.get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    key = os.path.basename(proj.path)
+    if _PARA_RW_RUNNING.get(key, {}).get("running"):
+        return JSONResponse({"error": "该书已有改写/补写任务在跑"}, status_code=409)
+    chapters = payload.get("chapters")
+    if not isinstance(chapters, list):
+        chapters = []
+    chapters = sorted({int(c) for c in chapters if str(c).strip().isdigit()})
+    if not chapters:
+        try:
+            pf = writer.book_health.preflight(proj, "导出前补全截断")
+            chapters = sorted({x["ch"] for x in (pf.get("audit") or {}).get("truncated", [])}
+                              | set((pf.get("repair") or {}).get("needs_finish") or []))
+        except Exception:
+            chapters = []
+    if not chapters:
+        return {"ok": True, "started": False, "msg": "没有需要补写的截断章节"}
+    writer.supersede_rewrites(key)
+    writer.clear_pause(key)
+    jid = _rw_claim(key)
+    writer.start_task(
+        key, "rewrite", f"补全《{proj.name}》导出前截断章节", chapters,
+        batch=lambda todo: _rw_short_batch(key, todo, writer.book_health.target_words(proj), jid),
+        params={"mode": "finish_truncated", "workers": 2})
+    return {"ok": True, "started": True, "chapters": chapters, "workers": 2,
+            "msg": f"✍️ 正在补全 {len(chapters)} 个截断章节，完成后会自动重试导出"}
+
+
 @app.get("/api/canon")
 def api_canon(key: str, run: int = 1):
     """正典体检：书名承诺 / 人物登记 / 对手 / 章卡结构（零 token）。"""
@@ -5329,6 +5368,7 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
     novel = not is_script and not is_mini
     plan = proj.plan() or {}
     sproj = None
+    _clean = {}
     if novel:
         title = plan.get("novelName") or proj.name
         if not (frm or to):
@@ -5339,6 +5379,20 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
             except Exception:
                 pass
         chapters = export_mod.novel_chapters(proj)
+        # v4.41.0：闸门前先做确定性清理（标签/章题回显/章节号引用/排版残留）。
+        # 这些是纯格式问题，整章重写既浪费 token，又会因「新稿分数没更高」被回滚，
+        # 于是每次导出都看到同一批禁止项。能规则修掉的必须在这里修掉。
+        try:
+            from bot import export_repair as _export_repair
+            _clean = _export_repair.repair(proj)
+            if _clean.get("changed"):
+                chapters = export_mod.novel_chapters(proj)
+        except Exception as _e:
+            _clean = {}
+            try:
+                proj.log(f"⚠️ 导出前确定性清理失败：{_e}")
+            except Exception:
+                pass
     elif is_script:
         sproj = script_writer.ScriptProject(proj.path, proj.name)
         plan = sproj.plan() or plan
@@ -5408,6 +5462,7 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
             "blocking": len(_blocks),
             "findings": [{k: f.get(k) for k in ("code", "name", "location", "detail")}
                          for f in _blocks[:20]],
+            "repaired": len(_clean.get("changed") or []),
             **_taste_info,
         })
     # v4.33.8 未达标不放行：放行门禁已跑且未放行的盖章作品，整书导出默认拦截；
