@@ -4,6 +4,18 @@ run_short_expand 只挑「低于目标字数」的章；N03 常常字数够但�
 走那条路会被整批跳过，导出于是永远复检同一份内容。
 """
 import app
+from bot import writer
+
+
+def test_cut_chapter_keeps_completed_continuation_even_if_score_drops():
+    # 半句截断原稿的分数没有完整度含义：补全后略降也必须保留
+    assert writer._expand_should_revert(True, 80, 61) is False
+    assert writer._expand_should_revert(True, 80, 40) is False
+
+
+def test_normal_chapter_still_reverts_on_clear_score_drop():
+    assert writer._expand_should_revert(False, 80, 61) is True
+    assert writer._expand_should_revert(False, 80, 90) is False
 
 
 def test_finish_batch_calls_expand_for_every_requested_chapter(monkeypatch):

@@ -4562,6 +4562,17 @@ def short_chapters(proj, below_words=3000):
     return sorted(out, key=lambda x: x["ch"])
 
 
+def _expand_should_revert(is_cut, base_score, after_score):
+    """补写后是否回滚到原章。
+
+    半句截断（is_cut）永不回滚：原稿的「高分」建立在没写完的正文上，
+    补全后分数略降也必须保留，否则导出下一轮仍是同一处半句。
+    """
+    if is_cut or base_score is None or after_score is None:
+        return False
+    return after_score < base_score - 5 or (after_score < 60 <= base_score)
+
+
 def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
     """把篇幅不足的章节扩写到 target_words，保持情节/人物不变。
 
@@ -4660,8 +4671,7 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
         after_score = score_chapter(proj, ch_no)
     except Exception:
         after_score = None
-    if (base_score is not None and after_score is not None
-            and (after_score < base_score - 5 or (after_score < 60 <= base_score))):
+    if _expand_should_revert(is_cut, base_score, after_score):
         book_health.save_chapter(proj, ch_no, body, label="补字后降分备份",
                                  kind="revert", target=int(target_words))
         _guard_drop(proj, ch_no)
@@ -4669,6 +4679,11 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
         return {"ch": ch_no, "kept": False, "before_words": before_words,
                 "after_words": before_words, "before": base_score, "after": after_score,
                 "note": "扩写后质量下降，已还原"}
+    if is_cut and base_score is not None and after_score is not None and after_score < base_score:
+        # 截断原章的分数不代表完整度：把半句写完才是交付底线，
+        # 即便评分略降也必须保留完整稿，否则下一轮导出又看到同一处半句。
+        proj.log(f"📌 第{ch_no}章原稿为半句截断，补全后评分 {base_score}→{after_score}，"
+                 f"保留完整稿（完整性优先于评分）")
     _guard_drop(proj, ch_no)
     proj.log(f"📏 第{ch_no}章补字 {before_words}→{cur_w} 字"
              + (f"（评分 {base_score}→{after_score}）" if after_score is not None else ""))
