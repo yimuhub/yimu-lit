@@ -67,6 +67,9 @@ def test_expand_short_chapter_keeps_expansion(tmp_path, monkeypatch):
 
 def test_expand_short_chapter_restores_on_score_drop(tmp_path, monkeypatch):
     plan = _plan_with(str(tmp_path), {1: 400})
+    # v4.41.2：半句截断章补全后不再回滚；这里用「已收句」的短章验证普通降分回滚
+    with open(os.path.join(str(tmp_path), "01.md"), "w", encoding="utf-8") as f:
+        f.write("# 第1章\n\n" + "字" * 400 + "。\n")
     proj = _Proj(str(tmp_path), plan)
     scores = iter([90, 60])
     monkeypatch.setattr(writer, "score_chapter", lambda _p, _n: next(scores))
