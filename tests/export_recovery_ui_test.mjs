@@ -49,6 +49,7 @@ dom.window.URL.revokeObjectURL = () => {};
 global.URL = dom.window.URL;
 
 const calls = [];
+let rewrote = false;
 
 const json = (payload, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -87,11 +88,18 @@ global.fetch = async (url, opts = {}) => {
   const method = (opts && opts.method) || 'GET';
   calls.push({ url: u, method });
   if (u.includes('/api/version')) return json({ version: '4.35.0', desktop: false });
+  if (u.includes('/api/rewrite-parallel/progress')) {
+    // v4.41.0：重写分支会等后台任务收口后再自动重试导出；这里模拟任务已结束
+    return json({ ok: true, rw_running: false, running: false });
+  }
   if (u.includes('/api/rewrite-parallel')) {
+    rewrote = true;
     return json({ ok: true, started: true, workers: 3, msg: '⚡ 多岗位并行改写已启动' });
   }
   if (u.includes('/api/export')) {
-    if (u.includes('force=1')) return file('# 复仇太妃：改写贞观（未放行初稿35.5分）\n');
+    if (u.includes('force=1') || rewrote) {
+      return file('# 复仇太妃：改写贞观（已修复）\n');
+    }
     return json(NOT_RELEASED, 409);
   }
   return json({ ok: true });
@@ -150,21 +158,26 @@ const api = await import(pathToFileURL(path.join(root, 'static/v2/js/core/api.js
 // ---------------------------------------------------------------- 场景二：重写低评分章节
 {
   calls.length = 0;
+  rewrote = false;
   const pending = api.exportWork('book', 'docx', { name: '复仇太妃' });
   await waitFor(() => modalTitle().includes('评分不足'), '第二次弹窗');
   clickByText('重写低评分章节');
   const r = await pending;
 
-  const rw = calls.filter((c) => c.url.includes('/api/rewrite-parallel'));
+  const rw = calls.filter((c) => c.url.includes('/api/rewrite-parallel') && !c.url.includes('/progress'));
   ok(rw.length === 1 && rw[0].method === 'POST', '点「重写低评分章节」调用 /api/rewrite-parallel');
   ok(!calls.some((c) => c.url.includes('/api/export') && c.url.includes('force=1')),
-     '重写分支不会顺手把稿子导出去');
-  ok(r && r.cancelled === true, '重写分支返回 cancelled，调用方不会叠「导出失败」红字');
+     '重写分支不会顺手带 force 把稿子导出去');
+  const exports_ = calls.filter((c) => c.url.includes('/api/export'));
+  ok(exports_.length === 2, '后台修复结束后自动重新检查并导出（第二次导出不再是同一份被拦稿）');
+  ok(r?.cancelled !== true && !document.querySelector('#overlays .modal'),
+     '自动重试成功后弹窗关闭，不叠「导出失败」红字');
 }
 
 // ---------------------------------------------------------------- 场景三：取消
 {
   calls.length = 0;
+  rewrote = false;
   const pending = api.exportWork('book', 'md');
   await waitFor(() => modalTitle().includes('评分不足'), '第三次弹窗');
   clickByText('取消');
