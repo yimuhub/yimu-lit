@@ -31,11 +31,6 @@ import re
 
 from . import state as state_mod
 
-# 死亡/退场语义（从自由文本 status 里识别；状态库没有独立的生死字段）
-_DEAD = ("已死", "死亡", "身亡", "阵亡", "殁", "被杀", "自尽", "殉", "伏诛", "斩首", "死去")
-_LEFT = ("离京", "离开", "远走", "流放", "外放", "失踪", "退隐", "幽禁")
-_ALIVE = ("在世", "健在", "存活", "活着")
-
 # 常见姓氏：只对「高频出现的姓」做漂移检测，避免把「沈」「李」之外的普通词当人名
 _SURNAMES = set(
     "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜"
@@ -56,17 +51,6 @@ _SURNAMES = set(
 
 def _pdir(proj) -> str:
     return os.path.abspath(getattr(proj, "path", "") or "")
-
-
-def _is_dead(status: str) -> bool:
-    s = status or ""
-    if any(w in s for w in _ALIVE):
-        return False
-    return any(w in s for w in _DEAD)
-
-
-def _is_gone(status: str) -> bool:
-    return any(w in (status or "") for w in _LEFT)
 
 
 def _names_of(name: str, rec: dict) -> list:
@@ -103,15 +87,17 @@ def build(proj, no: int, cfg=None, card: dict | None = None) -> dict:
             continue
         status = str(rec.get("status") or "")
         aliases = _names_of(nm, rec)
+        life = state_mod.life_of(rec)
         # 注意：**不用 first_seen 判断「尚未登场」**。状态库的 first_seen 记录的是
         # 「第一次被写进账本」的章号，不是「正文里第一次出场」——一个第 30 章就出场、
         # 却在第 100 章才被抽取进状态的配角，first_seen 会是 100。用它做禁出场判定，
         # 会把主角本人在第 1 章判成「第 100 章才登场」。
-        if _is_dead(status):
-            forbidden.append({"name": nm, "reason": f"已退场（{status[:16]}）", "names": aliases})
-        elif _is_gone(status):
-            forbidden.append({"name": nm, "reason": f"当前不在场（{status[:16]}）", "names": aliases})
-        elif any(w in status for w in ("未登场", "尚未出场", "未出场", "未出场")):
+        if life == "dead":
+            why = f"已于第{rec.get('death_chapter')}章死亡" if rec.get("death_chapter") else (status[:16] or "已死")
+            forbidden.append({"name": nm, "reason": f"已退场（{why}）", "names": aliases})
+        elif life == "gone":
+            forbidden.append({"name": nm, "reason": f"当前不在场（{status[:16] or '已离场'}）", "names": aliases})
+        elif life == "not_yet":
             forbidden.append({"name": nm, "reason": "尚未登场", "names": aliases})
         else:
             allowed.append(nm)
@@ -126,7 +112,8 @@ def build(proj, no: int, cfg=None, card: dict | None = None) -> dict:
         if not c:
             from . import longform
             c = longform.build_chapter_card(proj, n, cfg) or {}
-        card_chars = [str(x) for x in (c.get("characters") or []) if x]
+        card_chars = [str(x) for x in (c.get("cast") or []) if x]
+        card_chars += [str(x) for x in (c.get("characters") or []) if x]
         focus = ((c.get("state_focus") or {}).get("characters") or [])
         card_chars += [str(x.get("name")) for x in focus if isinstance(x, dict) and x.get("name")]
     except Exception:
@@ -162,10 +149,22 @@ def build(proj, no: int, cfg=None, card: dict | None = None) -> dict:
         if holder:
             items.append({"name": nm, "holder": holder})
 
+    # 全书在册人名（含对手）：仅用于写后「同名/近似名」漂移对照，不限制出场
+    known = []
+    for nm, rec in chars.items():
+        rec = rec if isinstance(rec, dict) else {}
+        nm = state_mod._clean_person_name(nm)
+        if nm and state_mod._is_person_key(nm):
+            known.extend(_names_of(nm, rec))
+    for nm, rec in (st.get("opponents") or {}).items():
+        rec = rec if isinstance(rec, dict) else {}
+        known.extend(_names_of(str(nm), rec))
+
     return {
         "chapter": n,
         "form": form,
         "allowed": allowed[:24],
+        "known": sorted(set(x for x in known if len(x) >= 2))[:80],
         "forbidden": forbidden[:16],
         "alias_table": table,
         "must_pay": must_pay,
@@ -279,6 +278,7 @@ def validate(fc: dict, text: str, n: int = 0) -> list:
 def _name_drift(fc: dict, body: str) -> list:
     """同姓近名漂移检测：抓「沈知微 / 沈清漪」这类一处之差的错名。"""
     allowed = set(fc.get("allowed") or [])
+    allowed.update(fc.get("known") or [])
     for info in (fc.get("alias_table") or {}).values():
         allowed.update(info.get("aliases") or [])
     if not allowed:

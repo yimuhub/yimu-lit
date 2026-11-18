@@ -398,7 +398,7 @@ def build(proj, ch, cfg=None, references=None) -> dict:
             lore_relevant = ""
 
     blocks = [
-        {"name": "card", "text": card_text, "layer": 0, "priority": 0, "cap": 1600},
+        {"name": "card", "text": card_text, "layer": 0, "priority": 0, "cap": 2200},
         {"name": "state_excerpt", "text": state_excerpt, "layer": 0, "priority": 1, "cap": 5000},
         {"name": "prev_tail", "text": prev_tail, "layer": 0, "priority": 2, "cap": 1800},
         {"name": "structure", "text": "\n".join(structure), "layer": 0, "priority": 3, "cap": 800},
@@ -413,7 +413,7 @@ def build(proj, ch, cfg=None, references=None) -> dict:
         {"name": "outline", "text": _outline_brief(outline, no), "layer": 2, "priority": 23, "cap": 4000},
         {"name": "references", "text": refs_text, "layer": 3, "priority": 30, "cap": 4000},
         {"name": "long_summary", "text": _long_summary(pdir), "layer": 4, "priority": 40, "cap": 1400},
-        {"name": "story_bible", "text": _read(pdir, "09-故事圣经.md", 12000), "layer": 4, "priority": 41, "cap": 1400},
+        {"name": "story_bible", "text": _read(pdir, "09-故事圣经.md", 12000), "layer": 4, "priority": 41, "cap": 2000},
         {"name": "timeline", "text": _read(pdir, "12-时间线与连续性.md", 12000), "layer": 4, "priority": 42, "cap": 900},
         {"name": "covenant", "text": _read(pdir, "13-一致性纲领.md", 12000), "layer": 1, "priority": 15, "cap": 1500},
         {"name": "graph", "text": graph_text, "layer": 4, "priority": 43, "cap": 900},

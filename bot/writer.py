@@ -493,6 +493,11 @@ def create_project(cfg, titles, pdir=None, name=None):
         try:
             _sb = workflow.gen_story_bible(cfg)
             _write_cfg_text(pdir, "09-故事圣经.md", "# 故事圣经\n\n" + _sb)
+            try:
+                from bot import canon as _canon
+                _canon.seed_state(proj)
+            except Exception:
+                pass
             _evt(_ek, "planner", phase="done", title="生成故事圣经",
                  output=f"故事圣经 {len(_sb or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
         except Exception as e:
@@ -2303,6 +2308,29 @@ def recover_pending_rewrites(proj, ch_no=None) -> int:
     return restored
 
 
+def _engine_directives(proj, ch_no, body, cfg=None, limit=6):
+    """把本章的引擎对账 + 工艺告警翻成改写要求（零 token 生成，写进重写提示）。"""
+    out = []
+    try:
+        from . import engine_check, craft_check, canon, longform, state
+        cards = longform.load_cards(proj)
+        motifs = canon.title_motifs(canon.book_title(proj))
+        try:
+            opps = engine_check.opponent_names(state.load(proj.path))
+        except Exception:
+            opps = []
+        for f in engine_check.check_chapter(body or "", ch_no, cards.get(ch_no) or {},
+                                            motifs, opps):
+            if f.get("level") in ("high", "warn") or f.get("code") in ("E03", "E04", "E06"):
+                out.append(f"【{f['code']}】{f.get('message')}")
+        for f in craft_check.check_chapter(body or "", n=ch_no, cfg=cfg or {}):
+            if f.get("gate") in ("C24", "C15") or f.get("severity") == "block":
+                out.append(f"【{f['gate']}】{f.get('message')}")
+    except Exception:
+        pass
+    return out[:limit]
+
+
 def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_dims=None, skip_deslop=False):
     """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。
     v4.20：skip_deslop=True 供 _write_chapter 在「去味必跑」拆出后复用（避免同章 deslop 两次）；
@@ -2360,6 +2388,9 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
         fix = "\n".join(f"【第{ch_no}章·主攻】提升【{w}】维度" for w in weak[:3])
         if extra_dims:
             fix += "\n【审稿问题（逐条落实）】\n" + "\n".join(f"- {d}" for d in extra_dims[:6])
+        _eng = _engine_directives(proj, ch_no, body, plan.get("config") or {})
+        if _eng:
+            fix += "\n【故事引擎/工艺（逐条消除，不许只改措辞）】\n" + "\n".join(f"- {d}" for d in _eng)
         _db = _director_brief(proj, ch_no)
         if _db:
             fix += "\n" + _db
@@ -3242,6 +3273,7 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
                 continue
             fp = _chapter_file_path(proj, ch)
             old = open(fp, encoding="utf-8").read()
+            base_score = score_chapter(proj, cno)
             new = re.sub(r"```[a-zA-Z]*\n?", "", workflow.fix_chapter(old, act.get("action", ""), {"cfg": cfg})).strip()
             # v4.22.1：审稿修复稿也过净化——只留四段结构，修复说明/评分不落盘
             new = purity.sanitize_chapter(new) if new else ""
@@ -3250,7 +3282,15 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
                 _g = book_health.save_chapter(proj, cno, new, label="审稿修复前",
                                               kind="fix", orig=old)
                 if _g.get("ok"):
-                    fixed += 1
+                    new_score = score_chapter(proj, cno)
+                    if (base_score is not None and new_score is not None
+                            and new_score < base_score):
+                        _rb = book_health.save_chapter(
+                            proj, cno, old, label="修复后评分更低，回退", kind="restore")
+                        proj.log(f"↩️ 第{cno}章审稿修复后 {new_score} < 原稿 {base_score}，"
+                                 f"已回退原稿{'（回退失败）' if not _rb.get('ok') else ''}")
+                    else:
+                        fixed += 1
                 else:
                     proj.log(f"↩️ 第{cno}章审稿修复被门禁拦下（{_g.get('reason')}），保留原稿")
             else:
@@ -4251,6 +4291,128 @@ def _pch_before(proj, ch_no):
 _PARA_RW_PROGRESS: dict = {}
 
 @_serialize_book
+def run_ordered_review(key, short_below=None, low_below=60, target=None, workers=3,
+                       include_engine=True):
+    """按作者定死的顺序跑一遍：①字数不足 → ②评分<60 → ③引擎/工艺问题。
+
+    为什么必须是一个入口：以前三个动作分散在三个意图里，作者说完「按顺序审」，
+    系统只做了其中一件；做下一件又要求再说一次，而且「继续」可能捡起上一批的旧清单。
+    这里把顺序写死，一次调用依次跑完，中间只有暂停/取消能打断；每阶段都复用
+    已有的「保留更好守护」，改稿分不够就回滚原稿。
+    """
+    proj = Project(_project_dir(key), key)
+    plan = proj.plan() or {}
+    if not plan.get("chapters"):
+        return {"ok": False, "msg": "写作计划缺失或没有章节，无法按顺序审校"}
+    cfg = plan.get("config") or {}
+    try:
+        book_health.preflight(proj, "顺序审校")
+    except Exception as e:
+        proj.log(f"⚠️ 顺序审校开工体检失败：{e}")
+    min_words = int(plan.get("minWordsPerChapter") or cfg.get("min_words_per_chapter") or 3000)
+    try:
+        below = int(short_below or min_words)
+    except (TypeError, ValueError):
+        below = min_words
+    try:
+        low = int(low_below or 60)
+    except (TypeError, ValueError):
+        low = 60
+    try:
+        tgt = int(target) if target is not None else None
+    except (TypeError, ValueError):
+        tgt = None
+
+    report = {"ok": True, "short": [], "low": [], "engine": [], "msg": ""}
+    proj.log(f"🧭 顺序审校启动：①<{below}字 → ②<{low}分 → ③引擎/工艺（一次跑完，不用再说继续）")
+
+    # ① 字数不足 / 结尾截断
+    try:
+        shorts = sorted({x["ch"] for x in short_chapters(proj, below)})
+    except Exception:
+        shorts = []
+    try:
+        from . import book_health as _bh
+        aud = _bh.audit(proj, below) or {}
+        shorts = sorted(set(shorts) | {int(x) for x in (aud.get("truncated") or [])})
+    except Exception:
+        pass
+    if shorts:
+        proj.log(f"① 字数不足/截断：{len(shorts)} 章（第 {shorts[:8]}…）")
+        try:
+            r1 = run_short_expand(key, chapters=shorts, below_words=below, workers=2)
+            report["short"] = (r1 or {}).get("results") or []
+        except Exception as e:
+            proj.log(f"⚠️ ①字数阶段失败（继续下一阶段）：{e}")
+    else:
+        proj.log("① 字数不足：0 章")
+
+    # ② 评分 < 60
+    try:
+        lows = sorted({p["ch"] for p in per_chapter_scores(proj)
+                       if isinstance(p.get("score"), (int, float)) and p["score"] < low})
+    except Exception:
+        lows = []
+    if lows:
+        proj.log(f"② 评分<{low}：{len(lows)} 章（第 {lows[:8]}…）")
+        try:
+            r2 = run_parallel_rewrite(key, chapters=lows, workers=workers, max_rounds=2,
+                                      target=tgt or max(low + 15, 75))
+            report["low"] = (r2 or {}).get("results") or []
+        except Exception as e:
+            proj.log(f"⚠️ ②评分阶段失败（继续下一阶段）：{e}")
+    else:
+        proj.log(f"② 评分<{low}：0 章")
+
+    # ③ 引擎/工艺（排除前两阶段已处理过的章，避免同一章白改两遍）
+    if include_engine:
+        touched = set(shorts) | set(lows)
+        eng_chs = set()
+        try:
+            from . import engine_check
+            ed = engine_check.scan(proj)
+            for f in ed.get("findings") or []:
+                if f.get("level") in ("high", "warn") and f.get("chapter"):
+                    eng_chs.add(int(f["chapter"]))
+        except Exception:
+            pass
+        try:
+            from . import craft_check
+            chs = []
+            for row in plan.get("chapters") or []:
+                n = int(row.get("chapterNumber") or 0)
+                fp = _chapter_file_path(proj, row)
+                if n and os.path.exists(fp):
+                    chs.append({"n": n, "text": open(fp, encoding="utf-8").read()})
+            rep = craft_check.check_book(chs, cfg)
+            for f in rep.get("findings") or []:
+                if f.get("gate") in ("C24", "C15") and f.get("chapter"):
+                    eng_chs.add(int(f["chapter"]))
+        except Exception:
+            pass
+        eng_chs -= touched
+        eng_chs = sorted(eng_chs)
+        if eng_chs:
+            proj.log(f"③ 引擎/工艺：{len(eng_chs)} 章（第 {eng_chs[:8]}…）")
+            try:
+                r3 = run_parallel_rewrite(key, chapters=eng_chs, workers=workers, max_rounds=1,
+                                          target=tgt)
+                report["engine"] = (r3 or {}).get("results") or []
+            except Exception as e:
+                proj.log(f"⚠️ ③引擎阶段失败：{e}")
+        else:
+            proj.log("③ 引擎/工艺：0 章")
+
+    def _kept(rows):
+        return sum(1 for r in (rows or []) if isinstance(r, dict) and r.get("kept"))
+
+    report["msg"] = (f"顺序审校完成：①补足/收尾 {_kept(report['short'])}/{len(report['short'])} 章 · "
+                     f"②低分改写 {_kept(report['low'])}/{len(report['low'])} 章 · "
+                     f"③引擎工艺 {_kept(report['engine'])}/{len(report['engine'])} 章（其余已回滚原稿）")
+    proj.log("🧭 " + report["msg"])
+    return report
+
+
 def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=None):
     """v4.17.2：多岗位并行改写低分章——
     - 审稿问题（20b-审稿findings.json）一次性按章下发，改写指令带着问题清单
@@ -4659,6 +4821,7 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
             _db = _director_brief(proj, n)
             if _db:
                 reqs.append(_db)
+        reqs += [f"【引擎/工艺】{d}" for d in _engine_directives(proj, n, orig, cfg)]
         new = workflow.guided_rewrite(orig, "\n".join(reqs), cons, cfg)
         new = _clean_chapter_text(new or "")
         _why = rewrite_reject_reason(orig, new)

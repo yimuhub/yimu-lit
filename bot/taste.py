@@ -111,6 +111,86 @@ FORMS = {
 
 DEFAULT_FORM = FORM_SERIAL
 
+# ---------- 题材修饰（TASTE_MOD） ----------
+# 只改「节奏/情绪/伏笔」这些可执行参数，不新增评分维度。
+# 形态是底盘，题材是调校：历史/军事可以慢一点但对手必须具体；
+# 言情/都市要求情绪供给更密；悬疑允许更长的揭晓间隔。
+GENRE_MODIFIERS = {
+    "history": {
+        "rhythm": {"small_payoff_every": 2, "big_climax_every": 10},
+        "emotion": {"density": "high",
+                    "note": "历史/民国读者要「具体利益 + 具体对手」；制度与工艺必须落到某个人身上。"},
+        "foreshadow": {"max_open_a": 10},
+    },
+    "military": {
+        "rhythm": {"small_payoff_every": 2, "big_climax_every": 8},
+        "emotion": {"density": "high", "note": "战争线每个阶段都要有可量化的得失与牺牲。"},
+        "foreshadow": {"max_open_a": 10},
+    },
+    "xuanhuan": {
+        "rhythm": {"small_payoff_every": 2, "big_climax_every": 8},
+        "foreshadow": {"max_open_a": 15},
+    },
+    "xianxia": {
+        "rhythm": {"small_payoff_every": 2, "big_climax_every": 12},
+        "foreshadow": {"max_open_a": 12},
+    },
+    "scifi": {
+        "rhythm": {"big_climax_every": 12},
+        "foreshadow": {"max_open_a": 12},
+        "emotion": {"density": "medium", "note": "科幻的爽点来自推演兑现，不是打脸；每个设定都要付出代价。"},
+    },
+    "mystery": {
+        "rhythm": {"small_payoff_every": 3, "big_climax_every": 10},
+        "foreshadow": {"max_open_a": 9, "must_payoff_ratio": 1.0},
+    },
+    "horror": {
+        "rhythm": {"small_payoff_every": 3, "max_flat_chapters": 1},
+        "foreshadow": {"max_open_a": 8},
+    },
+    "romance": {
+        "rhythm": {"small_payoff_every": 2},
+        "emotion": {"density": "high", "note": "关系推进必须可见：每 2 章至少一次关系状态变化。"},
+        "foreshadow": {"max_open_a": 8},
+    },
+    "urban": {
+        "rhythm": {"small_payoff_every": 2},
+        "emotion": {"density": "high"},
+    },
+    "workplace": {
+        "rhythm": {"small_payoff_every": 3},
+        "emotion": {"density": "medium", "note": "职场线靠具体业务/权力动作推进，不靠口号。"},
+    },
+    "wuxia": {
+        "rhythm": {"small_payoff_every": 2, "big_climax_every": 10},
+    },
+}
+
+
+def _deep_merge(base: dict, extra: dict) -> dict:
+    for k, v in (extra or {}).items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            base[k] = _deep_merge(dict(base[k]), v)
+        else:
+            base[k] = v
+    return base
+
+
+def genre_key(cfg) -> str:
+    c = cfg if isinstance(cfg, dict) else {}
+    try:
+        from . import skillkit
+        key = skillkit._genre_key(c.get("genre_key") or c.get("genre"))
+    except Exception:
+        key = str(c.get("genre_key") or "").strip().lower()
+    return key if key in GENRE_MODIFIERS else ""
+
+
+def genre_modifiers(cfg) -> dict:
+    """当前作品的题材修饰（没有就返回空 dict）。"""
+    key = genre_key(cfg)
+    return dict(GENRE_MODIFIERS.get(key) or {})
+
 
 # ---------- 读者行为基准（只用于目标与报告，不作为写作方向） ----------
 
@@ -204,6 +284,8 @@ CRAFT_GATES = [
      "forms": [], "desc": "手机阅读段落过长会显著拉低完读率"},
     {"id": "C23", "name": "描写压过事件", "layer": "C", "check": "desc_heavy",
      "forms": [], "desc": "环境/心理描写占比过高，事件推进不足"},
+    {"id": "C24", "name": "文书压过故事", "layer": "C", "check": "paperwork_density",
+     "forms": [], "desc": "档案/台账/表格/审批/流程等文书面词汇密度过高，读者读到的是公文而不是小说"},
 ]
 
 LAYER_LABEL = {"A": "硬伤", "B": "结构", "C": "体验"}
@@ -229,14 +311,18 @@ def form_of(cfg) -> str:
 
 
 def spec(form, cfg=None) -> dict:
-    """取形态规格，并允许 cfg['form_overrides'] 覆盖标量/区间字段。"""
+    """取形态规格：底盘（形态）→ 题材修饰 → 用户 form_overrides（最深优先）。"""
     f = normalize(form)
-    base = dict(FORMS[f])
+    base = _deep_merge(dict(FORMS[f]), genre_modifiers(cfg))
     base["form"] = f
     ov = (cfg or {}).get("form_overrides") if isinstance(cfg, dict) else None
     if isinstance(ov, dict):
         for k, v in ov.items():
-            if k in base and isinstance(base[k], (int, float, tuple, str)) and v is not None:
+            if k not in base or v is None:
+                continue
+            if isinstance(base[k], dict) and isinstance(v, dict):
+                base[k] = _deep_merge(dict(base[k]), v)
+            elif isinstance(base[k], (int, float, tuple, str, bool)):
                 base[k] = v
     return base
 

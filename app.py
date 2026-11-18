@@ -1079,8 +1079,25 @@ def _chat_attached(s, proj, msg):
                      "说明文字": len(_a.get("meta") or []),
                      "缺文件": len(_a.get("missing") or [])}
             _left = {k: v for k, v in _left.items() if v}
+            _extra = []
+            try:
+                from bot import canon as _canon
+                _cd = _rep.get("canon") or {}
+                if _cd:
+                    _extra.append(_canon.brief(_cd))
+            except Exception:
+                pass
+            try:
+                from bot import engine_check as _eng
+                _ed = _eng.scan(proj)
+                if _ed.get("counts", {}).get("high") or _ed.get("counts", {}).get("warn"):
+                    _extra.append(_eng.brief(_ed))
+            except Exception:
+                pass
+            _tail = ("\n" + "\n".join("· " + x for x in _extra)) if _extra else ""
             if not _fixed and not _left:
-                return f"✅ 《{name}》体检通过：{_a.get('total', 0)} 章正文完整，没有字数不足、截断或说明文字。"
+                return (f"✅ 《{name}》体检通过：{_a.get('total', 0)} 章正文完整，"
+                        f"没有字数不足、截断或说明文字。" + _tail)
             _msg = f"🩺 《{name}》体检完成："
             if _fixed:
                 _msg += f"已从版本库还原 {_fixed} 章；"
@@ -1089,7 +1106,43 @@ def _chat_attached(s, proj, msg):
                 _msg += "说「把字数不足和结尾截断的章节补好」我就按原情节逐章补足/收尾。"
             else:
                 _msg += "其余章节完整。"
-            return _msg
+            return _msg + _tail
+
+        if intent in ("retrofit_scan", "retrofit_rewrite"):
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 旧书整改目前只支持小说。"
+            try:
+                from bot import retrofit as _retro
+                _rd = _retro.run(proj, quiet=True)
+            except Exception as e:
+                return f"⚠️ 旧书整改扫描失败：{e}"
+            _top = (_rd.get("surgical") or [])
+            _lines = [f"🧾 《{name}》旧书整改方案（已写 {_rd.get('chapters', 0)} 章 / "
+                      f"约 {_rd.get('words', 0)} 字）",
+                      f"· 书名：{( _rd.get('title_coverage') or 0):.0%} 的章提到书名关键词 → "
+                      f"{_rd.get('title_decision')}。{_rd.get('title_fix')}",
+                      f"· 建议先改 {len(_top)} 章（按顺序）："]
+            for i, x in enumerate(_top[:10], 1):
+                tier = {1: "①字数", 2: "②低分", 3: "③引擎", 4: "④文书", 5: "⑤章卡"}.get(x["tier"], "")
+                _lines.append(f"  {i}. 第{x['n']}章 {tier}：{'；'.join((x.get('reasons') or [])[:2])[:70]}")
+            _lines.append(f"完整清单见 {_retro.REPORT_MD}。")
+            if intent == "retrofit_rewrite":
+                _exec = [x["n"] for x in _top if x["tier"] != 5][:20]
+                if not _exec:
+                    return "\n".join(_lines) + "\n（没有可重写的章；⑤类请先补章卡规划。）"
+                writer.supersede_rewrites(key)
+                writer.clear_pause(key)
+                writer.start_task(
+                    key, "rewrite", f"旧书整改《{name}》（先改 {len(_exec)} 章）",
+                    _exec,
+                    batch=lambda todo: writer.run_parallel_rewrite(
+                        key, chapters=todo, workers=3, max_rounds=2, target=75),
+                    params={"workers": 3, "max_rounds": 2, "target": 75, "mode": "retrofit"})
+                _lines.append(f"⚡ 已启动这 {len(_exec)} 章的外科手术式重写：每章改稿分必须高于原稿，"
+                              f"否则自动回滚；全书不动。")
+            else:
+                _lines.append("要执行，点「旧书整改并改写」或说「按这份清单改」。")
+            return "\n".join(_lines)
 
         if intent in ("report_status", "show_outline", "audit", "export", "new_project", "pause"):
             intent = {"report_status": "query_status", "show_outline": "query_outline",
@@ -1322,12 +1375,67 @@ def _chat_attached(s, proj, msg):
                     f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章），{3} 个岗位并行改写，"
                     f"目标 {int(_tgt)} 分——每章最多 2 轮，改写分必须高于原分否则回滚。完成后逐章汇报。")
 
+        # v4.40.0：ordered_review——「按顺序审：先字数、再 60 分以下、最后其他」一次跑完
+        if intent == "ordered_review":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 顺序审校目前只支持小说；其他文体请说「检查全文」走对应审校。"
+            _below = params.get("below_words")
+            try:
+                _below = int(float(str(_below).replace("字", ""))) if _below not in (None, "") else None
+            except (TypeError, ValueError):
+                _below = None
+            if not _below:
+                _m = (re.search(r"(?:低于|少于|不到|不足|小于)\s*(\d+)\s*字", msg)
+                      or re.search(r"(\d+)\s*字(?:以下|以内|之下)", msg))
+                _below = int(_m.group(1)) if _m else int(
+                    (proj.plan() or {}).get("minWordsPerChapter") or 3000)
+            try:
+                _low = int(params.get("low_below") or 60)
+            except (TypeError, ValueError):
+                _low = 60
+            _prev_short = []
+            try:
+                _prev_short = sorted({x["ch"] for x in writer.short_chapters(proj, _below)})
+            except Exception:
+                pass
+            _prev_low = [p["ch"] for p in writer.per_chapter_scores(proj)
+                         if isinstance(p.get("score"), (int, float)) and p["score"] < _low]
+            _prev_eng = []
+            try:
+                from bot import engine_check as _eng
+                _ed = _eng.scan(proj)
+                _prev_eng = sorted({int(f["chapter"]) for f in (_ed.get("findings") or [])
+                                    if f.get("level") in ("high", "warn") and f.get("chapter")})
+            except Exception:
+                pass
+            _todo = sorted(set(_prev_short) | set(_prev_low) | set(_prev_eng))
+            if not _todo:
+                return (f"✅ 顺序审校没有发现要改的章：没有少于 {_below} 字的章、"
+                        f"没有低于 {_low} 分的章、故事引擎也没有高风险项。")
+            writer.supersede_rewrites(key)
+            writer.clear_pause(key)
+            writer.start_task(
+                key, "rewrite", f"按顺序审校《{name}》",
+                _todo,
+                batch=lambda todo: writer.run_ordered_review(
+                    key, short_below=_below, low_below=_low,
+                    target=max(_low + 15, 75)),
+                params={"mode": "ordered", "below_words": int(_below),
+                        "low_below": int(_low), "workers": 3,
+                        "target": max(_low + 15, 75)})
+            return (f"🧭 已按你定的顺序启动，且会一次跑完（不用再说「继续」）：\n"
+                    f"① 字数不足/截断：{len(_prev_short)} 章（低于 {_below} 字）\n"
+                    f"② 评分 <{_low}：{len(_prev_low)} 章\n"
+                    f"③ 故事引擎/工艺：{len(_prev_eng)} 章（已排除前两步处理过的章）\n"
+                    f"合计 {len(_todo)} 章，3 个岗位并行；每章改完必须比原稿分高，否则自动回滚原稿。")
+
         # v4.21.9：rewrite_all_below——「重写所有未达标的章节」（无章号/分数也准确理解）
         if intent == "rewrite_all_below":
             if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
                 return "⚠️ 批量重写暂支持小说；其他文体请在评分详情里逐章处理。"
-            if _PARA_RW_RUNNING.get(key, {}).get("running"):
-                return "⚠️ 该书已有改写任务在跑，请稍候。"
+            # v4.40.0：最新指令优先——不再让旧任务把作者挡在门外
+            writer.supersede_rewrites(key)
+            writer.clear_pause(key)
             _pass = writer._pass_line()
             _lows = [p["ch"] for p in writer.per_chapter_scores(proj)
                      if isinstance(p.get("score"), (int, float)) and p["score"] < _pass]
@@ -2924,6 +3032,48 @@ def api_rewrite_parallel_progress(key: str):
     prog = writer._PARA_RW_PROGRESS.get(key) or {}
     return {"ok": True, **st, **{k: prog.get(k) for k in ("done", "total", "results") if k in prog},
             "rw_running": prog.get("running", False)}
+
+
+@app.get("/api/canon")
+def api_canon(key: str, run: int = 1):
+    """正典体检：书名承诺 / 人物登记 / 对手 / 章卡结构（零 token）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    try:
+        from bot import canon
+        data = canon.run(proj, quiet=True) if run else canon.scan(proj)
+        return {"ok": True, "key": key, **data}
+    except Exception as e:
+        return JSONResponse({"error": f"正典体检失败：{e}"}, status_code=500)
+
+
+@app.get("/api/engine-check")
+def api_engine_check(key: str):
+    """故事引擎对账：章卡字段 → 正文证据（零 token）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    try:
+        from bot import engine_check
+        data = engine_check.run(proj, quiet=True)
+        return {"ok": True, "key": key, **data}
+    except Exception as e:
+        return JSONResponse({"error": f"故事引擎体检失败：{e}"}, status_code=500)
+
+
+@app.get("/api/retrofit")
+def api_retrofit(key: str):
+    """旧书整改方案：先改哪 20 章 + 书名处置（零 token）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    try:
+        from bot import retrofit
+        data = retrofit.run(proj, quiet=True)
+        return {"ok": True, "key": key, **data}
+    except Exception as e:
+        return JSONResponse({"error": f"旧书整改扫描失败：{e}"}, status_code=500)
 
 
 @app.get("/api/chapter-scores")

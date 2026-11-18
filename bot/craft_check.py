@@ -48,6 +48,7 @@ TH = {
     "chapter_len_tol": 0.40,        # 章长偏离目标 40%
     "hook_tail_chars": 180,
     "count_error_delta": 2,         # 声称字数与实际差 ≥2 才算穿帮
+    "paperwork_per_k": 13.0,        # 每千字文书面词超过 13 处，读到的是公文不是小说
 }
 
 _CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
@@ -576,6 +577,48 @@ def check_desc_heavy(text, n=0):
     return []
 
 
+# 文书面词：真实项目第 142 章每千字 52.8 处，读者反馈「在看公文」而不是小说。
+# 只收「小说里出现即意味着作者在描述流程」的词，不收「记录」「证明」这类日常词，
+# 否则正常叙事会被误伤。
+_PAPERWORK_WORDS = (
+    "档案", "台账", "表格", "清单", "审批", "流程", "工序", "标准", "规格",
+    "批文", "报表", "统计", "检验", "验收", "手续", "备案", "登记", "账册",
+    "名册", "章程", "条例", "公文", "条款", "文书", "凭证", "审核", "盖章",
+    "备案", "归档", "造册", "核销", "申报", "批示", "卷宗",
+)
+_PAPERWORK_RE = re.compile("|".join(sorted(set(_PAPERWORK_WORDS), key=len, reverse=True)))
+
+
+def check_paperwork_density(text, n=0):
+    """文书密度：每千字文书面词命中数。
+
+    这是「工业/职场/历史」题材最容易出的问题：作者用制度说明代替场景冲突，
+    结果一章读下来全是流程，没有一个具体的人在具体的地方做一个具体的决定。
+    只报体验层（C 层），因为文档本身不是错，密度失控才是。
+    """
+    body = _body(text)
+    w = max(1, wordcount.count(body))
+    hits = _PAPERWORK_RE.findall(body)
+    per_k = len(hits) * 1000.0 / w
+    if per_k < TH["paperwork_per_k"]:
+        return []
+    samples, seen = [], set()
+    for m in _PAPERWORK_RE.finditer(body):
+        s = max(0, m.start() - 14)
+        piece = _clip(body[s:m.end() + 14], 50)
+        if piece not in seen:
+            seen.add(piece)
+            samples.append(piece)
+        if len(samples) >= 3:
+            break
+    return [_finding(
+        "C24", "C", "info", n,
+        f"文书密度偏高：每千字 {per_k:.1f} 处（阈值 {TH['paperwork_per_k']}），"
+        f"命中 {len(hits)} 处，情节可能被流程说明挤掉",
+        evidence=" ｜ ".join(samples),
+        metric={"per_k": round(per_k, 2), "count": len(hits)})]
+
+
 def payoff_signals(text) -> int:
     """爽点/推进信号计数——供节奏判定复用。"""
     body = _body(text)
@@ -588,7 +631,7 @@ _CHAPTER_CHECKS = (
     check_truncated, check_repeat, check_meta_leak, check_process_residue,
     check_count_error, check_format_pollution, check_opening, check_hook_tail,
     check_chapter_len, check_dialogue_ratio, check_burstiness, check_ai_phrases,
-    check_paragraph_len, check_desc_heavy,
+    check_paragraph_len, check_desc_heavy, check_paperwork_density,
 )
 
 

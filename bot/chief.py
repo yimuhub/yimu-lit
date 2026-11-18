@@ -68,6 +68,13 @@ ACTIONS = {
                 "这是按正文字数筛，不是按评分筛；和 rewrite_below 完全不同",
         "params": {"below_words": "字数阈值，默认 3000"},
     },
+    "ordered_review": {
+        "desc": "按作者定死的顺序一次跑完：①字数不足/结尾截断 → ②评分低于阈值 → ③故事引擎/工艺问题。"
+                "作者说「按顺序审」「先补字数再改低分」「按我说的顺序来」「整体过一遍」时用；"
+                "它内部会依次执行，不需要作者再说「继续」",
+        "params": {"below_words": "字数阈值，默认取本书单章标准字数",
+                   "low_below": "评分阈值，默认 60"},
+    },
     "score_chapters": {
         "desc": "给章节评分；不带 chapters=补评所有未评分章",
         "params": {"chapters": "[章号整数] 或 null"},
@@ -76,6 +83,16 @@ ACTIONS = {
     "health_check": {
         "desc": "全书体检：检查字数不足、结尾截断、被写成说明文字、文件缺失的章节，"
                 "并自动从版本库还原能还原的稿子；作者说「体检」「检查全书」「书稿有没有问题」时用",
+        "params": {},
+    },
+    "retrofit_scan": {
+        "desc": "旧书整改评估：给已写几十/几百章的书一份「先改哪 20 章」清单，并判断书名与正文是否一致。"
+                "作者说「这本书怎么救」「先改哪些章」「书名和内容对不上怎么办」时用；只扫描不改稿",
+        "params": {},
+    },
+    "retrofit_rewrite": {
+        "desc": "按旧书整改清单执行外科手术式重写（只改清单里的章，不全书重写）。"
+                "作者说「按这份清单改」「执行整改方案」时用",
         "params": {},
     },
     "set_title": {"desc": "改书名/标题", "params": {"title": "新书名"}},
@@ -119,10 +136,14 @@ _ACTION_ALIASES = {
     "rewrite_low_score": "rewrite_below", "rewrite_all_below": "rewrite_below",
     "rewrite_by_words": "rewrite_short", "rewrite_words": "rewrite_short",
     "expand_short": "rewrite_short", "rewrite_short_chapters": "rewrite_short",
+    "review_in_order": "ordered_review", "ordered_rewrite": "ordered_review",
+    "review_by_order": "ordered_review", "按顺序审": "ordered_review",
     "score": "score_chapters", "score_all_unscored": "score_chapters",
     "consistency_audit": "audit",
     "health_check": "health_check", "check_book": "health_check", "book_health": "health_check",
     "体检": "health_check", "书稿体检": "health_check", "全书检查": "health_check",
+    "retrofit": "retrofit_scan", "old_book_fix": "retrofit_scan", "rescue_book": "retrofit_scan",
+    "apply_retrofit": "retrofit_rewrite", "旧书整改": "retrofit_scan",
     "title": "set_title", "rename": "set_title",
     "style": "directive", "constraint": "directive", "set_style": "directive",
     "add_constraint": "directive", "creative_hint": "directive",
@@ -178,6 +199,8 @@ scope 语义：
      rewrite_short(below_words=该字数)，按正文实测字数筛，**绝不能**当成评分阈值去 rewrite_below；
    - 作者说「低于60分」「不达标/评分不够」→ rewrite_below(below=该分数)。
    上下文里给了「少于3000字的章节」实测清单，按它判断规模，不要自己猜。
+   - 作者说「按顺序审」「先字数、再低分、最后其他」「整体过一遍」→ ordered_review：
+     它自己会按 ①字数 → ②低分 → ③引擎/工艺 一次跑完，**不要**拆成三个动作重复排队。
 7. **作者说「前面的任务不要了/只按最新的来/先停掉旧的再…」→ 同一轮 actions 里先
    cancel_task(kind=rewrite)，紧接着派新动作**（如 rewrite_short），两步一次做完。
    分解出来的步骤会自动连续执行到底，长任务在后台跑，**不要让作者再来说「继续」**。

@@ -95,12 +95,18 @@ def _recent_summaries(pdir, upto, n=3) -> str:
         return ""
 
 
-def _llm_arbitrate(key, proj, findings, pits, current_chapter) -> dict | None:
+def _llm_arbitrate(key, proj, findings, pits, current_chapter, engine=None) -> dict | None:
     """LLM 仲裁（审稿人岗）：把确定性扫描结果 + 超期坑分类成 修复计划。"""
     try:
         from bot import llm
         findings_txt = "\n".join(f"- [{f.get('severity')}] {f.get('location')}：{f.get('detail')}"
                                  for f in (findings or [])[:20]) or "（确定性扫描未发现硬伤）"
+        eng = engine if isinstance(engine, dict) else {}
+        eng_rows = [f for f in (eng.get("findings") or []) if f.get("level") in ("high", "warn")]
+        eng_txt = "\n".join(
+            f"- [{f.get('level')}] {'第' + str(f['chapter']) + '章' if f.get('chapter') else '全书'}"
+            f" {f.get('code')}：{f.get('message')}"
+            for f in eng_rows[:15]) or "（故事引擎未发现明显空转）"
         pits_txt = "\n".join(
             f"- 「{p['pit']}」第{p['setup_chapter']}章埋设，已悬置{p['age']}章"
             f"{('，原计划第' + str(p['due_to']) + '章前兑现，已超期' + str(p['over_by']) + '章') if p.get('over_by') else ''}"
@@ -123,6 +129,7 @@ def _llm_arbitrate(key, proj, findings, pits, current_chapter) -> dict | None:
             "必须结合最近章节摘要判断——已经回收的坑不要再列。"
         )
         user_p = (f"当前写到第 {current_chapter} 章。\\n\\n【确定性扫描发现】\\n{findings_txt}\\n\\n"
+                  f"【故事引擎对账】\\n{eng_txt}\\n\\n"
                   f"【超期未收的坑】\\n{pits_txt}\\n\\n【即将到期】\\n{due_soon_txt}\\n\\n"
                   f"【最近章节摘要】\\n{summaries}")
         res = llm.chat_json([{"role": "system", "content": sys_p},
@@ -135,6 +142,26 @@ def _llm_arbitrate(key, proj, findings, pits, current_chapter) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def _engine_section(engine: dict) -> str:
+    """巡检报告里的「## 故事引擎对账」段落（可读文本，零 LLM）。"""
+    if not isinstance(engine, dict) or not engine:
+        return ""
+    c = engine.get("counts") or {}
+    L = ["## 故事引擎对账",
+         "",
+         f"- 高 {c.get('high', 0)} 项 · 告警 {c.get('warn', 0)} 项 · 提示 {c.get('info', 0)} 项",
+         f"- 书名承诺：{'、'.join(engine.get('motifs') or []) or '（未切出）'}",
+         f"- 在册对手：{'、'.join(engine.get('opponents') or []) or '（无）'}"]
+    highs = [f for f in (engine.get("findings") or []) if f.get("level") == "high"]
+    if highs:
+        L.append("")
+        L.append("高优先：")
+        for f in highs[:10]:
+            where = f"第{f['chapter']}章" if f.get("chapter") else "全书"
+            L.append(f"- {where} {f.get('code')}：{f.get('message')}")
+    return "\n".join(L)
 
 
 def run_audit(key, trigger="manual"):
@@ -174,8 +201,16 @@ def run_audit(key, trigger="manual"):
         # ② 伏笔盘点
         pits = pit_inventory(pdir, current)
 
+        # ②.5 故事引擎对账（确定性，零 LLM）
+        engine = {}
+        try:
+            from bot import engine_check
+            engine = engine_check.scan(proj)
+        except Exception:
+            engine = {}
+
         # ③ LLM 仲裁
-        verdict = _llm_arbitrate(key, proj, findings, pits, current) or {}
+        verdict = _llm_arbitrate(key, proj, findings, pits, current, engine) or {}
         must_fix = verdict.get("must_fix") or []
         fill_plan = verdict.get("fill_plan") or []
         watch = verdict.get("watch") or []
@@ -187,8 +222,19 @@ def run_audit(key, trigger="manual"):
                   "continuity_findings": findings[:30],
                   "pits": pits, "must_fix": must_fix, "fill_plan": fill_plan,
                   "watch": watch,
+                  "engine": {
+                      "title": engine.get("title"), "motifs": engine.get("motifs"),
+                      "opponents": engine.get("opponents"),
+                      "counts": engine.get("counts"),
+                      "by_code": engine.get("by_code"),
+                      "high_chapters": engine.get("high_chapters"),
+                      "findings": [f for f in (engine.get("findings") or [])
+                                   if f.get("level") in ("high", "warn")][:40],
+                  },
+                  "engine_md": _engine_section(engine),
                   "stats": {"findings": len(findings),
                             "pits": pits.get("counts", {}),
+                            "engine": engine.get("counts") or {},
                             "must_fix": len(must_fix), "fill_plan": len(fill_plan)}}
 
         # ④ 报告落盘 + 修复计划进 plan.meta（写前注入用）
@@ -207,7 +253,8 @@ def run_audit(key, trigger="manual"):
 
         # ⑤ 活动流 + 日志
         summary = (f"硬矛盾 {len(must_fix)} 项 · 待填坑 {len(fill_plan)} 个 · "
-                   f"观察 {len(watch)} 项 · 超期伏笔 {pits.get('counts', {}).get('overdue', 0)} 个")
+                   f"观察 {len(watch)} 项 · 超期伏笔 {pits.get('counts', {}).get('overdue', 0)} 个 · "
+                   f"引擎高 {(engine.get('counts') or {}).get('high', 0)} 项")
         proj.log(f"🔍 一致性巡检完成（{trigger}）：{summary}")
         if _steps:
             try:

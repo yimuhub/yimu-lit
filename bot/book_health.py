@@ -252,7 +252,22 @@ def preflight(proj, purpose: str = "", target: int | None = None) -> dict:
     proj.log("🩺 开工体检%s：还原 %d 章；仍缺字 %d 章、截断 %d 章、说明文字 %d 章、缺文件 %d 章" % (
         f"（{purpose}）" if purpose else "", len(rep["repaired"]),
         len(aud["short"]), len(aud["truncated"]), len(aud["meta"]), len(aud["missing"])))
-    return {"repair": rep, "audit": aud}
+    canon_data = {}
+    try:
+        from . import canon
+        canon_data = canon.run(proj, quiet=True)
+        seeded = canon.seed_state(proj)
+        if seeded.get("promises") or seeded.get("opponents") or seeded.get("humanity"):
+            proj.log("📌 正典入账：从故事圣经补登记 "
+                     f"{seeded.get('promises', 0)} 条承诺、"
+                     f"{seeded.get('opponents', 0)} 名对手、"
+                     f"{seeded.get('humanity', 0)} 条人性命题")
+    except Exception as e:
+        try:
+            proj.log(f"⚠️ 正典体检跳过（不影响开工）：{e}")
+        except Exception:
+            pass
+    return {"repair": rep, "audit": aud, "canon": canon_data}
 
 
 def save_chapter(proj, ch_no, text, *, label="改稿前", kind="rewrite",

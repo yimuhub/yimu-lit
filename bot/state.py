@@ -135,7 +135,7 @@ def _norm_status(v) -> str:
 
 def empty_state() -> dict:
     return {
-        "version": 1,
+        "version": 2,
         "characters": {},
         "locations": {},
         "items": {},
@@ -143,11 +143,41 @@ def empty_state() -> dict:
         "rules": [],
         "threads": [],
         "foreshadowing": {},
+        # v4.40.0 故事引擎：书名/主题承诺、对手、情绪账本、人性命题
+        "promises": {},
+        "opponents": {},
+        "emotion_ledger": [],
+        "humanity": [],
         "timeline": [],
         "chapter_summaries": {},
         "metrics": {"words": 0, "chapters": 0, "last_chapter": 0, "updated_at": ""},
         "issues": [],
     }
+
+
+_LIFE_VALUES = ("alive", "dead", "gone", "not_yet", "unknown")
+_LIFE_DEAD = ("已死", "死亡", "身亡", "阵亡", "殁", "被杀", "自尽", "殉", "伏诛", "斩首", "死去")
+_LIFE_GONE = ("离京", "离开", "远走", "流放", "外放", "失踪", "退隐", "幽禁")
+_LIFE_ALIVE = ("在世", "健在", "存活", "活着")
+
+
+def life_of(rec: dict) -> str:
+    """人物的生死/在场状态：优先显式 life，其次从旧 status 文本推断。"""
+    if not isinstance(rec, dict):
+        return "unknown"
+    v = _str(rec.get("life"), 20).lower()
+    if v in _LIFE_VALUES:
+        return v
+    status = _str(rec.get("status"), 200)
+    if any(w in status for w in _LIFE_ALIVE):
+        return "alive"
+    if any(w in status for w in _LIFE_DEAD):
+        return "dead"
+    if any(w in status for w in _LIFE_GONE):
+        return "gone"
+    if any(w in status for w in ("未登场", "尚未出场", "未出场", "尚未登场")):
+        return "not_yet"
+    return "alive" if status else "unknown"
 
 
 def _norm_character(raw, chapter: int = 0) -> dict:
@@ -156,6 +186,9 @@ def _norm_character(raw, chapter: int = 0) -> dict:
     last = _int(f.get("last_seen"), chapter)
     out = {
         "aliases": _uniq(f.get("aliases")),
+        "canonical": bool(f.get("canonical", False)),
+        "life": life_of(f),
+        "death_chapter": _int(f.get("death_chapter"), 0),
         "status": _str(f.get("status"), 60),
         "location": _str(f.get("location"), 80),
         "goal": _str(f.get("goal"), 300),
@@ -171,6 +204,66 @@ def _norm_character(raw, chapter: int = 0) -> dict:
         if k not in out and not isinstance(v, (dict, list)):
             out[k] = v
     return out
+
+
+def _norm_promise(raw, chapter: int = 0) -> dict:
+    f = raw if isinstance(raw, dict) else {"text": raw}
+    return {
+        "text": _str(f.get("text") or f.get("description") or f.get("promise"), 600),
+        "kind": _str(f.get("kind") or f.get("type") or "theme", 40),
+        "setup_chapter": _int(f.get("setup_chapter"), chapter),
+        "due_from": _int(f.get("due_from"), 0),
+        "due_to": _int(f.get("due_to"), 0),
+        "status": _norm_status(f.get("status")),
+        "payoff_chapter": _int(f.get("payoff_chapter"), 0),
+        "importance": _str(f.get("importance") or "A", 20),
+        "notes": _str(f.get("notes"), 600),
+    }
+
+
+def _norm_opponent(raw, chapter: int = 0) -> dict:
+    f = raw if isinstance(raw, dict) else {"name": raw}
+    return {
+        "name": _str(f.get("name") or f.get("id"), 80),
+        "aliases": _uniq(f.get("aliases")),
+        "goal": _str(f.get("goal"), 400),
+        "pressure": _str(f.get("pressure") or f.get("method"), 400),
+        "status": _str(f.get("status"), 60),
+        "first_seen": _int(f.get("first_seen"), chapter),
+        "last_seen": _int(f.get("last_seen"), chapter),
+        "notes": _str(f.get("notes"), 600),
+    }
+
+
+def _norm_emotion(raw, chapter: int = 0) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    n = _int(raw.get("chapter"), chapter)
+    if n <= 0:
+        return None
+    return {
+        "chapter": n,
+        "beat": _str(raw.get("beat") or raw.get("emotion") or raw.get("name"), 40),
+        "carrier": _str(raw.get("carrier") or raw.get("scene") or raw.get("event"), 300),
+        "intensity": max(0, min(10, _int(raw.get("intensity"), 0))),
+        "evidence": _str(raw.get("evidence"), 300),
+    }
+
+
+def _norm_humanity(raw, chapter: int = 0) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    n = _int(raw.get("chapter"), chapter)
+    if n <= 0:
+        return None
+    return {
+        "chapter": n,
+        "dilemma": _str(raw.get("dilemma") or raw.get("question"), 400),
+        "choice": _str(raw.get("choice"), 300),
+        "cost": _str(raw.get("cost"), 300),
+        "value": _str(raw.get("value") or raw.get("theme"), 200),
+        "evidence": _str(raw.get("evidence"), 300),
+    }
 
 
 def _norm_location(raw, chapter: int = 0) -> dict:
@@ -246,6 +339,9 @@ _NOT_CHARACTER = {
     "characters", "locations", "items", "factions", "foreshadowing", "timeline",
     "rules", "chapter_summaries", "issues", "metrics", "threads", "chapter",
     "state_delta", "summary", "beats", "foreshadow_ops", "quality_signals",
+    "promises", "opponents", "emotion_ledger", "humanity",
+    "promise_ops", "opponent_ops", "emotion_ops", "humanity_ops",
+    "engine", "scenes", "elements",
 }
 
 
@@ -354,6 +450,37 @@ def _normalize_state(raw) -> dict:
         if not f.get("importance"):
             f["importance"] = "A" if re.search(r"A\s*级|核心", f.get("description") or "") else "B"
         st["foreshadowing"][key] = f
+    for pid, fields in _pairs(raw.get("promises")):
+        key = str(pid or "").strip()
+        if not key or not re.search(r"[\u4e00-\u9fffA-Za-z]", key):
+            continue
+        st["promises"][key[:60]] = _norm_promise(fields)
+    for name, fields in _pairs(raw.get("opponents")):
+        nm = _clean_person_name(name)
+        if not _is_person_key(nm):
+            continue
+        st["opponents"][nm] = _norm_opponent(fields)
+    seen_emotion, seen_humanity = set(), set()
+    for item in _list(raw.get("emotion_ledger")):
+        it = _norm_emotion(item)
+        if not it:
+            continue
+        key = (it["chapter"], it["beat"], it["carrier"])
+        if key in seen_emotion:
+            continue
+        seen_emotion.add(key)
+        st["emotion_ledger"].append(it)
+    for item in _list(raw.get("humanity")):
+        it = _norm_humanity(item)
+        if not it:
+            continue
+        key = (it["chapter"], it["dilemma"], it["choice"])
+        if key in seen_humanity:
+            continue
+        seen_humanity.add(key)
+        st["humanity"].append(it)
+    st["emotion_ledger"].sort(key=lambda x: _int(x.get("chapter"), 0))
+    st["humanity"].sort(key=lambda x: _int(x.get("chapter"), 0))
     for item in _list(raw.get("timeline")):
         it = _norm_timeline_item(item)
         if it:
@@ -647,6 +774,14 @@ def _merge_character(cur: dict, fields: dict, chapter: int) -> dict:
             out["relations"] = rel
         elif k in ("first_seen", "last_seen"):
             out[k] = _int(v, chapter)
+        elif k == "death_chapter":
+            out[k] = _int(v, 0)
+        elif k == "canonical":
+            out[k] = bool(v) or bool(out.get(k))
+        elif k == "life":
+            lv = _str(v, 20).lower()
+            if lv in _LIFE_VALUES:
+                out[k] = lv
         elif k in ("status", "location", "goal", "motivation", "arc", "notes"):
             out[k] = _str(v, 600)
         else:
@@ -706,12 +841,128 @@ def _pick_foreshadow_key(base: dict, fid: str, fields: dict) -> str:
     return fid
 
 
-def merge_state_delta(state: dict, delta: dict) -> dict:
+def _merge_promise(cur: dict, fields: dict, chapter: int) -> dict:
+    out = copy.deepcopy(cur) if isinstance(cur, dict) else {}
+    for k, v in (fields or {}).items():
+        if k == "status":
+            out["status"] = _norm_status(v)
+        elif k in ("setup_chapter", "due_from", "due_to", "payoff_chapter"):
+            out[k] = _int(v, out.get(k) or 0)
+        else:
+            out[k] = _str(v, 600)
+    if chapter > 0 and not out.get("setup_chapter"):
+        out["setup_chapter"] = chapter
+    return _norm_promise(out, chapter)
+
+
+def _apply_promise_ops(base: dict, ops, chapter: int) -> None:
+    created = 0
+    for op in _list(ops):
+        if not isinstance(op, dict):
+            continue
+        pid = _str(op.get("id") or op.get("name") or op.get("text"), 60)
+        if not pid:
+            continue
+        action = _str(op.get("action") or op.get("op"), 20).lower()
+        fields = {}
+        for key in ("text", "kind", "due_from", "due_to", "importance", "notes"):
+            if op.get(key) not in (None, ""):
+                fields[key] = op.get(key)
+        if "text" not in fields:
+            for key in ("description", "desc", "detail", "name"):
+                v = _str(op.get(key), 600)
+                if v and v != pid:
+                    fields["text"] = v
+                    break
+        fields.setdefault("text", pid)
+        if action in ("pay", "paid", "payoff", "回收", "兑现", "close"):
+            fields["status"] = "paid"
+            fields["payoff_chapter"] = _int(op.get("payoff_chapter"), chapter)
+        elif action in ("drop", "dropped", "abandon", "放弃", "废弃"):
+            fields["status"] = "dropped"
+        elif action in ("setup", "open", "plant", "埋设", "新增", "promise", "承诺"):
+            fields["status"] = "open"
+            fields.setdefault("setup_chapter", chapter)
+        if pid not in base["promises"]:
+            if created >= 3:
+                base["issues"].append(_norm_issue({
+                    "detail": f"第{chapter}章新增承诺「{_str(pid, 40)}」超出单章上限（3 条），未入账",
+                    "chapter": chapter, "level": "info"}, chapter))
+                continue
+            created += 1
+        base["promises"][pid] = _merge_promise(base["promises"].get(pid) or {}, fields, chapter)
+
+
+def _merge_opponent(cur: dict, fields: dict, chapter: int) -> dict:
+    out = copy.deepcopy(cur) if isinstance(cur, dict) else {}
+    for k, v in (fields or {}).items():
+        if k == "aliases":
+            out["aliases"] = _uniq(list(_list(out.get(k))) + list(_list(v)))
+        elif k in ("first_seen", "last_seen"):
+            out[k] = _int(v, chapter)
+        else:
+            out[k] = _str(v, 600)
+    if chapter > 0:
+        out["first_seen"] = out.get("first_seen") or chapter
+        out["last_seen"] = max(_int(out.get("last_seen"), 0), chapter)
+    return _norm_opponent(out, chapter)
+
+
+def _apply_opponent_ops(base: dict, ops, chapter: int) -> None:
+    for op in _list(ops):
+        if not isinstance(op, dict):
+            continue
+        name = _clean_person_name(op.get("name") or op.get("id") or "")
+        if not name or not _is_person_key(name):
+            continue
+        fields = {}
+        for key in ("goal", "pressure", "method", "status", "notes", "aliases"):
+            if op.get(key) not in (None, ""):
+                fields[key] = op.get(key)
+        if "pressure" not in fields and op.get("action"):
+            fields["pressure"] = _str(op.get("action"), 300)
+        base["opponents"][name] = _merge_opponent(base["opponents"].get(name) or {},
+                                                  fields, chapter)
+
+
+def _append_emotion(base: dict, items, chapter: int, ops: bool = False) -> None:
+    for raw in _list(items):
+        if ops and isinstance(raw, dict):
+            raw = dict(raw)
+            raw.setdefault("chapter", chapter)
+        it = _norm_emotion(raw, chapter)
+        if not it:
+            continue
+        if any(x["chapter"] == it["chapter"] and x["beat"] == it["beat"]
+               and x["carrier"] == it["carrier"] for x in base["emotion_ledger"]):
+            continue
+        base["emotion_ledger"].append(it)
+
+
+def _append_humanity(base: dict, items, chapter: int, ops: bool = False) -> None:
+    for raw in _list(items):
+        if ops and isinstance(raw, dict):
+            raw = dict(raw)
+            raw.setdefault("chapter", chapter)
+        it = _norm_humanity(raw, chapter)
+        if not it:
+            continue
+        if any(x["chapter"] == it["chapter"] and x["dilemma"] == it["dilemma"]
+               and x["choice"] == it["choice"] for x in base["humanity"]):
+            continue
+        base["humanity"].append(it)
+
+
+def merge_state_delta(state: dict, delta: dict, chapter: int = 0) -> dict:
     """纯函数：返回合并后的新状态，绝不修改传入对象。"""
     base = _normalize_state(copy.deepcopy(state) if isinstance(state, dict) else {})
     if not isinstance(delta, dict):
         return base
-    chapter = _int(delta.get("chapter") or delta.get("_chapter"), 0)
+    chapter = _int(chapter or delta.get("chapter") or delta.get("_chapter"), 0)
+    if chapter:
+        delta = dict(delta)
+        if not _int(delta.get("chapter"), 0):
+            delta["chapter"] = chapter
 
     for name, fields in _pairs(delta.get("characters")):
         nm = _clean_person_name(name)
@@ -785,6 +1036,27 @@ def merge_state_delta(state: dict, delta: dict) -> dict:
         if not merged.get("importance"):
             merged["importance"] = "B"
         base["foreshadowing"][key] = merged
+
+    for pid, fields in _pairs(delta.get("promises")):
+        key = str(pid or "").strip()
+        if key:
+            base["promises"][key[:60]] = _merge_promise(
+                base["promises"].get(key[:60]) or {}, fields, chapter)
+    _apply_promise_ops(base, delta.get("promise_ops"), chapter)
+
+    for name, fields in _pairs(delta.get("opponents")):
+        nm = _clean_person_name(name)
+        if _is_person_key(nm):
+            base["opponents"][nm] = _merge_opponent(
+                base["opponents"].get(nm) or {}, fields, chapter)
+    _apply_opponent_ops(base, delta.get("opponent_ops"), chapter)
+
+    _append_emotion(base, delta.get("emotion_ledger"), chapter)
+    _append_emotion(base, delta.get("emotion_ops"), chapter, ops=True)
+    _append_humanity(base, delta.get("humanity"), chapter)
+    _append_humanity(base, delta.get("humanity_ops"), chapter, ops=True)
+    base["emotion_ledger"].sort(key=lambda x: _int(x.get("chapter"), 0))
+    base["humanity"].sort(key=lambda x: _int(x.get("chapter"), 0))
 
     for item in _list(delta.get("timeline")):
         it = _norm_timeline_item(item)
@@ -1060,6 +1332,8 @@ def excerpt(state: dict, query: str = "", max_chars: int = 6000, focus_chars: in
                              ("motivation", "动机"), ("arc", "人物弧")):
                 if c.get(k):
                     bits.append(f"{label}：{c[k]}")
+            if c.get("life") and c["life"] != "alive":
+                bits.append(f"生死：{c['life']}" + (f"（第{c['death_chapter']}章）" if c.get("death_chapter") else ""))
             if c.get("relations"):
                 rel = "、".join(f"{k}→{v}" for k, v in list(c["relations"].items())[:4])
                 bits.append("关系：" + rel)
@@ -1099,6 +1373,28 @@ def excerpt(state: dict, query: str = "", max_chars: int = 6000, focus_chars: in
             if f.get("due_from") or f.get("due_to"):
                 span = f"（计划第{f.get('due_from') or '?'}–{f.get('due_to') or '?'}章兑现）"
             detail.append(f"- [{fid}] {f.get('description') or '（无描述）'}{span}")
+
+    if st.get("opponents"):
+        ops = [o for o in st["opponents"].values() if o.get("status") != "done"]
+        if ops:
+            detail.append("【在册对手（本章必须有人做出具体行动）】")
+            for o in ops[:5]:
+                bits = [o.get("goal") or "", o.get("pressure") or ""]
+                line = "；".join(b for b in bits if b)
+                detail.append(f"- {o.get('name') or '对手'}" + (f"：{line}" if line else ""))
+
+    unpaid = [p for p in (st.get("promises") or {}).values()
+              if p.get("status") not in ("paid", "dropped")]
+    if unpaid:
+        detail.append("【未兑现承诺（书名/主题承诺优先）】")
+        for p in unpaid[:6]:
+            tag = "书名承诺" if p.get("kind") == "title" else (p.get("kind") or "承诺")
+            detail.append(f"- [{tag}] {p.get('text') or ''}")
+
+    if st.get("humanity"):
+        detail.append("【近期人性选择】")
+        for h in st["humanity"][-3:]:
+            detail.append(f"- 第{h.get('chapter')}章 {h.get('choice') or h.get('text') or ''}")
 
     if st["timeline"]:
         detail.append("【最近事件】")

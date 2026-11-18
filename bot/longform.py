@@ -47,7 +47,12 @@ VOLUME_TARGET = 45             # 每卷 30–60 章，取中位
 ARC_TARGET = 11                # 每弧 8–15 章
 
 _CARD_FIELDS = ("title", "goal", "conflict", "turn", "payoff", "cliffhanger",
-                "foreshadow_setup", "foreshadow_payoff", "cast", "locations", "word_target")
+                "foreshadow_setup", "foreshadow_payoff", "cast", "locations", "word_target",
+                "scenes", "engine", "elements")
+
+_SCENE_FIELDS = ("want", "obstacle", "choice", "cost", "outcome", "value_shift")
+_ENGINE_FIELDS = ("opponent", "opponent_action", "emotion_beat", "humanity_choice",
+                  "promise_hits", "mystery_move", "title_hit", "elements")
 _MAX_PROPOSALS = 200
 
 
@@ -182,6 +187,46 @@ def _norm_status_card(v) -> str:
     return "planned"
 
 
+def _norm_scenes(raw) -> list[dict]:
+    out = []
+    for i, item in enumerate(_list(raw)):
+        if isinstance(item, str):
+            item = {"outcome": item}
+        if not isinstance(item, dict):
+            continue
+        scene = {"no": i + 1}
+        for k in _SCENE_FIELDS:
+            scene[k] = _text(item.get(k) or item.get({"want": "goal", "obstacle": "conflict",
+                                                      "choice": "decision", "cost": "price",
+                                                      "outcome": "result",
+                                                      "value_shift": "shift"}.get(k, k)), 300)
+        if any(scene.get(k) for k in _SCENE_FIELDS):
+            out.append(scene)
+        if len(out) >= 5:
+            break
+    return out
+
+
+def _norm_engine(raw) -> dict:
+    f = raw if isinstance(raw, dict) else {}
+    out = {}
+    for k in _ENGINE_FIELDS:
+        if k == "promise_hits":
+            out[k] = _str_list(f.get(k), 80, 8)
+        elif k == "elements":
+            out[k] = _str_list(f.get(k), 40, 8)
+        elif k == "mystery_move":
+            v = _text(f.get(k), 20).lower()
+            v = {"埋": "setup", "埋设": "setup", "伏笔": "setup",
+                 "兑": "pay", "兑现": "pay", "回收": "pay", "揭": "pay",
+                 "推": "advance", "推进": "advance", "推进中": "advance",
+                 "无": "none", "": "none"}.get(v, v)
+            out[k] = v if v in ("setup", "pay", "advance", "none") else "none"
+        else:
+            out[k] = _text(f.get(k), 400)
+    return out if any(out.values()) else {}
+
+
 def _norm_card(raw, n: int = 0) -> dict:
     f = raw if isinstance(raw, dict) else {}
     num = _int(f.get("n") or f.get("chapterNumber") or n, n)
@@ -200,6 +245,9 @@ def _norm_card(raw, n: int = 0) -> dict:
         "cast": _str_list(f.get("cast"), 40, 16),
         "locations": _str_list(f.get("locations"), 40, 12),
         "word_target": max(0, _int(f.get("word_target"), 0)),
+        "scenes": _norm_scenes(f.get("scenes")),
+        "engine": _norm_engine(f.get("engine")),
+        "elements": _str_list(f.get("elements"), 40, 8),
         "status": _norm_status_card(f.get("status")),
         "updated_at": _text(f.get("updated_at"), 40),
     }
@@ -810,7 +858,15 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             f"本次原因：{reason}\n"
             '只输出 JSON：{"cards":[{"n":章号,"title":"","goal":"","conflict":"","turn":"",'
             '"payoff":"","cliffhanger":"","foreshadow_setup":[],"foreshadow_payoff":[],'
-            '"cast":[],"locations":[]}]}。只规划给定章号，不确定的字段留空。'
+            '"cast":[],"locations":[],"scenes":[{"want":"","obstacle":"","choice":"",'
+            '"cost":"","outcome":"","value_shift":""}],'
+            '"engine":{"opponent":"具名对手","opponent_action":"对手本章主动做了什么",'
+            '"emotion_beat":"主导情绪","humanity_choice":"人性命题下的选择",'
+            '"promise_hits":["书名/主题承诺"],"mystery_move":"setup|pay|advance|none",'
+            '"title_hit":"本章兑现了书名的哪个词"}}]}。'
+            "scenes 给 3–5 个场景，每个场景都必须有具体的 want/obstacle/choice/cost/outcome/value_shift；"
+            "conflict 必须点名具体对手或具体阻力，不许写「时代压力/局势/环境」这类抽象词。"
+            "只规划给定章号，不确定的字段留空。"
         )
         out = _llm_json("你是长篇网文的分卷细纲师，只输出严格 JSON。", user, cfg,
                         "longform_window", 4000)
@@ -834,6 +890,18 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             val = item.get(key)
             if key in ("foreshadow_setup", "foreshadow_payoff", "cast", "locations"):
                 val = _str_list(val, 80, 16)
+                if val:
+                    card[key] = val
+            elif key == "elements":
+                val = _str_list(val, 40, 8)
+                if val:
+                    card[key] = val
+            elif key == "scenes":
+                val = _norm_scenes(val)
+                if val:
+                    card[key] = val
+            elif key == "engine":
+                val = _norm_engine(val)
                 if val:
                     card[key] = val
             elif key == "word_target":
@@ -910,6 +978,22 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
     due_lines = [f"[{x.get('id')}] {str(x.get('description') or '')[:70]}"
                  for x in (due["overdue"] + due["due"])][:8]
     total = max(1, _int((plan.get("scale") or {}).get("chapters"), n))
+    opps = []
+    for name, rec in list((st.get("opponents") or {}).items())[:6]:
+        rec = rec if isinstance(rec, dict) else {}
+        opps.append(f"{name}（目标：{_text(rec.get('goal'), 60) or '未知'}；"
+                    f"施压：{_text(rec.get('pressure'), 60) or '未知'}）")
+    promises = []
+    for pid, rec in list((st.get("promises") or {}).items())[:8]:
+        rec = rec if isinstance(rec, dict) else {}
+        if rec.get("status") == "paid":
+            continue
+        promises.append(f"[{pid}] {_text(rec.get('text'), 80)}")
+    try:
+        from . import elements as _elements
+        element_menu = _elements.menu_text(cfg.get("genre") or cfg.get("genre_key"), limit=10)
+    except Exception:
+        element_menu = ""
     user = (
         f"全书 {total} 章，现在只规划**第 {n} 章**这一张章卡（不要规划别的章）。\n"
         f"卷目标：{_text((v or {}).get('goal'), 300) or '（无）'}\n"
@@ -918,21 +1002,38 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
         f"大纲里本章原意：{_text(row.get('goal'), 300) or '（无）'}\n"
         f"最近四章摘要：\n" + ("\n".join(f"- 第{x}章：{t[:150]}" for x, t in recent) or "- （无）") + "\n"
         f"待兑现伏笔：\n" + ("\n".join(f"- {x}" for x in due_lines) or "- 无") + "\n"
-        '只输出 JSON：{"title":"","goal":"本章主角要达成什么（具体、可验收）",'
-        '"conflict":"谁/什么在阻止他，代价是什么","turn":"本章转折",'
-        '"payoff":"兑现哪条旧伏笔","cliffhanger":"章末钩子"}\n'
+        f"可用的具名对手（冲突优先从他们中间选）：\n" + ("\n".join(f"- {x}" for x in opps) or "- 无（请补一个具名对手，不要写抽象环境压力）") + "\n"
+        f"尚未兑现的书名/主题承诺：\n" + ("\n".join(f"- {x}" for x in promises) or "- 无") + "\n"
+        + (f"可选故事元件（只挑 1–3 个真正服务本章的，不要全用）：\n{element_menu}\n" if element_menu else "")
+        + '只输出 JSON：{"title":"","goal":"本章主角要达成什么（具体、可验收）",'
+        '"conflict":"谁/什么在阻止他，代价是什么（必须点名具体对手）","turn":"本章转折",'
+        '"payoff":"兑现哪条旧伏笔","cliffhanger":"章末钩子",'
+        '"scenes":[{"want":"","obstacle":"","choice":"","cost":"","outcome":"","value_shift":""}],'
+        '"engine":{"opponent":"具名对手","opponent_action":"对手本章主动做了什么",'
+        '"emotion_beat":"主导情绪","humanity_choice":"人性命题下的选择",'
+        '"promise_hits":["书名/主题承诺"],"mystery_move":"setup|pay|advance|none",'
+        '"title_hit":"本章兑现了书名的哪个词"},"elements":["选中的元件"]}\n'
         "要求：必须紧扣卷/弧目标与本书题材，**不得引入世界观之外的新元素**"
         "（例如古代权谋不得出现高维空间/代码/科幻设定）；goal 与 conflict 都必须写满，"
-        "不许写「承接本弧」这类套话。"
+        "scenes 给 3–5 个，每个都必须有 choice 和 cost；不许写「承接本弧」这类套话。"
     )
     out = _llm_json("你是长篇网文的章卡细纲师，只输出严格 JSON。", user, cfg,
-                    "longform_chapter", 1200, agent="planner")
+                    "longform_chapter", 2600, agent="planner")
     if not isinstance(out, dict) or not out:
         return {}
     for key in ("title", "goal", "conflict", "turn", "payoff", "cliffhanger"):
         val = _text(out.get(key), 500)
         if val:
             card[key] = _clean_title(val, val) if key == "title" else val
+    scenes = _norm_scenes(out.get("scenes"))
+    if scenes:
+        card["scenes"] = scenes
+    engine = _norm_engine(out.get("engine"))
+    if engine:
+        card["engine"] = engine
+    elems = _str_list(out.get("elements"), 40, 8)
+    if elems:
+        card["elements"] = elems
     if card_is_placeholder(card):
         return {}
     card["updated_at"] = _now()
@@ -1427,11 +1528,13 @@ def build_chapter_card(proj, ch_no: int, cfg=None) -> dict:
         c = st["characters"].get(name)
         if c:
             focus_chars.append({"name": name, **{k: c.get(k) for k in
-                                                 ("status", "location", "goal", "knowledge", "relations")}})
+                                                 ("canonical", "life", "death_chapter", "status",
+                                                  "location", "goal", "knowledge", "relations")}})
     if not focus_chars:
         for name, c in list(st["characters"].items())[:6]:
             focus_chars.append({"name": name, **{k: c.get(k) for k in
-                                                 ("status", "location", "goal")}})
+                                                 ("canonical", "life", "death_chapter",
+                                                  "status", "location", "goal")}})
     due = state_mod.foreshadow_due(st, n, lookahead=15)
     fs_ids = set(card.get("foreshadow_setup") or []) | set(card.get("foreshadow_payoff") or [])
     focus_fs = []
@@ -1460,8 +1563,18 @@ def build_chapter_card(proj, ch_no: int, cfg=None) -> dict:
         "cast": cast,
         "locations": list(card.get("locations") or []),
         "word_target": _int(card.get("word_target"), WORDS_PER_CHAPTER),
+        "scenes": list(card.get("scenes") or []),
+        "engine": dict(card.get("engine") or {}),
+        "elements": list(card.get("elements") or []),
         "status": card.get("status"),
-        "state_focus": {"characters": focus_chars, "foreshadowing": focus_fs[:8]},
+        "state_focus": {
+            "characters": focus_chars,
+            "foreshadowing": focus_fs[:8],
+            "opponents": list((st.get("opponents") or {}).items())[:6],
+            "promises": list((st.get("promises") or {}).items())[:8],
+            "emotion_recent": (st.get("emotion_ledger") or [])[-4:],
+            "humanity_recent": (st.get("humanity") or [])[-3:],
+        },
         "foreshadow_due": due,
         "recent_summaries": recent,
         "references": refs,
@@ -1481,6 +1594,29 @@ def render_card(card: dict) -> str:
                        ("payoff", "本章兑现"), ("cliffhanger", "章末钩子")):
         if card.get(key):
             lines.append(f"- {label}：{card[key]}")
+    if card.get("scenes"):
+        lines.append("- 场景链（按顺序推进，每场必须有选择与代价）：")
+        for s in card["scenes"][:5]:
+            bits = []
+            for k, label in (("want", "想要"), ("obstacle", "阻力"), ("choice", "选择"),
+                             ("cost", "代价"), ("outcome", "结果"), ("value_shift", "价值转向")):
+                if s.get(k):
+                    bits.append(f"{label}：{s[k]}")
+            lines.append(f"  {s.get('no') or ''}. " + "；".join(bits))
+    eng = card.get("engine") or {}
+    if eng:
+        bits = []
+        for k, label in (("opponent", "对手"), ("opponent_action", "对手行动"),
+                         ("emotion_beat", "情绪拍"), ("humanity_choice", "人性选择"),
+                         ("title_hit", "书名兑现"), ("mystery_move", "谜题动作")):
+            if eng.get(k):
+                bits.append(f"{label}：{eng[k]}")
+        if eng.get("promise_hits"):
+            bits.append("承诺兑现：" + "、".join(eng["promise_hits"][:4]))
+        if bits:
+            lines.append("- 故事引擎：" + "；".join(bits))
+    if card.get("elements"):
+        lines.append("- 本章元件：" + "、".join(card["elements"][:6]))
     if card.get("foreshadow_setup"):
         lines.append("- 需埋设伏笔：" + "、".join(card["foreshadow_setup"]))
     if card.get("foreshadow_payoff"):
@@ -1611,15 +1747,31 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
             known_fg = []
         _known_block = ("已登记且未兑现的伏笔（本章若推进/兑现它们，**必须原样复用 id**）：\n"
                         + ("；".join(known_fg) if known_fg else "（暂无）") + "\n")
+        known_opps = []
+        known_promises = []
+        try:
+            _st2 = state_mod.load(getattr(proj, "path", "") or "")
+            for _on, _ov in list((_st2.get("opponents") or {}).items())[:10]:
+                known_opps.append(f"{_on}（{_text((_ov or {}).get('goal'), 50)}）")
+            for _pid, _pv in list((_st2.get("promises") or {}).items())[:12]:
+                if (_pv or {}).get("status") != "paid":
+                    known_promises.append(f"[{_pid}] {_text((_pv or {}).get('text'), 60)}")
+        except Exception:
+            pass
         system = ("你是长篇小说的连续性编辑。只从给定正文提取事实，不补充、不推断未出现的设定。"
                   "只输出严格 JSON。")
         user = (
             f"第{n}章《{card.get('title') or f'第{n}章'}》。\n"
             f"卷目标：{_text((v or {}).get('goal'), 200)}\n弧目标：{_text((a or {}).get('goal'), 200)}\n"
-            + _known_block +
-            "请提取：summary(200-400字，只写本章发生的事)、beats(3-6条情节节拍)、"
+            + _known_block
+            + ("已登记对手：\n" + "；".join(known_opps) + "\n" if known_opps else "")
+            + ("书名/主题承诺：\n" + "；".join(known_promises) + "\n" if known_promises else "")
+            + "请提取：summary(200-400字，只写本章发生的事)、beats(3-6条情节节拍)、"
             "state_delta(人物/地点/物品/势力的状态变化，只写正文明确出现的)、"
             "foreshadow_ops(伏笔埋设/兑现/放弃；action=setup|pay|drop)、"
+            "engine_ops(本章故事引擎事实：opponent_ops 对手出场/行动/受挫；"
+            "promise_ops 书名/主题承诺的推进或兑现；emotion_ops 主导情绪与载体；"
+            "humanity_ops 人性命题下的选择与代价)、"
             "issues(本章暴露的连续性问题)、quality_signals(score 0-100、hook、pacing、"
             "tension 1-10 紧张度、emotion 2-4字主导情绪、hook_type 断章钩子类型五选一：危机/谜题/情感/反转/抉择)。\n"
             "foreshadow_ops 的硬纪律：\n"
@@ -1627,9 +1779,14 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
             "  · 若本章涉及上面清单里的伏笔，复用它的 id，不要新建；\n"
             "  · 每条必须带 importance（A=贯穿全书的主线谜团 / B=支线 / C=氛围细节）；\n"
             "  · 单章新增不超过 2 条，宁缺毋滥：不是每个道具都是伏笔。\n"
+            "engine_ops 的硬纪律：\n"
+            "  · 对手必须是正文里实际出现/行动的具名人物，action=introduce|update|defeat|ally；\n"
+            "  · 承诺 id 复用上面清单，action=advance|pay；正文没推进就不要硬报；\n"
+            "  · 情绪拍/人性选择必须带原文证据（短引文），没有就留空数组。\n"
             "JSON 结构：{\"summary\":\"\",\"beats\":[],\"state_delta\":{\"characters\":{},"
             "\"locations\":{},\"foreshadowing\":{},\"timeline\":[]},"
-            "\"foreshadow_ops\":[],\"issues\":[],\"quality_signals\":{}}\n"
+            "\"foreshadow_ops\":[],\"engine_ops\":{\"opponent_ops\":[],\"promise_ops\":[],"
+            "\"emotion_ops\":[],\"humanity_ops\":[]},\"issues\":[],\"quality_signals\":{}}\n"
             f"正文：\n{text[:10000]}"
         )
         out = _llm_json(system, user, cfg2, "longform_summary", 2200)
@@ -1648,6 +1805,11 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
     state_delta = out.get("state_delta") if isinstance(out.get("state_delta"), dict) else {}
     state_delta = copy.deepcopy(state_delta)
     ops = [x for x in _list(out.get("foreshadow_ops")) if isinstance(x, dict)][:20]
+    engine_ops = out.get("engine_ops") if isinstance(out.get("engine_ops"), dict) else {}
+    opp_ops = [x for x in _list(engine_ops.get("opponent_ops")) if isinstance(x, dict)][:8]
+    promise_ops = [x for x in _list(engine_ops.get("promise_ops")) if isinstance(x, dict)][:8]
+    emotion_ops = [x for x in _list(engine_ops.get("emotion_ops")) if isinstance(x, dict)][:4]
+    humanity_ops = [x for x in _list(engine_ops.get("humanity_ops")) if isinstance(x, dict)][:3]
     issues = _str_list(out.get("issues"), 300, 8)
     quality = out.get("quality_signals") if isinstance(out.get("quality_signals"), dict) else {}
     quality = dict(quality)
@@ -1657,6 +1819,14 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
 
     state_delta.setdefault("chapter", n)
     _apply_foreshadow_ops(state_delta, ops, n)
+    if opp_ops:
+        state_delta["opponent_ops"] = opp_ops
+    if promise_ops:
+        state_delta["promise_ops"] = promise_ops
+    if emotion_ops:
+        state_delta["emotion_ops"] = emotion_ops
+    if humanity_ops:
+        state_delta["humanity_ops"] = humanity_ops
     state_delta.setdefault("chapter_summaries", {})[str(n)] = {
         "summary": summary, "beats": beats, "promises": [],
         "state_changed": bool(state_delta.get("characters") or state_delta.get("foreshadowing")),
@@ -1686,6 +1856,8 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
         "beats": beats,
         "state_changed": bool(state_delta.get("characters") or state_delta.get("foreshadowing")),
         "foreshadow_ops": ops,
+        "engine_ops": {"opponent_ops": opp_ops, "promise_ops": promise_ops,
+                       "emotion_ops": emotion_ops, "humanity_ops": humanity_ops},
         "issues": issues,
         "quality_signals": quality,
         "fallback": fallback,
@@ -1710,7 +1882,10 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
 
     _write_volume_summary(proj, plan, cards)
     return {"n": n, "summary": summary, "beats": beats, "state_delta": state_delta,
-            "foreshadow_ops": ops, "issues": issues, "quality_signals": quality,
+            "foreshadow_ops": ops,
+            "engine_ops": {"opponent_ops": opp_ops, "promise_ops": promise_ops,
+                           "emotion_ops": emotion_ops, "humanity_ops": humanity_ops},
+            "issues": issues, "quality_signals": quality,
             "fallback": fallback, "applied": applied}
 
 

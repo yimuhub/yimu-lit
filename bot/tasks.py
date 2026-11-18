@@ -174,7 +174,10 @@ def _resume_rewrite(key, proj, task, left, batch_size=None):
     def _job():
         try:
             journal.update(proj.path, status="running", stage="rewriting")
-            if mode == "expand_short":
+            if mode == "ordered":
+                writer.run_ordered_review(key, short_below=below_words, low_below=_num("low_below", 60),
+                                          target=target, workers=workers)
+            elif mode == "expand_short":
                 writer.run_short_expand(key, chapters=left, below_words=below_words, workers=2)
             else:
                 writer.run_parallel_rewrite(key, chapters=left, workers=workers,
@@ -204,6 +207,9 @@ def _resume_rewrite(key, proj, task, left, batch_size=None):
 
     _bg(_job)
     head = "、".join(str(x) for x in left[:6]) + ("…" if len(left) > 6 else "")
+    if mode == "ordered":
+        return {"ok": True, "kind": "rewrite",
+                "text": f"接着上次没做完的顺序审校（①字数 → ②低分 → ③引擎），还剩 {len(left)} 章（第 {head} 章）"}
     if mode == "expand_short":
         return {"ok": True, "kind": "rewrite",
                 "text": f"接着补足正文少于 {below_words} 字的章节，还剩 {len(left)} 章（第 {head} 章）"}
