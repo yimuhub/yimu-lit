@@ -2997,6 +2997,32 @@ def _rw_short_batch(key, todo, below_words, job):
         raise
 
 
+def _rw_finish_batch(key, todo, target_words, job):
+    """N03 截断补写专用批次（v4.41.1）。
+
+    不能复用 run_short_expand：它只挑「低于目标字数」的章，而 N03 经常是
+    五六千字却停在半句，传进去会被整批跳过，导出于是永远复检、永远同一份内容。
+    这里对指定章直接调 expand_short_chapter——它自己会判断截断并续写收尾。
+    """
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        proj = writer.Project(writer._project_dir(key), key)
+
+        def one(n):
+            try:
+                return writer.expand_short_chapter(proj, n, target_words=int(target_words))
+            except Exception as e:
+                return {"ch": n, "kept": False, "note": f"异常：{e}"}
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            res = list(ex.map(one, todo))
+        _rw_release(key, job, res)
+        return res
+    except Exception as e:
+        _rw_release(key, job, {"error": str(e)})
+        raise
+
+
 @app.post("/api/rewrite-parallel")
 def api_rewrite_parallel(payload: dict):
     """v4.17.2：多岗位并行改写低分章——审稿问题一次性下发，每章独立改写，
@@ -3039,8 +3065,8 @@ def api_export_finish(payload: dict):
     """v4.41.0：导出被「半句截断（N03）」拦下时，走补写收尾而不是整章重写。
 
     整章重写会把已经合格的章节再写一遍，评分没提高就被回滚，于是导出永远
-    看到同一份内容。截断章需要的是「接着写完整」，本端点复用按字数补足通道：
-    先还原版本库完整旧稿，没有旧稿才请模型续写收尾，写完评分复核。
+    看到同一份内容。截断章需要的是「接着写完整」，本端点对指定章直接调用
+    expand_short_chapter：先还原版本库完整旧稿，没有旧稿才请模型续写收尾。
     """
     key = str(payload.get("key") or "")
     proj = _get_project(key)
@@ -3067,7 +3093,7 @@ def api_export_finish(payload: dict):
     jid = _rw_claim(key)
     writer.start_task(
         key, "rewrite", f"补全《{proj.name}》导出前截断章节", chapters,
-        batch=lambda todo: _rw_short_batch(key, todo, writer.book_health.target_words(proj), jid),
+        batch=lambda todo: _rw_finish_batch(key, todo, writer.book_health.target_words(proj), jid),
         params={"mode": "finish_truncated", "workers": 2})
     return {"ok": True, "started": True, "chapters": chapters, "workers": 2,
             "msg": f"✍️ 正在补全 {len(chapters)} 个截断章节，完成后会自动重试导出"}
