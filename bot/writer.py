@@ -1,7 +1,7 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
 import json, os, re, datetime, threading, queue, time
-from . import workflow, skill, continuity, llm, providers, versions
+from . import workflow, skill, continuity, llm, versions, steps, purity, journal, express
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,6 +29,24 @@ def _set_book_running(key, on=True):
             _RUNNING_BOOKS.add(key)
         else:
             _RUNNING_BOOKS.discard(key)
+
+
+# ---------- v4.21.0：创作事件埋点（bot/steps.py 事件总线）----------
+def _evt(key, agent, phase="done", title="", thinking="", output="", chapter=0, level="info", ms=0):
+    """steps.emit 安全壳：任何异常静默吞掉——埋点失败绝不影响写作主流程。"""
+    try:
+        steps.emit(key, agent, phase=phase, title=title, thinking=thinking, output=output,
+                   chapter=chapter, level=level, ms=ms)
+    except Exception:
+        pass
+
+
+def _bkey(proj):
+    """作品 key（= 项目目录名），创作事件埋点用。"""
+    try:
+        return os.path.basename(proj.path)
+    except Exception:
+        return ""
 
 
 class Project:
@@ -83,17 +101,30 @@ class Project:
 
     def status(self):
         plan = self.plan()
+        # v4.24.12：key 一律取项目目录名（= 作品 key）。
+        # 不能用 self.name —— 分支创建（app.py 的 /api/branch）传进来的是 novelName，
+        # 两者不是一回事，混用会让前端把 work 对到错误的作品上。
+        bkey = os.path.basename(self.path)
         if not plan:
-            return {"state": "missing", "done": 0, "total": 0, "words": 0}
+            return {"state": "missing", "done": 0, "total": 0, "words": 0, "key": bkey}
         chs = plan.get("chapters") or []
         done = sum(1 for c in chs if c.get("status") == "completed")
         words = sum(c.get("wordCount") or 0 for c in chs)
         meta = plan.get("meta") or {}
         return {"state": plan.get("status", "unknown"), "done": done, "total": len(chs),
-                "words": words, "running": self.running,
+                "words": words,
+                # v4.21.0：running 同时查共享注册表——resume_book 每次 new Project 实例，
+                # 线程存活标志挂在新实例上，只读 self.running 会让 /api/status 永远 False，
+                # 前端三态按钮因此恢复后永远显示「继续」。
+                "running": bool(self.running or _book_running(bkey)),
                 "paused": bool(meta.get("paused")),
                 "queued": len([q for q in meta.get("queued_msgs", []) if not q.get("consumed")]),
                 "name": plan.get("novelName", self.name),
+                # v4.24.12：带上 key —— 前端把本返回体并进 work 后靠 key 定位作品。
+                # 以前 key 只来自作品库条目，而「刷新页面」时 /api/status 比
+                # /api/library 先回（单本快、全量聚合慢），此刻条目还没到，
+                # work 就缺 key → 创作状态按钮（继续/暂停）整颗不渲染，且此后不再恢复。
+                "key": bkey,
                 "quality": quality_score(self.path)}
 
 def rebuild_book(proj) -> str:
@@ -159,47 +190,23 @@ def _parse_outline_titles(outline_md, total):
 
 def _strip_md_style(text: str) -> str:
     """v4.4.0：正文排版净化——去加粗/斜体/行首 #/列表符/反引号/分隔线，
-    只留正常中文标点（防模型不守排版纪律）。章节题行与结构小节标记由调用方处理。"""
-    t = re.sub(r"\*{1,3}([^*\n]{1,80}?)\*{1,3}", r"\1", text)          # **加粗** / *斜体*
-    t = re.sub(r"(?m)^(\s*)[-*•]\s+", r"\1", t)                        # 行首列表符
-    t = re.sub(r"_{1,3}([^_\n]{1,80}?)_{1,3}", r"\1", t)                # __下划线强调__
-    t = re.sub(r"`+", "", t)                                             # 反引号
-    t = re.sub(r"(?m)^\s*([-*_]\s*){3,}$", "", t)                      # --- 分隔线
-    # 行首 # 的结构标题（章题/引子/正文小节）保留——成书阅读需要层级；
-    # 正文中间的 # 由提示词禁止 + 本章概要/备注剥离后基本不出现。
-    return t
+    只留正常中文标点（防模型不守排版纪律）。章节题行与结构小节标记由调用方处理。
+    v4.22.1：实现迁到 bot/purity.py（正文纯净域单一出口），此处保留别名不破坏调用方。"""
+    return purity.strip_md_style(text)
 
 
-_ACK_PREFIX_RE = re.compile(
-    r"^(?:好的|没问题|收到|明白了|以下是|下面是|这是|当然|OK|Okay)[，,：:\s]*(?:以下是|下面是|这是)?[^。\n]{0,30}[：:]?\s*\n?")
-_THINK_RE = re.compile(r"<(?:think|thinking|reasoning)>[\s\S]*?</(?:think|thinking|reasoning)>\s*", re.I)
-_THINK_OPEN_RE = re.compile(r"<(?:think|thinking|reasoning)>[\s\S]*$", re.I)
-_FENCE_RE = re.compile(r"```[a-zA-Z0-9]*\n([\s\S]*?)\n```")
-_CH_TITLE_LINE_RE = re.compile(r"(?m)^#{1,3}\s*第\s*\d+\s*章.*\n?")
+_ACK_PREFIX_RE = purity._ACK_PREFIX_RE
+_THINK_RE = purity._THINK_RE
+_THINK_OPEN_RE = purity._THINK_OPEN_RE
+_FENCE_RE = purity._FENCE_RE
+_CH_TITLE_LINE_RE = purity._CH_TITLE_LINE_RE
 
 
 def _strip_chatter(body: str) -> str:
     """v4.8.0：剥 LLM 输出杂音——思考标签、客套开场白、代码围栏、正文中间的重复章题行。
-    写盘前、chapter_meta、章摘要、_clean_chapter_text 四处统一调用。"""
-    t = body or ""
-    t = _THINK_RE.sub("", t)
-    t = _THINK_OPEN_RE.sub("", t)          # 未闭合的思考标签：剥到结尾
-    t = _FENCE_RE.sub(r"\1", t)            # 成对代码围栏 → 保留内容
-    for _ in range(3):                     # 客套开场白可能连着多行
-        t2 = _ACK_PREFIX_RE.sub("", t)
-        if t2 == t:
-            break
-        t = t2
-    # 剥正文中间（非首行）重复的章题行——首行可能是合法章题，由调用方决定去留
-    lines = t.split("\n")
-    if len(lines) > 1:
-        kept = [lines[0]]
-        for ln in lines[1:]:
-            if _CH_TITLE_LINE_RE.match(ln + "\n"):
-                continue
-            kept.append(ln)
-        t = "\n".join(kept)
-    return t.strip()
+    写盘前、chapter_meta、章摘要、_clean_chapter_text 四处统一调用。
+    v4.22.1：实现迁到 bot/purity.strip_model_noise（单一出口）。"""
+    return purity.strip_model_noise(body)
 
 
 def _trigrams(text: str) -> set:
@@ -213,28 +220,16 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
-def _clean_chapter_text(text):
-    """成书时剥离规划元信息（本章概要/章节备注），保留 章题+章首引子+正文。
+def _clean_chapter_text(text, fallback_title=""):
+    """成书/复制/导出的唯一取文口径：章题 + 章首引子 + 正文。
+
     v3.1.0：补「仅有概要、无引子」分支——旧实现此时会把概要原样带进成书。
-    v4.4.0：输出前统一过 _strip_md_style 排版净化。"""
-    # v4.15.6：改用 (?m)^ 行首锚定——原 \n 前缀匹配不到文件开头的概要段（无前置换行），
-    # 导致「## 本章概要」作为第一行时整段混进成书（批量E2E 实测复现）
-    m_sum = re.search(r"(?m)^\s*## 本章概要", text)
-    m_intro = re.search(r"(?m)^\s*## 章首引子", text)
-    m_notes = re.search(r"(?m)^\s*## 章节备注", text)
-    end = m_notes.start() if m_notes else len(text)
-    if m_intro and m_sum and m_sum.start() < m_intro.start():
-        return _strip_md_style((text[:m_sum.start()] + text[m_intro.start():end])).strip()
-    if m_intro:
-        return _strip_md_style(text[:m_intro.start() + 1] + text[m_intro.start():end]).strip()
-    if m_sum:
-        # 只有概要没有引子：剥掉概要段（从标题行到下一个 ## 或文末）
-        nxt = re.search(r"\n## ", text[m_sum.end():])
-        cut = m_sum.end() + (nxt.start() if nxt else len(text) - m_sum.end())
-        return _strip_md_style(text[:m_sum.start()] + text[cut:]).strip()
-    if m_notes:
-        return _strip_md_style(text[:m_notes.start()]).strip()
-    return _strip_md_style(text).strip()
+    v4.4.0：输出前统一过 _strip_md_style 排版净化。
+    v4.22.1：改用白名单（bot/purity）——只认 章首引子/正文 两段，其余小节一律丢弃，
+    重写说明/评分表/审稿意见等不再随「未知小节」漏进成书与剪贴板。
+    v4.22.2：支持 fallback_title——历史稿件有一批没有 `# 第N章` 题头，用计划章名补上。
+    """
+    return purity.chapter_text(text, fallback_title=fallback_title)
 
 def _cfg_defaults():
     try:
@@ -292,11 +287,20 @@ def create_project(cfg, titles, pdir=None, name=None):
     os.makedirs(pdir, exist_ok=True)
     proj = Project(pdir, name)
     llm.book(os.path.basename(pdir), "planning")     # v0.3.x：规划阶段 token 归集到该书
+    _ek = os.path.basename(pdir)                     # v4.21.0：创作事件埋点用书 key
+    _t0 = time.perf_counter()
+    _evt(_ek, "planner", phase="start", title="生成人物档案",
+         thinking="从配置提炼主角/反派/配角：性格核心、致命缺陷、说话风格、背景故事，细到可直接指导写作")
     proj.log("📐 阶段2：生成人物档案…")
     characters = workflow.gen_characters(cfg)
     open(os.path.join(pdir, "00-人物档案.md"), "w", encoding="utf-8").write(
         f"# {name} 人物档案\n\n" + characters)
+    _evt(_ek, "planner", phase="done", title="生成人物档案",
+         output=f"人物档案 {len(characters or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
 
+    _t0 = time.perf_counter()
+    _evt(_ek, "planner", phase="start", title="生成全书大纲",
+         thinking="先定三幕结构与主线索引，再铺全章节奏曲线，保证每 10 章一个钩子")
     proj.log("📐 阶段2：生成大纲…")
     try:
         total = int(str(cfg.get("chapters") or 10))
@@ -312,13 +316,20 @@ def create_project(cfg, titles, pdir=None, name=None):
     outline = workflow.gen_outline(cfg_outline)
     open(os.path.join(pdir, "01-大纲.md"), "w", encoding="utf-8").write(
         f"# {name} 大纲\n\n" + outline)
+    _evt(_ek, "planner", phase="done", title="生成全书大纲",
+         output=f"规划 {total} 章 · 大纲 {len(outline or '')} 字",
+         ms=int((time.perf_counter() - _t0) * 1000))
 
+    _t0 = time.perf_counter()
+    _evt(_ek, "planner", phase="start", title="生成文风基准",
+         thinking="定文风指纹与基准段落，列 AI 腔负面清单，供全书按同一语感书写")
     proj.log("📐 阶段2：生成文风基准…")
     style = workflow.gen_style(cfg)
     open(os.path.join(pdir, "03-文风基准.md"), "w", encoding="utf-8").write(style)
+    _evt(_ek, "planner", phase="done", title="生成文风基准",
+         output=f"文风基准 {len(style or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
 
     # v0.3 P2：题材×风格技能（金手指/基调/视角/节奏/语言/卷）→ style.json，供 craft 注入
-    import json as _json
     _sk = {"genre": cfg.get("genre", ""), "tone": cfg.get("tone", ""),
            "perspective": cfg.get("perspective", ""), "style": cfg.get("style") or {},
            "platform": cfg.get("platform", ""), "platform_note": cfg.get("platform_note", ""),
@@ -328,16 +339,34 @@ def create_project(cfg, titles, pdir=None, name=None):
     # ---------- 连续性结构（加法，单个失败不阻断规划） ----------
     if _cfg_defaults().get("v3_pipeline", True):
         proj.log("📐 阶段2：生成 连续性结构（故事圣经/线索账本/时间线）…")
+        _t0 = time.perf_counter()
+        _evt(_ek, "planner", phase="start", title="生成故事圣经",
+             thinking="建立全书唯一事实来源：故事引擎/世界规则/主线结局/设定词典")
         try:
-            _write_cfg_text(pdir, "09-故事圣经.md", "# 故事圣经\n\n" + workflow.gen_story_bible(cfg))
+            _sb = workflow.gen_story_bible(cfg)
+            _write_cfg_text(pdir, "09-故事圣经.md", "# 故事圣经\n\n" + _sb)
+            _evt(_ek, "planner", phase="done", title="生成故事圣经",
+                 output=f"故事圣经 {len(_sb or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
         except Exception as e:
             proj.log(f"⚠️ 故事圣经生成失败（跳过）：{e}")
+        _t0 = time.perf_counter()
+        _evt(_ek, "planner", phase="start", title="生成线索账本",
+             thinking="从大纲提取服务主线的悬念/伏笔，登记为带真实答案与兑现计划的线索表")
         try:
-            _write_cfg_text(pdir, "10-线索账本.md", "# 线索账本\n\n" + workflow.gen_clue_ledger(cfg, outline))
+            _cltxt = workflow.gen_clue_ledger(cfg, outline)
+            _write_cfg_text(pdir, "10-线索账本.md", "# 线索账本\n\n" + _cltxt)
+            _evt(_ek, "planner", phase="done", title="生成线索账本",
+                 output=f"线索账本 {len(_cltxt or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
         except Exception as e:
             proj.log(f"⚠️ 线索账本生成失败（跳过）：{e}")
+        _t0 = time.perf_counter()
+        _evt(_ek, "planner", phase="start", title="生成时间线与连续性",
+             thinking="建全书事件时间线与连续性核对清单，每章写前核对前后一致")
         try:
-            _write_cfg_text(pdir, "12-时间线与连续性.md", "# 时间线与连续性\n\n" + workflow.gen_timeline(cfg, outline))
+            _tltxt = workflow.gen_timeline(cfg, outline)
+            _write_cfg_text(pdir, "12-时间线与连续性.md", "# 时间线与连续性\n\n" + _tltxt)
+            _evt(_ek, "planner", phase="done", title="生成时间线与连续性",
+                 output=f"时间线 {len(_tltxt or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
         except Exception as e:
             proj.log(f"⚠️ 时间线生成失败（跳过）：{e}")
         # v4.15.1：一致性纲领（所有写作 Agent 必须遵守的硬规则）
@@ -394,6 +423,9 @@ def create_project(cfg, titles, pdir=None, name=None):
     _lf = (cfg.get("longform") if isinstance(cfg.get("longform"), dict)
            else (_cfg_defaults().get("longform") or {}))
     if _lf.get("enabled", True):
+        _t0 = time.perf_counter()
+        _evt(_ek, "planner", phase="start", title="生成分层规划（卷/弧/章卡）",
+             thinking="按百万字规模分层：先定卷与弧，再铺章卡，滚动窗口补齐后续细纲")
         try:
             from . import longform as _longform
             proj.log("📚 阶段2：生成分层规划（卷 / 弧 / 章卡）…")
@@ -402,6 +434,9 @@ def create_project(cfg, titles, pdir=None, name=None):
             d = _longform.plan_digest(proj)
             proj.log(f"📚 分层规划就绪：{d.get('chapters_planned')} 章 / "
                      f"{d.get('volumes')} 卷；目标 {d.get('scale', {}).get('target_words', 0)} 字")
+            _evt(_ek, "planner", phase="done", title="生成分层规划（卷/弧/章卡）",
+                 output=f"{d.get('chapters_planned')} 章 / {d.get('volumes')} 卷",
+                 ms=int((time.perf_counter() - _t0) * 1000))
         except Exception as e:
             proj.log(f"⚠️ 分层规划失败（可稍后重建，不影响开写）：{e}")
     return proj
@@ -448,7 +483,7 @@ def _pause_for_budget(proj, msg: str) -> None:
     proj.log("💰 " + msg)
 
 
-def _ensure_writable_plan(proj) -> Optional[dict]:
+def _ensure_writable_plan(proj) -> dict | None:
     """写作前守卫：计划缺失或 0 章（规划线程被服务重启/异常杀掉）时先重建规划再写。
     没有它，「继续」会把 0 章的空书直接审校、成书、标记完结（v2.7 E2E 实测踩坑）。"""
     plan = proj.plan()
@@ -477,13 +512,16 @@ def _ensure_writable_plan(proj) -> Optional[dict]:
     return plan
 
 
-def start_writing(proj: Project, batch_size=None):
+def start_writing(proj: Project, batch_size=None) -> bool:
+    """启动写作线程。返回 True=已启动；False=被防重入拦截（已有线程在写）。
+    v4.20.1：此前被拦时静默返回 None，调用方无法区分「已启动」和「已在写」。"""
     _bk = os.path.basename(proj.path)
     if proj.running or _book_running(_bk):
-        return   # v4.12.16：双重防重入（实例 + 共享注册表）
+        return False   # v4.12.16：双重防重入（实例 + 共享注册表）
     _set_book_running(_bk, True)
     proj.running = True
     threading.Thread(target=_write_loop, args=(proj, batch_size), daemon=True).start()
+    return True
 
 # ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
 
@@ -526,14 +564,72 @@ def pause_book(key):
     plan.setdefault("meta", {})["paused"] = True
     plan["status"] = "paused"
     p.save_plan(plan)
+    # 任务档案同步标暂停：即使写线程当时不在检查点上，「继续」也知道上次干到哪儿了
+    journal.update(p.path, status="paused", note="已请求暂停")
     p.log("⏸ 已请求暂停（在下一检查点停，停在当前进度，可点「▶继续」恢复）")
     return True
 
-def resume_book(key, batch_size=None):
-    """清暂停位 + 续写剩余章节。batch_size 从 plan.config 取（未传参时）。"""
+def resume_plan(key) -> dict:
+    """「继续」到底会从哪儿接着跑 —— 供回复文案与规划器使用。
+
+    优先级：任务档案（上次在做什么）→ 章内草稿（上次停在第几段）→ 第一个未完成章。
+    """
+    out = {"kind": "", "label": "", "chapter": 0, "draft_words": 0,
+           "done": 0, "total": 0, "note": "", "exists": False}
+    try:
+        p = Project(_project_dir(key), key)
+        plan = p.plan() or {}
+        chapters = plan.get("chapters") or []
+        out["total"] = len(chapters)
+        out["done"] = sum(1 for c in chapters if c.get("status") == "completed")
+        task = journal.current_task(p.path)
+        if isinstance(task, dict):
+            out["exists"] = True
+            out["kind"] = task.get("kind") or ""
+            out["label"] = journal.KIND_LABEL.get(out["kind"], out["kind"])
+            out["note"] = task.get("note") or ""
+            out["chapter"] = int(task.get("current") or 0)
+            if isinstance(task.get("total"), int):
+                out["total"] = max(out["total"], task["total"])
+            if isinstance(task.get("done"), int):
+                out["done"] = max(out["done"], task["done"])
+        if out["kind"] in ("", "writing"):
+            if not out["chapter"]:
+                out["chapter"] = next((int(c.get("chapterNumber") or 0) for c in chapters
+                                       if c.get("status") != "completed"), 0)
+            if out["chapter"]:
+                info = draft_info(p, out["chapter"])
+                out["draft_words"] = info["words"]
+    except Exception:
+        pass
+    return out
+
+
+def _resume_text(key) -> str:
+    """一句人话，说明「继续」会接着做什么。"""
+    rp = resume_plan(key)
+    if rp["kind"] and rp["kind"] != "writing":
+        return f"接着上次没做完的「{rp['label']}」，已完成 {rp['done']}/{rp['total'] or '?'}"
+    if rp["chapter"]:
+        seg = f"从第 {rp['chapter']} 章接着写"
+        if rp["draft_words"]:
+            seg += f"（该章已有中断前草稿 {rp['draft_words']} 字，从末尾续写）"
+        return seg
+    return "从当前进度接着写"
+
+
+def resume_book(key, batch_size=None) -> bool:
+    """清暂停位 + 续写剩余章节。batch_size 从 plan.config 取（未传参时）。
+    返回 True=已启动新写作线程；False=无法启动（无计划/已完成/已有线程在写）。
+    v4.20.1：此前被防重入拦截时也写「▶ 继续写作」日志并返回 True，
+    前端据此误报成功——现在只有真正启动才记日志、才算成功。
+    v4.22.2：续跑点由任务档案 + 章内草稿决定，回复里明确说「从第几章／第几字接着写」。"""
     p = Project(_project_dir(key), key)
     plan = p.plan()
     if not plan:
+        return False
+    if plan.get("status") == "completed":
+        p.log("ℹ️ 该作品已完成，无需继续（想加章请用「续写」）")
         return False
     plan.setdefault("meta", {})["paused"] = False
     plan["status"] = "in_progress"
@@ -542,9 +638,95 @@ def resume_book(key, batch_size=None):
     if batch_size is None:
         cfg = plan.get("config") or {}
         batch_size = cfg.get("batch_size", "1")
-    p.log("▶ 继续写作（从上次进度接着写剩余章节）")
-    start_writing(p, batch_size=batch_size)
+    _where = _resume_text(key)
+    if not start_writing(p, batch_size=batch_size):
+        p.log("ℹ️ 收到「继续」请求，但该作品已在创作中，无需重复启动")
+        return False
+    p.log(f"▶ 继续写作：{_where}")
+    journal.remember(p.path, "user", f"继续（{_where}）")
+    # v4.21.0：创作事件——恢复线程启动（前端活动流显示「继续创作」进行中）
+    _bshow = "全部" if (batch_size is None or str(batch_size).lower() in ("all", "0")) else str(batch_size)
+    _evt(_bkey(p), "system", phase="start", title="继续创作", output=f"{_where} · 本批 {_bshow} 章")
     return True
+
+
+def resume_task(key, batch_size=None) -> dict:
+    """按任务档案恢复「上次那件事」——委托给 tasks 注册表统一判定。
+
+    v4.23.0：这里原来是一串 if/elif，只认识 writing / rewrite / score；
+    认不出的一律掉到 resume_book 去写新章（想接着做重写，系统却开写新章）。
+    现在判定逻辑搬到 bot/tasks.py 的注册表，新增任务类型只要 @runs(kind)，
+    不会再出现「新任务忘了登记续跑」这类漏洞。
+
+    返回 {"ok": bool, "kind": str, "text": 人话说明}
+    """
+    from . import tasks
+    return tasks.resume(key, batch_size=batch_size)
+
+
+def start_task(key, kind, title, chapters, per_chapter=None, batch=None, params=None) -> dict:
+    """登记并后台启动一类「按章推进」的长任务（重写 / 评分 / 补章卡都走这里）。
+
+    统一入口的意义：登记、跑、逐章记进度、收尾、异常改档这五件事只写一遍。
+    以前每个调用点各写一份，只要有一处漏掉 journal.begin，「继续」就认不出这个任务
+    —— 漏登记等于没法续跑，而且是静默的，测试也发现不了。
+
+    per_chapter(n, i)：逐章处理（评分、补章卡）
+    batch(left)：整批处理（并行重写，内部自己控并发）
+    两者给一个即可。
+    """
+    p = Project(_project_dir(key), key)
+    todo = []
+    for n in chapters or []:
+        try:
+            todo.append(int(n))
+        except (TypeError, ValueError):
+            continue
+    _params = dict(params or {})
+    _params["chapters"] = todo
+    task = journal.begin(p.path, kind, title, params=_params, total=len(todo))
+    total = len(todo)
+
+    def _job():
+        try:
+            journal.update(p.path, status="running", stage=kind)
+            if callable(batch):
+                batch(todo)
+            else:
+                # 「做完」的定义是**真的做完了**：失败的章不记 done，
+                # 这样「继续」会把它重新捡起来重试。
+                # 但同一章连续失败 3 次就放弃它（多半是文件坏了，不是模型的事），
+                # 否则这本书永远收不了尾、用户每次点继续都在等同一章。
+                stuck = []
+                for i, n in enumerate(todo, 1):
+                    try:
+                        per_chapter(n, i)
+                    except Exception as e:
+                        c = journal.bump_fail(p.path, n)
+                        if c >= 3:
+                            p.log(f"⛔ 第{n}章连续 {c} 次失败，本次跳过（请在章节工作台单独处理）")
+                            journal.mark_chapter_done(p.path, n, done=i, total=total, stage=kind)
+                        else:
+                            stuck.append(n)
+                            p.log(f"⚠️ 第{n}章处理失败（第 {c} 次，稍后「继续」会重试）：{e}")
+                        continue
+                    journal.clear_fail(p.path, n)
+                    journal.mark_chapter_done(p.path, n, done=i, total=total, stage=kind)
+                if stuck:
+                    journal.update(p.path, status="paused", stage="partial",
+                                   note=f"{len(stuck)} 章没做完（第 {stuck[:6]}）——点「继续」重试这些章")
+                    journal.remember(p.path, "system",
+                                     f"{title}：{len(stuck)} 章未完成，已存档待续")
+                    return
+            journal.finish(p.path, "done", note=f"{title}完成 {total} 章")
+            journal.remember(p.path, "system", f"{title}完成 {total} 章")
+        except Exception as e:
+            journal.update(p.path, status="paused", stage="interrupted",
+                           note=f"{title}中断：{str(e)[:80]}")
+            journal.remember(p.path, "system", f"{title}中断：{str(e)[:100]}")
+
+    threading.Thread(target=_job, daemon=True).start()
+    return {"ok": True, "task": task, "total": total}
 
 # ---------- v3.1.0：陈旧状态恢复（服务重启/线程死亡后的 validating 卡死） ----------
 
@@ -554,12 +736,25 @@ _PIPELINE_COUNT: dict[str, int] = {}
 
 
 def mark_pipeline(key, on=True):
-    """按作品 key 增/减流水线运行计数（线程启动 +1，结束 -1）。"""
+    """按作品 key 增/减流水线运行计数（线程启动 +1，结束 -1）。
+    v4.26.0：总编辑看护线程在此收口上下车——0→1 孵化监制（九文体通用），→0 延迟判定
+    （暂停待命 / 完稿终审 / 意外停滞自愈）。"""
     k = os.path.basename(str(key or ""))
     if not k:
         return
     with _PIPELINE_LOCK:
-        _PIPELINE_COUNT[k] = max(0, _PIPELINE_COUNT.get(k, 0) + (1 if on else -1))
+        prev = _PIPELINE_COUNT.get(k, 0)
+        _PIPELINE_COUNT[k] = max(0, prev + (1 if on else -1))
+        now = _PIPELINE_COUNT[k]
+    try:
+        if on and prev == 0 and now == 1:
+            from . import supervisor as _sv
+            _sv.ensure(k)
+        elif not on and prev == 1 and now == 0:
+            from . import supervisor as _sv
+            _sv.pipeline_stopped(k)
+    except Exception:
+        pass
 
 
 def pipeline_running(key) -> bool:
@@ -681,7 +876,12 @@ def pending_queue(key):
 
 def queue_action(key, index, action):
     """对某条待发送指令：'remove'=移除 / 'imm'=标记立即生效。返回剩余（未消化）列表。"""
-    p = Project(_project_dir(key), key)
+    # v4.24.16：目录已删（硬删除后 PROJECT_INDEX 缓存残留）→ 拒绝写入，
+    # 否则 atomic_write_json 会把已删除的作品目录连同空壳计划「复活」。
+    pdir = _project_dir(key)
+    if not os.path.isdir(pdir):
+        return []
+    p = Project(pdir, key)
     plan = p.plan() or {}
     qm = plan.get("meta", {}).get("queued_msgs") or []
     if 0 <= index < len(qm):
@@ -712,6 +912,56 @@ def _pop_queue_note(proj, ch_no):
 
 def _chapter_file_path(proj, ch):
     return os.path.join(proj.path, ch["filePath"])
+
+
+# ---------- v4.22.2：章内草稿检查点（中断不重来）----------
+# 「继续」以前只能按章粒度续跑：一章写到 2000 字被上游断流，重试就是整章重写，
+# 用户看到的就是「又从第一段开始」。这里把每个阶段的中间稿落到 .draft/，
+# 续跑时字数够就直接接着补，不够才重写。
+_DRAFT_DIR = ".draft"
+
+
+def _draft_path(proj, no) -> str:
+    return os.path.join(proj.path, _DRAFT_DIR, f"第{int(no):02d}章.partial.md")
+
+
+def _read_draft(proj, no) -> str:
+    try:
+        p = _draft_path(proj, no)
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                return purity.sanitize_chapter(f.read())
+    except Exception:
+        pass
+    return ""
+
+
+def _save_draft(proj, no, body) -> None:
+    try:
+        body = purity.sanitize_chapter(body or "")
+        if not body.strip():
+            return
+        p = _draft_path(proj, no)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        atomic_write_text(p, body)
+    except Exception:
+        pass
+
+
+def _clear_draft(proj, no) -> None:
+    try:
+        p = _draft_path(proj, no)
+        if os.path.exists(p):
+            os.remove(p)
+    except Exception:
+        pass
+
+
+def draft_info(proj, no) -> dict:
+    """给「继续」提示与规划器看的草稿状态。"""
+    txt = _read_draft(proj, no)
+    return {"chapter": int(no), "words": len(re.sub(r"\s", "", txt)) if txt else 0,
+            "has": bool(txt.strip())}
 
 def _book_skills_into(cfg, plan):
     """v3.0.0：把计划 meta.agent_skills（按作品岗位技能绑定）注入 cfg，
@@ -1012,6 +1262,42 @@ def _ensure_layered_plan(proj):
             proj.log(f"⚠️ 分层规划迁移失败（沿用扁平大纲）：{e}")
         except Exception:
             pass
+
+
+def _ensure_card_planned(proj, no, tries: int = 2) -> bool:
+    """临写前最后一道规划闸门：章卡是占位卡就补一张真卡。
+
+    长篇跑偏的真正病根不是「重规划不够勤」，而是**没有大纲也照写**：滚动规划窗口
+    一旦 LLM 返回空，就会用弧目标套话兜底生成占位卡，之后几十章全靠模型自由发挥
+    （《入赘三年》第41–50 章实证：conflict 全空，写到 90 章已成高维科幻）。
+    这里在动笔前把该章补实；补不出来就大声告警，让问题在日志里可见，而不是静默跑偏。
+    """
+    cfg, lf = _longform_cfg(proj)
+    if not lf.get("enabled", True):
+        return True
+    try:
+        from . import longform as _lf
+        cards = _lf.load_cards(proj)
+        card = cards.get(int(no))
+        if card and not _lf.card_is_placeholder(card):
+            return True
+        for i in range(max(1, tries)):
+            got = _lf.plan_chapter_now(proj, int(no), cfg, reason="before_write")
+            if isinstance(got, dict) and got and not _lf.card_is_placeholder(got):
+                proj.log(f"🧭 第{no}章补出真章卡：《{got.get('title') or ''}》"
+                         f"（目标：{str(got.get('goal') or '')[:40]}…）")
+                _evt(_bkey(proj), "planner", phase="done", title=f"第{no}章临写补规划",
+                     output=str(got.get("goal") or "")[:120], chapter=int(no))
+                return True
+            proj.log(f"⚠️ 第{no}章补规划第 {i + 1} 次未成功（章卡仍缺本章目标/冲突）")
+        proj.log(f"⛔ 第{no}章没有可用章卡（缺目标/冲突），照此写必然跑偏——"
+                 f"已跳过该章，请在「规划」里重建本章或检查模型可用性")
+        _evt(_bkey(proj), "planner", phase="warn", title=f"第{no}章缺章卡，已跳过",
+             output="章卡无本章目标/冲突，未动笔", chapter=int(no), level="warn")
+        return False
+    except Exception as e:
+        proj.log(f"⚠️ 章卡体检异常（继续写）：{e}")
+        return True
 
 
 def _maybe_replan(proj, next_no):
@@ -1377,6 +1663,20 @@ def _parallel_role_label(proj, wid):
 
 
 def _write_loop_parallel(proj, n_workers=5, rounds=None):
+    """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）——薄壳。
+    v4.24.16：纳入 _acq_book 同书串行——此前只串行了 重写/门禁，并行写作与它们
+    同时落到同一本书时（如「继续」触发的并行写作 + 用户手动改写）会并发写章节文件。
+    锁在调用期获取（_acq_book 定义在本文件后部，装饰器会在 import 期求值所以不能用）。"""
+    return _write_loop_parallel_locked(os.path.basename(proj.path), proj,
+                                       n_workers=n_workers, rounds=rounds)
+
+
+def _write_loop_parallel_locked(key, proj, n_workers=5, rounds=None):
+    with _acq_book(key):
+        return _write_loop_parallel_body(proj, n_workers=n_workers, rounds=rounds)
+
+
+def _write_loop_parallel_body(proj, n_workers=5, rounds=None):
     """v0.6 B：单本书内 N 个 worker 分章齐写（工作窃取）。
     先熔炼『总架构』，各 worker 领 1..N 章，写完一个立即取下一未完成章；
     真 LLM 并发由 providers.ConcurrencyGuard 兜底防 429。
@@ -1423,6 +1723,9 @@ def _write_loop_parallel(proj, n_workers=5, rounds=None):
         plan["status"] = "completed"; proj.save_plan(plan)
         return
     proj.log(f"📋 待写章节 {len(pend)} 章：{pend[:10]}{'…' if len(pend) > 10 else ''}")
+    # v4.21.0：创作事件——并行分章创作启动（多作家分身可视化）
+    _evt(_bkey(proj), "system", phase="start", title="并行分章创作",
+         output=f"待写 {len(pend)} 章 · {n_workers} 个作家分身")
     q = queue.Queue()
     for n in pend:
         q.put(n)
@@ -1479,12 +1782,18 @@ def _write_loop_parallel(proj, n_workers=5, rounds=None):
             try:
                 proj.log(f"🧵 Agent#{wid}{_parallel_role_label(proj, wid)} 领第{no}章（总架构已注入，写完立即取下一章）")
                 _maybe_replan(proj, no)
+                # v4.22.2：占位卡不许硬写（并行路径同样闸门，防长篇跑偏）
+                if not _ensure_card_planned(proj, no):
+                    q.task_done()
+                    continue
                 _write_chapter(proj, ch, min_words, 3)   # 内部 LLM 走 ConcurrencyGuard
             except llm.BudgetExceeded as e:
                 _pause_for_budget(proj, str(e))
                 break
             except Exception as e:
                 proj.log(f"⚠️ Agent#{wid} 第{no}章异常：{e}")
+                _evt(_bkey(proj), "writer", phase="warn", title=f"写第{no}章异常",
+                     output=str(e)[:120], chapter=no)
             q.task_done()
     threads = [threading.Thread(target=_worker, args=(i,), daemon=True) for i in range(1, n_workers + 1)]
     for t in threads:
@@ -1494,9 +1803,13 @@ def _write_loop_parallel(proj, n_workers=5, rounds=None):
     if is_paused(proj):
         p = proj.plan(); p["status"] = "paused"; proj.save_plan(p)
         proj.log("⏸ 并行写作已暂停（点「▶ 继续」恢复剩余章）")
+        _evt(_bkey(proj), "system", phase="warn", title="并行分章创作",
+             output="已暂停（点「继续」恢复剩余章）")
         return
     _validate_and_finish(proj)
     proj.log(f"🧵 并行写作完成（{n_workers} 个 Agent，总架构对齐）")
+    _evt(_bkey(proj), "system", phase="done", title="并行分章创作",
+         output=f"{n_workers} 个分身完工 · 交全书终审")
     _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：并行写完 → 刷新写作骨架
 
 # v0.6 B 起：让 _write_chapter 的『领章/完成』在并行下不互踩 —— 由 providers.ConcurrencyGuard 限真 LLM 并发；
@@ -1531,8 +1844,19 @@ def score_chapter(proj, ch_no):
     body = open(fp, encoding="utf-8").read()
     cfg = proj.plan().get("config") or {}
     llm.book(os.path.basename(proj.path), "review")           # 评分 token 归集
-    r = workflow.chapter_review(body, cfg, _ch_review_ctx(proj, ch_no))
+    _t0 = time.perf_counter()   # v4.21.0：评分耗时（创作事件 ms）
+    _ctx_txt = _ch_review_ctx(proj, ch_no)
+    try:
+        # v4.21.0：key/chapter_no 为 chapter_review 新增可选埋点参数；
+        # 旧签名/测试替身不识别时回落旧调用（保证评分主流程永不被埋点破坏）。
+        r = workflow.chapter_review(body, cfg, _ctx_txt,
+                                    key=os.path.basename(proj.path), chapter_no=ch_no)
+    except TypeError:
+        r = workflow.chapter_review(body, cfg, _ctx_txt)
     total = workflow.score_dimensions(r.get("scores")) if r else None
+    if total is not None:   # v4.21.0：评分成功 → 创作事件（百分制）
+        _evt(os.path.basename(proj.path), "reviewer", phase="done", title=f"第{ch_no}章评分",
+             output=f"{total} 分", chapter=ch_no, ms=int((time.perf_counter() - _t0) * 1000))
     with proj.lock:   # v0.6 B：并行写作下 meta.chapter_scores 读改写原子化
         plan = proj.plan()
         if not isinstance(plan.get("meta"), dict):
@@ -1547,8 +1871,10 @@ def score_chapter(proj, ch_no):
         proj.save_plan(plan)
     return total
 
-def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_dims=None):
-    """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。"""
+def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_dims=None, skip_deslop=False):
+    """低于线就局部重写该章（weak 维度当要求）→ 重评，最多 max_rounds 次。返回最终分。
+    v4.20：skip_deslop=True 供 _write_chapter 在「去味必跑」拆出后复用（避免同章 deslop 两次）；
+    改写师（rewriter）被停用时跳过重写轮（评分也会因 reviewer 停用得 None 而自然跳过）。"""
     plan = proj.plan()
     d = _cfg_defaults()
     if max_rounds is None:
@@ -1564,18 +1890,26 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
     base_score = score_chapter(proj, ch_no)
     orig_body = open(fp, encoding="utf-8").read()
     versions.snapshot(proj.path, ch_no, orig_body, label="自动重写前")
-    # deslop 定点去味（规则层定位 + LLM 最小改法；LLM 失败自动保留原文）
+    if not skip_deslop:
+        # deslop 定点去味（规则层定位 + LLM 最小改法；LLM 失败自动保留原文）
+        try:
+            ds = workflow.deslop_chapter(orig_body, {"cfg": plan.get("config") or {}},
+                                         key=_bkey(proj), chapter_no=ch_no)
+            _ds_clean = purity.sanitize_chapter(ds.get("cleaned") or "") if ds.get("cleaned") else ""
+            if _ds_clean and _ds_clean.strip() and _ds_clean != orig_body:
+                atomic_write_text(fp, _ds_clean)
+                proj.log(f"🧹 第{ch_no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
+                orig_body = _ds_clean
+                base_score = score_chapter(proj, ch_no) or base_score
+        except Exception:
+            pass
     try:
-        ds = workflow.deslop_chapter(orig_body, {"cfg": plan.get("config") or {}})
-        if ds.get("cleaned") and ds["cleaned"] != orig_body:
-            atomic_write_text(fp, ds["cleaned"])
-            proj.log(f"🧹 第{ch_no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
-            orig_body = ds["cleaned"]
-            base_score = score_chapter(proj, ch_no) or base_score
+        from . import agents as _agents_mod
+        _rewriter_off = "rewriter" in _agents_mod.disabled_agents()
     except Exception:
-        pass
+        _rewriter_off = False
     rounds = 0
-    while rounds < max_rounds:
+    while rounds < max_rounds and not _rewriter_off:
         sc = score_chapter(proj, ch_no)
         if sc is None or sc >= pass_line:
             break
@@ -1604,26 +1938,64 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
             sc2 = score_chapter(proj, ch_no)
             if (sc2 is not None and sc is not None and sc2 > sc):
                 proj.log(f"🔁 第{ch_no}章 {sc}→{sc2}（提分，保留），按[{','.join(weak[:3])}]局部重写（第{rounds+1}/{max_rounds}轮）")
+                # v4.26.1 分数停滞止损：提分 <2 分视为模型能力已到顶（实测分数在 ±5 内随机震荡，
+                # 继续抽卡每轮白烧 ~2 万 token），接受当前版本直接前进。
+                if (sc2 - sc) < 2:
+                    proj.log(f"⏹ 第{ch_no}章提分不足（{sc}→{sc2}），止损接受，继续下一章")
+                    break
             else:
                 atomic_write_text(fp, body)   # 没提分 → 还原原章，防改坏
                 sc2 = sc
                 proj.log(f"↩️ 第{ch_no}章重写未提分（{sc2}），已还原原章（防 LLM 波动改坏）")
+                # v4.26.1：未提分同样止损——还原后继续下一轮只是重新抽卡
+                break
+        else:
+            break   # 重写产出为空：无材料可保留，继续轮次只会重复失败
         rounds += 1
     final = score_chapter(proj, ch_no)
     # 若最终分低于最初基线，还原到原章基线（保守：只进不退）
     if (final or 0) < (base_score or 0):
         atomic_write_text(fp, orig_body)
         final = base_score
+    # v4.21.2 字数底线复核：重写/还原可能让字数缩水，跌破验收线（标准字数 90%）时
+    # 一次轻量续写补足（不整章重写，不做多轮——与字数新标准同一策略）。
+    try:
+        _pl = proj.plan() or {}
+        _minw = int(_pl.get("minWordsPerChapter") or 3000)
+        _floor = int(_minw * 0.9)
+        _ch = next((c for c in (_pl.get("chapters") or []) if c.get("chapterNumber") == ch_no), None)
+        _body = open(fp, encoding="utf-8").read()
+        from bot import wordguard as _wguard
+        _wc = _wguard.cn_len(_clean_chapter_text(_body))
+        if _ch and _wc < _floor:
+            _need = max(300, _floor - _wc + 150)
+            proj.log(f"📏 第{ch_no}章重写后 {_wc} 字（低于验收线 {_floor}），轻量补足约 {_need} 字…")
+            _evt(os.path.basename(proj.path), "writer", phase="warn", title="重写后字数低于验收线，轻量补足",
+                 output=f"{_wc} 字，续写约 {_need} 字", chapter=ch_no)
+            try:
+                _ctx = _build_ctx(proj, _ch)
+            except Exception:
+                _ctx = {}
+            _cont = purity.strip_fragment(workflow.continue_chapter(_body, _ctx, need_words=_need))
+            if _wguard.cn_len(_cont) >= 120:
+                atomic_write_text(fp, _body.rstrip() + "\n\n" + _cont)
+                proj.log(f"➕ 重写后补足完成（验收线 {_floor} 字）")
+    except Exception:
+        pass
     return final
 
 def per_chapter_scores(proj):
-    """[{ch, score, weak, status, verdict}]（来自 meta.chapter_scores，按章号排序）。"""
-    cs = (proj.plan().get("meta") or {}).get("chapter_scores", {}) or {}
+    """[{ch, score, dims, weak, status, verdict, evidence}]（meta.chapter_scores，按章号排序）。
+    v4.22.2：补回 dims（六维明细）与 evidence——质量弹窗的数据源。
+    v4.24.15：plan 读不到（项目被删/移到别处，成书后后台线程仍在跑）时返回空表，
+    而不是让 AttributeError 打死放行门禁那条线程。"""
+    cs = ((proj.plan() or {}).get("meta") or {}).get("chapter_scores", {}) or {}
     out = []
     for k in sorted(cs, key=lambda x: int(x) if str(x).isdigit() else 9999):
         v = cs[k]
         out.append({"ch": int(k) if str(k).isdigit() else k, "score": v.get("score"),
-                    "weak": v.get("weak", []), "status": v.get("status", "unscored"),
+                    "dims": v.get("dims") or {}, "weak": v.get("weak", []),
+                    "status": v.get("status", "unscored"),
                     "verdict": v.get("verdict", ""), "evidence": v.get("evidence") or []})
     return out
 
@@ -1638,7 +2010,12 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # 并行写作下各章互不串账；含本章的重试/扩充/评分重写全部消耗）
     _bk = os.path.basename(proj.path)
     llm.set_chapter(no)
+    # v4.22.2：把「正在写第N章」写进存档——中断后「继续」才知道停在哪一章
+    journal.progress(proj.path, current=no, stage="writing")
     _ch_started_at = datetime.datetime.now().isoformat(timespec="seconds")
+    # v4.21.0：创作事件——本章开写（串行/并行分章共用此处，活动流 + 多作家分身可视化数据源）
+    _evt(_bk, "writer", phase="start", title=f"写第{no}章「{ch['title']}」", chapter=no,
+         thinking="先回读前情摘要与活跃伏笔，按章卡场景顺序推进，结尾留钩")
     with proj.lock:   # 必须读最新计划再改；ch 是调用方手里的旧快照，直接 save 会覆盖并发写入
         plan0 = proj.plan() or {}
         for c in plan0.get("chapters", []):
@@ -1647,6 +2024,23 @@ def _write_chapter(proj, ch, min_words, max_retries):
         if plan0:
             proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
+    # v4.24.0：极速模式是**本书级**开关。只问 express.on()，不在这里拼 cfg 条件。
+    _expr = express.on(ctx.get("cfg") or {})
+    # v4.20 C3：规划师纠偏指引（每批收尾时规划师校准写入 plan.meta.drift_guidance，随写作提示注入）
+    try:
+        _dg = str(((proj.plan() or {}).get("meta") or {}).get("drift_guidance") or "").strip()
+        if _dg:
+            ctx["drift_guidance"] = _dg
+    except Exception:
+        pass
+    # v4.24.4：一致性巡检的修复计划（待填坑）——随写作提示置顶注入
+    try:
+        _fp = ((proj.plan() or {}).get("meta") or {}).get("fill_plan") or []
+        _fp_live = [f for f in _fp if isinstance(f, dict) and f.get("pit") and not f.get("filled_in")]
+        if _fp_live:
+            ctx["fill_plan"] = _fp_live[:6]
+    except Exception:
+        pass
     # v4.7.0（借鉴 reveric 手法账本）：把最近几章的断章钩子/情绪/紧张度注入写作上下文，
     # 防止连续多章用同款钩子、同款情绪（模式收敛）。
     try:
@@ -1667,15 +2061,31 @@ def _write_chapter(proj, ch, min_words, max_retries):
         ctx["recent_hooks"] = hooks[-5:]
     except Exception:
         pass
-    ctx["min_words_target"] = int(min_words * 1.1)   # v4.16.2：写作提示带 110% 硬下限，验收仍按 min_words
+    # v4.16.2：写作提示带 110% 硬下限，验收仍按 min_words
+    # v4.24.0：极速模式仍给目标字数（少给会让章卡的目标/冲突/兑现装不下），但不额外加 10% 加压
+    ctx["min_words_target"] = int(min_words * (1.0 if _expr else 1.1))
     qn = _pop_queue_note(proj, no)
     if qn:
         ctx["queue_note"] = qn
         proj.log(f"📌 第{no}章注入读者即时指令：「{qn[:30]}」")
-    body = _strip_chatter(workflow.write_chapter(ctx))
+    # ── v4.22.2：章内断点续写 ──────────────────────────────────────────────
+    # 中断（人工暂停 / 上游断流）后点「继续」，必须接着草稿写，而不是从第一段重来。
+    _draft = _read_draft(proj, no)
+    _draft_words = len(re.sub(r"\s", "", _draft)) if _draft else 0
+    _from_draft = _draft_words >= max(300, int(min_words * 0.35))
+    if _from_draft:
+        body = _draft
+        proj.log(f"♻️ 第{no}章有中断前草稿 {_draft_words} 字，从其末尾接着写（不重新开始）")
+        _evt(_bk, "writer", phase="warn", title="从中断前草稿续写（断点续跑）",
+             output=f"已有 {_draft_words} 字，从末尾接着写", chapter=no)
+    else:
+        body = _strip_chatter(workflow.write_chapter(ctx))
+        # v4.22.1：写盘前净化结构——只留 概要/引子/正文/备注 四段，重写说明/评分表等一律不落盘
+        body = purity.sanitize_chapter(body)
     # v4.8.0：模型若自带「# 第NN章 …」题头行则剥掉——规范题头由本函数统一写入，避免双题头
     body = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body.lstrip(), count=1) \
         if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body.lstrip()) else body
+    _save_draft(proj, no, body)      # 首段落地即存档：之后的任何中断都能接着写
     fp = _chapter_file_path(proj, ch)
     if os.path.exists(fp):
         try:
@@ -1697,50 +2107,95 @@ def _write_chapter(proj, ch, min_words, max_retries):
                 break
         return opens
     recent_opens = _recent_opens()
-    if recent_opens and _jaccard(_trigrams(body), _trigrams("".join(recent_opens))) > 0.5:
-        proj.log(f"🚨 第{no}章与近期章节内容高度相似，自动重写（禁抄开头）…")
-        ctx2 = dict(ctx)
-        ctx2["ban_openings"] = recent_opens
-        body2 = _strip_chatter(workflow.write_chapter(ctx2))
-        body2 = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body2.lstrip(), count=1) \
-            if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body2.lstrip()) else body2
-        if _jaccard(_trigrams(body2), _trigrams("".join(recent_opens))) <= 0.5:
-            body = body2
+    _sim = _jaccard(_trigrams(body), _trigrams("".join(recent_opens))) if recent_opens else 0.0
+    if (not _from_draft) and recent_opens and _sim > 0.5:
+        if _expr:
+            # 极速模式不重写（那是一次整章长调用），但「撞车」必须留痕：
+            # 事后人工核对的成本远低于让用户以为两章不一样。
+            proj.log(f"⚠️ 第{no}章与近期章节相似度 {_sim:.2f}（>0.5）；极速模式不重写，已记录供事后核对")
+            _evt(_bk, "writer", phase="warn", title="与前章相似度偏高（极速模式不重写）",
+                 output=f"Jaccard {_sim:.2f}", chapter=no)
         else:
-            proj.log(f"⚠️ 第{no}章重写后仍与近期章节相似，已保留第二次结果并标记人工复核")
+            proj.log(f"🚨 第{no}章与近期章节内容高度相似，自动重写（禁抄开头）…")
+            ctx2 = dict(ctx)
+            ctx2["ban_openings"] = recent_opens
+            body2 = purity.sanitize_chapter(_strip_chatter(workflow.write_chapter(ctx2)))
+            body2 = re.sub(r"(?m)^#{1,3}\s*第\s*\d+\s*章[^\n]*\n?", "", body2.lstrip(), count=1) \
+                if re.match(r"^#{1,3}\s*第\s*\d+\s*章", body2.lstrip()) else body2
+            if _jaccard(_trigrams(body2), _trigrams("".join(recent_opens))) <= 0.5:
+                body = body2
+            else:
+                proj.log(f"⚠️ 第{no}章重写后仍与近期章节相似，已保留第二次结果并标记人工复核")
     # v4.16.2：字数保障体系——
     #   首写目标 = min_words × 1.1（写作提示带硬下限）；
     #   扩充结果有采纳门禁（比当前短 = LLM 抽风，丢弃防「2858→458」倒退）；
     #   最后一轮改用末尾续写拼接（增量保证，不再全文重写）。
     from bot import wordguard
     _cn_len = wordguard.cn_len
+    # v4.21.2 字数新标准（用户定稿）：验收线 = 标准字数的 90%，达到 70% 只做一次
+    # 末尾轻量续写补足（不再整章反复扩写——无效编写极耗 token）；评分 ≥ pass_line
+    # （80）的章不做整章重写，与字数解耦。
+    # v4.24.0：极速模式验收线降到 60%、只补一轮。目标字数照给，砍的是「为凑字数反复扩写」。
+    word_floor = int(min_words * (express.WORD_FLOOR_RATIO if _expr else 0.9))
+    soft_floor = word_floor if _expr else int(min_words * 0.7)
+    _rounds = 0 if _expr else max_retries
     words, ok, i = 0, False, 0
-    for i in range(max_retries + 1):
+    for i in range(_rounds + 1):
         atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
-        ok, words = skill.check_words(fp, min_words)
+        ok, words = skill.check_words(fp, word_floor)
         if ok:
+            _clear_draft(proj, no)     # 本章定稿：草稿检查点已完成使命
             break
         prev_len = _cn_len(body)
         last_round = (i == max_retries)
-        if last_round:
-            need = max(600, min_words - words + 200)
-            proj.log(f"⚠️ 第{no}章仅 {words} 字（下限 {min_words}），末轮从结尾续写补足约 {need} 字…")
-            cont = workflow.continue_chapter(body, ctx, need_words=need)
+        pct = f"{words * 100 // min_words}%" if min_words else "?"
+        # 达到标准 70%：字数已大体成形，整章扩写是无效编写——直接末尾续写补足到 90% 线
+        if not last_round and words >= soft_floor:
+            need = max(300, word_floor - words + 150)
+            proj.log(f"⚠️ 第{no}章 {words} 字（标准的 {pct}，验收线 {word_floor}），末尾轻量续写补足约 {need} 字…")
+            _evt(_bk, "writer", phase="warn", title="字数未达 90% 线，轻量续写补足",
+                 output=f"{words} 字（{pct}），续写约 {need} 字", chapter=no)
+            cont = purity.strip_fragment(workflow.continue_chapter(body, ctx, need_words=need))
             cont_len = _cn_len(cont)
             if cont_len >= 120:
                 body = body.rstrip() + "\n\n" + cont
+                _save_draft(proj, no, body)
                 proj.log(f"➕ 续写拼接 {cont_len} 字（拼接后约 {prev_len + cont_len} 字）")
             else:
                 proj.log(f"⚠️ 续写返回 {cont_len} 字（过短），保留原稿交由验收阶段处理")
             continue
-        proj.log(f"⚠️ 第{no}章仅 {words} 字（下限 {min_words}），按 content-expansion.md 扩充（第{i+1}轮）")
+        if last_round:
+            need = max(600, word_floor - words + 200)
+            proj.log(f"⚠️ 第{no}章仅 {words} 字（标准的 {pct}，验收线 {word_floor}），末轮从结尾续写补足约 {need} 字…")
+            _evt(_bk, "writer", phase="warn", title="字数不足，末轮续写补足",
+                 output=f"{words} 字，续写约 {need} 字", chapter=no)
+            cont = purity.strip_fragment(workflow.continue_chapter(body, ctx, need_words=need))
+            cont_len = _cn_len(cont)
+            if cont_len >= 120:
+                body = body.rstrip() + "\n\n" + cont
+                _save_draft(proj, no, body)
+                proj.log(f"➕ 续写拼接 {cont_len} 字（拼接后约 {prev_len + cont_len} 字）")
+            else:
+                proj.log(f"⚠️ 续写返回 {cont_len} 字（过短），保留原稿交由验收阶段处理")
+            if _expr:
+                # 极速模式只有这一轮：标准模式靠下一轮循环重新验收，这里没有下一轮，
+                # 不重新落盘 + 复检的话 words 会停在续写前的旧值，本章白白判失败。
+                atomic_write_text(fp, f"# 第{no:02d}章 {ch['title']}\n\n{body}")
+                ok, words = skill.check_words(fp, word_floor)
+            continue
+        proj.log(f"⚠️ 第{no}章仅 {words} 字（不足标准的 70%），按 content-expansion.md 扩写（第{i+1}轮）")
+        _evt(_bk, "writer", phase="warn", title=f"字数不足标准的70%，扩写第{i+1}轮",
+             output=f"{words} 字，少于软线 {soft_floor}", chapter=no)
         new_body = _strip_chatter(workflow.expand_chapter(body, ctx, min_words=min_words, current_words=prev_len))
         new_len = _cn_len(new_body)
         if new_len < max(prev_len, int(min_words * 0.8)):
             # 扩充结果比当前还短/明显异常 → 丢弃（LLM 抽风返回删节版曾致 2858→458 倒退）
             proj.log(f"⚠️ 扩充结果仅 {new_len} 字（劣于当前 {prev_len}），本轮结果已丢弃")
+            _evt(_bk, "writer", phase="warn", title="扩写结果劣于当前，丢弃",
+                 output=f"{new_len} 字，劣于当前 {prev_len}", chapter=no)
             continue
         body = new_body
+        _save_draft(proj, no, body)
     # 章节元数据 → 大纲摘要 + 设定词典 + 章节摘要/线索账本（复用同一 meta，不加 LLM 调用）
     try:
         meta = workflow.chapter_meta(_strip_chatter(open(fp, encoding="utf-8").read())[:9000], ctx)
@@ -1767,8 +2222,25 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # v3.1.0：默认章名 → 用本章摘要起真名（写完即定名，不额外读全文）
     if summary:
         _name_chapter(proj, no, summary)
-    # 第1章：文风校准回填
-    if no == 1:
+    # v4.24.4：修复计划验证——本章摘要若回收了巡检登记的坑则标记（防重复注入，闭环可追溯）
+    try:
+        _fp_all = ((proj.plan() or {}).get("meta") or {}).get("fill_plan") or []
+        if _fp_all and summary:
+            _changed = False
+            for f in _fp_all:
+                if isinstance(f, dict) and f.get("pit") and not f.get("filled_in") and str(f["pit"]) in summary:
+                    f["filled_in"] = no
+                    _changed = True
+                    proj.log(f"✅ 修复计划验证：「{f['pit']}」已在第{no}章回收")
+            if _changed:
+                with proj.lock:
+                    _pl2 = proj.plan() or {}
+                    _pl2.setdefault("meta", {})["fill_plan"] = _fp_all
+                    proj.save_plan(_pl2)
+    except Exception:
+        pass
+    # 第1章：文风校准回填（极速模式跳过——这是一次纯质量相关的 LLM 调用）
+    if no == 1 and not _expr:
         try:
             cal = workflow.style_calibrate(open(fp, encoding="utf-8").read(), cfg=ctx.get("cfg"))
             sp = os.path.join(proj.path, "03-文风基准.md")
@@ -1780,7 +2252,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
         plan = proj.plan()
         # v1.2.2：扩写 3 轮仍不足 min_words，但有实质内容（≥60% 目标）→ 视为完成（soft pass），
         # 不再把整章标 failed（真实 LLM 常给 2600-2900 字；标 failed 会误导用户以为没写出来）
-        soft_ok = ok or words >= int(min_words * 0.6)
+        # v4.24.0：极速模式「不追求字数」——只要写得出正文就算完成，字数是否达标只记在 wordCountPass
+        soft_ok = (words > 0) if _expr else (ok or words >= int(min_words * 0.6))
         for c in plan["chapters"]:
             if c["chapterNumber"] == no:
                 c["status"] = "completed" if soft_ok else "failed"
@@ -1795,21 +2268,77 @@ def _write_chapter(proj, ch, min_words, max_retries):
                     except Exception:
                         c["tokens"] = None
         proj.save_plan(plan)
+    _soft_ok = (words > 0) if _expr else (ok or words >= int(min_words * 0.6))
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
-             if (ok or words >= int(min_words * 0.6)) else f"❌ 第{no}章未达标（{words}字）")
+             if _soft_ok else f"❌ 第{no}章未达标（{words}字）")
+    # v4.21.0：创作事件——本章完成（output=字数；未达标标 warn）
+    _evt(_bk, "writer", phase="done" if _soft_ok else "warn",
+         title=f"写第{no}章「{ch['title']}」", chapter=no,
+         output=f"{words} 字" if _soft_ok else f"{words} 字（未达下限 {min_words}）")
     # v0.5 M1：逐章评分 + 低于 90 自动局部重写（可配关，失败不阻断主流程）
-    if ok:
+    # v4.20 C4：去味师是必经环节——正文定稿（字数达标）后总是先跑 deslop，与质量门禁开关解耦
+    #（deslopper 被停用时 deslop_chapter 内部自动跳过原样返回；LLM 失败保留原文，绝不阻断）。
+    # v4.24.0：极速模式整块跳过——去味与评分/重写都不产出新剧情，却是每章最贵的两次长调用。
+    if _expr:
+        proj.log(f"⚡ 极速模式：第{no}章跳过去味与逐章评分（只保留摘要与连续性索引）")
+        _evt(_bk, "writer", phase="done", title=f"第{no}章完成（极速模式：不评分、不重写）",
+             output=f"{words} 字", chapter=no)
+    elif ok:
         try:
-            _d = _cfg_defaults()
-            if _d.get("chapter_quality", True):
-                proj.log(f"📊 第{no}章逐章评分（<90 自动局部重写，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
-                fin = _auto_rewrite_chapter(proj, no)
+            _cfg_now = (proj.plan() or {}).get("config") or {}
+            _body_now = open(fp, encoding="utf-8").read()
+            ds = workflow.deslop_chapter(_body_now, {"cfg": _cfg_now}, key=_bk, chapter_no=no)
+            _ds_clean = purity.sanitize_chapter(ds.get("cleaned") or "") if ds.get("cleaned") else ""
+            if _ds_clean and _ds_clean.strip() and _ds_clean != _body_now:
+                try:
+                    versions.snapshot(proj.path, no, _body_now, label="去味前")
+                except OSError:
+                    pass
+                atomic_write_text(fp, _ds_clean)
+                proj.log(f"🧹 第{no}章 deslop 定点去味 {len(ds.get('findings') or [])} 处")
+        except Exception as e:
+            proj.log(f"⚠️ 第{no}章去味失败（不阻断）：{e}")
+        # 逐章评分/自动重写：仍受 chapter_quality 开关与审稿人岗位启停控制（deslop 已拆出，不再依赖此分支）
+        try:
+            from . import agents as _agents_mod
+            _reviewer_off = "reviewer" in _agents_mod.disabled_agents()
+        except Exception:
+            _reviewer_off = False
+        if _reviewer_off:
+            proj.log(f"⏭️ 审稿人岗位已停用：第{no}章跳过逐章评分/自动重写")
+        elif _cfg_defaults().get("chapter_quality", True):
+            try:
+                _d = _cfg_defaults()
+                proj.log(f"📊 第{no}章逐章评分（低于达标线 {_pass_line()} 自动局部重写，最多 {_d.get('max_ch_rounds', 2)} 轮）…")
+                fin = _auto_rewrite_chapter(proj, no, skip_deslop=True)
                 _st = ((proj.plan().get("meta") or {}).get("chapter_scores", {}).get(str(no), {}).get("status"))
                 proj.log(f"📊 第{no}章 {fin if fin is not None else '?'} 分（{_st}）")
-        except Exception as e:
-            proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
-    _index_chapter_continuity(proj, ch, ctx.get("cfg"))
-    _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
+            except Exception as e:
+                proj.log(f"⚠️ 第{no}章逐章评分失败（不阻断）：{e}")
+    _index_chapter_continuity(proj, ch, ctx.get("cfg"))   # 极速模式保留：一致性靠它，不靠评分
+    # v4.24.4：一致性巡检——每 audit_every 章（默认10）自动跑一次（异步不阻塞写作）
+    try:
+        from bot import audit as _audit
+        _audit.maybe_auto(_bk, no)
+    except Exception:
+        pass
+    if not _expr:
+        _maybe_backflow_titles(proj, no)   # v2.3.0 任务一：每 10 章里程碑基于已成稿回流书名候选（防御性，绝不抛）
+    # v4.21.5：章节完成卡永久写入对话流（type=chapter，含最终评分）——
+    # 刷新后历史原样重放为章节卡（预览/展开全文/复制全文/从此章分支创作/章节工作台）。
+    # v4.21.0 活动流改版后旧 SSE 追章链路停走，此记录无人再写、章节卡一度消失，此处恢复。
+    try:
+        # 注意：只导入 _save_chat_msg——_clean_chapter_text 用本模块的同名函数，
+        # 在函数内 import 同名会遮蔽模块级定义，导致前文反撞车检查报 free variable 错。
+        from bot.v2api import _save_chat_msg
+        _final_score = ((proj.plan().get("meta") or {}).get("chapter_scores") or {}).get(str(no), {}).get("score")
+        _save_chat_msg(proj, "assistant", _clean_chapter_text(open(fp, encoding="utf-8").read()),
+                       {"type": "chapter", "no": no, "title": ch.get("title") or f"第{no}章",
+                        "words": words, "quality": _final_score,
+                        "tokens": llm.book_chapter_tokens(_bk, no),
+                        "completedAt": _ch_started_at if _soft_ok else ""})
+    except Exception:
+        pass
     llm.set_chapter(None)   # v2.9.0：本章结束，之后的审校/成书调用不再计入任何章
 
 def _validate_and_finish(proj):
@@ -1825,24 +2354,30 @@ def _validate_and_finish(proj):
     proj.save_plan(plan)
     min_words = plan.get("minWordsPerChapter", 3000)
     soft_floor = int(min_words * 0.6)
-    for round_no in range(3):
-        # v3.1.0：只重写「真失败」的章。旧逻辑把 soft-pass（完成但未达标，wcp=False）
-        # 也当失败整章重写，几百章的书等效无限循环、服务一重启就永远卡在「校验中」。
-        failed = [c for c in plan["chapters"]
-                  if c.get("status") == "failed"
-                  or (c.get("status") == "completed" and (c.get("wordCount") or 0) < soft_floor)]
-        if not failed:
-            break
-        capped, overflow = failed[:10], failed[10:]
-        proj.log(f"🔁 校验第{round_no+1}轮：{len(failed)}章真失败，本轮重写 {len(capped)} 章"
-                 + (f"（其余 {len(overflow)} 章下轮继续）" if overflow else ""))
-        for ch in capped:
-            ch["status"] = "failed"
-            _write_chapter(proj, ch, min_words, 3)
-        plan = proj.plan()
+    _expr = express.on(plan.get("config") or {})
+    if _expr:
+        # 极速模式：不重写失败章、不跑五角色审校、不触发放行门禁。
+        # 成书编译照常——用户要的就是「最短时间内拿到一本完整的书」。
+        proj.log("⚡ 极速模式：跳过失败章重写与全书审校，直接成书（初稿）")
+    else:
+        for round_no in range(3):
+            # v3.1.0：只重写「真失败」的章。旧逻辑把 soft-pass（完成但未达标，wcp=False）
+            # 也当失败整章重写，几百章的书等效无限循环、服务一重启就永远卡在「校验中」。
+            failed = [c for c in plan["chapters"]
+                      if c.get("status") == "failed"
+                      or (c.get("status") == "completed" and (c.get("wordCount") or 0) < soft_floor)]
+            if not failed:
+                break
+            capped, overflow = failed[:10], failed[10:]
+            proj.log(f"🔁 校验第{round_no+1}轮：{len(failed)}章真失败，本轮重写 {len(capped)} 章"
+                     + (f"（其余 {len(overflow)} 章下轮继续）" if overflow else ""))
+            for ch in capped:
+                ch["status"] = "failed"
+                _write_chapter(proj, ch, min_words, 3)
+            plan = proj.plan()
     # 分层编辑审稿（可配关；report=出修订记录，autofix=有界重写 high 项）
     val = _cfg_defaults().get("validation") or {}
-    if val.get("enabled", True):
+    if val.get("enabled", True) and not _expr:
         try:
             res = _run_layered(proj, val.get("mode", "report"), int(val.get("max_fix_rounds", 2)))
             proj.log(f"📝 五角色审校 + 确定性引擎：百分制 {res.get('total')}（达标 {'是' if res.get('pass') else '否'}），"
@@ -1871,7 +2406,9 @@ def _validate_and_finish(proj):
     proj.log(f"📚 《{plan['novelName']}》成书完成：{total} 字，文件：成书-{plan['novelName']}.md")
     # 放行门禁：成书后自动（后台线程）带要求重写到 ≥达标线，不阻断成书；已放行则跳过
     # v0.7：一键完稿驱动时由 ⑤ 统一门控，此处不再二次触发（避免同书 6 轮冗余 LLM）
-    if _cfg_defaults().get("release_gate", True) and not ((plan.get("meta") or {}).get("released")) \
+    # v4.24.0：极速模式不触发放行门禁——它本质是「全书重写到 90 分」，与极速模式互相矛盾
+    if _cfg_defaults().get("release_gate", True) and not _expr \
+            and not ((plan.get("meta") or {}).get("released")) \
             and not one_shot_driving(os.path.basename(proj.path)):
         _gkey = os.path.basename(proj.path)
         threading.Thread(target=lambda: run_release_gate(_gkey), daemon=True).start()
@@ -1894,6 +2431,10 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
     _book_skills_into(cfg, plan)   # v3.0.0：审校/总编同样吃到本书绑定
     pdir = proj.path
     min_words = plan.get("minWordsPerChapter", 3000)
+    _t0 = time.perf_counter()   # v4.21.0：终审耗时
+    # v4.21.0：创作事件——全书终审开始（agent=editor；自动完结与手动审稿共用此入口）
+    _evt(_bkey(proj), "editor", phase="start", title="全书终审",
+         thinking="先跑确定性引擎 L1，再五角色分工评审，按权重合成百分制并判达标线")
 
     def _book():
         return "\n\n".join(_clean_chapter_text(open(_chapter_file_path(proj, c), encoding="utf-8").read())
@@ -1915,7 +2456,7 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
         proj.log(f"📊 分层评审完成：{_meta.get('slices', '?')} 段采样 × 五角色；"
                  + (f"双轨合成 {_meta.get('blended_total')} 分（逐章均分 {_meta.get('chapter_avg')}）" if _meta.get("chapter_avg") else "（无逐章分，仅段评）"))
     else:
-        review = workflow.five_role_review(book_text, cfg, l1["findings"]) or {}
+        review = workflow.five_role_review(book_text, cfg, l1["findings"], key=_bkey(proj)) or {}
     total = workflow.score_dimensions(review.get("scores"))
     if isinstance((review.get("_meta") or {}).get("blended_total"), (int, float)):
         # 双轨合成总分作为最终总分（段评均分×0.6 + 逐章分均分×0.4）
@@ -1934,13 +2475,15 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
             fp = _chapter_file_path(proj, ch)
             old = open(fp, encoding="utf-8").read()
             new = re.sub(r"```[a-zA-Z]*\n?", "", workflow.fix_chapter(old, act.get("action", ""), {"cfg": cfg})).strip()
-            if new:
+            # v4.22.1：审稿修复稿也过净化——只留四段结构，修复说明/评分不落盘
+            new = purity.sanitize_chapter(new) if new else ""
+            if new.strip():
                 versions.snapshot(proj.path, cno, old, label="审稿修复前")
                 atomic_write_text(fp, new)
                 fixed += 1
         if fixed:
             book_text = _book()
-            review = workflow.five_role_review(book_text, cfg, l1["findings"]) or {}
+            review = workflow.five_role_review(book_text, cfg, l1["findings"], key=_bkey(proj)) or {}
             total = workflow.score_dimensions(review.get("scores"))
     reader_data = workflow.reader_panel(book_text, cfg)[:3] if _cfg_defaults().get("reader_panel") else []
     _write_quality_report(proj, l1, review, total, mode, fixed, pass_line, reader_data=reader_data)
@@ -1954,6 +2497,11 @@ def _run_layered(proj, mode, max_rounds, progress_cb=None):
             "fix_actions": (review.get("fix_actions") or [])[:12]})
     except Exception:
         pass
+    # v4.21.0：创作事件——全书终审完成（结论摘要 + 耗时）
+    _evt(_bkey(proj), "editor", phase="done", title="全书终审",
+         output=f"百分制 {total}（达标线 {pass_line}，{'达标' if total >= pass_line else '未达标'}）"
+                + (f" · autofix {fixed} 处" if fixed else ""),
+         ms=int((time.perf_counter() - _t0) * 1000))
     return {"scores": review.get("scores"), "total": total, "pass": total >= pass_line,
             "findings": review.get("findings"), "l1": l1["findings"], "fixed": fixed, "book": book_text}
 
@@ -2033,6 +2581,15 @@ def _write_loop(proj: Project, batch_size=None):
     _sem = _write_semaphore()          # v0.3 P3：并发（默认 2 本同时写，超出排队）
     _sem.acquire()
     llm.book(os.path.basename(proj.path), "writing")   # v0.3.x：写稿 token 归集到该书
+    # v4.24.12：运行标志在这里设，而不是只在 start_writing 里设。
+    # 一键完稿（one_shot）直接调 _write_loop 绕过了 start_writing，
+    # 于是写作期间 running 一直是 False —— 前端创作状态按钮显示成「继续」
+    # （点下去其实正在写），/api/book-live 也报 running:false。
+    # finally 里有对称的清除，这里重复设也无副作用（set 幂等）。
+    _bk = os.path.basename(proj.path)
+    _set_book_running(_bk, True)
+    proj.running = True
+    mark_pipeline(_bk, True)   # v4.26.0：小说主链路也纳入 mark_pipeline 收口（总编辑上下车）
     try:
         plan = _ensure_writable_plan(proj)
         if not plan:
@@ -2040,11 +2597,45 @@ def _write_loop(proj: Project, batch_size=None):
         plan["status"] = "in_progress"
         proj.save_plan(plan)
         _ensure_layered_plan(proj)
+        # v4.24.0：极速模式——不评分、不重写、不按批停，一口气写完
+        _expr = express.on(plan.get("config") or {})
+        if _expr:
+            proj.log("⚡ 极速模式：不评分、不重写，一口气写完全部章节（保留章卡与前情摘要，连续性不打折）")
+
+        def _live_express() -> bool:
+            """v4.24.15：每章重新问一次——极速开关是**动态**的，用户随时可切。
+
+            原实现把启动那一刻的速度存进 `_expr` 用到底：中途切开关会出现
+            「界面变了、这批还是不评分/还是按批停」的分叉。写作线程只持有一个
+            Project，`proj.plan()` 每次读盘，所以这里拿到的就是用户刚刚点的值。
+            开关只在章与章之间生效——一章写到一半不会换档（换档会把同章的
+            字数线与评分逻辑撕成两半）。
+            """
+            try:
+                return express.on((proj.plan() or {}).get("config") or {})
+            except Exception:
+                return _expr
+
+        # v4.22.2：登记任务档案——「继续」据此知道上次在做什么、做到第几章
+        _pdir = proj.path
+        _bkey_ = os.path.basename(_pdir)
+        _total_ch = len(plan.get("chapters") or [])
+        _done0 = sum(1 for c in (plan.get("chapters") or []) if c.get("status") == "completed")
+        _cur = journal.current_task(_pdir)
+        if not (isinstance(_cur, dict) and _cur.get("kind") == "writing"):
+            journal.begin(_pdir, "writing", f"写《{proj.name}》",
+                          params={"batch_size": str(batch_size)}, total=_total_ch,
+                          note=f"从第 {_done0 + 1} 章继续" if _done0 else "")
+            journal.progress(_pdir, done=_done0, total=_total_ch)
+        else:
+            journal.progress(_pdir, done=_done0, total=_total_ch, stage="writing")
 
         # v4.15.0：batch_size 控制每批写多少章
+        # v4.24.15：判据改成实时值——启动时是标准、写到一半切极速，这一批也不该再按批停。
         wrote = 0
+        _plan_blocked = False
         batch_limit = None
-        if batch_size is not None:
+        if batch_size is not None and not _live_express():
             if str(batch_size).lower() in ("all", "0"):
                 batch_limit = None  # 全部写完
             else:
@@ -2056,17 +2647,24 @@ def _write_loop(proj: Project, batch_size=None):
         for ch in plan["chapters"]:
             if is_paused(proj):
                 break
-            if batch_limit is not None and wrote >= batch_limit:
+            if batch_limit is not None and wrote >= batch_limit and not _live_express():
                 # v4.15.6：本批额度用尽——仅当后面还有未完成章时才停；
                 # 若刚好写完全书，落到循环自然结束走 _validate_and_finish 正常完结。
                 _no = ch.get("chapterNumber") or 0
                 _rest = [c for c in (plan.get("chapters") or [])
                          if (c.get("chapterNumber") or 0) > _no and c.get("status") != "completed"]
                 if _rest:
+                    # v4.20 C3：批次收尾 → 规划师校准（每批一次，盯规划有没有跑偏；失败不阻断暂停返回）
+                    try:
+                        workflow.plan_drift_check(proj, plan.get("config") or {}, wrote)
+                    except Exception:
+                        pass
                     proj.log(f"⏸ 本批已写 {wrote} 章（batch={batch_limit}），停在当前进度。说「再写N章」或「写完全部」继续。")
                     plan2 = proj.plan(); plan2["status"] = "paused"
                     plan2.setdefault("meta", {})["paused"] = True   # 与循环后 is_paused 检查同一口径
                     proj.save_plan(plan2)
+                    journal.update(_pdir, status="paused", note=f"本批写完 {wrote} 章")
+                    journal.remember(_pdir, "system", f"本批已写 {wrote} 章后暂停，进度已存档")
                     _skeleton_refresh(os.path.basename(proj.path))
                     return
             _msg = budget_blocked(proj)
@@ -2075,29 +2673,70 @@ def _write_loop(proj: Project, batch_size=None):
                 break
             if ch["status"] != "completed":
                 _maybe_replan(proj, ch["chapterNumber"])
+                # v4.22.2：章卡是占位卡就先补真规划；补不出来不许硬写（防长篇跑偏）
+                if not _ensure_card_planned(proj, ch["chapterNumber"]):
+                    _plan_blocked = True
+                    break
+                journal.progress(_pdir, current=ch["chapterNumber"], stage="writing")
                 _write_chapter(proj, ch, plan.get("minWordsPerChapter", 3000), 3)
                 wrote += 1
+                _p_now = proj.plan() or {}
+                journal.progress(_pdir, done=sum(1 for c in (_p_now.get("chapters") or [])
+                                                 if c.get("status") == "completed"),
+                                 current=ch["chapterNumber"], stage="writing")
                 _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：每写完一章即刷新写作骨架
                 if is_paused(proj):
                     break
+        if _plan_blocked:
+            plan = proj.plan(); plan["status"] = "paused"
+            plan.setdefault("meta", {})["paused"] = True
+            proj.save_plan(plan)
+            proj.log("⏸ 因规划不全暂停：上面的章卡缺本章目标/冲突，补齐后点「继续」即可接着写")
+            journal.update(_pdir, status="paused", stage="plan_blocked",
+                           note="章卡缺目标/冲突，已暂停")
+            journal.remember(_pdir, "system", "因章卡不全暂停（不是模型故障）")
+            _skeleton_refresh(os.path.basename(proj.path))
+            return
         if is_paused(proj):
             plan = proj.plan(); plan["status"] = "paused"; proj.save_plan(plan)
             proj.log("⏸ 已暂停（停在当前进度，点「▶继续」恢复；也可「⏹ 停止」）")
+            journal.update(_pdir, status="paused", note="人工暂停，进度已存档")
+            journal.remember(_pdir, "system", "写作已暂停，点继续可从中断处接着写")
             _skeleton_refresh(os.path.basename(proj.path))
             return
+        # v4.20 C3：完结收尾前最后一轮规划师校准（纠偏指引会注入校验轮里失败章的重写；失败不阻断完结）
+        # v4.24.0：极速模式跳过——纠偏指引只服务于「校验轮里失败章的重写」，而极速不跑校验轮
+        # v4.24.15：实时判据——收尾前用户刚开启极速，这一轮校准同样不该跑
+        if not _live_express():
+            try:
+                workflow.plan_drift_check(proj, (proj.plan() or {}).get("config") or {}, wrote)
+            except Exception:
+                pass
         _validate_and_finish(proj)
+        journal.finish(_pdir, "done", note="全书完成")
+        journal.remember(_pdir, "system", "全书写作完成")
         _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：全书写完 → 刷新写作骨架
     except llm.BudgetExceeded as e:
         _pause_for_budget(proj, str(e))
+        # 保留为「可续跑」状态（不能 finish，否则「继续」查不到任务档案）
+        journal.update(proj.path, status="paused", stage="interrupted",
+                       note=f"预算用尽：{str(e)[:80]}")
     except Exception as e:
         proj.log(f"💥 写作异常中断（说「继续」可续写）：{e}")
+        _evt(os.path.basename(proj.path), "system", phase="warn", title="写作异常中断",
+             output=str(e)[:120])
         plan = proj.plan()
         plan["status"] = "in_progress"
         proj.save_plan(plan)
+        # 关键：任务档案保留失败现场（阶段 + 当前章 + 草稿），「继续」才能精确接着跑
+        journal.update(proj.path, status="paused", stage="interrupted",
+                       note=f"上游/异常中断：{str(e)[:80]}")
+        journal.remember(proj.path, "system", f"写作异常中断：{str(e)[:100]}（草稿已保存，可继续）")
     finally:
         _sem.release()
         proj.running = False
         _set_book_running(os.path.basename(proj.path), False)
+        mark_pipeline(os.path.basename(proj.path), False)   # v4.26.0：对称下车
 
 # v0.3 P3：并发写（同一时刻最多 N 本在写，N=defaults.concurrency 默认 2，超出排队）
 _WRITE_SEM, _WRITE_SEM_N = None, 0
@@ -2483,12 +3122,17 @@ def rename_book(key, new_name):
     plan[nk] = new_name
     plan["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
     atomic_write_json(pj, plan)
+    result = {"ok": True, "key": key, "name": new_name}
     if old and old != new_name:
         oldf, newf = os.path.join(pdir, f"成书-{old}.md"), os.path.join(pdir, f"成书-{new_name}.md")
         if os.path.exists(oldf) and not os.path.exists(newf):
-            try: os.rename(oldf, newf)
-            except Exception: pass
-    return {"ok": True, "key": key, "name": new_name}
+            try:
+                os.rename(oldf, newf)
+            except Exception as e:
+                print(f"[writer] 成书文件重命名失败: {e} ({oldf} -> {newf})")
+                result["renamed"] = False
+                result["warn"] = "成书文件重命名失败（旧文件保留）"
+    return result
 
 def delete_book(key, hard=False):
     """v0.3.3：删除。soft（默认）=归档进回收站可恢复；hard=彻底删除（删目录+清 schedules，不可逆）。"""
@@ -2506,6 +3150,31 @@ def delete_book(key, hard=False):
             if isinstance(sc, dict) and sc.pop(key, None) is not None:
                 atomic_write_json(SCHEDULES_FILE, sc)
         except Exception: pass
+        # v4.24.16 修复「僵尸复活」：硬删除后运行期注册表不清——PROJECT_INDEX 仍持有指向
+        # 已删路径的 Project，queue_action 等写入路径会把目录连同空壳计划重建出来；
+        # 活动流 ring/落盘水位与流水标志也一并清掉。
+        try:
+            _BOOK_LOCKS.pop(key, None)
+        except Exception:
+            pass
+        try:
+            _RW_PROGRESS.pop(key, None)
+        except Exception:
+            pass
+        try:
+            from . import steps as _steps_mod
+            _steps_mod.reset(key)
+        except Exception:
+            pass
+        try:
+            from . import supervisor as _sv
+            _sv.stop(key)   # v4.26.0：总编辑看护线程随书删除下岗
+        except Exception:
+            pass
+        try:
+            mark_pipeline(key, False)
+        except Exception:
+            pass
         return {"ok": True, "hard": True, "note": "已彻底删除（不可恢复）"}
     res = trash_book(key)
     if not res.get("ok"):
@@ -2548,15 +3217,6 @@ _ONESHOT_DRIVING = set()
 def one_shot_driving(key):
     return key in _ONESHOT_DRIVING
 
-@contextlib.contextmanager
-def one_shot_scope(key):
-    """一键完稿全程占用该书的『驱动』标记：期间 成书 不再自动触发放行门禁（由一键⑤统一门控）。"""
-    _ONESHOT_DRIVING.add(key)
-    try:
-        yield
-    finally:
-        _ONESHOT_DRIVING.discard(key)
-
 def one_shot_begin(key):
     _ONESHOT_DRIVING.add(key)
 
@@ -2572,7 +3232,7 @@ def rewrite_brief(proj, cfg, pass_line=None):
     book = workflow.list_chapters_text(proj.path) or ""
     l1 = continuity.run_project(proj.path, min_words=1)
     l1 = l1.get("findings", []) if isinstance(l1, dict) else []
-    review = workflow.five_role_review(book, cfg, l1) or {}
+    review = workflow.five_role_review(book, cfg, l1, key=_bkey(proj)) or {}
     scores = review.get("scores") or {}
     total = workflow.score_dimensions(scores)
     weak = sorted([d for d in workflow.SCORE_WEIGHTS if d in scores],
@@ -2686,26 +3346,63 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
     proj.log(f"⚡ 多岗位并行改写：{len(chapters)} 个低分章（同时 {workers} 个岗位，每章 {max_rounds} 轮）")
 
     def _one(ch_no):
+        # v4.24.16 修复两连：①线程池新线程的 thread-local 不继承——不补 llm.book 的话
+        # 改写消耗全靠 score_chapter 的副作用兜底归到 review，score 提前 return 时整章
+        # token 完全不入账（与 v2.9.0 并行写作的修复同型）；②整体 try/finally——此前
+        # before=score_chapter 抛错会跳过 set_chapter(None)/进度收尾，进度标志永久卡 running。
         with sem:
-            if is_paused(proj):
-                return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
-            before = score_chapter(proj, ch_no)
-            dims = findings_by_ch.get(ch_no) or []
-            # v4.17.3：target 驱动——改写评分达到目标分即停（每章最多 2 轮，不烧 token）
-            _stop_at = max(_pass_line(), int(target)) if target else _pass_line()
             try:
-                _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, pass_line=_stop_at, extra_dims=dims or None)
-            except Exception as e:
-                proj.log(f"⚠️ 第{ch_no}章并行改写异常：{e}")
-            after = score_chapter(proj, ch_no)
-            delta = (after or 0) - (before or 0)
-            kept = (after or 0) > (before or 0)
-            r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1), "kept": kept}
-            proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '已回滚原稿，质量优先'}）")
-            with proj.lock:
-                prog["done"] += 1
-                prog["results"].append(r)
-            return r
+                llm.book(key, "rewrite")
+                if is_paused(proj):
+                    return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
+                # v4.21.9：改写消耗计入该章 token 账本 + 过程并入本章创作活动流
+                llm.set_chapter(ch_no)
+                _evt(key, "rewriter", phase="start", title=f"定向重写第{ch_no}章", chapter=ch_no,
+                     thinking="按审稿问题清单逐条定点改写——改写分必须高于原分，否则自动回滚原稿")
+                before = score_chapter(proj, ch_no)
+                dims = findings_by_ch.get(ch_no) or []
+                # v4.17.3：target 驱动——改写评分达到目标分即停（每章最多 2 轮，不烧 token）
+                _stop_at = max(_pass_line(), int(target)) if target else _pass_line()
+                try:
+                    _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, pass_line=_stop_at, extra_dims=dims or None)
+                except Exception as e:
+                    proj.log(f"⚠️ 第{ch_no}章并行改写异常：{e}")
+                after = score_chapter(proj, ch_no)
+                delta = (after or 0) - (before or 0)
+                kept = (after or 0) > (before or 0)
+                r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1), "kept": kept}
+                proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '已回滚原稿，质量优先'}）")
+                _evt(key, "rewriter", phase="done" if kept else "warn",
+                     title=f"定向重写第{ch_no}章", chapter=ch_no,
+                     output=f"{before}→{after} 分（{'保留改稿' if kept else '已回滚原稿'}）")
+                # v4.21.9：改稿保留后更新对话流章节卡（同 no 追加最新记录、completedAt 保持
+                # 原值 → 读取端按章去重后章节卡仍在原位，只更新内容/评分/token）。
+                if kept:
+                    try:
+                        from bot.v2api import _save_chat_msg
+                        _pl2 = proj.plan()
+                        _ch2 = next((c for c in (_pl2.get("chapters") or []) if c.get("chapterNumber") == ch_no), None)
+                        _fp2 = os.path.join(proj.path, _ch2.get("filePath")) if _ch2 and _ch2.get("filePath") else None
+                        if _ch2 and _fp2 and os.path.exists(_fp2):
+                            _save_chat_msg(proj, "assistant", _clean_chapter_text(open(_fp2, encoding="utf-8").read()),
+                                           {"type": "chapter", "no": ch_no,
+                                            "title": _ch2.get("title") or f"第{ch_no}章",
+                                            "words": _ch2.get("wordCount"), "quality": after,
+                                            "tokens": llm.book_chapter_tokens(os.path.basename(proj.path), ch_no),
+                                            "ts": int(time.time()),
+                                            "completedAt": _ch2.get("completedAt") or ""})
+                    except Exception:
+                        pass
+                with proj.lock:
+                    prog["done"] += 1
+                    prog["results"].append(r)
+                # v4.23.0：把「这一章改完了」写进任务档案。
+                # 以前进度只存在 _PARA_RW_PROGRESS（内存），进程一重启就归零，
+                # 「继续」会把整批已改好的章再改一遍——白烧 token，还可能把好稿改坏。
+                journal.mark_chapter_done(proj.path, ch_no, total=len(chapters), stage="rewriting")
+                return r
+            finally:
+                llm.set_chapter(None)
 
     with _cf.ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
         list(ex.map(_one, chapters))
@@ -2725,7 +3422,13 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     proj = Project(_project_dir(key), key)
     llm.book(key, "rewrite")            # v0.3.x：定向重写 token 归集
     _RW_CANCEL.discard(key)             # 新 job 清旧取消标记
-    plan = proj.plan()
+    plan = proj.plan() or {}
+    # v4.23.2：plan 可能不存在（目录在但计划文件缺失/损坏/刚创建还没规划）。
+    # 此前直接 plan.get() 会在后台线程抛 AttributeError，用户只看到「没反应」，
+    # 堆栈只落在 stderr。这里直接给出可读的失败原因，不空转。
+    if not plan.get("chapters"):
+        proj.log("⚠️ 定向重写跳过：写作计划缺失或没有章节（请先打开该书确认计划正常）")
+        return {"ok": False, "msg": "写作计划缺失或没有章节，无法定向重写"}
     cfg = dict((plan.get("config") or {}))
     cfg.update(cfg_over or {})
     _book_skills_into(cfg, plan)   # v3.0.0：本书绑定
@@ -2793,7 +3496,7 @@ def run_guided_rewrite(key, chapters=None, dimensions=None, max_rounds=6, cfg_ov
     # 重评（保留：书级 before→after + 逐章 after）
     book = workflow.list_chapters_text(proj.path) or ""
     l1 = continuity.run_project(proj.path, min_words=1).get("findings", [])
-    review2 = workflow.five_role_review(book, cfg, l1) or {}
+    review2 = workflow.five_role_review(book, cfg, l1, key=key) or {}
     after = workflow.score_dimensions(review2.get("scores") or {})
     weak2 = sorted([d for d in workflow.SCORE_WEIGHTS if d in (review2.get("scores") or {})],
                    key=lambda d: (review2.get("scores") or {}).get(d, 0))[:3]
@@ -2901,11 +3604,6 @@ def run_release_gate(key, cfg_over=None):
     _skeleton_refresh(key)   # v0.9.0：放行门禁结束 → 刷新写作骨架
     return {"before": before, "after": final, "released": meta["released"], "cancelled": cancelled,
             "pass_line": pl, "rounds": len(gate_results), "gate_results": gate_results}
-
-def cancel_release_gate(key):
-    """请求取消某项目的放行门禁（下一轮检查点生效）。"""
-    _GATE_CANCEL.add(key)
-    return {"ok": True, "key": key, "msg": "已请求取消（下一检查点生效）"}
 
 def pick_title(key, title):
     """选定书名：改名（同步 02.meta.name + 成书文件名）并开写。用于 awaiting_title 项目。"""

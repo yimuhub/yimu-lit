@@ -415,6 +415,10 @@ def stage_inject(stage: str, med: str, extra: list[str] | None = None,
     forced = list(extra or [])
     if agent_names:
         forced = list(dict.fromkeys(forced + agent_names))   # 复用 extra → by_name 路径
+    header = f"【{medium_mod.label(med)} · {stage} 阶段参考】"
+    # v4.24.16 修复：extra/岗位绑定是「强制注入」，此前 appended 后统一按 weight 排序裁剪——
+    # 绑定技能 weight 低（默认 3）会先被丢掉，与函数文档承诺矛盾。强制注入的豁免裁剪。
+    forced_set = set()
     if forced:
         chosen = {sf.relpath for sf in files}
         chosen_names = {sf.name for sf in files}
@@ -424,8 +428,8 @@ def stage_inject(stage: str, med: str, extra: list[str] | None = None,
                 files.append(sf)
                 chosen.add(sf.relpath)
                 chosen_names.add(sf.name)
+                forced_set.add(sf.relpath)
 
-    header = f"【{medium_mod.label(med)} · {stage} 阶段参考】"
     entries: list[tuple[SkillFile, str]] = []
     total = 0
     dropped: list[str] = []
@@ -433,7 +437,7 @@ def stage_inject(stage: str, med: str, extra: list[str] | None = None,
         head = sf.header()
         body = sf.text
         piece = f"\n\n===== 技能：{sf.title or sf.name}（{sf.relpath}）=====\n{head}{body}"
-        if total + len(piece) > max_bytes and entries:
+        if total + len(piece) > max_bytes and entries and sf.relpath not in forced_set:
             dropped.append(sf.relpath)
             continue
         entries.append((sf, piece))

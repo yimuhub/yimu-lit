@@ -360,23 +360,6 @@
   color: var(--ink-secondary);
 }
 
-.composer .stream-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--accent-ink);
-  font-size: 11px;
-}
-
-.composer .stream-hint .dot {
-  background: var(--accent);
-  animation: pulse-dot 1.2s ease-in-out infinite;
-}
-
-.composer .queue-hint {
-  color: var(--ink-tertiary);
-}
-
 @media (max-width: 760px) {
   .composer-dock {
     padding: 4px 12px 10px;

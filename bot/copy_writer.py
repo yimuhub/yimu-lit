@@ -7,10 +7,10 @@ import json
 import os
 import re
 
-from bot.safeio import atomic_write_text, atomic_write_json, safe_join
+from bot.safeio import atomic_write_text, safe_join
 
 from . import llm
-from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project
+from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project, run_pipeline
 
 F_PLAN = "文案计划.json"
 F_OUTLINE = "00-需求与钩子.md"
@@ -74,6 +74,7 @@ def resume_project(key: str):
             proj.log("✅ 已定稿，无需恢复")
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
+        llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账失活
         _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
@@ -83,7 +84,6 @@ def resume_project(key: str):
 def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
-    meta = plan["meta"]
     ktype = KTYPES.get(cfg.get("ktype") or "voice", "口播稿")
     platform = PLATFORMS.get(cfg.get("platform") or "douyin", "抖音")
     tone = TONES.get(cfg.get("tone") or "energetic", "活力种草")
@@ -101,25 +101,7 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
         ("K4", "标题标签", lambda: _stage_titles(proj, pdir, cfg, plan, platform)),
         ("K5", "适配", lambda: _stage_adapt(proj, pdir, cfg, plan, platform)),
     ]
-    for code, label, fn in stages:
-        if (plan.get("chapterStatus") or {}).get(code) == "completed":
-            continue
-        proj.log(f"📋 {code} {label}…")
-        meta["stage"] = code
-        proj.save_plan(plan)
-        try:
-            fn()
-            plan.setdefault("chapterStatus", {})[code] = "completed"
-        except Exception as e:
-            proj.log(f"⚠️ {code} 失败：{e}")
-            plan.setdefault("chapterStatus", {})[code] = "failed"
-        meta["stage"] = code
-        plan["meta"] = meta
-        proj.save_plan(plan)
-    plan["status"] = "completed"
-    meta["stage"] = "F"
-    proj.save_plan(plan)
-    proj.log("✅ 文案定稿完成")
+    run_pipeline(proj, cfg, stages, plan=plan, done_msg="✅ 文案定稿完成")
 
 
 def _stage_brief(proj, pdir, cfg, plan, ktype, platform, tone):
@@ -180,9 +162,13 @@ def _stage_body(proj, pdir, cfg, plan, ktype, platform, tone):
 
 def _stage_titles(proj, pdir, cfg, plan, platform):
     final = _read(os.path.join(pdir, F_FINAL))
+    if not final.strip():
+        return          # v4.23.2：没有正文就不出标题（此前会拿空输入让模型瞎编）
     out = llm.chat([{"role": "user", "content":
         f"为以下{PLATFORMS.get(platform, '')}文案出 5 个标题候选 + 5-10 个话题标签。\n"
-        "标题要求：每个角度不同（悬念/数字/痛点/直给/情绪）。输出 markdown。"}],
+        "标题要求：每个角度不同（悬念/数字/痛点/直给/情绪）。输出 markdown。\n\n"
+        # v4.23.2 修真 bug：此前只读了正文却没拼进 prompt，模型看不到文案，标题全是凭空编的
+        f"【文案正文】\n{final[:4000]}"}],
         cfg=cfg, stage="review")
     atomic_write_text(os.path.join(pdir, F_TITLE_TAGS), (out or "（生成失败）").strip())
 

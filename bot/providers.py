@@ -323,8 +323,13 @@ def update_provider(pid, payload):
         allowed = {"name", "api_key", "api_key_file", "temperature", "max_tokens",
                    "timeout", "active"}
         for k in allowed:
-            if k in payload:
-                p[k] = payload[k]
+            if k not in payload:
+                continue
+            # v4.19.1 兜底：密钥不回显，前端「留空=不修改」；空串/空白一律视为不修改，
+            # 绝不能把已保存的密钥覆盖成空（一旦清掉，所有模型调用立即 401）。
+            if k in ("api_key", "api_key_file") and not str(payload.get(k) or "").strip():
+                continue
+            p[k] = payload[k]
         if "base_url" in payload and payload["base_url"]:
             if not _valid_base_url(payload["base_url"]):
                 raise ProviderError("base_url 非法")
@@ -393,10 +398,6 @@ def _dedupe(lst):
 
 
 # ---------- 探测 / 拉模型 ----------
-
-def _client_timeout(p):
-    return p.get("timeout", 900)
-
 
 def fetch_models(pid):
     """拉 GET /models。成功返回模型 id 列表；失败返回 None（不阻塞）。"""
@@ -526,7 +527,6 @@ def stage_resolve(cfg, stage):
     return resolve(cfg)
 
 # ---------- v0.5 M4：子 Agent 独立配模型 + 并发/限流守卫 ----------
-AGENT_MODELS_FALLBACK = {}   # 全局兜底 agent→{provider_id,model}（config.json defaults.agent_models 也可）
 
 def agent_resolve(cfg, agent=None, stage=None):
     """v0.5 M4：子 Agent 模型绑定优先级 —— agent_models[agent] > stage_models[stage] > 默认 resolve。
@@ -599,3 +599,44 @@ def active_model_options():
         out.append({"id": p["id"], "name": p["name"],
                     "models": p.get("models", []), "default_model": p.get("default_model", "")})
     return out
+
+
+# ---------- 全局默认模型（v4.20：设置页「模型与供应商」的全局默认选择项） ----------
+
+def global_model():
+    """当前全局默认模型 {provider_id, model}（= default_provider + 其 default_model）。
+    没有可用默认时返回 {"provider_id": "", "model": ""}，绝不抛异常。"""
+    try:
+        data = load_data()
+        dp = data.get("default_provider") or ""
+        p = next((x for x in data["providers"] if x.get("id") == dp), None)
+        if not p:
+            return {"provider_id": "", "model": ""}
+        model = p.get("default_model") or (p.get("models") or [""])[0] or ""
+        return {"provider_id": dp, "model": model}
+    except Exception:
+        return {"provider_id": "", "model": ""}
+
+
+def set_global_model(provider_id, model):
+    """设置全局默认模型：default_provider=provider_id，且该供应商 default_model=model。
+    校验：供应商必须存在且 active；model 必须在其 models 里（model 为空则取其 default_model）。
+    返回 {"provider_id", "model"}；非法输入抛 ProviderError。"""
+    provider_id = str(provider_id or "").strip()
+    model = str(model or "").strip()
+    with _LOCK:
+        data = load_data()
+        p = _require_id(data, provider_id)
+        if not p.get("active"):
+            raise ProviderError("供应商已停用，不能设为全局默认：%s" % provider_id)
+        if not model:
+            model = p.get("default_model") or (p.get("models") or [""])[0]
+        if not model:
+            raise ProviderError("供应商 %s 没有可选模型，请先在供应商里添加模型" % provider_id)
+        if model not in (p.get("models") or []):
+            raise ProviderError("模型 %s 不在供应商 %s 的模型列表里" % (model, provider_id))
+        set_default(provider_id)          # 设为默认（其内部会激活并落盘 default_provider）
+        data2 = load_data()
+        _require_id(data2, provider_id)["default_model"] = model
+        _write(data2)
+    return {"provider_id": provider_id, "model": model}

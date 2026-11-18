@@ -24,7 +24,7 @@ def _load_or_create_token() -> str:
     """v2.7.0: 令牌持久化到文件，服务器重启后复用同一令牌。"""
     try:
         if os.path.isfile(_TOKEN_FILE):
-            with open(_TOKEN_FILE, "r") as f:
+            with open(_TOKEN_FILE) as f:
                 tok = f.read().strip()
                 if tok and len(tok) >= 16:
                     return tok

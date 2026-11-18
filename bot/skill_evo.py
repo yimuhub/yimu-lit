@@ -27,8 +27,8 @@ import os
 import re
 import secrets
 import threading
-from datetime import datetime, timezone
-UTC = timezone.utc  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；与 timezone.utc 等价）
+from datetime import datetime, UTC
+UTC = UTC  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；与 timezone.utc 等价）
 
 from . import eval as eval_mod
 from . import feedback
@@ -83,11 +83,6 @@ def _load_toggles() -> dict:
 def _save_toggles(toggles: dict) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     atomic_write_text(_TOGGLES_PATH, json.dumps(toggles, ensure_ascii=False, indent=2))
-
-
-def is_disabled(skill_name: str) -> bool:
-    """检查某技能是否被手动禁用"""
-    return not _load_toggles().get(skill_name, True)
 
 
 def toggle(skill_name: str, enabled: bool) -> dict:

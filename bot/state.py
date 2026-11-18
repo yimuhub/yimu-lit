@@ -131,10 +131,6 @@ def _norm_status(v) -> str:
     return "open"
 
 
-def _chapter_key(n) -> str:
-    return str(_int(n, 0))
-
-
 # ---------- 规范化 ----------
 
 def empty_state() -> dict:
@@ -655,26 +651,6 @@ def upsert_foreshadow(state: dict, id: str, **fields) -> dict:
     return state
 
 
-def close_issue(state: dict, issue_id, note: str = "") -> dict:
-    """按 id（或序号）关闭一个 issue；找不到也安全返回。"""
-    if not isinstance(state, dict):
-        return state
-    issues = state.get("issues")
-    if not isinstance(issues, list):
-        return state
-    target = _str(issue_id, 80)
-    idx = _int(issue_id, -1)
-    for i, iss in enumerate(issues):
-        if not isinstance(iss, dict):
-            continue
-        if (target and _str(iss.get("id"), 80) == target) or i == idx:
-            iss["status"] = "closed"
-            if note:
-                iss["detail"] = (_str(iss.get("detail"), 500) + f"（处理：{note[:200]}）")[:600]
-            break
-    return state
-
-
 # ---------- 校验 ----------
 
 def validate(state: dict) -> list[str]:
@@ -1010,8 +986,8 @@ def rebuild_from_project(pdir: str, plan: dict, chapter_texts=None) -> dict:
                           "last_chapter": last_ch, "updated_at": _now()})
     try:
         save(pdir, st)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[state] 状态保存失败: {e} (pdir={pdir})")
     return st
 
 

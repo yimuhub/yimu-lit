@@ -18,7 +18,7 @@ import os
 import re
 import threading
 
-from . import llm, poetry_checker, skillkit
+from . import llm, poetry_checker, skillkit, express
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
@@ -164,6 +164,17 @@ def _gen(stage_label: str, task: str, ctx: str, cfg: dict,
              f"4. 交付形态：Markdown，可直接作为工作稿。\n")
     msgs = [{"role": "system", "content": sys_p + ("\n\n" + ctx if ctx else "")},
             {"role": "user", "content": f"请产出：{task}"}]
+    # v4.24.10：流式 + 活动流接线
+    try:
+        from . import steps as _steps
+        _bk = llm.current_book()
+        if _bk:
+            out = llm.chat_stream(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens,
+                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", 0, chunk, title=stage_label))
+            _steps.emit_delta(_bk, "writer", 0, "", done=True, title=stage_label)
+            return out
+    except Exception:
+        pass
     try:
         return llm.chat(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens)
     except Exception:
@@ -362,6 +373,12 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
     pdir = proj.path
     name = plan.get("poemName") or proj.name
     max_rounds = int(cfg.get("maxRounds", plan.get("maxRounds", 3)))
+    # v4.24.0：极速模式——K 格律校验是纯 CPU 的确定性检查，必须保留（格律错就是废稿）；
+    # 砍掉的是 R 评改（LLM 改稿）和 F 里的审美评分。
+    _expr = express.on(cfg)
+    if _expr:
+        max_rounds = 1
+        proj.log("⚡ 极速模式：保留格律校验，跳过 R 评改与审美评分")
 
     # ---- K → R 循环 ----
     report: dict = {}
@@ -388,6 +405,9 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
             break
         if form in ("modern", "free"):
             break
+        if _expr:
+            proj.log("⚡ 极速模式：格律报告已出，不做改稿（R 评改阶段跳过）")
+            break
         proj.log(f"🔁 阶段 R：按报告改稿（第 {rnd} 轮）…")
         revised = gen_revise(text, report, cfg)
         if not revised.strip() or revised.strip() == text.strip():
@@ -400,7 +420,8 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
 
     # ---- F 定稿 ----
     proj.log("📋 阶段 F：审校与定稿…")
-    crit = gen_critique(text, cfg)
+    # 极速模式不出审美评分：评分不改变任何一个字，只多一次 LLM 往返
+    crit = {} if _expr else gen_critique(text, cfg)
     header = f"# {name}\n\n"
     if crit:
         dims = crit.get("dims") or {}
@@ -456,28 +477,46 @@ def resume_project(key: str) -> PoetryProject | None:
     name = plan.get("poemName") or key
     proj = PoetryProject(pdir, name)
     proj.running = True   # v3.1.0
+    llm.book(key, "writing")
     plan.setdefault("meta", {})
     if plan.get("status") == "completed":
         proj.log("✅ 该作品已定稿，无需恢复")
         return proj
     proj.log("▶ 断点恢复：检查已有产物…")
 
+    # v4.20.0：步骤间检查暂停位——点「暂停」后当前步骤做完即停
+    def _hit_pause() -> bool:
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return True
+        return False
+
     note = _read(os.path.join(pdir, F_NOTE))
     if not note.strip():
+        if _hit_pause():
+            return proj
         proj.log("🖋 阶段 I：释读…")
         note = gen_note(cfg) or ""
         _write(os.path.join(pdir, F_NOTE), f"# {name} · 题记\n\n" + (note or "（释读生成失败）"))
     plan_md = _read(os.path.join(pdir, F_IMAGERY))
     if not plan_md.strip():
+        if _hit_pause():
+            return proj
         proj.log("📋 阶段 P：创作规划…")
         plan_md = gen_plan(cfg) or ""
         _write(os.path.join(pdir, F_IMAGERY), f"# {name} · 创作规划\n\n" + (plan_md or "（规划生成失败）"))
     draft = _read(os.path.join(pdir, F_DRAFT))
     if not draft.strip():
+        if _hit_pause():
+            return proj
         proj.log("✍️ 阶段 C：起草…")
         draft = gen_draft(cfg, plan_md) or "（起草失败，请重试）"
         _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
 
+    if _hit_pause():
+        return proj
     _check_and_finalize(proj, plan, cfg, form, draft.strip())
     return proj
 

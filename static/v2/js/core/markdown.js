@@ -157,11 +157,3 @@ export function renderMarkdownInto(el, source) {
   return el;
 }
 
-export function plainText(source, limit = 120) {
-  const raw = String(source || '')
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/[#>*_`~\-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return raw.length > limit ? `${raw.slice(0, limit)}…` : raw;
-}

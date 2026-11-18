@@ -1,10 +1,29 @@
 /* 后端适配层：统一 fetch、中文错误、401 通知、404/501 优雅降级，以及 ?mock=1 演示模式。
    约定：所有接口返回 JSON；错误优先读取 {error} 或 {detail}。 */
 
-import { mockRequest, mockChatStream } from '../../mock/mock.js';
-
+/* v4.21.1：mock 模式粘性化——?mock=1 首次进入后写入 sessionStorage，
+   中途意外整页导航（丢 search 参数）也不会静默穿透到真实后端写真实数据。 */
 export const IS_MOCK =
-  typeof location !== 'undefined' && new URLSearchParams(location.search).get('mock') === '1';
+  typeof location !== 'undefined' &&
+  (() => {
+    try {
+      if (new URLSearchParams(location.search).get('mock') === '1') {
+        sessionStorage.setItem('shenbi_mock', '1');
+        return true;
+      }
+      return sessionStorage.getItem('shenbi_mock') === '1';
+    } catch {
+      return false;
+    }
+  })();
+
+/* mock 演示数据（fixtures 体积不小）只在 ?mock=1 时按需加载；模块级缓存
+   promise 保证并发请求下也只 import 一次。 */
+let mockPromise = null;
+function loadMock() {
+  if (!mockPromise) mockPromise = import('../../mock/mock.js');
+  return mockPromise;
+}
 
 export class ApiError extends Error {
   constructor(message, { status = 0, code = '', payload = null } = {}) {
@@ -64,8 +83,9 @@ function joinUrl(path, query) {
 
 export async function request(path, opts = {}) {
   if (IS_MOCK) {
+    const mock = await loadMock();
     try {
-      return await mockRequest(path, opts);
+      return await mock.mockRequest(path, opts);
     } catch (err) {
       if (err instanceof ApiError) throw err;
       throw new ApiError(err && err.message ? err.message : '演示数据请求失败', {
@@ -257,13 +277,12 @@ function enc(value) {
 
 export const api = {
   capabilities: () => request('/api/capabilities', { timeout: 8000 }),
-  projects: () => request('/api/projects'),
   status: (key) => request('/api/status', { query: { key } }),
-  continueWork: (key, extra = 0) => request('/api/continue', jsonBody({ key, extra })),
   pause: (key) => request('/api/pause', jsonBody({ key })),
   resume: (key) => request('/api/resume', jsonBody({ key })),
-  queue: (key) => request('/api/queue', { query: { key } }),
-  queueAction: (payload) => request('/api/queue/action', jsonBody(payload)),
+  /* v4.24.12：未完成章节直接用极速模式续写。mode='express' 切极速并开写，
+     mode='standard' 只把开关切回标准（不启动写作）。 */
+  expressWrite: (key, mode = 'express') => request('/api/express-write', jsonBody({ key, mode })),
   bookLive: (key) => request('/api/book-live', { query: { key }, timeout: 12000 }),
 
   library: (params = {}) => request('/api/library', { query: params }),
@@ -276,55 +295,45 @@ export const api = {
   restore: (key) => request(`/api/library/${enc(key)}/restore`, jsonBody({})),
   purge: (key, confirm) => request(`/api/library/${enc(key)}/purge`, { method: 'DELETE', query: { confirm } }),
   rename: (key, name) => request(`/api/library/${enc(key)}/rename`, jsonBody({ name })),
-  remove: (key) => request(`/api/library/${enc(key)}`, { method: 'DELETE' }),
   batch: (keys, action) => request('/api/library/batch', jsonBody({ keys, action })),
-  tags: (key, tags) => request(`/api/library/${enc(key)}/tags`, jsonBody({ tags })),
-  compare: (keys) => request('/api/compare', { query: { keys: keys.join(',') } }),
 
   chat: (payload) => request('/api/chat', { method: 'POST', body: payload, timeout: 180000 }),
-  cmd: (payload) => request('/api/cmd', { method: 'POST', body: payload, timeout: 60000 }),
 
   /* ---- 剧本/诗词/散文工作台（v2 原生渲染）----
      三套引擎各有接口面：剧本按文档名分路由，诗词/散文用 part 参数。 */
   scriptStatus: (key) => request('/api/script/status', { query: { key } }),
   scriptDoc: (tab, key) => request(`/api/script/${tab}`, { query: { key } }),
+  /* 整剧预览：一次取回全部场次（未写的场 text 为空串）。
+     mediumbench.js 一直在调 api.scriptPreview，但 api.js 里从来没定义过——
+     和 onboarding 同一类问题：懒加载视图里的调用没人核对，点了就 TypeError。 */
+  scriptPreview: (key) => request('/api/script/preview', { query: { key }, timeout: 60000 }),
   scriptWrite: (key, sceneNo = 0) => request('/api/script/write', jsonBody(sceneNo ? { key, sceneNo } : { key })),
   /* 单场正文与整本预览：预览一次取回全部场次（未写完的场 text 为空串）。 */
   scriptScene: (key, no) => request('/api/script/scene', { query: { key, no } }),
-  scriptPreview: (key) => request('/api/script/preview', { query: { key } }),
   scriptRevise: (key) => request('/api/script/revise', jsonBody({ key })),
   /* 世界观一致性体检 + 按设定重写违规场次（先落快照）。 */
-  scriptCheck: (key) => request('/api/script/check', jsonBody({ key }), { timeout: 180000 }),
-  scriptAudit: (key) => request('/api/script/audit', jsonBody({ key }), { timeout: 120000 }),
+  scriptCheck: (key) => request('/api/script/check', { ...jsonBody({ key }), timeout: 180000 }),
+  scriptAudit: (key) => request('/api/script/audit', { ...jsonBody({ key }), timeout: 120000 }),
   scriptAuditGet: (key) => request('/api/script/audit', { query: { key } }),
   scriptStoryboard: (key) => request('/api/script/storyboard', { query: { key } }),
   thesisStatus: (key) => request('/api/thesis/status', { query: { key } }),
   thesisPart: (key, part) => request('/api/thesis/part', { query: { key, part } }),
-  thesisRefsCheck: (key) => request('/api/thesis/refs-check', jsonBody({ key })),
   miniStatus: (key) => request('/api/mini/status', { query: { key } }),
   miniPart: (key, part) => request('/api/mini/part', { query: { key, part } }),
   aiGenerate: (payload) => request('/api/ai-generate', jsonBody(payload)),
-  regenPlan: (payload) => request('/api/plan/regen', jsonBody(payload), { timeout: 30000 }),
-  scriptStoryboardRun: (key, sceneNo) => request('/api/script/storyboard', jsonBody({ key, sceneNo }), { timeout: 20000 }),
-  novelToDrama: (payload) => request('/api/novel-to-drama', jsonBody(payload), { timeout: 30000 }),
+  regenPlan: (payload) => request('/api/plan/regen', { ...jsonBody(payload), timeout: 30000 }),
+  scriptStoryboardRun: (key, sceneNo) => request('/api/script/storyboard', { ...jsonBody({ key, sceneNo }), timeout: 20000 }),
+  novelToDrama: (payload) => request('/api/novel-to-drama', { ...jsonBody(payload), timeout: 30000 }),
   scriptRewriteScenes: (key, sceneNos, instruction = '') =>
-    request('/api/script/rewrite-scenes', jsonBody({ key, sceneNos, instruction, force: true }), { timeout: 600000 }),
+    request('/api/script/rewrite-scenes', { ...jsonBody({ key, sceneNos, instruction, force: true }), timeout: 600000 }),
   /* 通用副驾（剧本/诗词/散文）：讨论或定向改写；改写只回 diff，应用走 assistApply。 */
   assistStream: (payload, opts) => streamSSE('/api/assist/stream', payload, opts),
-  assistApply: (payload) => request('/api/assist/apply', jsonBody(payload), { timeout: 60000 }),
-  assistVersions: (key, medium, doc) =>
-    request('/api/assist/versions', { query: { key, medium, doc } }),
-  assistRestore: (payload) => request('/api/assist/restore', jsonBody(payload), { timeout: 60000 }),
+  assistApply: (payload) => request('/api/assist/apply', { ...jsonBody(payload), timeout: 60000 }),
+  assistRestore: (payload) => request('/api/assist/restore', { ...jsonBody(payload), timeout: 60000 }),
   /* 对话历史 + 改稿记录（作品目录 .assist/ 留档） */
   assistHistory: (key, medium) => request('/api/assist/history', { query: { key, medium } }),
 
   /* 对话副驾：讨论或定向改写；改写只回 diff，应用走 assistApply。 */
-  scriptAssistStream: (payload, opts) => streamSSE('/api/script/assist/stream', payload, opts),
-  scriptAssistApply: (payload) => request('/api/script/assist/apply', jsonBody(payload), { timeout: 60000 }),
-  scriptAssistVersions: (key, scene) =>
-    request('/api/script/assist/versions', { query: { key, scene } }),
-  scriptAssistRestore: (key, scene, version) =>
-    request('/api/script/assist/restore', jsonBody({ key, scene, version }), { timeout: 60000 }),
 
   poetryStatus: (key) => request('/api/poetry/status', { query: { key } }),
   poetryPart: (key, part) => request('/api/poetry/part', { query: { key, part } }),
@@ -334,8 +343,6 @@ export const api = {
   prosePart: (key, part) => request('/api/prose/part', { query: { key, part } }),
 
   create: (payload) => request('/api/create', { method: 'POST', body: payload, timeout: 30000 }),
-  titles: (key) => request('/api/titles', { query: { key } }),
-  pickTitle: (key, title) => request('/api/pick-title', jsonBody({ key, title })),
   /* v2.3 书名改名与候选：set 返回改名后的新 key；generate 同步调 LLM（10-40 秒）。 */
   title: {
     set: (key, title) => request('/api/title/set', { ...jsonBody({ key, title }), timeout: 60000 }),
@@ -344,7 +351,6 @@ export const api = {
   },
   /* 全书一致性体检：同步返回 {ok, issues[str], at, scope}。 */
   audit: (key, scope = 'book') => request('/api/audit', { ...jsonBody({ key, scope }), timeout: 120000 }),
-  sample: () => request('/api/sample', jsonBody({})),
 
   settings: () => request('/api/settings'),
   saveSettings: (payload) => request('/api/settings', jsonBody(payload)),
@@ -352,7 +358,6 @@ export const api = {
   pennamesSave: (payload) => request('/api/pennames/save', jsonBody(payload)),
   pennamesDelete: (payload) => request('/api/pennames/delete', jsonBody(payload)),
   usage: (key = '') => request('/api/usage', { query: { key } }),
-  llmCalls: (limit = 50) => request('/api/llm-calls', { query: { limit } }),
 
   providers: () => request('/api/providers'),
   addProvider: (payload) => request('/api/providers', jsonBody(payload)),
@@ -360,48 +365,43 @@ export const api = {
   removeProvider: (id) => request(`/api/providers/${enc(id)}`, { method: 'DELETE' }),
   setDefaultProvider: (id) => request(`/api/providers/${enc(id)}/default`, jsonBody({})),
   setProviderActive: (id, active) => request(`/api/providers/${enc(id)}/active`, jsonBody({ active })),
-  testProvider: (id) => request(`/api/providers/${enc(id)}/test`, jsonBody({ probe_chat: false }), { timeout: 30000 }),
-  fetchProviderModels: (id) => request(`/api/providers/${enc(id)}/models`, jsonBody({}), { timeout: 30000 }),
+  testProvider: (id) => request(`/api/providers/${enc(id)}/test`, { ...jsonBody({ probe_chat: false }), timeout: 30000 }),
   modelOptions: () => request('/api/model_options'),
 
   mediums: () => request('/api/mediums'),
+  /* 向导词表：题材/基调/视角/卖点/风格预设 + 平台 + 引擎词表。
+     后端 /api/onboarding 一直存在；v4.21.1 清「死 API」时把它从客户端删了，
+     而唯一调用方 views/wizard.js 是 `await import()` 懒加载的，静态扫描扫不到，
+     于是被判成无用——新建作品弹窗当场 TypeError、正文全空（v4.23.1 修回）。
+     结论：**懒加载模块里的调用，不能只靠首屏闭包扫描来判死**。 */
+  onboarding: () => request('/api/onboarding'),
   learn: () => request('/api/learn'),
   styles: () => request('/api/styles'),
-  distill: (payload) => request('/api/distill', jsonBody(payload), { timeout: 180000 }),
-  onboarding: () => optional(request('/api/onboarding'), null),
+  distill: (payload) => request('/api/distill', { ...jsonBody(payload), timeout: 180000 }),
 
   plan: (key) => request('/api/plan', { query: { key }, timeout: 60000 }),
-  planEnsure: (key) => request('/api/plan/ensure', jsonBody({ key }), { timeout: 120000 }),
-  replan: (payload) => request('/api/plan/replan', jsonBody(payload), { timeout: 180000 }),
-  planMulti: (payload) => request('/api/plan/multi', jsonBody(payload), { timeout: 600000 }),
+  planMulti: (payload) => request('/api/plan/multi', { ...jsonBody(payload), timeout: 600000 }),
   applyPlan: (key, proposalId, allowPast = false) =>
-    request('/api/plan/apply', jsonBody({ key, proposal_id: proposalId, allow_past: allowPast }), { timeout: 60000 }),
+    request('/api/plan/apply', { ...jsonBody({ key, proposal_id: proposalId, allow_past: allowPast }), timeout: 60000 }),
   rejectPlan: (key, proposalId, note = '') =>
     request('/api/plan/reject', jsonBody({ key, proposal_id: proposalId, note })),
-  planWindow: (key, start, end) => request('/api/plan/window', jsonBody({ key, start, end }), { timeout: 180000 }),
 
   state: (key, q = '') => request('/api/state', { query: { key, q }, timeout: 30000 }),
 
   references: (key) => request('/api/references', { query: { key } }),
-  addRefText: (payload) => request('/api/references/text', jsonBody(payload), { timeout: 120000 }),
-  addRefUrl: (payload) => request('/api/references/url', jsonBody(payload), { timeout: 120000 }),
+  addRefText: (payload) => request('/api/references/text', { ...jsonBody(payload), timeout: 120000 }),
+  addRefUrl: (payload) => request('/api/references/url', { ...jsonBody(payload), timeout: 120000 }),
   uploadRef: (form) => request('/api/references/upload', { method: 'POST', form, timeout: 180000 }),
   patchRef: (id, payload) => request(`/api/references/${enc(id)}`, { method: 'PATCH', body: payload }),
   deleteRef: (id) => request(`/api/references/${enc(id)}`, { method: 'DELETE' }),
-  analyzeRef: (id) => request(`/api/references/${enc(id)}/analyze`, jsonBody({}), { timeout: 180000 }),
-  refChunks: (id, offset = 0, limit = 20) =>
-    request(`/api/references/${enc(id)}/chunks`, { query: { offset, limit } }),
+  analyzeRef: (id) => request(`/api/references/${enc(id)}/analyze`, { ...jsonBody({}), timeout: 180000 }),
   searchRefs: (key, q, k = 6) => request('/api/references/search', { query: { key, q, k } }),
-  linkRef: (key, refId, usageMode = 'facts') =>
-    request('/api/references/link', jsonBody({ key, ref_id: refId, usage_mode: usageMode })),
-  unlinkRef: (key, refId) => request('/api/references/unlink', jsonBody({ key, ref_id: refId })),
-  refOverlap: (key, text) => request('/api/references/overlap', jsonBody({ key, text }), { timeout: 60000 }),
 
   feedback: (payload) => request('/api/feedback', jsonBody(payload)),
   feedbackList: (params = {}) => request('/api/feedback', { query: params }),
   skillsEvolution: (status = '') => request('/api/skills/evolution', { query: { status } }),
-  proposeSkill: (payload) => request('/api/skills/evolution/propose', jsonBody(payload), { timeout: 180000 }),
-  evaluateSkill: (payload) => request('/api/skills/evolution/evaluate', jsonBody(payload), { timeout: 300000 }),
+  proposeSkill: (payload) => request('/api/skills/evolution/propose', { ...jsonBody(payload), timeout: 180000 }),
+  evaluateSkill: (payload) => request('/api/skills/evolution/evaluate', { ...jsonBody(payload), timeout: 300000 }),
   promoteSkill: (id, force = false) =>
     request('/api/skills/evolution/promote', jsonBody({ id, force, approver: 'user' })),
   rejectSkill: (id, note = '') => request('/api/skills/evolution/reject', jsonBody({ id, note })),
@@ -411,18 +411,24 @@ export const api = {
   fixConsistencyAll: (key) => request('/api/fix-consistency-all', jsonBody({ key })),
   fetchModels: (payload) => request('/api/providers/fetch-models', jsonBody(payload)),
   diagnostics: () => request('/api/diagnostics'),
+  syslog: (params = {}) => request('/api/syslog', { query: params }),
+  syslogClear: () => request('/api/syslog/clear', jsonBody({})),
+  chatNote: (key, text, note) => request('/api/chat/note', jsonBody({ key, text, note })),
+  chapterTokens: (key, no) => request('/api/chapter-tokens', { query: { key, no } }),
+  consistencyAuditRun: (key) => request('/api/consistency-audit/run', { ...jsonBody({ key }), timeout: 30000 }),
+  consistencyAudit: (key) => request('/api/consistency-audit', { query: { key } }),
+  rewriteChapter: (key, no) => request('/api/rewrite', { ...jsonBody({ key, chapters: [no] }), timeout: 30000 }),
+  expressToggle: (key, on) => request('/api/express-toggle', jsonBody({ key, on })),
   bookAgents: (key) => request('/api/book-agents', { query: { key } }),
   setBookAgents: (payload) => request('/api/book-agents', jsonBody(payload)),
-  selfUpdate: () => request('/api/self-update', jsonBody({}), { timeout: 180000 }),
-  restart: () => request('/api/restart', jsonBody({})),
-  branchBook: (key, chapter) => request('/api/branch', jsonBody({ key, chapter }), { timeout: 60000 }),
-  chapterNamesBackfill: (key) => request('/api/chapter-names/backfill', jsonBody({ key }), { timeout: 20000 }),
+  selfUpdate: () => request('/api/self-update', { ...jsonBody({}), timeout: 180000 }),
+  branchBook: (key, chapter) => request('/api/branch', { ...jsonBody({ key, chapter }), timeout: 60000 }),
+  chapterNamesBackfill: (key) => request('/api/chapter-names/backfill', { ...jsonBody({ key }), timeout: 20000 }),
   bookSkills: (key) => request('/api/book-skills', { query: { key } }),
   setBookSkills: (payload) => request('/api/book-skills', jsonBody(payload)),
   chatHistory: (key) => request(`/api/chat/history?key=${encodeURIComponent(key)}`),
-  chatClear: (key) => request('/api/chat/clear', jsonBody({ key })),
   addAgent: (data) => request('/api/agents/add', jsonBody(data)),
-  scoreBook: (key, force) => request('/api/score', jsonBody({ key, force: !!force }), { timeout: 120000 }),
+  scoreBook: (key, force) => request('/api/score', { ...jsonBody({ key, force: !!force }), timeout: 120000 }),
   scoreProgress: (key) => request('/api/score/progress', { query: { key } }),
   rewriteParallel: (payload) => request('/api/rewrite-parallel', jsonBody(payload)),
   rewriteParallelProgress: (key) => request('/api/rewrite-parallel/progress', { query: { key } }),
@@ -433,7 +439,7 @@ export const api = {
   skillkitFile: (relpath) => request('/api/skills/file', { query: { path: relpath } }),
   skillkitStats: () => request('/api/skillkit/stats'),
   skillsApplicable: (key) => request('/api/skills/applicable', { query: { key } }),
-  skillkitAdd: (payload) => request('/api/skillkit/add', jsonBody(payload), { timeout: 60000 }),
+  skillkitAdd: (payload) => request('/api/skillkit/add', { ...jsonBody(payload), timeout: 60000 }),
   skillkitDelete: (name) => request(`/api/skillkit/custom/${enc(name)}`, { method: 'DELETE' }),
 
   /* 多 Agent：岗位×模型×技能绑定 + 单书并行创作 */
@@ -441,16 +447,20 @@ export const api = {
   agentsSet: (payload) => request('/api/agents-set', jsonBody(payload)),
   agentsMaxGlobal: (n) => request('/api/agents-maxglobal', jsonBody({ n })),
   agentsSkills: (payload) => request('/api/agents-skills', jsonBody(payload)),
-  parallelWrite: (payload) => request('/api/parallel-write', jsonBody(payload), { timeout: 60000 }),
+  /* v4.20：岗位启停（writer 不可停用）与删除自定义岗位 */
+  agentsToggle: (payload) => request('/api/agents-toggle', jsonBody(payload)),
+  agentsRemove: (name) => request('/api/agents/remove', jsonBody({ name })),
+  /* v4.20：全局默认模型（default_provider + 其 default_model） */
+  globalModelSet: (payload) => request('/api/global-model', jsonBody(payload)),
+  parallelWrite: (payload) => request('/api/parallel-write', { ...jsonBody(payload), timeout: 60000 }),
   parallelLog: (key) => request('/api/parallel-log', { query: { key } }),
   jobs: (key = '') => request('/api/jobs', { query: { key } }),
 
   chapter: (key, n) => request('/api/chapter', { query: { key, n } }),
-  saveChapter: (key, n, text) => request('/api/chapter', { method: 'PUT', body: { key, n, text }, timeout: 60000 }),
+  saveChapter: (key, n, text, mode) => request('/api/chapter', { method: 'PUT', body: { key, n, text, mode }, timeout: 60000 }),
   chapterVersions: (key, n) => request('/api/chapter/versions', { query: { key, n } }),
-  chapterVersion: (key, n, id) => request('/api/chapter/version', { query: { key, n, id } }),
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
-  restoreChapter: (key, n, id) => request('/api/chapter/restore', jsonBody({ key, n, id }), { timeout: 60000 }),
+  restoreChapter: (key, n, id) => request('/api/chapter/restore', { ...jsonBody({ key, n, id }), timeout: 60000 }),
 
   exportUrl(key, fmt = 'docx') {
     return joinUrl('/api/export', { key, fmt });
@@ -463,8 +473,9 @@ export const api = {
   /* 聊天 SSE：mock 模式模拟分段输出；真实模式走通用 streamSSE。 */
   async streamChat(payload, { onEvent, signal } = {}) {
     if (IS_MOCK) {
+      const mock = await loadMock();
       try {
-        return await mockChatStream(payload, { onEvent, signal });
+        return await mock.mockChatStream(payload, { onEvent, signal });
       } catch (err) {
         if (err && err.code === 'aborted') throw new ApiError('已取消', { code: 'aborted' });
         throw new ApiError((err && err.message) || '演示流式输出失败', { code: 'mock' });

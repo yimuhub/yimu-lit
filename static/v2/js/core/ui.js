@@ -61,6 +61,17 @@ export function closeTopOverlay() {
   return false;
 }
 
+/* v4.24.16：给非 openModal 的浮层（右栏 rp-modal 等）一个登记口——
+   Esc 关最顶层由 app.js 的全局 keydown 调 closeTopOverlay 完成。 */
+export function registerOverlay(entry) {
+  if (entry && !modalStack.includes(entry)) modalStack.push(entry);
+}
+
+export function unregisterOverlay(entry) {
+  const idx = modalStack.indexOf(entry);
+  if (idx >= 0) modalStack.splice(idx, 1);
+}
+
 export function openModal({
   title,
   subtitle = '',

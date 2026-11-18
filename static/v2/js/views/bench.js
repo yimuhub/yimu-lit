@@ -1,26 +1,17 @@
 /* 章节工作台：正文编辑、自动保存、版本历史、差异对比与回滚。 */
 
-import { h, icon, fmtWords, fmtDate, relTime, copyText } from '../core/dom.js';
+import { h, icon, fmtWords, fmtDate, relTime, copyText, downloadUrl } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { api, errorText } from '../core/api.js';
-import { toast, confirmDialog, openModal } from '../core/ui.js';
+import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { navigate } from '../core/router.js';
+import { cleanChapterText } from '../core/purity.js';
 import { mountChatFloat } from '../components/chatfloat.js';
 
 
-/* v3.1.0：复制口径＝引子+正文（剥 ## 本章概要 / ## 章节备注），与成书/导出一致。
+/* v4.22.1：复制口径统一走 core/purity.js（与后端 bot/purity.py 同源）——
+   正文 = 章题 + 章首引子 + 正文；本章概要/章节备注/修改说明/审核评分一律不进剪贴板。
    实时基于编辑器内容计算，编辑后未保存也能复制正确口径。 */
-function stripChapterMeta(text) {
-  const out = [];
-  let skipping = null;
-  for (const line of String(text || '').split('\n')) {
-    if (/^##\s*本章概要/.test(line)) { skipping = true; continue; }
-    if (/^##\s*章节备注/.test(line)) { skipping = true; continue; }
-    if (/^##\s/.test(line)) skipping = false;   // 章首引子 / 正文 保留
-    if (!skipping) out.push(line);
-  }
-  return out.join('\n').trim();
-}
 
 export function renderBench(container, ctx) {
   const state0 = store.get();
@@ -34,6 +25,8 @@ export function renderBench(container, ctx) {
     n,
     title: '',
     text: '',
+    rawText: '',
+    mode: 'prose',          /* v4.22.2：prose=纯净正文（默认）；raw=工作文件（含概要/备注/历史残留） */
     savedText: '',
     words: 0,
     updatedAt: '',
@@ -94,6 +87,69 @@ export function renderBench(container, ctx) {
 
   /* ------------------------------------------------------------ paint */
 
+  /* v4.22.1：整本导出菜单（md/docx/epub/print）——后端 /api/export 逐章走正文纯净域，
+     导出的文件里只有 章题 + 章首引子 + 正文，不会混入概要/备注/修改说明/评分表。 */
+  const EXPORT_FMTS = [
+    ['md', 'Markdown'],
+    ['docx', 'Word'],
+    ['epub', 'EPUB'],
+    ['print', '打印排版']
+  ];
+
+  function exportMenu(anchor) {
+    const items = EXPORT_FMTS.map(([fmt, label]) => ({
+      label: `导出全书 · ${label}`,
+      icon: 'download',
+      onSelect: () => {
+        try {
+          downloadUrl(api.exportUrl(key, fmt));
+          toast(`正在导出 ${label}（正文已去噪）…`, { duration: 2400 });
+        } catch (err) {
+          toast(errorText(err, '导出失败'), { tone: 'danger' });
+        }
+      }
+    }));
+    popoverMenu(anchor, items, { label: '导出整本（仅正文）' });
+  }
+
+  /* 正文 / 工作文件 切换（v4.22.2）。只在两者确实不同时出现，避免无谓打扰。 */
+  const modeSwitch = h('div', { class: 'bench-mode', role: 'tablist', style: { display: 'none' } });
+  function paintModeSwitch() {
+    const differ = (model.rawText || '') !== (model.text || '');
+    modeSwitch.style.display = differ ? '' : 'none';
+    modeSwitch.textContent = '';
+    if (!differ) return;
+    for (const [m, label, tip] of [
+      ['prose', '正文', '章题 + 章首引子 + 正文（默认，可复制/可发布）'],
+      ['raw', '工作文件', '含本章概要 / 章节备注 / 历史残留，仅供核对']
+    ]) {
+      modeSwitch.append(h('button', {
+        class: `bench-mode-btn${model.mode === m ? ' is-on' : ''}`,
+        type: 'button',
+        role: 'tab',
+        'aria-selected': model.mode === m ? 'true' : 'false',
+        title: tip,
+        text: label,
+        dataset: { mode: m },
+        on: {
+          click: () => {
+            if (model.mode === m) return;
+            if (model.dirty) {
+              toast('先保存当前改动，再切换视图', { tone: 'danger', duration: 2200 });
+              return;
+            }
+            model.mode = m;
+            editor.value = m === 'raw' ? model.rawText : model.text;
+            model.savedText = editor.value;
+            model.dirty = false;
+            paintModeSwitch();
+            paintAll();
+          }
+        }
+      }));
+    }
+  }
+
   function paintHead() {
     head.textContent = '';
     const work = store.get().work;
@@ -116,6 +172,17 @@ export function renderBench(container, ctx) {
         })
       ),
       h('span', { style: { flex: '1' } }),
+      /* v4.22.2：正文 / 工作文件切换。默认「正文」——所见即可复制、可发布；
+         「工作文件」才显示本章概要、章节备注与历史残留，供核对，不参与复制与导出。 */
+      modeSwitch,
+      /* v4.22.1：把「整本导出」放到编辑现场——导出的永远是去噪后的正文 */
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        title: '导出整本（章题 + 章首引子 + 正文，不含任何概要/备注/修改说明/评分）',
+        html: `${icon('download', 13)}<span>导出全书</span>`,
+        on: { click: (event) => exportMenu(event.currentTarget) }
+      }),
       h('button', {
         class: 'btn btn-sm',
         type: 'button',
@@ -123,10 +190,10 @@ export function renderBench(container, ctx) {
         on: {
           click: async () => {
             try {
-              /* v3.1.0：复制「引子+正文」口径（剥本章概要/章节备注），与成书/导出一致 */
-              const raw = stripChapterMeta(editor.value) || editor.value;
+              /* v4.22.1：复制「引子+正文」口径（剥全部元信息小节），与成书/导出一致 */
+              const raw = cleanChapterText(editor.value) || editor.value;
               await copyText(raw);
-              toast('已复制到剪贴板（引子+正文，不含概要与备注）', { tone: 'success', duration: 2200 });
+              toast('已复制到剪贴板（章题+引子+正文，不含概要与任何说明/评分）', { tone: 'success', duration: 2400 });
             } catch {
               toast('复制失败，请手动选择文本', { tone: 'danger' });
             }
@@ -223,6 +290,7 @@ export function renderBench(container, ctx) {
 
   function paintAll() {
     paintHead();
+    paintModeSwitch();
     paintFoot();
     paintSide();
     paintSaveBtn();
@@ -239,13 +307,16 @@ export function renderBench(container, ctx) {
     try {
       const [ch, vers] = await Promise.all([api.chapter(key, model.n), api.chapterVersions(key, model.n)]);
       model.title = ch.title || '';
-      model.text = ch.text || '';
-      model.cleanText = ch.cleanText || '';   // v3.1.0：复制用（引子+正文口径）
+      /* v4.22.2：编辑框默认装「纯净正文」——从这里全选复制，拿到的就是能发的正文。
+         原文件（含本章概要/章节备注，以及历史遗留的改写说明）收进 rawText，
+         切到「工作文件」才显示；保存时后端会把概要/备注补回去，不会丢元信息。 */
+      model.rawText = ch.rawText || ch.text || '';
+      model.text = ch.cleanText || cleanChapterText(model.rawText) || model.rawText;
       model.savedText = model.text;
       model.words = ch.words || 0;
       model.updatedAt = ch.updatedAt || '';
       model.versions = (vers && vers.items) || [];
-      editor.value = model.text;
+      editor.value = model.mode === 'raw' ? model.rawText : model.text;
     } catch (err) {
       model.error = errorText(err, '章节加载失败');
     }
@@ -260,8 +331,9 @@ export function renderBench(container, ctx) {
     model.saving = true;
     paintAll();
     try {
-      const res = await api.saveChapter(key, model.n, editor.value);
+      const res = await api.saveChapter(key, model.n, editor.value, model.mode);
       model.savedText = editor.value;
+      if (model.mode === 'prose') model.text = editor.value; else model.rawText = editor.value;
       model.dirty = false;
       model.words = (res && res.words) || model.words;
       model.updatedAt = (res && res.updatedAt) || new Date().toISOString();

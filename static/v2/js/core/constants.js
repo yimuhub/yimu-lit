@@ -29,7 +29,9 @@ export function scaleLabel(value) {
 export const WRITING_MODES = [
   { value: 'rolling', label: '滚动规划', desc: '写一段、看反馈、再规划，适合连载。', icon: 'refresh' },
   { value: 'outline', label: '大纲优先', desc: '先定全书骨架，再逐章落地。', icon: 'list' },
-  { value: 'one_shot', label: '一次成稿', desc: '适合短篇，一次生成再统一打磨。', icon: 'zap' }
+  { value: 'one_shot', label: '一次成稿', desc: '适合短篇，一次生成再统一打磨。', icon: 'zap' },
+  /* v4.24.0：极速模式——三个老选项只影响规划节奏，这一个真正驱动流程（跳过评分/去味/重写） */
+  { value: 'express', label: '极速模式', desc: '不评分、不重写，一口气写完；产出初稿。', icon: 'zap' }
 ];
 
 export const MEDIUM_FALLBACK = [
@@ -53,3 +55,23 @@ export function mediumIcon(medium) {
 }
 
 export const FEEDBACK_TAGS = ['剧情拖沓', '人物失真', '文风不对', '信息错误', '没按规划', '太像 AI'];
+
+/* ---- 非小说工作台的共享枚举 ----
+   从 views/mediumbench.js 下沉到这里：右侧面板（rightpanel.js）只需要这两个
+   判定/标签函数，原先却要为此静态加载整条 mediumbench → chatfloat → markdown 链。 */
+
+/* 有专属工作台的非小说文体（与 views/mediumbench.js 的 BENCH 配置一一对应）。 */
+export const MEDIUM_BENCHES = ['script', 'thesis', 'other', 'children', 'news', 'copy', 'poetry', 'prose'];
+
+export function isMediumBench(medium) {
+  return MEDIUM_BENCHES.includes(medium);
+}
+
+/* status 里的 operation/verdict 是引擎内部的码（写/审的码、pass|fail|unclear），
+   直接上屏等于把流水线术语丢给用户；这里只留各自的短标签。 */
+export const OPERATION_LABELS = { write: '写', review: '审', refactor: '改', recreate: '重写' };
+export const VERDICT_LABELS = { pass: '通过', fail: '未过', unclear: '存疑' };
+
+export function verdictLabel(verdict) {
+  return VERDICT_LABELS[verdict] || verdict || '';
+}

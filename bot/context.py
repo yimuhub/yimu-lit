@@ -391,7 +391,9 @@ def build(proj, ch, cfg=None, references=None) -> dict:
     if cfg.get("lorebook", True):
         try:
             from . import lorebook
-            lore_relevant = lorebook.relevant(pdir, f"{title} {card.get('goal') or ''[:300]} {prev_tail[-400:]}")
+            # v4.24.16 修复运算符优先级：原 `card.get('goal') or ''[:300]` 中 or 低于下标，
+            # goal 非空时整段不截断直接进检索 query（超长 goal 污染 lorebook 召回）
+            lore_relevant = lorebook.relevant(pdir, f"{title} {(card.get('goal') or '')[:300]} {prev_tail[-400:]}")
         except Exception:
             lore_relevant = ""
 
@@ -456,48 +458,6 @@ def build(proj, ch, cfg=None, references=None) -> dict:
         "context_meta": meta,
     }
     return ctx
-
-
-def build_legacy(proj, ch, cfg=None) -> dict:
-    """完全沿用旧 _build_ctx 的兜底；导入失败时复制其最小语义。"""
-    try:
-        from . import writer as _writer
-        ctx = _writer._build_ctx(proj, ch)
-        if isinstance(ctx, dict):
-            if cfg:
-                ctx.setdefault("cfg", cfg)
-            return ctx
-    except Exception:
-        pass
-    # 兜底：旧项目文件直读（不依赖新内核，也不调用 LLM）
-    pdir = _pdir(proj)
-    plan = _flat_plan(proj)
-    no = max(1, _read_int((ch or {}).get("chapterNumber"), 1))
-    outline = _read(pdir, "01-大纲.md")
-    prev_tail = _prev_tail(proj, no, pdir)
-    chapter_plan = _outline_row(outline, no) or outline[-3000:]
-    return {
-        "chapter_no": no,
-        "chapter_title": (ch or {}).get("title") or f"第{no}章",
-        "outline_text": outline,
-        "chapter_plan": chapter_plan,
-        "characters_text": _read(pdir, "00-人物档案.md", 8000),
-        "style_text": _style_text(pdir)[:6000],
-        "prev_tail": prev_tail,
-        "cfg": _resolve_cfg(proj, cfg),
-        "continuation": bool((ch or {}).get("continuation")),
-        "story_bible": _read(pdir, "09-故事圣经.md"),
-        "clue_ledger": _read(pdir, "10-线索账本.md"),
-        "chapter_summaries": _read(pdir, "11-章节摘要.md"),
-        "timeline": _read(pdir, "12-时间线与连续性.md"),
-        "covenant": _read(pdir, "13-一致性纲领.md"),   # v4.15.2：legacy 路径也注入一致性纲领
-        "lore_relevant": "",
-        "graph_ctx": {},
-        "retrieval_ctx": [],
-        "blueprint": "",
-        "queue_note": "",
-        "_plan": plan,  # 仅供排障，workflow 忽略未知键
-    }
 
 
 def render_context_block(ctx: dict) -> str:

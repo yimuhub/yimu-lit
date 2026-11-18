@@ -204,25 +204,6 @@ def test_jobs_run_persists_lifecycle(monkeypatch, tmp_path):
     assert "boom" in got["error"]
 
 
-def test_dispatch_is_async_and_reported_by_jobs(monkeypatch, tmp_path):
-    monkeypatch.setattr(appmod.jobs, "JOBS_FILE", str(tmp_path / "jobs.json"))
-    monkeypatch.setattr(appmod.agents, "dispatch_write",
-                        lambda keys, get, write: [{"key": k, "ok": True} for k in keys])
-    c = TestClient(appmod.app)
-    r = c.post("/api/agents-dispatch", json={"keys": ["A", "B"]})
-    body = r.json()
-    assert body["ok"] is True and body["async"] is True and body["job_id"]
-
-    for _ in range(100):
-        items = c.get("/api/jobs?kind=dispatch").json()["items"]
-        if items and items[0]["status"] in ("done", "failed"):
-            break
-        time.sleep(0.02)
-    assert items[0]["id"] == body["job_id"]
-    assert items[0]["status"] == "done"
-    assert len(items[0]["result"]) == 2
-
-
 def test_live_sse_emits_status_and_done(monkeypatch, tmp_path):
     pdir = tmp_path / "bk"
     pdir.mkdir()

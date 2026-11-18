@@ -106,12 +106,6 @@ def test_api_library_status_filter_covers_planning(four_works):
     assert {i["key"] for i in d["items"]} == {"e_prose"}
 
 
-def test_studio_overview_stays_novel_only(four_works):
-    """工作室总览挂的是小说的并行/重写/放行动作，非小说项目不该混进来。"""
-    so = client.get("/api/studio-overview").json()
-    assert [b["key"] for b in so["books"]] == ["novel_a"]
-
-
 def test_frontend_opens_every_medium_in_v2():
     """静态资源契约：v2 是默认界面，四种文体都在 v2 内打开，不做经典版跳转。"""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

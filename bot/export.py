@@ -11,7 +11,7 @@ import re
 import uuid
 import zipfile
 
-from . import writer as novel_writer
+from . import purity
 
 _SCENE_RE = re.compile(r"^(内景|外景|内/外景|日景|夜景|INT\.?|EXT\.?|I/E)", re.I)
 _NONAME_RE = re.compile(r"[，。！？,.!?：:；;、\s]")
@@ -26,17 +26,23 @@ def _strip_md(s: str) -> str:
 
 
 def novel_chapters(proj) -> list[dict]:
+    """取可导出的章节：正文 = 章首引子 + 正文内容（不含章题/小节标记/任何元信息）。
+
+    v4.22.1：取文口径统一走 bot/purity（正文纯净域）——重写说明、评分表、审稿意见
+    不再随章落盘进任何导出格式；章题由调用方按 plan 标题另行渲染，避免双题头。
+    """
     plan = proj.plan() or {}
     out = []
     for ch in plan.get("chapters") or []:
         fp = os.path.join(proj.path, os.path.basename(ch.get("filePath") or ""))
         try:
-            text = open(fp, encoding="utf-8").read()
+            raw = open(fp, encoding="utf-8").read()
         except OSError:
             continue
-        text = novel_writer._clean_chapter_text(text)
+        text = purity.chapter_body(raw)
         if text.strip():
-            out.append({"n": ch.get("chapterNumber"), "title": ch.get("title") or "",
+            out.append({"n": ch.get("chapterNumber"),
+                        "title": ch.get("title") or purity.chapter_title(raw),
                         "text": text})
     return out
 

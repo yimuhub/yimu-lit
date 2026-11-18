@@ -6,6 +6,7 @@
 import os
 import shutil
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,11 +27,21 @@ SCENE_MD = """| 场次 | 内/外 | 地点 | 时间 | 出场 | 道具 | 前提 | 
 
 
 @pytest.fixture(autouse=True)
-def _mock_llm(monkeypatch):
+def _mock_llm_local(monkeypatch):   # v4.24.16：改名避开 conftest 同名 autouse（同名即遮蔽，conftest 的 stub 面在这些文件里从未生效——烧网事故病灶）
     monkeypatch.setattr(llm, "chat", lambda *a, **k: "内景  地点  日\n\n某人走进来。", raising=False)
     monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {
         "scores": {"前提": 8, "结构": 7, "人物": 8, "对白": 7, "格式": 8, "可行性": 8},
         "weak": ["对白"], "verdict": "尚可", "fixes": ["补潜台词"]}, raising=False)
+
+    def _chat_stream_stub(messages, *a, **k):
+        kw = {x: v for x, v in k.items() if x != "on_delta"}
+        text = llm.chat(messages, *a, **kw)
+        cb = k.get("on_delta")
+        if callable(cb) and text:
+            cb(text)
+        return text
+
+    monkeypatch.setattr(llm, "chat_stream", _chat_stream_stub, raising=False)
     yield
 
 
@@ -176,8 +187,18 @@ def test_script_create_api():
     key = r["key"]
     try:
         assert r["medium"] == "script"
+        # v4.23.2：创建是**异步**的（_spawn_project 立即返回 key，规划在后台线程跑）。
+        # 原先这里建完就同步断言 bible，只有后台线程恰好先跑完才过——随机红。
+        # 按真实前端的方式轮询等待（前端也是拿 key 反复查 status 直到非 planning）。
         assert client.get("/api/script/status", params={"key": key}).status_code == 200
-        assert client.get("/api/script/bible", params={"key": key}).json()["text"]
+        deadline = time.time() + 15
+        text = ""
+        while time.time() < deadline:
+            text = client.get("/api/script/bible", params={"key": key}).json().get("text") or ""
+            if text.strip():
+                break
+            time.sleep(0.05)
+        assert text.strip(), "后台规划 15s 内没有产出创作圣经"
         items = client.get("/api/script/projects").json()["items"]
         assert any(i["key"] == key for i in items)
     finally:

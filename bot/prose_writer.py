@@ -21,7 +21,7 @@ import os
 import re
 import threading
 
-from . import llm, skillkit
+from . import llm, skillkit, express
 from . import slop_checker
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
@@ -168,6 +168,17 @@ def _gen(stage_label: str, task: str, ctx: str, cfg: dict,
              f"5. 交付形态：Markdown。\n")
     msgs = [{"role": "system", "content": sys_p + ("\n\n" + ctx if ctx else "")},
             {"role": "user", "content": f"请产出：{task}"}]
+    # v4.24.10：流式 + 活动流接线
+    try:
+        from . import steps as _steps
+        _bk = llm.current_book()
+        if _bk:
+            out = llm.chat_stream(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens,
+                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", 0, chunk, title=stage_label))
+            _steps.emit_delta(_bk, "writer", 0, "", done=True, title=stage_label)
+            return out
+    except Exception:
+        pass
     try:
         return llm.chat(msgs, cfg=cfg, stage=stage_code, max_tokens=max_tokens)
     except Exception:
@@ -441,14 +452,20 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
         proj.log("✅ 审稿完成（未改动原文）")
         return proj
 
-    proj.log("🔍 阶段 A：去味与精修…")
-    polished = gen_polish(draft, cfg)
-    if not polished.strip():
-        polished = draft
-    polished, slop_rep = slop_pass(polished, cfg)
-    if slop_rep:
-        proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
-                 f"{slop_rep.get('summary', '')}")
+    # v4.24.0：极速模式——A 段（去味 + 反 AI 腔扫描）全是打磨，不改内容结构，直接跳过。
+    # F 定稿照常拼接，产物文件名与 meta 字段保持不变（下游按 03-去味报告.md 取文的地方不会断）。
+    if express.on(cfg):
+        proj.log("⚡ 极速模式：跳过 A 去味与精修（初稿即定稿）")
+        polished, slop_rep = draft, {}
+    else:
+        proj.log("🔍 阶段 A：去味与精修…")
+        polished = gen_polish(draft, cfg)
+        if not polished.strip():
+            polished = draft
+        polished, slop_rep = slop_pass(polished, cfg)
+        if slop_rep:
+            proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
+                     f"{slop_rep.get('summary', '')}")
     _write(os.path.join(pdir, F_SLOP), polished.strip() + "\n")
     plan["meta"]["stage"] = "P"
     plan["meta"]["stageIdx"] = 4
@@ -495,18 +512,33 @@ def resume_project(key: str) -> ProseProject | None:
     proj.log("▶ 断点恢复：检查已有产物…")
     source_text = cfg.get("sourceText") or ""
 
+    # v4.20.0：步骤间检查暂停位——点「暂停」后当前步骤做完即停
+    def _hit_pause() -> bool:
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return True
+        return False
+
     brief = _read(os.path.join(pdir, F_BRIEF))
     if not brief.strip():
+        if _hit_pause():
+            return proj
         proj.log("📋 阶段 B：创作简报…")
         brief = gen_brief(cfg) or ""
         _write(os.path.join(pdir, F_BRIEF), f"# {name} · 创作简报\n\n" + (brief or "（简报生成失败）"))
     material = _read(os.path.join(pdir, F_MATERIAL))
     if not material.strip():
+        if _hit_pause():
+            return proj
         proj.log("🗂 阶段 S：素材与细节库…")
         material = gen_material(cfg, brief) or ""
         _write(os.path.join(pdir, F_MATERIAL), f"# {name} · 素材\n\n" + (material or "（素材生成失败）"))
     draft = _read(os.path.join(pdir, F_DRAFT))
     if not draft.strip():
+        if _hit_pause():
+            return proj
         proj.log(f"✍️ 阶段 D：{OPERATIONS[op]}…")
         draft = gen_draft(cfg, brief, material, op, source_text) or "（生成失败，请重试）"
         _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
@@ -529,14 +561,22 @@ def resume_project(key: str) -> ProseProject | None:
     if polished.strip() and os.path.exists(os.path.join(pdir, F_FINAL)):
         pass   # 去味与定稿都已在盘上：只补状态，不重写
     elif not polished.strip():
-        proj.log("🔍 阶段 A：去味与精修…")
-        polished = gen_polish(draft, cfg)
-        if not polished.strip():
-            polished = draft
-        polished, slop_rep = slop_pass(polished, cfg)
-        if slop_rep:
-            proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
-                     f"{slop_rep.get('summary', '')}")
+        if _hit_pause():
+            return proj
+        # v4.24.16 修复：极速书的断点恢复此前会补跑 A 段（去味+精修+AI腔扫描）——
+        # 与 create_project 的极速分支不一致，违背「极速=初稿即定稿」约定。
+        if express.on(cfg):
+            proj.log("⚡ 极速模式：跳过 A 去味与精修（初稿即定稿）")
+            polished, slop_rep = draft, {}
+        else:
+            proj.log("🔍 阶段 A：去味与精修…")
+            polished = gen_polish(draft, cfg)
+            if not polished.strip():
+                polished = draft
+            polished, slop_rep = slop_pass(polished, cfg)
+            if slop_rep:
+                proj.log(f"🧪 反 AI 腔扫描（{cfg.get('slop_depth') or 'standard'}）："
+                         f"{slop_rep.get('summary', '')}")
         _write(os.path.join(pdir, F_SLOP), polished.strip() + "\n")
         plan["meta"]["slop"] = {"depth": str(cfg.get("slop_depth") or "standard"),
                                 "verdict": slop_rep.get("verdict", ""),

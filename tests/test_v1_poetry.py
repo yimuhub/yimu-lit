@@ -36,12 +36,22 @@ CLASSICS = [
 
 
 @pytest.fixture(autouse=True)
-def _mock_llm(monkeypatch):
+def _mock_llm_local(monkeypatch):   # v4.24.16：改名避开 conftest 同名 autouse（同名即遮蔽，conftest 的 stub 面在这些文件里从未生效——烧网事故病灶）
     monkeypatch.setattr(llm, "chat", lambda *a, **k: "白日依山尽\n黄河入海流\n欲穷千里目\n更上一层楼",
                         raising=False)
     monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {
         "dims": {"意象": 8, "章法": 8, "声律": 9, "情感": 7},
         "total": 80, "verdict": "尚可"}, raising=False)
+
+    def _chat_stream_stub(messages, *a, **k):
+        kw = {x: v for x, v in k.items() if x != "on_delta"}
+        text = llm.chat(messages, *a, **kw)
+        cb = k.get("on_delta")
+        if callable(cb) and text:
+            cb(text)
+        return text
+
+    monkeypatch.setattr(llm, "chat_stream", _chat_stream_stub, raising=False)
     yield
 
 
@@ -215,8 +225,7 @@ def test_recheck_writes_report():
 def test_poetry_routes_registered():
     paths = {getattr(r, "path", "") for r in appmod.app.routes}
     for p in ["/api/poetry/projects", "/api/poetry/create", "/api/poetry/status",
-              "/api/poetry/part", "/api/poetry/recheck", "/api/poetry/rhyme",
-              "/api/poetry/check", "/api/poetry/forms"]:
+              "/api/poetry/part", "/api/poetry/recheck", "/api/poetry/forms"]:
         assert p in paths, f"缺路由 {p}"
 
 
@@ -224,19 +233,6 @@ def test_poetry_forms_api():
     d = client.get("/api/poetry/forms").json()
     labels = [f["label"] for f in d["forms"]]
     assert "七律" in labels and "词" in labels and "现代诗" in labels
-
-
-def test_poetry_check_api():
-    r = client.get("/api/poetry/check", params={
-        "poem": "白日依山尽，黄河入海流。\n欲穷千里目，更上一层楼。",
-        "form": "五绝"}).json()
-    assert r["verdict"] in ("pass", "unclear")
-    assert r["form_label"] == "五绝"
-
-
-def test_poetry_rhyme_api():
-    d = client.get("/api/poetry/rhyme", params={"ch": "楼"}).json()
-    assert d["rhyme"] == "下平十一尤"
 
 
 def test_poetry_create_api():

@@ -15,7 +15,6 @@
 
 import json
 import re
-import datetime
 
 # ── 意图定义 ──────────────────────────────────────────────
 
@@ -26,6 +25,8 @@ INTENTS = {
     "resume_writing":    "继续 / 续写 / 接着写下一章",
     "batch_writing":     "批量写 N 章 / 写完全部 / 再写 N 章",
     "rewrite_low_score": "改写低分章（如「低于65分的全部重写目标80分」「70分以下的章节都改好」）",
+    "rewrite_all_below": "重写所有未达标/不达标/低于标准的章节（不带章号与分数，如「重写所有未达标的章节」）",
+    "score_all_unscored": "给所有未评分/未打分的章节评分（如「给所有未评分的章节进行评分」）",
     "pause_writing":     "暂停写作",
     "query_status":      "查询进度 / 看看写到哪了",
     "set_title":         "修改标题或书名",
@@ -89,12 +90,68 @@ _PAT_START = re.compile(
     re.I,
 )
 
+# rewrite_all_below: 重写所有未达标章节——「重写/改写」+「所有/全部」+「未达标/不达标/低于标准」，无具体章号与分数
+# score_all_unscored: 给所有未评分章节评分——「评分/打分」+「所有/全部/未评分的章节」
+# rewrite_all_below: 重写所有未达标章节（无章号/分数——「重写所有未达标的章节」）
+_PAT_RW_ALL = re.compile(
+    r"(重写|改写|换新|重做)[^。]{0,14}(所有|全部|每一个)[^。]{0,10}(未达标|不达标|低于标准|低于验收|未达到标准|不合格|低于要求)"
+    r"|(所有|全部)[^。]{0,10}(未达标|不达标|低于标准|未达到标准|不合格|低于要求)[^。]{0,12}(章节|内容)?[^。]{0,8}(重写|改写|换新|重做)",
+    re.I,
+)
+
+# score_all_unscored: 给所有未评分章节评分
+_PAT_SCORE_ALL = re.compile(
+    r"(给|把|对)[^。]{0,6}(所有|全部)[^。]{0,8}(未评分|未打分|没有评分|没有打分)[^。]{0,10}(评分|打分)"
+    r"|(评分|打分)[^。]{0,10}(所有|全部)[^。]{0,8}(未评分|未打分)",
+    re.I,
+)
+
 # rewrite_low_score: 按分数阈值改写低分章
 _PAT_RW_LOW = re.compile(
     r"((低于|不到|不足|小于)\s*(\d{2})\s*分?|(\d{2})\s*分?(以下|之内|之下)).{0,24}?(重写|改写|修改|改好|提到|提升|达标)"
     r"|(重写|改写|改好).{0,16}((低于|不到|不足|小于)\s*(\d{2})\s*分?|(\d{2})\s*分?(以下|之下))",
     re.I,
 )
+
+# v4.24.16：目标分数的语义绑定提取（「提到/改到/提升到/达到/目标 X 分」）
+_PAT_TARGET_SCORE = re.compile(r"(?:提到?|提升到?|改到|达到?|目标|冲到)\s*(\d{2,3})(?:\s*分)?")
+# 「低于/以下」就近绑定的下限数字（不依赖与目标分数的先后顺序）
+_PAT_BELOW_NUM = re.compile(r"(?:低于|不到|不足|小于)\s*(\d{2,3})(?:\s*分)?|\s*(\d{2,3})\s*分?\s*(?:以下|之内|之下)")
+
+
+def _extract_thresholds(t: str):
+    """从「低于X分的重写，改到Y分」这类句子里提取 (below, target)。
+    v4.24.16 修复：此前按文本出现顺序取数（nums[0]=below, nums[1]=target），
+    「改到95分，低于85分的重写」会得出 below=95/target=110 的颠倒语义；
+    且 \\d{2} 会把「100」切成「10」。现在按下限词/目标词就近绑定，数字取 2-3 位并过滤 ≤100。"""
+    def _clean(v):
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            return None
+        return v if 30 <= v <= 100 else None
+    below = None
+    m = _PAT_RW_LOW.search(t or "")
+    if m:
+        for gi in (3, 4, 9, 10):      # 模式内与「低于/以下」绑定的数字组
+            below = _clean(m.group(gi))
+            if below is not None:
+                break
+    if below is None:
+        mb = _PAT_BELOW_NUM.search(t or "")
+        if mb:
+            below = _clean(mb.group(1) or mb.group(2))
+    mt = _PAT_TARGET_SCORE.search(t or "")
+    target = _clean(mt.group(1)) if mt else None
+    if target is None:
+        mt2 = re.search(r"到\s*(\d{2,3})\s*分", t or "")   # 「写到90分以上」这类兜底
+        target = _clean(mt2.group(1)) if mt2 else None
+    if below is None:
+        below = 65
+    if target is None or target <= below:
+        target = max(below + 15, 80)
+    target = min(target, 100)   # 目标分不可能超过满分
+    return below, target
 
 # batch_writing: 批量写N章 / 全部写完
 _PAT_BATCH = re.compile(
@@ -228,12 +285,16 @@ def _rule_parse(text):
             ch_no = _cn_to_int(nums[0])
         return "rewrite_chapter", {"chapter_number": ch_no}, 0.85
 
+    # v4.21.9：rewrite_all_below / score_all_unscored——无章号与分数的「全部重写未达标」「全部评分」诉求
+    if _PAT_RW_ALL.search(t):
+        return "rewrite_all_below", {}, 0.86
+    if _PAT_SCORE_ALL.search(t):
+        return "score_all_unscored", {}, 0.86
+
     # rewrite_low_score: 按分数阈值改写低分章（规则兜底，LLM 优先）
     m = _PAT_RW_LOW.search(t)
     if m:
-        nums = [int(x) for x in re.findall(r"\d{2}", t) if 30 <= int(x) <= 100]
-        below = nums[0] if nums else 65
-        target = nums[1] if len(nums) > 1 and nums[1] > below else max(below + 15, 80)
+        below, target = _extract_thresholds(t)
         return "rewrite_low_score", {"below": below, "target": target}, 0.85
 
     # batch_writing: 再写N章 / 写完全部（优先于 start_writing_all 的泛化匹配）
@@ -432,12 +493,18 @@ def parse_intent(text, project_status=None):
         if intent != "rewrite_low_score":
             _m = _PAT_RW_LOW.search(text or "")
             if _m:
-                _nums = [int(x) for x in re.findall(r"\d{2}", text) if 30 <= int(x) <= 100]
-                _below = _nums[0] if _nums else 65
-                _target = _nums[1] if len(_nums) > 1 and _nums[1] > _below else max(_below + 15, 80)
+                _below, _target = _extract_thresholds(text or "")
                 return {"intent": "rewrite_low_score",
                         "params": {"below": _below, "target": _target},
                         "confidence": max(conf, 0.85), "source": "rule", "raw": text}
+        # v4.21.9：高精度规则覆盖——「重写所有未达标」「全部评分」这类固定句式，
+        # 规则比 LLM 可靠（LLM 连续误判为 rewrite_chapter / creative_hint），命中即覆盖。
+        if _PAT_RW_ALL.search(text or ""):
+            return {"intent": "rewrite_all_below", "params": {}, "confidence": 0.9,
+                    "source": "rule", "raw": text}
+        if _PAT_SCORE_ALL.search(text or ""):
+            return {"intent": "score_all_unscored", "params": {}, "confidence": 0.9,
+                    "source": "rule", "raw": text}
         return {"intent": intent, "confidence": conf, "params": params, "source": "llm", "raw": text}
 
     # 降级规则

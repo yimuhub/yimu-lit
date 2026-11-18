@@ -68,10 +68,6 @@ def _spans(text_low: str, term: str) -> list[int]:
     return [m.start() for m in pat.finditer(text_low)]
 
 
-def _count(text: str, term: str) -> int:
-    return len(_spans(text.lower(), term))
-
-
 def guess_era(text: str) -> str:
     """按古/今词表命中数投票。平票或全未命中返回 ""（不猜）。"""
     s = text or ""

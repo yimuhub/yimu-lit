@@ -1,5 +1,5 @@
 """一幕·YIMU 神笔文学创作台 主应用：聊天即开写（小说 / 剧本 / 诗词 / 散文）"""
-import json, os, re, shutil, threading, uuid, time, secrets
+import json, os, re, shutil, threading, traceback, uuid, time, secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
@@ -12,7 +12,11 @@ from bot import prose_writer, slop_checker, security, jobs, versions, platforms
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
+from bot import syslog as syslog_mod
+from bot import steps as steps_mod
 from bot import export as export_mod
+from bot import purity, journal, express
+from bot import audit as audit_mod
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +39,8 @@ _GREETING_REPLY = (
 
 @asynccontextmanager
 async def _lifespan(_app):
+    syslog_mod.log_event("system", "服务启动", {"version": version.current(), "platform": f"{os.name}/{sys.platform}"},
+                         f"服务启动（v{version.current()}）")
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     # v3.1.0：启动时后台恢复「校验中/放行中但线程已死」的书（服务重启遗留卡死）
     def _recover():
@@ -44,6 +50,25 @@ async def _lifespan(_app):
                 print(f"[recover] 已救回 {n} 本陈旧卡死状态的书", flush=True)
         except Exception as e:
             print(f"[recover] 陈旧状态恢复失败：{e}", flush=True)
+        # v4.23.0：任务档案启动对账——进程被上游断流/关机杀掉时来不及写「已暂停」，
+        # 档案会永远停在 running，「继续」因此不肯接手。启动一次，全部改标为可续跑。
+        try:
+            k = journal.reconcile_all(writer._project_dirs())
+            if k:
+                print(f"[recover] 已将 {k} 个中断任务标记为可继续", flush=True)
+        except Exception as e:
+            print(f"[recover] 任务档案对账失败：{e}", flush=True)
+        # v4.26.1：总编辑开机孤儿扫描——服务重启杀掉了看护线程，重启后
+        # 「计划说在写、实际没人在跑」的书此前只能等用户人工发现。
+        # 现在启动 15 秒后扫描全部 in_progress（未暂停）的书，总编辑逐本接手
+        # （ensure 后首检发现无引擎在跑 → 预算内自动断点恢复）。
+        import time as _t
+        _t.sleep(15)
+        try:
+            from bot import supervisor as _sv
+            _sv.sweep_orphans()
+        except Exception as e:
+            print(f"[recover] 总编辑孤儿扫描失败：{e}", flush=True)
     threading.Thread(target=_recover, daemon=True).start()
     yield
 
@@ -190,7 +215,6 @@ def chat(session_id, message, key=None, digest=None):
                 # 不 return，让下面的新作品提取逻辑接管
             else:
                 # 非创作意图（如查询、修改），仍走提示引导
-                from bot import prose_writer as _pw, poetry_writer as _pyw, script_writer as _sw
                 hint = {
                     "poetry": "🎵 识别为诗词创作。请告诉我具体需求，例如「诗词 七绝 写秋夜」，我直接用诗词流水线处理。",
                     "prose": "✒️ 识别为散文创作。请告诉我具体需求，例如「散文 写一段关于母亲的回忆」，我直接用散文流水线处理。",
@@ -252,8 +276,10 @@ def chat(session_id, message, key=None, digest=None):
             return "\n".join(reply)
     # ---- options 阶段 ----
     if s["state"] == "options" and s.get("cfg"):
-        _trace("options-branch", msg=msg[:40], starts134=msg.startswith(("1", "3", "4")))
-        if msg.startswith(("1", "3", "4")) or msg in ("确认", "快车道", "直接写", "随机"):
+        _trace("options-branch", msg=msg[:40], starts134=msg.startswith(("1", "2", "3", "4")))
+        # v4.24.16 修复死分支：「2」（快车道）此前被挡在外层准入元组之外——
+        # 内层 if msg.startswith("2") 永不可达，用户回复「2」只会得到「请回复 1/2/3/4」
+        if msg.startswith(("1", "2", "3", "4")) or msg in ("确认", "快车道", "直接写", "随机"):
             cfg = s["cfg"]
             if msg.startswith("3") and len(msg) > 2:
                 # 合并调整意见（带忙锁，防重复投递双跑 LLM）
@@ -424,7 +450,7 @@ def _apply_title(key, title):
         return {"ok": False, "error": "书名不能为空"}
     proj = _get_project(key)
     if not proj:
-        return {"ok": False, "error": "项目不存在"}
+        return {"ok": False, "error": "项目不存在或未加载，请刷新作品库"}
     if not os.path.isdir(proj.path):
         return {"ok": False, "error": "作品目录不存在"}
     base = os.path.basename(proj.path)
@@ -439,6 +465,13 @@ def _apply_title(key, title):
     if target != proj.path:
         os.rename(proj.path, target)
     new_key = os.path.basename(target)
+    # v4.24.16 修复：目录改名后必须持久化别名——此前只更新内存 PROJECT_INDEX/SESSIONS，
+    # 服务重启后所有持旧 key 的标签页/书签全部 404「项目不存在」
+    # （writer.pick_title 的改名路径早就调 record_rename，这里补齐同款）。
+    try:
+        writer.record_rename(key, new_key)
+    except Exception:
+        pass
     proj.path = target
     proj.name = title
     # 计划文件改名：v3.3.0 修复——此前硬编码写 02-写作计划.json 的 novelName，
@@ -473,7 +506,29 @@ def _apply_title(key, title):
     for sess in SESSIONS.values():
         if sess.get("project") == key:
             sess["project"] = new_key
-    return {"ok": True, "key": new_key, "name": title}
+    # v4.26.0 修复「选完书名就停」：采用书名走的是改名接口（右栏「采用」→ /api/title/set），
+    # 此前只改目录名不启动创作（真正开写的 /api/pick-title 前端这条链路从不调用）——
+    # 引导创建的书选完书名永远停在 awaiting_title。现在检测到待选书名状态：
+    # 清标记 → 启动创作 → 对话流写入确认回复（总编辑随即接手汇报分工）。
+    started = False
+    try:
+        _med2, _fp2, _plan2 = writer._plan_of(target)
+        if _plan2 and (_plan2.get("meta") or {}).get("awaiting_title"):
+            _plan2.setdefault("meta", {})["awaiting_title"] = False
+            _plan2["status"] = "in_progress"
+            atomic_write_json(_fp2, _plan2)
+            started = writer.start_writing(proj, batch_size=((_plan2.get("config") or {}).get("batch_size")))
+            try:
+                from bot.v2api import _save_chat_msg
+                _save_chat_msg(proj, "assistant",
+                               f"✅ 已收到，将以《{title}》进行创作，现在马上安排创作——总编辑已接手，"
+                               f"规划师/作家/审稿人各就各位，进度会在本对话全程汇报。",
+                               {"type": "note"})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {"ok": True, "key": new_key, "name": title, "started": bool(started)}
 
 def _read_title_items(key):
     """读 05-标题候选.json 的 items（无文件返回 []）。"""
@@ -753,157 +808,282 @@ def _chat_attached(s, proj, msg):
     if msg.startswith("@"):
         return _chat_group(s, proj, msg, plan, st, name)
 
-    # ── v2.4.0：NLU 自然语言意图理解（替换原步骤 2-6 的硬编码正则）──
-    # 任意自然语言均可被解析为结构化意图，再路由到对应操作
-    from bot.nlu import parse_intent, format_intent_result
-    _nlu_status = {"state": st.get("state", "unknown")}
-    _nlu = parse_intent(msg, project_status=_nlu_status)
-    _intent = _nlu["intent"]
-    try:
-        _trace("nlu", sid=s.get("session", ""), intent=_intent, conf=_nlu["confidence"], src=_nlu["source"])
-    except Exception:
-        pass
+    # v4.22.0：意图分发抽成嵌套函数 _run —— 供「LLM 规划器」逐步调用（多步任务/任意表述）
+    def _run(intent, params):
+        params = params or {}
+        # query_status → 进度回复
+        if intent == "query_status":
+            mark = ("正在创作中" if st.get("running") else
+                    "已暂停" if st.get("paused") else
+                    "已完结" if st.get("state") == "completed" else "在库待写")
+            # 单位随文体：剧本=场、诗词=轮、散文=阶段、小说=章
+            _unit = {"s_": "场", "p_": "轮", "e_": "阶段", "c_": "篇", "n_": "阶段", "k_": "阶段", "o_": "阶段"}.get(str(key)[:2], "章")   # v4.24.16：单文档引擎按阶段计
+            return (f"📖 《{name}》{mark}：{st['done']}/{st['total']} {_unit}，已写 {st['words']} 字。"
+                    f"可随时问「进度」，或直接下修改指令。")
 
-    # query_status → 进度回复
-    if _intent == "query_status":
-        mark = ("正在创作中" if st.get("running") else
-                "已暂停" if st.get("paused") else
-                "已完结" if st.get("state") == "completed" else "在库待写")
-        # 单位随文体：剧本=场、诗词=轮、散文=阶段、小说=章
-        _unit = {"s_": "场", "p_": "轮", "e_": "阶段"}.get(str(key)[:2], "章")
-        return (f"📖 《{name}》{mark}：{st['done']}/{st['total']} {_unit}，已写 {st['words']} 字。"
-                f"可随时问「进度」，或直接下修改指令。")
+        # set_title → 标题命令
+        if intent == "set_title":
+            _t = params.get("title")
+            return _chat_title_cmd(s, key, msg if not _t else f"改名叫{_t}")
 
-    # set_title → 标题命令
-    if _intent == "set_title":
-        _t = _nlu["params"].get("title")
-        return _chat_title_cmd(s, key, msg if not _t else f"改名叫{_t}")
+        # rewrite_chapter → 局部重写通道
+        if intent == "rewrite_chapter":
+            no = params.get("chapter_number") or _parse_chapter_no(msg)
+            if no:
+                if _REWRITING.get(key, {}).get("running"):
+                    return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
+                if _start_rewrite(key, chapters=[no], dimensions=[msg]):
+                    return f"已安排第{no}章局部重写，完成后状态 pane 可见。"
+                return "⚠️ 重写任务启动失败，请稍后再试。"
 
-    # rewrite_chapter → 局部重写通道
-    if _intent == "rewrite_chapter":
-        no = _nlu["params"].get("chapter_number") or _parse_chapter_no(msg)
-        if no:
-            if _REWRITING.get(key, {}).get("running"):
-                return f"🔁 《{name}》已有重写在进行中，请稍候（状态 pane 可看进度）。"
-            if _start_rewrite(key, chapters=[no], dimensions=[msg]):
-                return f"已安排第{no}章局部重写，完成后状态 pane 可见。"
-            return "⚠️ 重写任务启动失败，请稍后再试。"
+        # pause_writing → 暂停
+        if intent == "pause_writing":
+            if writer.pause_book(key):
+                return f"⏸ 已暂停《{name}》的创作，说「继续」即可恢复。"
+            return f"⚠️ 无法暂停《{name}》。"
 
-    # pause_writing → 暂停
-    if _intent == "pause_writing":
-        if writer.pause_book(key):
-            return f"⏸ 已暂停《{name}》的创作，说「继续」即可恢复。"
-        return f"⚠️ 无法暂停《{name}》。"
+        # query_outline → 大纲
+        if intent == "query_outline":
+            chs = plan.get("chapters") or []
+            if not chs:
+                return f"📖 《{name}》暂无大纲。"
+            lines = [f"📖 《{name}》目录（共 {len(chs)} 章）："]
+            for c in chs[:30]:
+                mark = "✅" if c.get("status") == "completed" else "⏳" if c.get("status") == "in_progress" else "⬜"
+                lines.append(f"  {mark} 第{c.get('chapterNumber', '?')}章 {c.get('title', '')}")
+            if len(chs) > 30:
+                lines.append(f"  …（还有 {len(chs) - 30} 章）")
+            return "\n".join(lines)
 
-    # query_outline → 大纲
-    if _intent == "query_outline":
-        chs = plan.get("chapters") or []
-        if not chs:
-            return f"📖 《{name}》暂无大纲。"
-        lines = [f"📖 《{name}》目录（共 {len(chs)} 章）："]
-        for c in chs[:30]:
-            mark = "✅" if c.get("status") == "completed" else "⏳" if c.get("status") == "in_progress" else "⬜"
-            lines.append(f"  {mark} 第{c.get('chapterNumber', '?')}章 {c.get('title', '')}")
-        if len(chs) > 30:
-            lines.append(f"  …（还有 {len(chs) - 30} 章）")
-        return "\n".join(lines)
+        # export_book → 导出
+        if intent == "export_book":
+            return f"📥 请在「作品」面板点击《{name}》的「导出」按钮，可导出 Markdown / EPUB / PDF。"
 
-    # export_book → 导出
-    if _intent == "export_book":
-        return f"📥 请在「作品」面板点击《{name}》的「导出」按钮，可导出 Markdown / EPUB / PDF。"
+        # new_project → 引导
+        if intent == "new_project":
+            return (f"当前对话已绑定《{name}》。要改这本书直接说（例如「第12章节奏再紧一点」"
+                    f"「给女主加一场反击」）；要开新书请用左侧『新建作品』。")
 
-    # new_project → 引导
-    if _intent == "new_project":
-        return (f"当前对话已绑定《{name}》。要改这本书直接说（例如「第12章节奏再紧一点」"
-                f"「给女主加一场反击」）；要开新书请用左侧『新建作品』。")
+        # v4.22.2：resume_task ——「继续」的真正含义：接着上次没做完那件事，而不是重新开始
+        if intent == "resume_task":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                intent = "resume_writing"       # 非小说文体走各自引擎的断点恢复
+            else:
+                if running:
+                    return (f"📖 《{name}》正在创作中：{st['done']}/{st['total']} 章，"
+                            f"不用再点继续，说「进度」可随时查。")
+                try:
+                    r = writer.resume_task(key, batch_size=params.get("batch_size"))
+                except Exception as e:
+                    r = {"ok": False, "text": f"恢复失败：{e}"}
+                if not r.get("ok"):
+                    return (f"⚠️ 没能接着上次的任务继续（{r.get('text') or '无可用断点'}）。"
+                            f"可以说「写下一章」另起一个写作任务。")
+                return f"▶ {r.get('text')}。已恢复运行，工作台可见进度。"
 
-    # start_writing_all / start_writing / resume_writing → 启动或继续写作
-    # v4.17.3：rewrite_low_score——自然语言按分数阈值改写低分章（「低于65分的全部重写，目标80分」）
-    if _intent == "rewrite_low_score":
-        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
-            return f"⚠️ 按分数改写暂支持小说；其他文体请用评分详情里的「多岗位并行改写」。"
-        _below = _nlu["params"].get("below") or 65
-        _tgt = _nlu["params"].get("target") or max(int(_below) + 15, 80)
-        _lows = [p["ch"] for p in writer.per_chapter_scores(proj)
-                 if isinstance(p.get("score"), (int, float)) and p["score"] < int(_below)]
-        if not _lows:
-            return f"✅ 没有低于 {_below} 分的章节（逐章分最低见「评分详情」），无需改写。"
-        if _PARA_RW_RUNNING.get(key, {}).get("running"):
-            return "⚠️ 该书已有改写任务在跑，请稍候。"
-        _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
-        def _rw_job():
-            try:
-                writer.run_parallel_rewrite(key, chapters=_lows, workers=3, max_rounds=2, target=int(_tgt))
-            finally:
-                _PARA_RW_RUNNING[key]["running"] = False
-        threading.Thread(target=_rw_job, daemon=True).start()
-        return (f"⚡ 已启动按分改写：{_lows.__len__()} 章低于 {_below} 分"
-                f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章），{3} 个岗位并行改写，"
-                f"目标 {int(_tgt)} 分——每章最多 2 轮，改写分必须高于原分否则回滚。完成后逐章汇报。")
+        # start_writing_all / start_writing / resume_writing → 启动或继续写作
+        # v4.17.3：rewrite_low_score——自然语言按分数阈值改写低分章（「低于65分的全部重写，目标80分」）
+        if intent == "rewrite_low_score":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return f"⚠️ 按分数改写暂支持小说；其他文体请用评分详情里的「多岗位并行改写」。"
+            _below = params.get("below") or 65
+            _tgt = params.get("target") or max(int(_below) + 15, 80)
+            _lows = [p["ch"] for p in writer.per_chapter_scores(proj)
+                     if isinstance(p.get("score"), (int, float)) and p["score"] < int(_below)]
+            if not _lows:
+                return f"✅ 没有低于 {_below} 分的章节（逐章分最低见「评分详情」），无需改写。"
+            if _PARA_RW_RUNNING.get(key, {}).get("running"):
+                return "⚠️ 该书已有改写任务在跑，请稍候。"
+            _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+            # v4.23.0：登记任务档案（以前这里漏登记 → 「继续」认不出这个任务，
+            # 会掉去 resume_book 开写新章，把正在改写的书打断）
+            writer.start_task(
+                key, "rewrite", f"重写《{name}》低于 {_below} 分的章节", _lows,
+                batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING, target=int(_tgt)),
+                params={"below": int(_below), "target": int(_tgt)})
+            return (f"⚡ 已启动按分改写：{_lows.__len__()} 章低于 {_below} 分"
+                    f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章），{3} 个岗位并行改写，"
+                    f"目标 {int(_tgt)} 分——每章最多 2 轮，改写分必须高于原分否则回滚。完成后逐章汇报。")
 
-    # v4.15.0：batch_writing 意图识别「再写N章 / 写完全部」——统一并入写作分支
-    if _intent == "batch_writing":
-        _batch_param = _nlu["params"].get("batch_size") or "1"
-        # 非小说：走各自引擎的断点恢复（带 batch_size）
-        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
-            if writer.pipeline_running(key):
-                return f"📖 《{name}》正在创作中：说「继续」可随时查看进度。"
-            import threading as _th
-            from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
-                             children_writer, news_writer, copy_writer, other_writer)
-            _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
-                    "t_": thesis_writer, "c_": children_writer,
-                    "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
+        # v4.21.9：rewrite_all_below——「重写所有未达标的章节」（无章号/分数也准确理解）
+        if intent == "rewrite_all_below":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 批量重写暂支持小说；其他文体请在评分详情里逐章处理。"
+            if _PARA_RW_RUNNING.get(key, {}).get("running"):
+                return "⚠️ 该书已有改写任务在跑，请稍候。"
+            _pass = writer._pass_line()
+            _lows = [p["ch"] for p in writer.per_chapter_scores(proj)
+                     if isinstance(p.get("score"), (int, float)) and p["score"] < _pass]
+            if not _lows:
+                return f"✅ 所有章节都达到 {_pass} 分达标线，没有需要重写的章节。"
+            _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+            # v4.23.0：统一入口——登记 + 跑 + 逐章记进度 + 收尾，全部交给 start_task
+            writer.start_task(
+                key, "rewrite", f"重写《{name}》未达标章节", _lows,
+                batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING,
+                                             workers=3, max_rounds=2),
+                params={"workers": 3, "max_rounds": 2, "pass_line": _pass})
+            return (f"⚡ 已启动重写全部未达标章节：共 {len(_lows)} 章"
+                    f"（第 {_lows[:8]}{'…' if len(_lows) > 8 else ''} 章，均低于达标线 {_pass} 分），"
+                    f"3 个岗位并行定向重写——每章最多 2 轮，改写分必须高于原分否则回滚原稿。完成后逐章汇报。")
+
+            # v4.24.4：consistency_audit——「检查一致性」「盘点一下坑」（巡检异步，报告写活动流与右栏）
+        if intent == "consistency_audit":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 一致性巡检暂支持小说。"
+            def _audit_job():
+                try:
+                    audit_mod.run_audit(key, "manual")
+                except Exception as e:
+                    proj.log(f"⚠️ 巡检异常：{e}")
+            threading.Thread(target=_audit_job, daemon=True).start()
+            return "🔍 已启动一致性巡检：扫描全书矛盾 + 盘点超期未收的伏笔坑，审稿人仲裁后给出修复计划——完成后活动流会汇报，报告可在右栏查看。"
+
+        # v4.21.9：score_all_unscored——「给所有未评分的章节进行评分」
+        if intent == "score_all_unscored":
+            _meta_sc = (proj.plan().get("meta") or {}).get("chapter_scores") or {}
+            _unsc = [c["chapterNumber"] for c in (proj.plan().get("chapters") or [])
+                     if c.get("status") == "completed" and not _meta_sc.get(str(c.get("chapterNumber")))]
+            if not _unsc:
+                return "✅ 所有章节都已有评分，无需补评。"
+            # v4.23.0：统一入口——补评分跑到一半被打断，「继续」会接着评剩下的
+            writer.start_task(
+                key, "score", f"给《{name}》补评分", sorted(_unsc),
+                per_chapter=lambda n, i: writer.score_chapter(proj, n))
+            _head = _unsc[:8]
+            return (f"📚 已开始为 {len(_unsc)} 个未评分章节评分"
+                    f"（第 {_head}{'…' if len(_unsc) > 8 else ''} 章），完成后章节卡会自动显示质量分。")
+
+        # v4.15.0：batch_writing 意图识别「再写N章 / 写完全部」——统一并入写作分支
+        if intent == "batch_writing":
+            _batch_param = params.get("batch_size") or "1"
+            # 非小说：走各自引擎的断点恢复（带 batch_size）
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                if writer.pipeline_running(key):
+                    return f"📖 《{name}》正在创作中：说「继续」可随时查看进度。"
+                import threading as _th
+                from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
+                                 children_writer, news_writer, copy_writer, other_writer)
+                _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
+                        "t_": thesis_writer, "c_": children_writer,
+                        "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
+                _bs = str(_batch_param)
+                _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
+                try:
+                    if hasattr(_mod, "resume_project"):
+                        _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
+                    else:
+                        _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
+                    return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
+                except Exception as e:
+                    return f"⚠️ 无法批量写《{name}》：{e}"
+            # 小说
+            if not running and not writer.resume_book(key, batch_size=_batch_param):
+                return f"⚠️ 无法批量写《{name}》：写作计划缺失或已完本。"
+            if not writer.pipeline_running(key):
+                writer.resume_book(key, batch_size=_batch_param)
             _bs = str(_batch_param)
             _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
-            try:
-                if hasattr(_mod, "resume_project"):
-                    _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
-                else:
-                    _th.Thread(target=lambda: _mod.resume_project(key), daemon=True).start()
-                return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
-            except Exception as e:
-                return f"⚠️ 无法批量写《{name}》：{e}"
-        # 小说
-        if not running and not writer.resume_book(key, batch_size=_batch_param):
-            return f"⚠️ 无法批量写《{name}》：写作计划缺失或已完本。"
-        if not writer.pipeline_running(key):
-            writer.resume_book(key, batch_size=_batch_param)
-        _bs = str(_batch_param)
-        _bs_label = "全部写完" if _bs.lower() in ("all", "0") else f"{_bs} 章"
-        return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
+            return f"▶ 批量写《{name}》：本轮写 {_bs_label}，写完停在当前进度。"
 
-    if _intent in ("start_writing_all", "start_writing", "resume_writing"):
-        if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
-            # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
-            if writer.pipeline_running(key):
-                return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
-            import threading as _th
-            from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
-                             children_writer, news_writer, copy_writer, other_writer)
-            _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
-                    "t_": thesis_writer, "c_": children_writer,
-                    "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
-            # v4.15.7：start_writing_all（用户明确说全部写完）→ 全写，不落 config 默认逐章
-            _bs = "all" if _intent == "start_writing_all" else None
-            _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
-            return f"▶ 恢复《{name}》的创作，工作台可见进度…"
-        if running:
-            st2 = proj.status()
-            return (f"📖 《{name}》正在创作中：第 {st2['done']}/{st2['total']} 章，"
-                    f"说「进度」随时可查。")
-        if writer.resume_book(key):
-            st2 = proj.status()
-            if _intent != "start_writing_all":
-                _bs = str((proj.plan().get("config") or {}).get("batch_size") or "1")
-                if _bs.lower() not in ("all", "0"):
-                    _extra = f"（本批写 {_bs} 章后暂停；说「写完全部」或「一直写下去」可连续创作）"
+        if intent in ("start_writing_all", "start_writing", "resume_writing"):
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                # 非小说文体：走各自引擎的断点恢复（resume_book 只认小说计划）
+                if writer.pipeline_running(key):
+                    return f"📖 《{name}》正在创作中，进度见工作台运行日志。"
+                import threading as _th
+                from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
+                                 children_writer, news_writer, copy_writer, other_writer)
+                _mod = {"s_": script_writer, "p_": poetry_writer, "e_": prose_writer,
+                        "t_": thesis_writer, "c_": children_writer,
+                        "n_": news_writer, "k_": copy_writer, "o_": other_writer}[str(key)[:2]]
+                # v4.15.7：start_writing_all（用户明确说全部写完）→ 全写，不落 config 默认逐章
+                _bs = "all" if intent == "start_writing_all" else None
+                _th.Thread(target=lambda: _mod.resume_project(key, batch_size=_bs), daemon=True).start()
+                return f"▶ 恢复《{name}》的创作，工作台可见进度…"
+            if running:
+                st2 = proj.status()
+                return (f"📖 《{name}》正在创作中：第 {st2['done']}/{st2['total']} 章，"
+                        f"说「进度」随时可查。")
+            if writer.resume_book(key):
+                st2 = proj.status()
+                if intent != "start_writing_all":
+                    _bs = str((proj.plan().get("config") or {}).get("batch_size") or "1")
+                    if _bs.lower() not in ("all", "0"):
+                        _extra = f"（本批写 {_bs} 章后暂停；说「写完全部」或「一直写下去」可连续创作）"
+                    else:
+                        _extra = "（连续模式）"
                 else:
-                    _extra = "（连续模式）"
-            else:
-                _extra = "（全章批量模式）"
-            return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
-        return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
+                    _extra = "（全章批量模式）"
+                return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
+            return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
+
+        return None   # 未命中任何分支
+
+    # ══════════ v4.22.0：Agent 规划器 —— 先理解自然语言，再自主执行 ══════════
+    # 不再依赖写死的句式规则：把「用户原话 + 真实项目状态」交给 LLM 规划器，
+    # 它先理解意图，再输出可执行的多步计划（action + params），这里逐步执行。
+    # 规划器不可用（无模型/断网/解析失败）时才回退到传统单意图理解（规则 + LLM 分类）。
+    from bot.planner import plan_actions, build_context, ACTIONS as _PLAN_ACTIONS
+    try:
+        _pctx = build_context(proj, st, key)
+    except Exception:
+        _pctx = {"state": st.get("state") or "", "done": st.get("done") or 0,
+                 "total": st.get("total") or 0, "pass_line": writer._pass_line()}
+    _planobj = None
+    try:
+        _planobj = plan_actions(msg, _pctx)
+    except Exception:
+        _planobj = None
+    _steps = (_planobj or {}).get("steps") or []
+    _valid_steps = [stp for stp in _steps
+                    if isinstance(stp, dict) and stp.get("action") in _PLAN_ACTIONS]
+    if _valid_steps:
+        try:
+            _trace("plan", sid=s.get("session", ""), steps=[x.get("action") for x in _valid_steps],
+                   understand=(_planobj or {}).get("understanding", "")[:80])
+        except Exception:
+            pass
+        _outs = []
+        try:
+            from bot import steps as _steps_mod
+            if len(_valid_steps) > 1:
+                _steps_mod.emit(key, "planner", "start", title="理解并规划任务",
+                                thinking=(_planobj or {}).get("understanding", ""),
+                                output=f"{len(_valid_steps)} 步：" + " → ".join(x.get("title") or x["action"] for x in _valid_steps))
+        except Exception:
+            pass
+        for _i, _stp in enumerate(_valid_steps, 1):
+            _act = _stp.get("action")
+            _prm = _stp.get("params") if isinstance(_stp.get("params"), dict) else {}
+            try:
+                _r = _run(_act, _prm)
+            except Exception as _e:
+                _r = f"⚠️ 第{_i}步（{_act}）执行异常：{_e}"
+            if _r:
+                if len(_valid_steps) > 1:
+                    _outs.append(f"【第 {_i} 步 · {_stp.get('title') or _act}】{_r}")
+                else:
+                    _outs.append(_r)
+        if _outs:
+            _head = ""
+            if len(_valid_steps) > 1 and (_planobj or {}).get("understanding"):
+                _head = f"🧠 我的理解：{_planobj.get('understanding')}\n\n"
+            return _head + "\n\n".join(_outs)
+        # 全部步骤都返回 None（如纯创作建议）→ 落到 creative_hint 合并通道
+    else:
+        # ── 回退：传统单意图理解（规则 + LLM 分类）──
+        from bot.nlu import parse_intent
+        _nlu = parse_intent(msg, project_status={"state": st.get("state", "unknown")})
+        _intent = _nlu["intent"]
+        try:
+            _trace("nlu", sid=s.get("session", ""), intent=_intent,
+                   conf=_nlu["confidence"], src=_nlu["source"])
+        except Exception:
+            pass
+        _r = _run(_intent, _nlu.get("params") or {})
+        if _r is not None:
+            return _r
 
     # set_style / add_constraint / creative_hint → 并入创作
     # 读者即时指令：存入队列，由写作线程在后续章节消费
@@ -923,6 +1103,7 @@ def _chat_attached(s, proj, msg):
         return f"⚠️ 这条要求没能并入《{name}》的创作（写作计划缺失？），可在『作品』里检查该书。"
     nxt = _next_pending_chapter(plan)
     _hint = ""
+    _intent = locals().get("_intent", "")
     if _intent == "set_style":
         _hint = "（风格调整）"
     elif _intent == "add_constraint":
@@ -995,6 +1176,8 @@ def api_provider_fetch_models(pid: str):
         got = providers.fetch_models(pid)
         if got:
             providers.update_provider(pid, {"models": got})
+            syslog_mod.log_event("provider", "刷新模型清单", {"id": pid, "count": len(got)},
+                                 f"从接口刷新供应商「{pid}」模型清单（{len(got)} 个）")
             return {"ok": True, "models": got, "from_api": True}
         return {"ok": False, "models": providers.get_models(pid), "from_api": False,
                 "msg": "该供应商未开放 /models，请手动填写模型清单"}
@@ -1011,6 +1194,9 @@ def api_model_options():
 def api_provider_add(payload: dict):
     try:
         p = providers.add_provider(payload)
+        syslog_mod.log_event("provider", "添加供应商",
+                             {"id": p.get("id"), "base_url": p.get("base_url"), "models": (p.get("models") or [])[:8]},
+                             f"添加供应商「{p.get('name') or p.get('id')}」（{len(p.get('models') or [])} 个模型）")
         return {"ok": True, "provider": p}
     except providers.ProviderError as e:
         return _prov_err(e)
@@ -1019,6 +1205,11 @@ def api_provider_add(payload: dict):
 def api_provider_update(pid: str, payload: dict):
     try:
         p = providers.update_provider(pid, payload)
+        fields = [k for k in payload if k != "api_key"]
+        syslog_mod.log_event("provider", "修改供应商",
+                             {"id": pid, "fields": fields},
+                             f"修改供应商「{p.get('name') or pid}」：{'、'.join(fields) or '无字段变更'}"
+                             + ("（密钥已更新）" if payload.get("api_key") else ""))
         return {"ok": True, "provider": p}
     except providers.ProviderError as e:
         return _prov_err(e)
@@ -1026,14 +1217,18 @@ def api_provider_update(pid: str, payload: dict):
 @app.delete("/api/providers/{pid}")
 def api_provider_delete(pid: str):
     try:
-        return {"ok": True, **providers.remove_provider(pid)}
+        r = providers.remove_provider(pid)
+        syslog_mod.log_event("provider", "删除供应商", {"id": pid}, f"删除供应商「{pid}」")
+        return {"ok": True, **r}
     except providers.ProviderError as e:
         return _prov_err(e)
 
 @app.post("/api/providers/{pid}/default")
 def api_provider_set_default(pid: str):
     try:
-        return {"ok": True, "default_provider": providers.set_default(pid)}
+        r = providers.set_default(pid)
+        syslog_mod.log_event("provider", "设为默认", {"id": pid}, f"把「{pid}」设为默认供应商")
+        return {"ok": True, "default_provider": r}
     except providers.ProviderError as e:
         return _prov_err(e)
 
@@ -1041,6 +1236,9 @@ def api_provider_set_default(pid: str):
 def api_provider_set_active(pid: str, payload: dict):
     try:
         p = providers.set_active(pid, payload.get("active", True))
+        on = payload.get("active", True)
+        syslog_mod.log_event("provider", "启用/停用", {"id": pid, "active": bool(on)},
+                             f"{'启用' if on else '停用'}供应商「{p.get('name') or pid}」")
         return {"ok": True, "provider": p}
     except providers.ProviderError as e:
         return _prov_err(e)
@@ -1048,14 +1246,13 @@ def api_provider_set_active(pid: str, payload: dict):
 @app.post("/api/providers/{pid}/test")
 def api_provider_test(pid: str, payload: dict = None):
     try:
-        return providers.test_provider(pid, probe_chat=(payload or {}).get("probe_chat", True))
+        r = providers.test_provider(pid, probe_chat=(payload or {}).get("probe_chat", True))
+        syslog_mod.log_event("provider", "测试连接",
+                             {"id": pid, "ok": bool(r.get("ok", True)), "detail": str(r.get("detail") or "")[:120]},
+                             f"测试供应商「{pid}」连接{'成功' if r.get('ok', True) else '失败'}：{str(r.get('detail') or '')[:80]}")
+        return r
     except providers.ProviderError as e:
         return _prov_err(e)
-
-@app.get("/api/debug_sessions")
-def api_debug_sessions():
-    return {k: {kk: vv for kk, vv in v.items() if kk != "cfg"} | {"cfg_keys": list((v.get("cfg") or {}).keys())}
-            for k, v in SESSIONS.items()}
 
 @app.get("/api/projects")
 def api_projects():
@@ -1125,6 +1322,17 @@ def _provider_into(cfg: dict, payload: dict) -> dict:
     return cfg
 
 
+def _express_into(cfg: dict, payload: dict) -> dict:
+    """v4.24.0：把「极速模式」折成 cfg.express。
+
+    两条界面入口等价：小说的「创作模式」卡片传 mode=express，其余文体传 express=express。
+    只在为真时写键——老项目没有这个字段，统一写 False 只会让 02-写作计划.json 变脏。
+    """
+    if express.on({"express": payload.get("express"), "mode": payload.get("mode")}):
+        cfg["express"] = True
+    return cfg
+
+
 def _style_prompt_of(style_id) -> str:
     """蒸馏风格卡的技法文本。剧本/诗词/散文没有 style_ref.json 注入点，折进素材说明里交给提示词。"""
     card = distill.get_style((style_id or "").strip())
@@ -1142,13 +1350,24 @@ def _refs_into(cfg: dict, payload: dict, query_keys: tuple) -> list:
 
 def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: str,
                    cfg: dict, ref_ids: list) -> dict:
-    """占位 key 立即返回，规划放后台线程（引擎里是多次 LLM 调用，同步跑会卡死事件循环）。"""
+    """占位 key 立即返回，规划放后台线程（引擎里是多次 LLM 调用，同步跑会卡死事件循环）。
+
+    v4.23.2：先在**当前线程**把项目目录建出来，再启动后台规划。
+    此前目录要等后台线程真正开始跑才 makedirs，而各引擎的 get_project 都是
+    「目录不存在 → 返回 None」，于是前端拿到 key 立刻轮询 /api/*/status 会吃 404
+    （提示「项目不存在或未加载，请刷新作品库」），网速快一点就必现。
+    引擎 create_project 内部都是 os.makedirs(exist_ok=True)，预建目录不影响它。
+    """
     import threading as _th
     from datetime import datetime as _dt
     display = (cfg.get("title") or cfg.get("idea") or default_name or "").strip()
     display = (display.splitlines()[0] if display else default_name)[:40] or default_name
     _name = safe_fn(cfg.get("title") or cfg.get("idea") or default_name)
     base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
+    try:
+        os.makedirs(os.path.join(writer.PROJECTS_DIR, base), exist_ok=True)
+    except Exception as e:
+        print(f"[spawn] 预建目录失败（{base}）：{e}", flush=True)
 
     def _bg():
         writer.mark_pipeline(base, True)   # v3.1.0：规划+写作全程「创作中」可见
@@ -1156,7 +1375,10 @@ def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: s
             create_fn(cfg, base_key=base)
             _link_references(base, ref_ids)
         except Exception as e:
-            print(f"[bg] {medium}创作失败: {e}", flush=True)
+            # v4.23.2：只打 str(e) 时排查不到落点（曾见「No such file or directory: .tmp-xxx.part」
+            # 完全看不出是哪一步），补完整堆栈。
+            _tb = traceback.format_exc()
+            print(f"[bg] {medium}创作失败: {e}\n{_tb}", flush=True)
         finally:
             writer.mark_pipeline(base, False)
 
@@ -1177,6 +1399,7 @@ def _create_script_project(payload: dict) -> dict:
     if payload.get("agents"):
         cfg["agents"] = payload["agents"] if isinstance(payload["agents"], list) else [payload["agents"]]
     cfg.setdefault("form", "film")
+    _express_into(cfg, payload)
     # 「跟随素材」不写具体时代，交给引擎从题材/标题/素材里推断，避免默认值压过用户意图。
     if str(cfg.get("setting_era") or "") in ("", "auto"):
         cfg.pop("setting_era", None)
@@ -1205,6 +1428,7 @@ def _create_poetry_project(payload: dict) -> dict:
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("form", "modern")
+    _express_into(cfg, payload)
     try:
         rounds = int(payload.get("maxRounds") or payload.get("rounds") or 3)
     except (TypeError, ValueError):
@@ -1234,6 +1458,7 @@ def _create_prose_project(payload: dict) -> dict:
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     cfg.setdefault("operation", "write")
+    _express_into(cfg, payload)
     sp = _style_prompt_of(payload.get("style_id"))
     if sp:
         cfg["idea"] = "\n".join(x for x in ((cfg.get("idea") or "").strip(), "目标文风：" + sp) if x)
@@ -1286,6 +1511,7 @@ def _create_thesis_project(payload: dict) -> dict:
         if payload.get(k) is not None:
             cfg[k] = payload[k]
     _provider_into(cfg, payload)
+    _express_into(cfg, payload)
     return _spawn_project("thesis", "t_", thesis_writer.create_project,
                           thesis_writer._safe, "未命名论文", cfg, [])
 
@@ -1366,6 +1592,9 @@ def api_create(payload: dict):
     for k in ("scale", "writing_mode", "mode", "medium"):
         if payload.get(k):
             cfg[k if k != "writing_mode" else "mode"] = payload[k]
+    # v4.24.0：极速模式。界面上有两条入口——小说的「创作模式」卡片（mode=express）
+    # 与其余文体的「创作节奏」开关（express=express）。两者等价，统一折成 cfg.express。
+    _express_into(cfg, payload)
     if isinstance(cfg.get("scale"), str):
         try:
             from bot import longform as _lf
@@ -1428,7 +1657,8 @@ def api_create(payload: dict):
             if title:
                 plan["meta"] = meta
                 proj.save_plan(plan)
-                writer.start_writing(proj)
+                # v4.20.0：开书第一批也要遵守「一次写几张」设置（此前漏传 → 第一批直接全写完）
+                writer.start_writing(proj, batch_size=(plan.get("config") or {}).get("batch_size"))
             else:
                 meta["title_candidates"] = cands
                 meta["awaiting_title"] = True
@@ -1490,10 +1720,12 @@ _REWRITING = {}  # key -> {"running":bool,"result":dict}
 
 def _start_rewrite(key, chapters=None, dimensions=None, max_rounds=6):
     """v2.3.0：局部重写统一入口（/api/rewrite 端点与 attached 对话共用，不重复造轮子）。
-    已在跑则返回 False；否则后台线程跑 writer.run_guided_rewrite，状态进 _REWRITING 表。"""
-    if _REWRITING.get(key, {}).get("running"):
-        return False
-    _REWRITING[key] = {"running": True, "result": None}
+    已在跑则返回 False；否则后台线程跑 writer.run_guided_rewrite，状态进 _REWRITING 表。
+    v4.24.16：检查+置位加注册表互斥（与 /api/parallel-write 同款 TOCTOU 修复）。"""
+    with _RUNNING_REG_LOCK:
+        if _REWRITING.get(key, {}).get("running"):
+            return False
+        _REWRITING[key] = {"running": True, "result": None}
 
     def _job():
         try:
@@ -1616,7 +1848,7 @@ def api_lib_item(key: str):
     """单作品元数据：前端冷启动只有 key，用它解析文体与进度。"""
     it = writer.library_item(key)
     if not it:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return it
 
 @app.post("/api/library/{key}/favorite")
@@ -1641,12 +1873,26 @@ def api_lib_trash(key: str):
 def api_lib_restore(key: str):
     return writer.restore_book(key)
 
+def _after_book_gone(key: str):
+    """v4.24.16：作品彻底删除后的运行期注册表清理——否则 PROJECT_INDEX 仍持有指向
+    已删路径的 Project（缓存命中直接返回），queue_action 等写入路径会把已删目录
+    连同空壳计划「复活」；活动流与并行/改写状态也要一并清。"""
+    PROJECT_INDEX.pop(key, None)
+    for reg in (_PARALLEL_RUNNING, _REWRITING, _RELEASE_RUNNING, _ONESHOT_RUNNING,
+                _PARA_RW_RUNNING):
+        try:
+            reg.pop(key, None)
+        except Exception:
+            pass
+
+
 @app.delete("/api/library/{key}/purge")
 def api_lib_purge(key: str, confirm: str = ""):
     """彻底删除（不可逆）：confirm 必须与作品显示名完全一致。"""
     res = writer.purge_book(key, confirm)
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
+    _after_book_gone(key)
     return res
 
 @app.post("/api/library/{key}/rename")
@@ -1661,6 +1907,7 @@ def api_lib_delete(key: str, hard: bool = False, confirm: str = ""):
     res = writer.purge_book(key, confirm)
     if not res.get("ok"):
         return JSONResponse(res, status_code=400)
+    _after_book_gone(key)
     return res
 
 @app.post("/api/library/batch")
@@ -1692,25 +1939,6 @@ def api_compare(keys: str):
     ks = [k for k in keys.split(",") if k][:4]
     return {"items": [writer.library_item(k) for k in ks]}
 
-@app.post("/api/rewrite-plan")
-def api_rewrite_plan(payload: dict):
-    key = payload.get("key")
-    proj = _get_project(key)
-    if not proj:
-        # 内存中未命中时尝试从磁盘加载
-        try:
-            pdir = writer._project_dir(key)
-            if os.path.isdir(pdir):
-                PROJECT_INDEX[key] = writer.Project(pdir, key)
-                proj = PROJECT_INDEX[key]
-        except ValueError:
-            pass
-    if not proj:
-        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
-    cfg = (proj.plan() or {}).get("config") or {}
-    brief = writer.rewrite_brief(proj, cfg)
-    return brief
-
 @app.post("/api/rewrite")
 def api_rewrite(payload: dict):
     key = payload.get("key")
@@ -1732,29 +1960,13 @@ def api_rewrite(payload: dict):
                    max_rounds=int(payload.get("max_rounds") or 6))
     return {"ok": True, "running": True, "msg": "🔁 审查后定向重写中…（约 2-5 分钟，把要求书逐条带进目标章）"}
 
-@app.get("/api/rewrite-progress")
-def api_rewrite_progress(key: str):
-    """v0.7 R2：重写 job 逐章实时进度（前端进度板轮询；无 job 时返回空结构）。"""
-    p = writer.rewrite_progress(key)
-    return p or {"running": False, "total": 0, "done": 0, "cancelled": False, "per_chapter": [], "result": None}
-
-@app.post("/api/rewrite-cancel")
-def api_rewrite_cancel(payload: dict):
-    """v0.7 R2：取消该书重写（下一检查点停，已写章保留）。"""
-    key = payload.get("key")
-    if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
-    writer.cancel_rewrite(key)
-    _REWRITING[key] = {"running": False, "result": {"cancelled": True}}
-    return {"ok": True, "msg": "已请求取消（下一检查点停，已写章保留）"}
-
 # ---------- v2.3.0：标题体系 + 一致性体检 ----------
 
 @app.post("/api/title/set")
 def api_title_set(payload: dict):
     key = str(payload.get("key") or "")
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     res = _apply_title(key, str(payload.get("title") or ""))
     if not res.get("ok"):
         return JSONResponse({"error": res.get("error") or "改名失败"}, status_code=400)
@@ -1764,7 +1976,7 @@ def api_title_set(payload: dict):
 def api_title_generate(payload: dict):
     key = str(payload.get("key") or "")
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         n = min(max(int(payload.get("n") or 5), 1), 10)
     except (TypeError, ValueError):
@@ -1775,42 +1987,33 @@ def api_title_generate(payload: dict):
 @app.get("/api/title/candidates")
 def api_title_candidates(key: str):
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"items": _read_title_items(key)}
 
-# ---------- v4.15.11：一致性一键修复（单个深度修复 + 全部一键修复） ----------
+# ---------- v4.15.11：一致性一键修复（全部一键修复） ----------
 
 _FIXABLE_REWRITE_RE = re.compile(r"第(\d+)章")
 
 
-def _consistency_fix_one(key: str, issue: str) -> dict:
-    """单个体检问题的修复：先确定性修复（continuity.fix），改稿类自动升级 LLM 定向重写。"""
-    from bot import continuity as _cont
-    res = _cont.fix(writer._project_dir(key), issue)   # v4.17.4：此前引用未定义的 _project_dir → 一键修复 NameError
-    actions = list(res.get("actions") or [])
-    if not res.get("fixed"):
-        # 改稿类：定位章号（无章号则取最近完成章），启动定向重写（后台，状态进 _REWRITING）
-        m = _FIXABLE_REWRITE_RE.search(issue)
-        plan = writer.Project(writer._project_dir(key), key).plan() or {}
-        no = int(m.group(1)) if m else max(
-            [c.get("chapterNumber") or 0 for c in (plan.get("chapters") or [])
-             if c.get("status") == "completed"] or [0])
-        if no:
-            ok = _start_rewrite(key, chapters=[no], dimensions=[issue], max_rounds=1)
-            actions.append(f"已启动第{no}章定向重写（LLM 修复后台进行）" if ok
-                           else "已有重写任务在跑，本章修复已排队语义跳过")
-        else:
-            actions.append("没有可定位的章节，仅标记已处理")
-    return {"issue": issue, "fixed": res.get("fixed"), "actions": actions}
-
-
 @app.post("/api/providers/fetch-models")
 def api_providers_fetch_models(payload: dict):
-    """v4.15.15：拉取供应商的可用模型列表（GET {base_url}/models）。
-    添加/编辑供应商时，填完地址与密钥即可一键拉取，模型选择改为下拉。"""
+    """拉取供应商的可用模型列表（GET {base_url}/models）。
+    添加/编辑供应商时，填完地址与密钥即可一键拉取。
+    v4.19.1 修复：编辑已保存供应商时密钥框按设计不回显（留空=不修改），
+    此前把空密钥直接发给接口导致 401，用户误以为密钥丢失。现在留空且带
+    provider_id 时自动回落到该供应商已保存的密钥（明文不回显但服务端可复用）。"""
     import urllib.request as _ur
     base = str(payload.get("base_url") or "").strip().rstrip("/")
     key = str(payload.get("api_key") or "").strip()
+    pid = str(payload.get("provider_id") or "").strip()
+    used_saved_key = False
+    if not key and pid:
+        try:
+            _p = providers._require_id(providers.load_data(), pid)
+            key = providers.key_of(_p)
+            used_saved_key = bool(key)
+        except providers.ProviderError:
+            pass
     if not base:
         return JSONResponse({"error": "请先填写接口地址"}, status_code=400)
     url = f"{base}/models"
@@ -1825,7 +2028,8 @@ def api_providers_fetch_models(payload: dict):
         if not ids:
             # 兼容 {"models":[...]} 形态（Ollama 原生）
             ids = [str(m.get("name") or m.get("model")) for m in (data.get("models") or []) if (m.get("name") or m.get("model"))]
-        return {"ok": True, "models": sorted(set(ids)), "count": len(set(ids))}
+        return {"ok": True, "models": sorted(set(ids)), "count": len(set(ids)),
+                "used_saved_key": used_saved_key}
     except Exception as e:
         return JSONResponse({"error": f"拉取失败（{type(e).__name__}）：请检查接口地址与密钥"}, status_code=502)
 
@@ -1845,7 +2049,7 @@ _UPDATE_SYNC = [
 @app.post("/api/self-update")
 def api_self_update():
     """一键自更新：下载 GitHub 最新 release 源码 → 白名单覆盖 → 返回需重启。"""
-    import urllib.request, zipfile, io, shutil, tempfile
+    import zipfile, io, shutil
     repo = "yimuhub/yimu-lit"
     token = None
     try:
@@ -1932,6 +2136,7 @@ def api_restart(request: Request):
     """重启服务（自更新后调用）。v4.15.18：-m uvicorn 方式（脚本路径方式会遮蔽标准库）+ 端口取自当前请求。"""
     import sys as _sys, subprocess as _sp
     _port = request.url.port or int(os.environ.get("NOVEL_BOT_PORT") or 46821)
+    syslog_mod.log_event("system", "重启服务", {"port": _port}, "手动重启服务")
     _uv = [ _sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(_port) ]
     # v4.15.18：新进程延迟 2.5 秒再绑定端口——旧进程 timer 0.6s 后退出，避免 address in use 竞争
     if _sys.platform == "win32":
@@ -2032,31 +2237,64 @@ def api_diagnostics():
             "providers": prov_summary, "llm_errors": llm_errors}
 
 
+# ---------- v4.19.0：系统级操作日志（设置/供应商/技能/岗位/启停等系统侧流水） ----------
+
+@app.get("/api/syslog")
+def api_syslog(kind: str = "", q: str = "", limit: int = 300):
+    """系统级操作日志：最新在前。kind 过滤一类；q 关键词过滤。"""
+    return {"ok": True, "total": syslog_mod.count(), "items": syslog_mod.tail(limit=limit, kind=kind, q=q)}
+
+
+@app.post("/api/syslog/clear")
+def api_syslog_clear():
+    # 先删文件、再重新落一条「清空」留痕（先记会被 clear 一起删掉）
+    syslog_mod.clear()
+    syslog_mod.log_event("system", "清空日志", None, "清空系统操作日志")
+    return {"ok": True}
+
+
+# ---------- v4.19.0：会话级创作日志（原有 运行日志.txt / chat_log.jsonl）的统一说明见 /api/diagnostics ----------
+
 _PARA_RW_RUNNING: dict = {}
+
+
+def _rw_batch(key, todo, running_map, target=None, workers=3, max_rounds=2):
+    """跑一批并行改写，并保证运行标志一定被清掉（异常时照样清，否则该书永远「在跑」）。"""
+    try:
+        res = writer.run_parallel_rewrite(key, chapters=todo, workers=workers,
+                                          max_rounds=max_rounds, target=target)
+        running_map[key] = {"running": False, "result": res}
+        return res
+    except Exception as e:
+        running_map[key] = {"running": False, "result": {"error": str(e)}}
+        raise
+
 
 @app.post("/api/rewrite-parallel")
 def api_rewrite_parallel(payload: dict):
     """v4.17.2：多岗位并行改写低分章——审稿问题一次性下发，每章独立改写，
-    分数必须高于原分（保留更好守护），每章 1 轮不烧 token。异步执行。"""
+    分数必须高于原分（保留更好守护），每章 1 轮不烧 token。异步执行。
+    v4.23.0：登记任务档案，中途被打断也能「继续」接着改剩下的。"""
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     key = os.path.basename(proj.path)
     if _PARA_RW_RUNNING.get(key, {}).get("running"):
         return JSONResponse({"error": "该书已有改写任务在跑"}, status_code=409)
     chapters = payload.get("chapters")
     workers = max(1, min(8, int(payload.get("workers") or 3)))
-    _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
     _target = payload.get("target")
-    def _job():
-        try:
-            res = writer.run_parallel_rewrite(key, chapters=chapters, workers=workers, max_rounds=1,
-                                              target=_target)
-            _PARA_RW_RUNNING[key] = {"running": False, "result": res}
-        except Exception as e:
-            _PARA_RW_RUNNING[key] = {"running": False, "result": {"error": str(e)}}
-    threading.Thread(target=_job, daemon=True).start()
+    _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
+    if not chapters:
+        chapters = [p["ch"] for p in writer.per_chapter_scores(proj)
+                    if isinstance(p.get("score"), (int, float)) and p["score"] < writer._pass_line()]
+    writer.start_task(
+        key, "rewrite", f"并行改写《{proj.name}》低分章", chapters or [],
+        batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING,
+                                     target=_target, workers=workers, max_rounds=1),
+        params={"workers": workers, "max_rounds": 1,
+                **({"target": _target} if _target else {})})
     return {"ok": True, "started": True, "workers": workers,
             "msg": f"⚡ 多岗位并行改写已启动（同时 {workers} 个岗位，改完自动停）"}
 
@@ -2074,80 +2312,196 @@ def api_chapter_scores(key: str):
     """逐章评分列表（多岗位并行改写弹窗数据源）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"ok": True, "key": key, "scores": writer.per_chapter_scores(proj),
             "pass_line": writer._pass_line()}
 
 
+# v4.24.11：key 前缀 → 各文体计划文件名（绑定岗位/技能这类「本书配置」必须读写
+# 各自文体的计划，而不是往剧本目录里塞一份 02-写作计划.json）
+_BOOK_PLAN_BY_PREFIX = {
+    "s_": "剧本计划.json", "p_": "诗词计划.json", "e_": "散文计划.json",
+    "t_": "论文计划.json", "c_": "儿童文学计划.json", "n_": "新闻稿计划.json",
+    "k_": "文案计划.json", "o_": "其他创作计划.json",
+}
+
+
+def _read_book_plan(key: str) -> dict:
+    """按 key 前缀读对应文体的计划文件；缺失/损坏返回 {}。"""
+    import json as _json
+    try:
+        fp = os.path.join(writer._project_dir(key),
+                          _BOOK_PLAN_BY_PREFIX.get(str(key)[:2], "02-写作计划.json"))
+        with open(fp, encoding="utf-8") as f:
+            d = _json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_book_plan(key: str, plan: dict) -> bool:
+    """按 key 前缀写回对应文体的计划文件（原子写）。"""
+    from bot.safeio import atomic_write_json as _aw
+    try:
+        fp = os.path.join(writer._project_dir(key),
+                          _BOOK_PLAN_BY_PREFIX.get(str(key)[:2], "02-写作计划.json"))
+        _aw(fp, plan)
+        return True
+    except Exception:
+        return False
+
+
+def _book_plan_exists(key: str) -> bool:
+    try:
+        return bool(key) and os.path.isdir(writer._project_dir(key))
+    except Exception:
+        return False
+
+
 @app.get("/api/book-agents")
 def api_book_agents(key: str = ""):
-    """本书绑定的创作岗位（plan.config.agents）。"""
-    proj = _get_project(key) if key else None
-    if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
-    plan = proj.plan() or {}
+    """本书绑定的创作岗位（plan.config.agents）。v4.24.11：全文体通用——按前缀读各自计划文件。"""
+    if not _book_plan_exists(key):
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    plan = _read_book_plan(key)
     agents = (plan.get("config") or {}).get("agents") or []
     from bot import agents as _ag
+    _merged = _ag._all_agents()   # v4.20：内置 + 自定义岗位都能正确显示 label/stage/desc
     return {"ok": True, "key": key, "agents": [
-        {"agent": a, "label": _ag.AGENTS.get(a, {}).get("label", a),
-         "stage": _ag.AGENTS.get(a, {}).get("stage", ""),
-         "desc": _ag.AGENTS.get(a, {}).get("desc", "")} for a in agents if isinstance(a, str)]}
+        {"agent": a, "label": _merged.get(a, {}).get("label", a),
+         "stage": _merged.get(a, {}).get("stage", ""),
+         "desc": _merged.get(a, {}).get("desc", "")} for a in agents if isinstance(a, str)]}
 
 
 @app.post("/api/book-agents")
 def api_book_agents_set(payload: dict):
-    """设置本书创作岗位（真正参与创作：并行领章署名、写作日志展示）。"""
+    """设置本书创作岗位（真正参与创作：并行领章署名、写作日志展示）。
+    v4.24.11：全文体通用——非小说写各自计划文件，不再误建 02-写作计划.json。"""
     key = str(payload.get("key") or "")
-    proj = _get_project(key)
-    if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+    if not _book_plan_exists(key):
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import agents as _ag
-    from bot import medium as _med_mod
     raw = payload.get("agents")
     if not isinstance(raw, list):
         return JSONResponse({"error": "agents 必须是数组"}, status_code=400)
     cleaned = []
     for a in raw:
         a = str(a or "").strip()
-        if a and (a in _ag.AGENTS or str(key)[:2] == "s_"):
+        # v4.20：is_known_agent 覆盖内置 + 自定义岗位（此前自定义岗位加不进本书名单）
+        if a and (_ag.is_known_agent(a) or str(key)[:2] == "s_"):
             cleaned.append(a)
-    plan = proj.plan() or {}
-    plan.setdefault("config", {})["agents"] = cleaned
-    proj.save_plan(plan)
+    # v4.24.12：读-改-写纳入按书串行原语——协作页签连点/双端并发改同一本书时不再互相覆盖；
+    # 读失败时绝不整文件覆盖写（否则一次瞬时读错误就会把整本计划清成只剩 config.agents）。
+    with writer._acq_book(key):
+        fp = os.path.join(writer._project_dir(key),
+                          _BOOK_PLAN_BY_PREFIX.get(str(key)[:2], "02-写作计划.json"))
+        plan, read_ok = _read_book_plan(key), False
+        try:
+            with open(fp, encoding="utf-8") as f:
+                import json as _json
+                read_ok = isinstance(_json.load(f), dict)
+        except Exception:
+            read_ok = False
+        if not read_ok:
+            return JSONResponse({"error": "计划文件不可读，已拒绝写入（防止覆盖整本计划）"}, status_code=409)
+        plan.setdefault("config", {})["agents"] = cleaned
+        if not _write_book_plan(key, plan):
+            return JSONResponse({"error": "计划文件写入失败"}, status_code=500)
     return {"ok": True, "key": key, "agents": cleaned}
 
 
 @app.post("/api/diagnostics/export")
 def api_diagnostics_export(payload: dict = None):
-    """一键导出诊断包（纯文本，不含任何密钥/作品正文）——发给开发者排查用。"""
+    """导出诊断包（纯文本，不含任何密钥/作品正文）——发给开发者排查用。
+    v4.20.0：支持按需选择范围。payload 可选 {sections:[works|sysops|server|llm|providers],
+    logs:bool}；sections 缺省=全部（兼容旧版一键导出）；logs=True 附全部日志全文（可读、
+    截断防爆：服务端 2000 行 / 每本运行日志 800 行 / 系统操作日志 2000 条）。"""
     import datetime as _dt
+    body = payload if isinstance(payload, dict) else {}
+    sections = body.get("sections") if isinstance(body.get("sections"), list) else None
+    want = set(sections) if sections else {"works", "sysops", "server", "llm", "providers"}
+    logs_full = bool(body.get("logs"))
     d = api_diagnostics()
-    lines = [f"# 一幕·YIMU 神笔 诊断包", f"- 导出时间: {_dt.datetime.now().isoformat(timespec='seconds')}",
-             f"- 版本: {d['version']} | 平台: {d['platform']}", f"- 模型最近调用: {d.get('llm_state')}", ""]
-    lines.append("== 模型供应商配置（脱敏） ==")
-    for p in (d.get("providers") or []):
-        lines.append(json.dumps(p, ensure_ascii=False))
-    if d.get("llm_errors"):
+    lines = [f"# 一幕·YIMU 神笔 诊断包",
+             f"- 导出时间: {_dt.datetime.now().isoformat(timespec='seconds')}",
+             f"- 版本: {d['version']} | 平台: {d['platform']}",
+             f"- 范围: {'、'.join(sorted(want)) or '（无）'}{' + 日志全文' if logs_full else ''}",
+             f"- 模型最近调用: {d.get('llm_state')}", ""]
+
+    if "providers" in want:
+        lines.append("== 模型供应商配置（脱敏） ==")
+        for p in (d.get("providers") or []):
+            lines.append(json.dumps(p, ensure_ascii=False))
         lines.append("")
-        lines.append("== 模型调用错误日志（尾40） ==")
-        lines.extend(d["llm_errors"])
-    lines.append("")
-    lines.append("== 各作品状态 ==")
-    for b in d["books"]:
-        flag = f"  ⚠️ 疑似卡住 {b['stalled_seconds']//60} 分钟" if b.get("stalled_seconds") else ""
-        lines.append(f"[{b['name']}] {b['medium']} {b['state']} {b['done']}/{b['total']}{flag}")
-        lines.append(f"  最后日志: {b['last_line']}")
-    lines.append("")
-    for b in d["books"]:
-        lines.append(f"===== {b['name']} 运行日志（尾40行）=====")
-        lines.extend(b["tail"])
+
+    if "llm" in want:
+        if d.get("llm_errors"):
+            lines.append("== 模型调用错误日志（尾40） ==")
+            lines.extend(d["llm_errors"])
+            lines.append("")
+
+    if "works" in want:
+        lines.append("== 各作品状态 ==")
+        for b in d["books"]:
+            flag = f"  ⚠️ 疑似卡住 {b['stalled_seconds']//60} 分钟" if b.get("stalled_seconds") else ""
+            lines.append(f"[{b['name']}] {b['medium']} {b['state']} {b['done']}/{b['total']}{flag}")
+            lines.append(f"  最后日志: {b['last_line']}")
         lines.append("")
-    if d["server_tail"]:
-        lines.append("===== 服务端日志（尾60行）=====")
+        for b in d["books"]:
+            lines.append(f"===== {b['name']} 运行日志（尾40行）=====")
+            lines.extend(b["tail"])
+            lines.append("")
+
+    if "sysops" in want:
+        lines.append("== 系统操作日志（最新在前，尾 500 条） ==")
+        for e in syslog_mod.tail(limit=500):
+            lines.append(f"[{e.get('time')}] [{e.get('kind')}] {e.get('summary') or e.get('action')}")
+            det = e.get("detail")
+            if det not in (None, {}, [], ""):
+                lines.append(f"    详情: {json.dumps(det, ensure_ascii=False, default=str)[:400]}")
+        lines.append("")
+
+    if "server" in want and d.get("server_tail"):
+        lines.append("== 服务端日志（尾60行） ==")
         lines.extend(d["server_tail"])
+        lines.append("")
+
+    # v4.20.0：日志全文（可读、截断防爆）
+    if logs_full:
+        try:
+            nb = sorted([f for f in os.listdir(ROOT) if f.startswith("nb") and f.endswith(".log")],
+                        key=lambda f: os.path.getmtime(os.path.join(ROOT, f)))
+            if nb:
+                with open(os.path.join(ROOT, nb[-1]), encoding="utf-8", errors="replace") as f:
+                    srv_all = [l.rstrip() for l in f.readlines()[-2000:]]
+                lines.append(f"== 服务端日志全文（{nb[-1]} 尾 2000 行） ==")
+                lines.extend(srv_all)
+                lines.append("")
+        except Exception:
+            pass
+        for b in d["books"]:
+            log_path = os.path.join(writer.PROJECTS_DIR, b["key"], "运行日志.txt")
+            try:
+                if os.path.exists(log_path):
+                    with open(log_path, encoding="utf-8", errors="replace") as f:
+                        full = [l.rstrip() for l in f.readlines()[-800:]]
+                    lines.append(f"===== {b['name']} 运行日志全文（尾 800 行）=====")
+                    lines.extend(full)
+                    lines.append("")
+            except Exception:
+                continue
+        lines.append("== 系统操作日志全文（最新在前，尾 2000 条） ==")
+        for e in syslog_mod.tail(limit=2000):
+            lines.append(f"[{e.get('time')}] [{e.get('kind')}] {e.get('summary') or e.get('action')}")
+            det = e.get("detail")
+            if det not in (None, {}, [], ""):
+                lines.append(f"    详情: {json.dumps(det, ensure_ascii=False, default=str)[:400]}")
+        lines.append("")
+
+    scope = "all" if not sections else "-".join(sorted(want))
     text = "\n".join(lines)
     return Response(text, media_type="text/plain; charset=utf-8",
-                    headers={"Content-Disposition": "attachment; filename=yimu-lit-diagnostics.txt"})
+                    headers={"Content-Disposition": f"attachment; filename=yimu-lit-diagnostics-{scope}.txt"})
 
 
 def _gh_fetch(url: str, token: str | None = None, timeout: int = 15, retries: int = 3, binary: bool = False):
@@ -2283,12 +2637,12 @@ def api_audit(payload: dict):
     return {"ok": True, "at": at, "scope": scope, "issues": list(issues or [])[:50]}
 
 @app.get("/api/book-live")
-def api_book_live(key: str):
+def api_book_live(key: str, request: Request):
     """v0.7 R4：对话区「本书在干什么」live 卡数据源（纯读、无 LLM、按书隔离）。
     聚合 阶段/当前章/进度/实时日志，前端 1.5s 轮询原地刷新（Hermes 式 live 工具步骤）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     st = proj.status()
     if st.get("state") in ("missing", "", "unknown"):
         # v4.13.0：非小说文体没有 02-写作计划.json，Project.status 误报 → 回退 library_item
@@ -2302,6 +2656,9 @@ def api_book_live(key: str):
             st["total"] = it.get("total", 0)
             st["words"] = it.get("total_words", 0)
             st["running"] = bool(it.get("running"))
+            # v4.24.12：非小说回退分支漏传 paused —— 「暂停中…」永远不出现，
+            # 界面上就只剩「继续」，看不出线程其实还活着。
+            st["paused"] = bool(it.get("paused"))
     plan = proj.plan() or {}
     chs = plan.get("chapters") or []
     inprog = [c.get("chapterNumber") for c in chs if c.get("status") == "in_progress"]
@@ -2343,11 +2700,176 @@ def api_book_live(key: str):
         "key": key, "name": st.get("name"), "phase": phase, "state": state,
         "current_chapter": cur_ch,
         "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0},
-        "running": bool(st.get("running") or par or rw or rel),
+        "running": bool(st.get("running") or par or rw or rel or osh),
         "paused": st.get("paused"), "parallel": bool(par), "rewriting": bool(rw), "releasing": bool(rel),
         "live_log": live,
         "updated_at": int(time.time()),
+        # v4.21.0：创作活动流增量 + 当前流式步骤（对话内 Agent 逐条动作/思考/产出）
+        # v4.24.16：stream_think_offset 透传——stream_state 早就设计了独立的思维链
+        # 增量游标，但 HTTP 层从未接（B 支持的字段 A 不传），思维链每 1.5s 全量重发
+        "steps": steps_mod.since(key, _q_int(request, "steps_cursor")),
+        "stream": steps_mod.stream_state(key, _q_int(request, "stream_offset"),
+                                         _q_int(request, "stream_think_offset")),
     }
+
+
+def _q_int(request: Request, name: str) -> int:
+    try:
+        return int(request.query_params.get(name) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+@app.post("/api/chat/note")
+def api_chat_note(payload: dict):
+    """v4.21.3：创作按钮（继续/暂停）的气泡永久入库——写入 chat_log.jsonl，
+    刷新/重开后对话流原样回放。payload: {key, text, note}"""
+    key = str(payload.get("key") or "")
+    text = str(payload.get("text") or "").strip()[:60]
+    note = str(payload.get("note") or "来自创作按钮").strip()[:30]
+    if not key or not text:
+        return JSONResponse({"error": "缺少 key 或 text"}, status_code=400)
+    from bot.v2api import _save_chat_msg
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    _save_chat_msg(proj, "user", text, {"note": note})
+    return {"ok": True}
+
+
+@app.post("/api/express-toggle")
+def api_express_toggle(payload: dict):
+    """v4.22.2：已有书的极速开关（向导只在开书时能选，此端点让任何书随时切换）。
+
+    v4.24.13：与「⚡ 极速续写」(POST /api/express-write) 合并成**同一个写入口**
+    `express.set_plan_flag`。此前开关写 `config.express` + 顶层 `plan["express"]`，
+    续写写 `config.express` + `config.mode`，两个入口各写一半，同一本书的字段会
+    互相矛盾（顶层说开、config 说关），界面标签和实际行为也会分叉。
+
+    **小说：运行中也能切，下一章生效。** 写作循环每章都重读 `config.express`
+    （`_write_loop._live_express()`），所以切档只影响还没写的章：一章写到一半
+    不会换档（换档会把同章的字数线与评分逻辑撕成两半）。开关是**动态**的——
+    用户随时可以开启或关闭，不需要先暂停。
+    非小说仍拒绝运行中切换：那 7 个引擎在启动时就把要跑的阶段算定了，
+    中途改只会「标签变了、阶段没变」，宁可说清楚。
+
+    非小说也支持：走各自引擎的 project（不能落到 `Project` 上——那会往
+    剧本/诗词目录里写一份 02-写作计划.json）。
+    """
+    key = str(payload.get("key") or "")
+    on = bool(payload.get("on"))
+    running = False   # v4.24.15：回给前端，决定提示语是「立即」还是「下一章起」
+    paused = False
+    mod = _nonnovel_module(key)
+    if mod is not None:
+        try:
+            proj = mod.get_project(key)
+        except Exception:
+            proj = None
+        if not proj:
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+        plan = proj.plan() or {}
+        if not plan:
+            # 目录在、计划文件缺失（删过/损坏）：不能凭空 save 一份只有 express 的计划，
+            # 那会把这本书的状态彻底弄脏，且引擎读不到任何创作字段。
+            return JSONResponse({"error": "该作品的计划文件缺失，请先从作品库恢复"}, status_code=404)
+        running = bool(writer.pipeline_running(key))
+        if not running:
+            try:
+                st = proj.status() if callable(getattr(proj, "status", None)) else {}
+                running = bool((st or {}).get("running"))
+            except Exception:
+                running = False
+        if running:
+            return {"ok": False, "express": express.plan_flag(plan), "running": True,
+                    "msg": "该文体的写作按阶段一口气调度，运行中切换不会生效——先暂停再切。"}
+        express.set_plan_flag(plan, on, sync_mode=False)
+        try:
+            proj.save_plan(plan)
+        except Exception as e:
+            return JSONResponse({"error": f"写入极速开关失败：{e}"}, status_code=500)
+    else:
+        proj = _get_project(key)
+        if not proj:
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+        st = proj.status()
+        # v4.24.15：小说**运行中也能切**。写作线程每章重读 config.express，
+        # 切档只影响还没写的章；拦下来只会让用户在「正在写」时无法改速度。
+        running = bool(st.get("running"))
+        paused = bool(st.get("paused"))
+        with proj.lock:
+            plan = proj.plan() or {}
+            if not plan:
+                return JSONResponse({"error": "该作品的写作计划缺失，先从作品库恢复"}, status_code=404)
+            express.set_plan_flag(plan, on)
+            proj.save_plan(plan)
+
+    writer._evt(key, "system", "done" if on else "warn",
+                title="⚡ 极速模式" + ("开启" if on else "关闭"),
+                output="后续章节不评分、不重写、字数验收降至60%" if on else "恢复正常验收标准")
+    syslog_mod.log_event("system", "极速模式", {"key": key, "on": on},
+                         f"{'开启' if on else '关闭'}极速模式（{key[:24]}）")
+    _tail = "（当前这一章写完即生效，不会打断）" if running else ""
+    return {"ok": True, "express": on, "running": running, "paused": paused,
+            "msg": ("⚡ 极速模式已开启：后续章节不评分、不重写、字数验收降至 60%" + _tail if on
+                    else "已关闭极速模式：后续章节恢复评分 + 90% 字数线" + _tail)}
+
+
+@app.get("/api/consistency-audit")
+def api_consistency_audit(key: str):
+    """v4.24.4：读取最新一致性巡检报告（22-巡检报告.json）。"""
+    return {"ok": True, "report": audit_mod.read_report(key)}
+
+
+@app.post("/api/consistency-audit/run")
+def api_consistency_audit_run(payload: dict):
+    """v4.24.4：手动触发一致性巡检。
+    v4.24.16 修复：docstring 写着「异步线程」实际是同步执行——run_audit 内含分钟级
+    LLM 仲裁（审稿人岗 chat_json），请求线程会挂住数分钟占用 uvicorn worker。
+    对齐 chat 意图路径：防重入检查 + 后台线程，接口立即返回。"""
+    key = str((payload or {}).get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    if audit_mod._RUNNING.get(key):
+        return {"ok": True, "running": True, "msg": "巡检已在进行中，请稍候"}
+
+    def _job():
+        try:
+            audit_mod.run_audit(key, "manual")
+        except Exception as e:
+            try:
+                proj.log(f"⚠️ 巡检异常：{e}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_job, daemon=True).start()
+    return {"ok": True, "running": True, "msg": "已启动一致性巡检：完成后活动流会汇报，报告可在右栏查看。"}
+
+
+@app.get("/api/chapter-tokens")
+def api_chapter_tokens(key: str, no: int):
+    """v4.22.1：本章 token 消耗明细（按阶段细分：正文/评分/去味/重写等）。
+    数据源 usage.json by_chapter[no]（llm.set_chapter 归账）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    try:
+        u = llm.read_usage(key)
+    except Exception:
+        u = {}
+    cb = ((u.get("by_chapter") or {}).get(str(no)) or {})
+    return {"ok": True, "no": no, "total": int(cb.get("total") or 0),
+            "calls": int(cb.get("calls") or 0), "by_stage": cb.get("by_stage") or {}}
+
+
+@app.get("/api/chapter-steps")
+def api_chapter_steps(key: str, chapter: int = 0, limit: int = 400):
+    """v4.21.0：本章创作档案——该章的全部创作事件（岗位/思考/产出，新→旧）。
+    内存 ring + 历史 JSONL 去重合并，跨重启可查。"""
+    if _get_project(key) is None:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    return {"ok": True, "items": steps_mod.chapter_events(key, chapter, limit=limit)}
 
 @app.post("/api/cmd")
 def api_cmd(payload: dict):
@@ -2378,7 +2900,7 @@ def api_rewrite_section(payload: dict):
     key = payload.get("key")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch_no = int(payload.get("chapter") or 0)
     match = (payload.get("match") or "").strip()
     para = int(payload.get("para") or 0)
@@ -2419,16 +2941,6 @@ def api_rewrite_section(payload: dict):
         atomic_write_text(fp, body.replace(target, new, 1))
         proj.log(f"✒️ 第{ch_no}章改写一段（{instr[:24]}…）")
     return {"ok": True, "chapter": ch_no, "orig": target, "new": new}
-
-@app.get("/api/rewrite-log")
-def api_rewrite_log(key: str):
-    try:
-        p = os.path.join(writer._project_dir(key), "16-重写记录.md")
-    except ValueError:
-        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
-    w = _REWRITING.get(key, {})
-    return {"running": bool(w.get("running")), "result": w.get("result"),
-            "text": open(p, encoding="utf-8").read() if os.path.exists(p) else ""}
 
 # ---------- v0.2.1：开书向导 / 书名选 / 放行门禁 ----------
 # v0.3 P2：题材×风格技能目录（16 题材 × 风格维度：金手指/基调/视角/节奏/语言/卷）
@@ -2516,7 +3028,7 @@ def api_style_get(key: str):
     """v0.3 P2：取某书的题材×风格技能（style.json）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     p = os.path.join(proj.path, "style.json")
     if os.path.exists(p):
         try:
@@ -2531,7 +3043,7 @@ def api_style_put(payload: dict):
     key = payload.get("key") or ""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     st = {"genre": _plan_genre(proj) or payload.get("genre") or "",
           "style": payload.get("style") or {}}
     atomic_write_json(os.path.join(proj.path, "style.json"), st)
@@ -2546,7 +3058,7 @@ def api_sched_list():
 def api_sched_set(payload: dict):
     key = payload.get("key") or ""
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     d = writer.load_schedules(); now = time.time()
     cur = d.get(key, {})
     enabled = bool(payload.get("enabled", cur.get("enabled", False)))
@@ -2636,7 +3148,7 @@ def api_usage(key: str = ""):
     if key:
         proj = _get_project(key)
         if not proj:
-            return JSONResponse({"error": "项目不存在"}, status_code=404)
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
         u = llm.read_usage(os.path.basename(proj.path))
         used, cap = int(u.get("total_tokens") or 0), llm.budget_tokens()
         return {"key": key, "usage": u, "global": g, "budget": cap,
@@ -2660,6 +3172,7 @@ def api_settings():
             "call_gap": d.get("call_gap", 2), "max_global_agents": d.get("max_global_agents", 4),
             "chat_context_limit": chatsum.load_limit(),
             "chat_auto_compress": chatsum.compress_enabled(),
+            "supervisor_autonomy": str(d.get("supervisor_autonomy") or "guarded"),
             "score_provider_id": d.get("score_provider_id", ""),
             "score_model": d.get("score_model", "")}
 
@@ -2668,6 +3181,7 @@ def api_settings():
 def api_settings_save(payload: dict):
     """收口关键开关：审稿强度、token 预算、Lorebook 检索、调用日志、对话压缩。"""
     cf = os.path.join(ROOT, "config.json")
+    before = api_settings()   # v4.19.0：留存旧值，保存后对比差异写系统日志
     try:
         cfg = json.load(open(cf, encoding="utf-8")) if os.path.exists(cf) else {}
     except Exception:
@@ -2696,12 +3210,24 @@ def api_settings_save(payload: dict):
         d["chat_context_limit"] = v
     if "chat_auto_compress" in payload:
         d["chat_auto_compress"] = bool(payload.get("chat_auto_compress"))
+    # v4.26.0：总编辑自动化程度（guarded=低自动：结构级重规划找用户确认；auto=全自动）
+    if "supervisor_autonomy" in payload:
+        v = str(payload.get("supervisor_autonomy") or "guarded").strip().lower()
+        if v not in ("guarded", "auto"):
+            return JSONResponse({"error": "supervisor_autonomy 只能是 guarded/auto"}, status_code=400)
+        d["supervisor_autonomy"] = v
     # v4.18.0：评分专用模型（空 = 跟随创作模型）
     if "score_provider_id" in payload:
         d["score_provider_id"] = str(payload.get("score_provider_id") or "").strip()[:60]
     if "score_model" in payload:
         d["score_model"] = str(payload.get("score_model") or "").strip()[:80]
     atomic_write_json(cf, cfg)
+    after = api_settings()
+    changed = {k: {"旧值": before.get(k), "新值": after.get(k)}
+               for k in payload if k in before and before.get(k) != after.get(k)}
+    if changed:
+        syslog_mod.log_event("settings", "修改设置", changed,
+                             "修改设置：" + "、".join(changed.keys()))
     return api_settings()
 
 
@@ -2731,6 +3257,9 @@ def _save_pennames(pennames: dict) -> dict:
         cfg = {}
     cfg.setdefault(_PENNAME_CFG_KEY, {}).update(pennames or {})
     atomic_write_json(cf, cfg)
+    syslog_mod.log_event("penname", "保存笔名",
+                         {"count": len(pennames.get("list") or []), "default": pennames.get("default") or ""},
+                         f"保存笔名配置（{len(pennames.get('list') or [])} 个笔名）")
     return _load_pennames()
 
 
@@ -2781,6 +3310,7 @@ def api_pennames_delete(payload: dict):
     if saved.get("default") == name:
         saved["default"] = saved["list"][0]["name"] if saved["list"] else ""
     _save_pennames(saved)
+    syslog_mod.log_event("penname", "删除笔名", {"name": name}, f"删除笔名「{name}」")
     return {"ok": True, **saved}
 
 @app.get("/api/titles")
@@ -2788,7 +3318,7 @@ def api_titles(key: str):
     """只读返回书名候选；候选项由 /api/create 的后台规划生成，避免轮询时反复触发 LLM。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     meta = plan.get("meta") or {}
     return {"key": key, "candidates": meta.get("title_candidates") or [],
@@ -2814,7 +3344,7 @@ def api_release(payload: dict):
     key = payload.get("key")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     # v4.7.1 修复 TOCTOU：原先「检查是否已在跑」和「置位 running」之间隔着 jobs.run()
     # （它立刻起后台线程），实测 8 个并发点击会全部通过检查、真的执行 8 次放行门禁
     # ——重复烧 token，且多个线程并发改写同一批章节文件。
@@ -2866,26 +3396,80 @@ def api_release_log(key: str):
         gate = t[i:] if i >= 0 else ""
     return {"running": running, "result": res, "gate": gate}
 
-@app.post("/api/release-cancel")
-def api_release_cancel(payload: dict):
-    return writer.cancel_release_gate(payload.get("key"))
-
 # ---------- v0.4：暂停 / 继续 / 读者即时指令（像 Agent 聊天一样随时控）----------
+def _nonnovel_set_paused(key, paused: bool) -> bool:
+    """v4.20.0：非小说文体通用暂停位——直接写 plan.meta.paused，
+    各引擎在步骤/章间检查该位后自停（剧本引擎原生支持，其余本次补齐）。"""
+    from bot import script_writer, poetry_writer, prose_writer, thesis_writer
+    from bot import children_writer, news_writer, copy_writer, other_writer
+    for mod in (script_writer, poetry_writer, prose_writer, thesis_writer,
+                children_writer, news_writer, copy_writer, other_writer):
+        gp = getattr(mod, "get_project", None)
+        if not callable(gp):
+            continue
+        try:
+            proj = gp(key)
+        except Exception:
+            proj = None
+        if proj is None:
+            continue
+        try:
+            pl = proj.plan() or {}
+        except Exception:
+            continue
+        pl.setdefault("meta", {})["paused"] = bool(paused)
+        if paused:
+            if pl.get("status") in ("in_progress", "writing", "planning"):
+                pl["status"] = "paused"
+        elif pl.get("status") == "paused":
+            pl["status"] = "in_progress"
+        try:
+            proj.save_plan(pl)
+            return True
+        except Exception:
+            return False
+    return False
+
+
+_NONNOVEL_PREFIXES = ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_")
+
+
 @app.post("/api/pause")
 def api_pause(payload: dict):
     key = payload.get("key")
-    if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    if str(key)[:2] in _NONNOVEL_PREFIXES:
+        if not _nonnovel_set_paused(key, True):
+            return JSONResponse({"error": "项目不存在或该文体不支持暂停"}, status_code=404)
+        return {"ok": True, "msg": "⏸ 暂停请求已发出：当前步骤做完即停", "running": True,
+                "paused": True, "state": "in_progress"}
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ok = writer.pause_book(key)
-    return {"ok": ok, "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停"}
+    st = proj.status()
+    return {"ok": ok, "msg": "⏸ 已暂停（下一检查点停，停在当前进度）" if ok else "无法暂停",
+            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")}
 
 @app.post("/api/resume")
 def api_resume(payload: dict):
     key = payload.get("key")
-    if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
-    ok = writer.resume_book(key)
-    return {"ok": ok, "msg": "▶ 继续写作中（接着写剩余章节）…" if ok else "无法继续"}
+    if str(key)[:2] in _NONNOVEL_PREFIXES:
+        _nonnovel_set_paused(key, False)
+        return api_continue({"key": key})
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    # v4.22.2：「继续」按任务档案恢复上次那件事（写作/重写/补评分），而不是一律当写作
+    try:
+        r = writer.resume_task(key)
+    except Exception as e:
+        r = {"ok": False, "text": f"恢复失败：{e}"}
+    st = proj.status()
+    ok = bool(r.get("ok"))
+    return {"ok": ok,
+            "msg": f"▶ {r.get('text')}…" if ok else f"无法继续（{r.get('text') or '无可用断点'}）",
+            "kind": r.get("kind") or "",
+            "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")}
 
 @app.post("/api/queue")
 def api_queue(payload: dict):
@@ -2893,7 +3477,7 @@ def api_queue(payload: dict):
     text = (payload.get("text") or "").strip()
     immediate = bool(payload.get("immediate"))
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ok = writer.queue_msg(key, text, immediate)
     return {"ok": ok, "items": writer.pending_queue(key)}
 
@@ -2911,7 +3495,7 @@ def api_queue_action(payload: dict):
         index = 0
     action = payload.get("action", "")
     if not _get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     items = writer.queue_action(key, index, action)
     return {"ok": True, "items": items, "msg": "已移除" if action == "remove" else "已标记立即生效"}
 
@@ -2946,7 +3530,7 @@ def api_bkchat_post(payload: dict):
     if not key or not text:
         return {"ok": False}
     if not _get_project(key):
-        return JSONResponse({"ok": False, "error": "项目不存在"}, status_code=404)
+        return JSONResponse({"ok": False, "error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     p = _bkchat_path(key)
     msgs = []
     if os.path.exists(p):
@@ -3043,60 +3627,44 @@ def api_bkchat_branch(key: str, payload: dict):
     return {"ok": True, "branch_id": branch_id, "messages": idx + 1}
 
 
-@app.get("/api/bkchat/{key}/branches")
-def api_bkchat_branches(key: str):
-    try:
-        pdir = writer._project_dir(key)
-    except ValueError:
-        return {"branches": []}
-    out = []
-    if os.path.isdir(pdir):
-        for f in sorted(os.listdir(pdir)):
-            if f.startswith("chat-b") and f.endswith(".json"):
-                bid = f[5:-5]
-                try:
-                    n = len(json.loads(open(os.path.join(pdir, f), encoding="utf-8").read()))
-                except Exception:
-                    n = 0
-                out.append({"branch_id": bid, "messages": n})
-    return {"branches": out}
-
-
-@app.get("/api/bkchat/{key}/branch/{bid}")
-def api_bkchat_branch_get(key: str, bid: str):
-    if not re.fullmatch(r"b\d{1,20}", bid or ""):
-        return JSONResponse({"error": "分支 id 非法"}, status_code=400)
-    try:
-        bp = os.path.join(writer._project_dir(key), f"chat-{bid}.json")
-    except ValueError:
-        return JSONResponse({"error": "作品 key 非法"}, status_code=400)
-    if not os.path.isfile(bp):
-        return JSONResponse({"error": "分支不存在"}, status_code=404)
-    return {"branch_id": bid, "messages": json.loads(open(bp, encoding="utf-8").read())}
-
-
 @app.get("/api/feedback")
-def api_feedback_stats():
-    """反馈总账（设置→学习报告用）。"""
-    fb_path = os.path.join(writer.PROJECTS_DIR, "_feedback.json")
-    if os.path.exists(fb_path):
-        try:
-            return json.load(open(fb_path, encoding="utf-8"))
-        except Exception:
-            pass
-    return {"total": 0, "up": 0, "down": 0, "issue": 0, "notes": []}
+def api_feedback_list_compat(key: str = "", medium: str = "", stage: str = "", limit: int = 100):
+    """v4.24.16 修复路由遮蔽：app.py 与 bot/v2api.py 各注册了一个 GET /api/feedback——
+    FastAPI 先注册者赢，v2api 的列表版（items/summary/focus，evolution.js 的
+    feedbackList 消费）永远不可达，前端只能拿到这里的 stats 形状靠容错降级。
+    现在这里直接转发给 feedback 模块的完整实现；stats 形状保留在 v.notes 里向后兼容。"""
+    from bot import feedback as _fb
+    try:
+        items = _fb.list_feedback(key, medium, stage, min(max(int(limit), 1), 500))
+        summary = _fb.aggregate()
+        return {"ok": True, "items": items, "summary": summary,
+                "total": summary.get("total", 0), "up": summary.get("up", 0),
+                "down": summary.get("down", 0), "issue": summary.get("issue", 0),
+                "notes": items}
+    except Exception:
+        fb_path = os.path.join(writer.PROJECTS_DIR, "_feedback.json")
+        if os.path.exists(fb_path):
+            try:
+                return json.load(open(fb_path, encoding="utf-8"))
+            except Exception:
+                pass
+        return {"total": 0, "up": 0, "down": 0, "issue": 0, "notes": []}
 
 @app.get("/api/status")
 def api_status(key: str):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     # v3.1.0：validating/releasing 且线程已死 → 立即恢复，前端不再永远转圈
     try:
         writer.recover_stale_book(key, live_proj=proj)
     except Exception:
         pass
     st = proj.status()
+    # v4.24.12：status 必须自带 key —— 前端 refreshWork 用它和作品库条目合并成 work。
+    # 以前 key 只来自 library 条目，于是「刷新页面」时 /api/status 比 /api/library 先回
+    # （单本快、聚合慢），work 就缺 key → 创作状态按钮（继续/暂停）整颗不渲染。
+    st["key"] = key
     if st.get("state") in ("missing", "", None):
         # 剧本/诗词/散文没有 02-写作计划.json，Project.status 会误报 missing；
         # 工作台 refreshWork 对当前作品调的就是本接口，必须回退到全文体元数据，
@@ -3117,6 +3685,180 @@ def api_status(key: str):
     st["has_book"] = os.path.exists(os.path.join(proj.path, f"成书-{st.get('name', key)}.md"))
     return st
 
+# ---------- v4.24.12：未完成章节直接用极速模式续写 ----------
+
+#: key 前缀 → 非小说引擎模块名。api_continue / api_express_write 共用这一份，
+#: 免得加文体时漏改一处（漏改的后果是该文体的入口静默走到小说分支，行为完全不对）。
+_NONNOVEL_MODS = {
+    "s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer",
+    "t_": "thesis_writer", "c_": "children_writer",
+    "n_": "news_writer", "k_": "copy_writer", "o_": "other_writer",
+}
+
+
+def _nonnovel_module(key):
+    """按 key 前缀取非小说引擎模块；不是非小说 key 时返回 None。"""
+    name = _NONNOVEL_MODS.get(str(key)[:2])
+    if not name:
+        return None
+    return {
+        "script_writer": script_writer, "poetry_writer": poetry_writer,
+        "prose_writer": prose_writer, "thesis_writer": thesis_writer,
+        "children_writer": children_writer, "news_writer": news_writer,
+        "copy_writer": copy_writer, "other_writer": other_writer,
+    }.get(name)
+
+
+@app.post("/api/express-write")
+def api_express_write(payload: dict):
+    """v4.24.12：未完成章节直接用极速模式续写。
+
+    需求原文：「在极速模式和普通模式下还未完成的章节也可以直接采用极速模式进行创作」。
+
+    **与「极速开关」的关系（v4.24.13 明确）**：两者共用同一个 `config.express`，
+    不是两套并行逻辑。区别只有动作范围：
+    - 极速开关（/api/express-toggle）：只改速度，不开写；
+    - 极速续写（本接口）：改速度 **并** 立刻开写。
+    因此「极速续写」会把这本书切成极速模式，写完后保持极速，直到用户点
+    「切回标准」或关掉开关。前端菜单文案已按这个语义写明，不再暗示「只对这一批生效」。
+
+    mode="express"（默认）：切极速 + 立即开写剩余章节（一口气写完）。
+    mode="standard"：只切回标准，**不启动写作**。
+
+    开关落在 plan.config.express（与 bot/express.on 同一口径），由
+    express.set_plan_flag 单点写入；小说另有 config.mode（创作模式卡片）同步。
+    """
+    key = str(payload.get("key") or "").strip()
+    mode = str(payload.get("mode") or "express").strip().lower()
+    if not key:
+        return JSONResponse({"error": "缺少作品 key"}, status_code=400)
+    if mode not in ("express", "standard"):
+        return JSONResponse({"error": "mode 只支持 express / standard"}, status_code=400)
+
+    # ---- 非小说文体：走各自引擎的断点恢复，开关写进 plan.config（引擎自己读它）----
+    mod = _nonnovel_module(key)
+    if mod is not None:
+        try:
+            proj = mod.get_project(key)
+        except Exception:
+            proj = None
+        if not proj:
+            return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+        try:
+            plan = proj.plan() or {}
+        except Exception:
+            plan = {}
+        if not plan:
+            return JSONResponse({"error": "该作品的计划文件缺失，请先从作品库恢复"}, status_code=404)
+        # v4.24.13：运行中拒绝切速度（与 /api/express-toggle 同一口径）。
+        # 引擎在启动时就算好了要跑哪些阶段，中途改开关只会让界面与实际分叉。
+        if writer.pipeline_running(key):
+            return {"ok": False, "express": express.plan_flag(plan), "running": True,
+                    "msg": "正在创作中，先暂停再切换速度。"}
+        # v4.24.13：先判「有没有活」，再改开关——已定稿的书不该被切成极速。
+        if mode == "express" and str(plan.get("status") or "") == "completed":
+            return {"ok": False, "express": express.plan_flag(plan), "running": False,
+                    "msg": "该作品已定稿，没有待写的阶段。"}
+        express.set_plan_flag(plan, mode == "express", sync_mode=False)
+        # 只有「极速续写」才清暂停位（要立刻开写）；「切回标准」只改速度，
+        # 不替用户解除暂停——否则界面显示在跑、实际没有线程，比不改更糟。
+        if mode == "express":
+            plan.setdefault("meta", {})["paused"] = False
+            if plan.get("status") == "paused":
+                plan["status"] = "in_progress"
+        try:
+            proj.save_plan(plan)
+        except Exception as e:
+            return JSONResponse({"error": f"写入极速开关失败：{e}"}, status_code=500)
+        if mode == "standard":
+            return {"ok": True, "mode": "standard", "express": False, "running": False,
+                    "paused": bool((plan.get("meta") or {}).get("paused")),
+                    "msg": "已切回标准模式：后续写作恢复逐章审校与打磨。"}
+        fn = getattr(mod, "resume_project", None)
+        if not callable(fn):
+            return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
+        # v4.24.13：7 个引擎的 resume_project 是**同步**的（docstring 写明「调用方放后台线程」）。
+        # 原实现在请求线程里直接调，一本书写完前 HTTP 都不返回 → 按钮像卡死、
+        # 期间 running 还是 false（没走 mark_pipeline），用户再点一次就是两条流水线
+        # 同时改同一批文件。这里与 /api/continue 对齐：后台线程 + 运行标记。
+        import threading as _th
+
+        def _bg():
+            try:
+                fn(key)
+            except Exception as e:
+                print(f"[bg] {mod.__name__} 极速续写失败: {e}", flush=True)
+            finally:
+                writer.mark_pipeline(key, False)
+
+        writer.mark_pipeline(key, True)   # 先置标记，响应返回时前端就能看到「创作中」
+        try:
+            _th.Thread(target=_bg, daemon=True).start()
+        except Exception as e:
+            writer.mark_pipeline(key, False)
+            return JSONResponse({"error": f"极速续写启动失败：{e}"}, status_code=500)
+        return {"ok": True, "mode": "express", "express": True, "running": True, "paused": False,
+                "msg": "⚡ 已切到极速模式，正在一口气写完剩余阶段（不评分、不重写）。"}
+
+    # ---- 小说 ----
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    try:
+        plan = proj.plan()
+    except Exception:
+        plan = None
+    if not plan:
+        return JSONResponse({"error": "该作品还没有写作计划，先点「继续」生成一次"}, status_code=404)
+    st = proj.status()
+    _name = proj.name or key
+    if st.get("running"):
+        # v4.24.15：速度已经可以运行中切换（开关入口），这里拒绝的只是「再起一条写作线程」。
+        return {"ok": False, "running": True, "paused": st.get("paused"), "state": st.get("state"),
+                "msg": f"《{_name}》正在创作中——切速度用「⚡ 极速」开关（下一章起生效），不会再起一条写作线程。"}
+    _chs = plan.get("chapters") or []
+    _done = sum(1 for c in _chs if c.get("status") == "completed")
+    _left = len(_chs) - _done
+    if mode == "standard":
+        express.set_plan_flag(plan, False)
+        proj.save_plan(plan)
+        return {"ok": True, "mode": "standard", "express": False, "running": False,
+                "paused": bool((plan.get("meta") or {}).get("paused")),
+                "state": plan.get("status"),
+                "msg": "已切回标准模式：后续写作恢复逐章审校与打磨。"}
+    # v4.24.13：先判「有没有活」，再改开关。原顺序会把一本已写完的书切成极速模式，
+    # 然后回一句「没有待写的章节了」——操作失败了，状态却变了。
+    if _left <= 0:
+        return {"ok": False, "running": False, "paused": False, "state": plan.get("status"),
+                "express": express.plan_flag(plan),
+                "msg": f"《{_name}》没有待写的章节了。" if _chs else f"《{_name}》还没有章节规划。"}
+    _prev_cfg = dict(plan.get("config") or {})   # 启动失败要原样退回去，别顺带改了速度
+    express.set_plan_flag(plan, True)
+    # 极速续写：清暂停位并开写。completed 的书也允许续写（规划在、章节没写完是常态），
+    # 状态先改回进行中，否则 writer.resume_book 会以「该作品已完成」为由拒绝启动。
+    plan.setdefault("meta", {})["paused"] = False
+    if plan.get("status") in ("paused", "completed"):
+        plan["status"] = "in_progress"
+    proj.save_plan(plan)
+    ok = writer.resume_book(key, batch_size="all")
+    if not ok:
+        # 启动失败（并发抢跑 / 线程已存在）：把速度开关退回原样。
+        # 否则用户看到「无法启动」，书却已经被切成极速，下一次「继续」会被静默降级。
+        try:
+            _p2 = proj.plan() or {}
+            _p2["config"] = _prev_cfg
+            _p2["express"] = express.plan_flag(_p2)
+            proj.save_plan(_p2)
+        except Exception:
+            pass
+        return {"ok": False, "running": True, "paused": False, "state": st.get("state"),
+                "express": express.plan_flag({"config": _prev_cfg}),
+                "msg": "无法启动极速续写（该作品已在创作中）。"}
+    return {"ok": True, "mode": "express", "express": True, "running": True, "paused": False,
+            "state": "in_progress",
+            "msg": f"⚡ 已切到极速模式，正在一口气写完剩余 {_left} 章（不评分、不重写）。"}
+
+
 @app.post("/api/continue")
 def api_continue(payload: dict):
     key = payload.get("key")
@@ -3125,27 +3867,30 @@ def api_continue(payload: dict):
     except (ValueError, TypeError):
         extra = 0
     # ---- 非小说文体：走各自引擎的断点恢复（服务重启/线程中断后的唯一续跑通道）----
-    _medium_mod = {"s_": "script_writer", "p_": "poetry_writer", "e_": "prose_writer",
-                   "t_": "thesis_writer", "c_": "children_writer",
-                   "n_": "news_writer", "k_": "copy_writer", "o_": "other_writer"}.get(str(key)[:2])
-    if _medium_mod:
+    # v4.24.12：前缀映射抽成 _nonnovel_module()，与 /api/express-write 共用一份。
+    # 此前这里内联了一份，加文体时漏改一处 → 该文体的「继续」静默走小说分支。
+    mod = _nonnovel_module(key)
+    if mod is not None:
         import threading as _th
-        from bot import script_writer, poetry_writer, prose_writer, thesis_writer
-        mod = {"script_writer": script_writer, "poetry_writer": poetry_writer,
-               "prose_writer": prose_writer, "thesis_writer": thesis_writer}[_medium_mod]
         fn = getattr(mod, "resume_project", None)
         if not callable(fn):
             return JSONResponse({"error": "该文体暂不支持断点恢复"}, status_code=501)
+        # v4.24.16 修复：无防重入——对比 chat 意图路径与 /api/express-write 都有
+        # pipeline_running 守卫，唯独这里没有；双击「继续」会起两条恢复流水线
+        # 并发写同一本书的场次/阶段文件。
+        if writer.pipeline_running(key):
+            return {"ok": True, "msg": "该书正在创作中，进度见工作台运行日志。", "running": True, "paused": False}
+        _nonnovel_set_paused(key, False)   # v4.20.0：继续前清掉暂停位（统一「继续=接着跑」语义）
         def _bg():
             writer.mark_pipeline(key, True)   # v3.1.0：恢复期间「创作中」可见
             try:
                 fn(key)
             except Exception as e:
-                print(f"[bg] {_medium_mod} 断点恢复失败: {e}", flush=True)
+                print(f"[bg] {mod.__name__} 断点恢复失败: {e}", flush=True)
             finally:
                 writer.mark_pipeline(key, False)
         _th.Thread(target=_bg, daemon=True).start()
-        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。"}
+        return {"ok": True, "msg": "已从中断处恢复创作，工作台轮询可见进度。", "running": True, "paused": False}
     proj = _get_project(key)
     if not proj:
         # 内存中未命中时尝试从磁盘加载
@@ -3164,12 +3909,17 @@ def api_continue(payload: dict):
     if extra > 0:
         # 续写：追加 extra 章（对已完成/未完成都适用），复用作品的默认供应商/模型
         writer.append_chapters(proj, extra)
-        writer.start_writing(proj)
-        return {"ok": True, "msg": f"《{proj.name}》续写 {extra} 章中…（已完成 {st.get('done')}/{st.get('total')} 章）"}
+        writer.start_writing(proj, batch_size=extra)
+        return {"ok": True, "msg": f"《{proj.name}》续写 {extra} 章中…（已完成 {st.get('done')}/{st.get('total')} 章）",
+                "running": True, "paused": False}
     if st.get("state") == "completed":
         return {"ok": True, "msg": f"《{proj.name}》已完成。想加章请在作品上点「▶ 续写」。"}
-    writer.start_writing(proj)
-    return {"ok": True, "msg": f"继续写作《{proj.name}》…"}
+    # v4.20.0：按开书时设置的「一次写几张」（plan.config.batch_size）写，写完一批自动暂停；
+    # 设了「全部写完」才一口气写到底。此前这里漏传批量 → 点一次继续就全书写完。
+    _batch = (proj.plan().get("config") or {}).get("batch_size")
+    writer.start_writing(proj, batch_size=_batch)
+    return {"ok": True, "msg": f"继续写作《{proj.name}》…（本批 {_batch or '全部'} 章，写完自动暂停）",
+            "running": True, "paused": False}
 
 @app.post("/api/branch")
 def api_branch(payload: dict):
@@ -3186,7 +3936,11 @@ def api_branch(payload: dict):
         return JSONResponse({"error": "缺少 key 或章节号"}, status_code=400)
     src = _get_project(key)
     if not src:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    # v4.24.16 修复：创作中的书直接 copytree 会产生撕裂副本（计划说完成、章节文件是半截）。
+    # 与 /api/express-write 对运行中的口径一致：要求先暂停。
+    if writer.pipeline_running(key):
+        return JSONResponse({"error": "该书正在创作中，请先暂停再分支"}, status_code=409)
     plan = src.plan()
     if not plan:
         return JSONResponse({"error": "仅支持小说作品的分支"}, status_code=400)
@@ -3245,7 +3999,6 @@ def api_branch(payload: dict):
 
     # 状态库裁剪到第 ch 章（时间线/最近章回退），best-effort
     try:
-        from bot import state as _stmod
         stp = os.path.join(new_pdir, "18-状态库.json")
         if os.path.exists(stp):
             st = json.load(open(stp, encoding="utf-8")) or {}
@@ -3275,7 +4028,7 @@ def api_book_skills(key: str):
     """v3.0.0：某本书的按岗位技能绑定 + 全局绑定（前端合并展示来源徽标）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import agents as _ag
     return {"ok": True, "key": key,
             "book": _ag.book_skill_bindings(proj.path),
@@ -3289,7 +4042,7 @@ def api_book_skills_set(payload: dict):
     agent = str(payload.get("agent") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     if agent not in agents.AGENTS and agent not in (agents.get_skill_bindings() or {}):
         return JSONResponse({"error": f"未知岗位：{agent}"}, status_code=400)
     try:
@@ -3305,7 +4058,7 @@ def api_chapter_names_backfill(payload: dict):
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     import threading as _th
 
     def _run():
@@ -3336,7 +4089,7 @@ def api_live(key: str):
     """SSE：把写作/审稿/门禁的进程日志与状态变化实时推给前端（替代高频轮询）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
 
     def _active():
         for table in (_RELEASE_RUNNING, _ONESHOT_RUNNING, _PARALLEL_RUNNING, _REWRITING):
@@ -3379,14 +4132,22 @@ def api_live(key: str):
 
 @app.get("/api/download")
 def api_download(key: str):
+    """下载整本（Markdown）：正文由章节文件现场拼装并逐章去噪。
+
+    v4.22.1：旧实现在没有「成书」时直接返回 `01-大纲.md`——用户点「下载全书」拿到的
+    是规划大纲，且成书可能是旧版清洗逻辑的产物（含概要/修改说明/评分表）。现在一律
+    以章节文件为准：章题 + 章首引子 + 正文，一本书里不出现任何非正文小节。
+    """
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
-    book = os.path.join(proj.path, f"成书-{plan.get('novelName','')}.md") if plan.get("novelName") else ""
-    if not os.path.exists(book):
-        book = os.path.join(proj.path, "01-大纲.md")
-    text = open(book, encoding="utf-8").read()
+    if not (plan.get("chapters") or []) and not export_mod.is_script(proj):
+        return JSONResponse({"error": "还没有可下载的正文"}, status_code=400)
+    name = plan.get("novelName") or plan.get("scriptName") or proj.name
+    text = export_mod.markdown(proj)
+    if not (text or "").strip():
+        return JSONResponse({"error": "还没有可下载的正文"}, status_code=400)
     meta = (plan.get("meta") or {})
     if "gate_rounds" in meta or meta.get("released") is not None:
         pl = int(((plan.get("config") or {}).get("defaults") or {}).get("validation", {}).get("pass_line", 90))
@@ -3396,8 +4157,7 @@ def api_download(key: str):
         else:
             text = f"> ⚠️ **beta·未放行**（质量 {fq}/{pl}，未达放行线，仅供内部阅读）\n\n" + text
     from urllib.parse import quote
-    fname = os.path.basename(book)
-    disp = f"attachment; filename=\"novel.md\"; filename*=UTF-8''{quote(fname)}"
+    disp = f"attachment; filename=\"novel.md\"; filename*=UTF-8''{quote(name + '.md')}"
     return Response(text.encode("utf-8"), media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": disp})
 
@@ -3407,7 +4167,7 @@ def api_export(key: str, fmt: str = "docx"):
     from urllib.parse import quote
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     fmt = (fmt or "docx").lower()
     novel = not os.path.exists(os.path.join(proj.path, script_writer.F_PLAN))
     plan = proj.plan() or {}
@@ -3504,6 +4264,9 @@ def api_agents_add(payload: dict):
                 label = desc[:8]
                 stage = "writing"
         result = _ag.add_agent(name, desc, stage=stage, skills=skills, label=label)
+        syslog_mod.log_event("agent", "添加岗位",
+                             {"name": name, "label": label or name, "stage": stage},
+                             f"添加自定义岗位「{label or name}」")
         return {"ok": True, "agent": result, "name": name}
     except Exception as e:
         return JSONResponse({"error": f"添加 Agent 失败：{e}"}, status_code=500)
@@ -3513,6 +4276,11 @@ def api_agents_add(payload: dict):
 def api_agents_set(payload: dict):
     """v0.5 M4：给某子 Agent 单独配 provider/model（留空=回落 stage/默认）。"""
     am = agents.set_binding(payload.get("agent"), payload.get("provider_id"), payload.get("model"))
+    _m = str(payload.get("model") or "").strip()
+    _p = str(payload.get("provider_id") or "").strip()
+    syslog_mod.log_event("agent", "岗位改模型",
+                         {"agent": payload.get("agent"), "provider_id": _p, "model": _m},
+                         f"岗位「{payload.get('agent')}」模型改为 {_m or _p or '阶段/默认'}")
     return {"ok": True, "agent_models": am}
 
 @app.post("/api/agents-skills")
@@ -3523,37 +4291,69 @@ def api_agents_skills(payload: dict):
         agents.set_skills(payload.get("agent"), payload.get("skills"))
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    _n = len(payload.get("skills") or [])
+    syslog_mod.log_event("agent", "岗位绑技能",
+                         {"agent": payload.get("agent"), "count": _n, "skills": list(payload.get("skills") or [])[:10]},
+                         f"岗位「{payload.get('agent')}」绑定 {_n} 个技能")
     return {"ok": True, "agent": payload.get("agent"), "skills": agents.skills_for(payload.get("agent"))}
 
 @app.post("/api/agents-maxglobal")
 def api_agents_maxglobal(payload: dict):
     """v0.5 M4：设全局并发上限（多 Agent/多书同时创作时的在飞上限）。"""
-    return {"ok": True, "max_global_agents": agents.set_max_global(int(payload.get("n", 4)))}
+    _n = int(payload.get("n", 4))
+    _v = agents.set_max_global(_n)
+    syslog_mod.log_event("agent", "改并发上限", {"max_global_agents": _v}, f"全局并发上限改为 {_v}")
+    return {"ok": True, "max_global_agents": _v}
 
-@app.post("/api/agents-dispatch")
-def api_agents_dispatch(payload: dict):
-    """v0.5 M4：批量并发创作多本书（每书一线程同步跑完，LLM 并发受 ConcurrencyGuard 限流排队）。"""
-    d = payload
-    keys = d.get("keys") or []
-    if not keys:
-        return JSONResponse({"ok": False, "error": "请至少选一本书"}, status_code=400)
-    def _get(k):
-        try:
-            p = writer.Project(writer._project_dir(k), k)
-        except Exception:
-            p = None
-        if not p or not p.plan():
-            raise Exception(f"《{k}》不存在或未创建")
-        return p
-    keys = [k for k in keys if isinstance(k, str) and k][:8]
-    job = jobs.run("dispatch", lambda: agents.dispatch_write(keys, _get, lambda p: writer._write_loop(p)),
-                   key=",".join(keys), title="批量并发创作", keys=keys)
-    # 兼容旧前端：立即返回已受理（不再同步等所有书跑完）
-    return {"ok": True, "async": True, "job_id": job["id"],
-            "results": {k: {"ok": True, "message": "已进入后台队列"} for k in keys}}
+@app.post("/api/agents-toggle")
+def api_agents_toggle(payload: dict):
+    """v4.20：启用/停用创作岗位（停用 = 流水线跳过该岗位环节；作家 writer 不可停用）。"""
+    agent = str(payload.get("agent") or "").strip()
+    enabled = bool(payload.get("enabled"))
+    try:
+        _disabled = agents.set_agent_enabled(agent, enabled)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    syslog_mod.log_event("agent", "岗位启停",
+                         {"agent": agent, "enabled": enabled},
+                         f"{'启用' if enabled else '停用'}岗位「{agent}」")
+    return {"ok": True, "agent": agent, "enabled": enabled, "agent_disabled": _disabled}
+
+@app.post("/api/agents/remove")
+def api_agents_remove(payload: dict):
+    """v4.20：删除自定义岗位（内置岗位只能停用不能删；模型/技能绑定与停用状态一并清除）。"""
+    name = str(payload.get("name") or "").strip()
+    try:
+        agents.remove_custom_agent(name)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    syslog_mod.log_event("agent", "删除岗位", {"name": name}, f"删除自定义岗位「{name}」")
+    return {"ok": True, "name": name}
+
+@app.get("/api/global-model")
+def api_global_model_get():
+    """v4.20：全局默认模型（= default_provider + 其 default_model）。"""
+    return {"ok": True, **providers.global_model()}
+
+@app.post("/api/global-model")
+def api_global_model_set(payload: dict):
+    """v4.20：设全局默认模型（provider_id + model；校验供应商 active 且模型在其列表里）。POST 返回最新全局默认。"""
+    try:
+        providers.set_global_model(payload.get("provider_id"), payload.get("model"))
+    except providers.ProviderError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    _g = providers.global_model()
+    syslog_mod.log_event("provider", "设全局默认模型",
+                         {"provider_id": _g.get("provider_id"), "model": _g.get("model")},
+                         f"全局默认模型设为 {_g.get('provider_id') or '—'} · {_g.get('model') or '—'}")
+    return {"ok": True, **_g}
 
 # ---------- v0.6 B：并行章节创作（单本书内 N 个 Agent 分章齐写 + 总架构对齐） ----------
 _PARALLEL_RUNNING = {}
+# v4.24.16：运行标志注册表的检查-置位互斥（_PARALLEL_RUNNING/_REWRITING/_ONESHOT_RUNNING 共用）
+_RUNNING_REG_LOCK = threading.Lock()
 
 @app.post("/api/parallel-write")
 def api_parallel_write(payload: dict):
@@ -3564,23 +4364,29 @@ def api_parallel_write(payload: dict):
     proj = _get_project(key)
     if not proj or not proj.plan():
         return JSONResponse({"ok": False, "error": "项目不存在或未创建"}, status_code=404)
-    if _PARALLEL_RUNNING.get(key, {}).get("running"):
-        return {"ok": True, "running": True, "msg": "该书并行创作进行中…"}
-    _PARALLEL_RUNNING[key] = {"running": True, "result": None, "workers": nworkers}
+    # v4.24.16 修复 TOCTOU：检查+置位之间无锁——两个并发请求都能过检查，
+    # 同一本书起两条并行写作线程（v4.7.1 已给 /api/release 修过同款，这里补齐）。
+    with _RUNNING_REG_LOCK:
+        if _PARALLEL_RUNNING.get(key, {}).get("running"):
+            return {"ok": True, "running": True, "msg": "该书并行创作进行中…"}
+        _PARALLEL_RUNNING[key] = {"running": True, "result": None, "workers": nworkers}
     def _job():
         try:
             if key.startswith("s_"):
                 # v4.16.7：剧本走多岗位并行分场齐写（场次结构独立引擎）
+                # v4.24.12 修复：此前在后台线程里再起一个嵌套线程然后直接 return——
+                # 内层线程跑完没人收尾，_PARALLEL_RUNNING[key] 永远 running=True，
+                # /api/parallel-log 和书页活动阶段会永久误报「并行创作进行中」；
+                # 且项目缺失时在线程里 return JSONResponse 无人接收，用户仍被告知「创作中」。
+                # 现在 _job 本身就是后台线程，直接同步跑完并收尾。
                 import script_writer as _sw
                 sproj = _sw.get_project(key)
                 if not sproj:
-                    return JSONResponse({"error": "剧本项目不存在"}, status_code=404)
-                _sp2 = threading.Thread(
-                    target=lambda: _sw._write_loop_parallel_scenes(sproj, n_workers=nworkers, rounds=payload.get("rounds")),
-                    daemon=True)
-                _sp2.start()
-                return {"ok": True, "running": True, "workers": nworkers,
-                        "msg": f"⚡ 剧本并行创作中：{nworkers} 个岗位分场齐写（写完一个立即取下一场）"}
+                    _PARALLEL_RUNNING[key] = {"running": False, "result": {"error": "剧本项目不存在"}, "workers": nworkers}
+                    return
+                _sw._write_loop_parallel_scenes(sproj, n_workers=nworkers, rounds=payload.get("rounds"))
+                _PARALLEL_RUNNING[key] = {"running": False, "result": "ok", "workers": nworkers}
+                return
             writer._write_loop_parallel(proj, n_workers=nworkers, rounds=payload.get("rounds"))
             _PARALLEL_RUNNING[key] = {"running": False, "result": "ok", "workers": nworkers}
         except Exception as e:
@@ -3605,10 +4411,12 @@ def api_one_shot(payload: dict):
     key = payload.get("key"); proj = _get_project(key)
     if not proj or not proj.plan():
         return JSONResponse({"ok": False, "error": "项目不存在或未创建"}, status_code=404)
-    if _ONESHOT_RUNNING.get(key, {}).get("running"):
-        return {"ok": True, "running": True, "msg": "✨ 一键完稿进行中（看对话区本书活动卡）"}
-    auto_rw = bool(payload.get("auto_rewrite", True)); auto_rel = bool(payload.get("auto_release", True))
-    _ONESHOT_RUNNING[key] = {"running": True}
+    # v4.24.16：检查+置位加注册表互斥（TOCTOU，同 /api/parallel-write）
+    with _RUNNING_REG_LOCK:
+        if _ONESHOT_RUNNING.get(key, {}).get("running"):
+            return {"ok": True, "running": True, "msg": "✨ 一键完稿进行中（看对话区本书活动卡）"}
+        auto_rw = bool(payload.get("auto_rewrite", True)); auto_rel = bool(payload.get("auto_release", True))
+        _ONESHOT_RUNNING[key] = {"running": True}
     def _job():
         try:
             writer.one_shot_begin(key)   # v0.7：期间 成书 不再二次自动门控
@@ -3644,54 +4452,13 @@ def api_one_shot(payload: dict):
     return {"ok": True, "running": True,
             "msg": "✨ 一键完稿启动：熔炼→写剩余→逐章评分→不达标自动重写→放行门禁（全程看对话区「本书在干什么」活动卡）"}
 
-@app.get("/api/studio-overview")
-def api_studio_overview():
-    """v0.7 R5 工作室总览（重度）：所有书 mini 进度 + 运行态（并行/重写/放行/一键），像任务看板。"""
-    items = []
-    for it in writer.library_all():
-        if it.get("medium") not in (None, "novel"):
-            continue   # 本看板只挂小说的并行/重写/放行动作，剧本等另走各自工作台
-        k = it.get("key")
-        items.append({
-            "key": k, "name": it.get("name"), "state": it.get("state"),
-            "done": it.get("done"), "total": it.get("total"), "quality": it.get("quality"),
-            "archived": it.get("archived"),
-            "running": bool(_PARALLEL_RUNNING.get(k, {}).get("running") or _REWRITING.get(k, {}).get("running")
-                          or _RELEASE_RUNNING.get(k, {}).get("running") or _ONESHOT_RUNNING.get(k, {}).get("running")),
-        })
-    active = [i for i in items if i["running"]]
-    return {"books": items, "active_count": len(active)}
-
-@app.get("/api/blueprint")
-def api_blueprint(key: str):
-    """v0.6 B：取某书『总架构』（02b-总架构）；未生成则给规则式即时预览（不落盘）。"""
-    proj = _get_project(key)
-    if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
-    jpath = os.path.join(proj.path, "02b-总架构.json")
-    mdpath = os.path.join(proj.path, "02b-总架构.md")
-    bp = None
-    if os.path.exists(jpath):
-        try:
-            bp = json.load(open(jpath, encoding="utf-8"))
-        except Exception:
-            bp = None
-    out = {"key": key, "exists": bool(bp), "blueprint": bp,
-           "md": open(mdpath, encoding="utf-8").read() if os.path.exists(mdpath) else ""}
-    if not bp:
-        try:
-            out["blueprint"] = writer._rule_blueprint(proj, proj.plan() or {})
-        except Exception:
-            out["blueprint"] = None
-    return out
-
 @app.get("/api/skeleton")
 def api_skeleton(key: str, regen: int = 0):
     """v0.9.0：该书『写作骨架』（17-写作骨架.md）——写到哪/多少/重点/为何/续写提示。
     纯文件聚合，不花 LLM；regen=1 立即重新生成（也可由写作/重写/放行自动刷新）。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     if regen:
         try:
             skeleton.build(key)
@@ -3702,18 +4469,6 @@ def api_skeleton(key: str, regen: int = 0):
     return {"key": key, "exists": bool(md.strip()), "md": md,
             "updated": meta.get("skeleton") or (proj.plan() or {}).get("meta", {}).get("skeleton"),
             "skeleton_file": "17-写作骨架.md"}
-
-@app.post("/api/skeleton")
-def api_skeleton_regen(payload: dict):
-    """v0.9.0：手动刷新写作骨架。"""
-    key = payload.get("key")
-    if not key or not _get_project(key):
-        return JSONResponse({"ok": False, "error": "项目不存在"}, status_code=404)
-    try:
-        p = skeleton.build(key)
-        return {"ok": True, "key": key, "path": p, "md": skeleton.read(key, cap=8000) if p else ""}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 def _chapter_entry(proj, n):
     """按 1-based 章序取章节记录与最新计划；越界返回 (None, plan)。"""
@@ -3797,7 +4552,7 @@ def _apply_chapter_text(proj, n, text: str, label: str = "编辑前") -> int:
 def api_chapter(key: str, n: int):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch, _plan = _chapter_entry(proj, n)
     if ch is None:
         return JSONResponse({"error": "章节不存在"}, status_code=404)
@@ -3806,7 +4561,9 @@ def api_chapter(key: str, n: int):
     return {"chapter": n, "title": ch.get("title") or "", "text": text,
             # v3.1.0：cleanText = 章题+引子+正文（剥本章概要/章节备注），复制与对外分享用；
             # text 保留原结构供编辑器与 PUT 回写
-            "cleanText": writer._clean_chapter_text(text),
+            "cleanText": writer._clean_chapter_text(text, fallback_title=ch.get("title") or ""),
+            # v4.22.2：rawText —— 工作文件原文（含概要/备注/可能的历史污染），仅供「工作文件」视图核对
+            "rawText": text,
             "words": ch.get("wordCount") or 0,
             "updatedAt": ch.get("editedAt") or "",
             "versions": len(versions.list_versions(proj.path, n))}
@@ -3817,12 +4574,35 @@ def api_chapter_save(payload: dict):
     """手动编辑 / 自动保存：写正文 + 词数 + 重建成书 + 版本快照。"""
     proj = _get_project(payload.get("key"))
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     text = payload.get("text")
     if not isinstance(text, str):
         return JSONResponse({"error": "正文必须是字符串"}, status_code=400)
     if len(text) > 2_000_000:
         return JSONResponse({"error": "单章超过 200 万字符，请分段保存"}, status_code=413)
+    # v4.22.2：编辑器默认只显示纯净正文（章题+引子+正文）。此时保存要把旧文件里的
+    # 「本章概要 / 章节备注」补回去，否则工作文件会丢规划元信息；旧文件里的修改说明/
+    # 评分等污染不会被回填。
+    if str(payload.get("mode") or "") == "prose":
+        try:
+            _old = ""
+            _ch0, _ = _chapter_entry(proj, payload.get("n"))
+            _fp0 = _chapter_path(proj, _ch0) if _ch0 else ""
+            if _fp0 and os.path.exists(_fp0):
+                _old = open(_fp0, encoding="utf-8").read()
+            if _old:
+                text = purity.merge_meta(text, _old)
+        except Exception:
+            pass
+    else:
+        # 未声明 mode（旧客户端/接口调用）→ 按整文件处理，但必须去污染。
+        # 本就干净的正文保持原样（不做无意义的尾换行改写，避免影响按字节比对的调用方）。
+        try:
+            _s = purity.sanitize_chapter(text)
+            if _s.strip() != text.strip():
+                text = _s
+        except Exception:
+            pass
     try:
         words = _apply_chapter_text(proj, payload.get("n"), text)
     except ValueError as e:
@@ -3835,7 +4615,7 @@ def api_chapter_save(payload: dict):
 def api_chapter_versions(key: str, n: int):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch, _ = _chapter_entry(proj, n)
     if ch is None:
         return JSONResponse({"error": "章节不存在"}, status_code=404)
@@ -3846,7 +4626,7 @@ def api_chapter_versions(key: str, n: int):
 def api_chapter_version(key: str, n: int, id: str):
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         text = versions.read_version(proj.path, n, id)
     except ValueError as e:
@@ -3859,7 +4639,7 @@ def api_chapter_diff(key: str, n: int, id: str):
     """历史版本 → 当前正文 的 unified diff。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     ch, _ = _chapter_entry(proj, n)
     if ch is None:
         return JSONResponse({"error": "章节不存在"}, status_code=404)
@@ -3877,7 +4657,7 @@ def api_chapter_restore(payload: dict):
     """回滚到某个历史版本（当前内容会先自动存一份快照，可再滚回来）。"""
     proj = _get_project(payload.get("key"))
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     n = payload.get("n")
     try:
         text = versions.read_version(proj.path, n, payload.get("id"))
@@ -3897,36 +4677,38 @@ def _preview_pass_line(plan):
 
 @app.get("/api/preview")
 def api_preview(key: str):
-    """预览：返回成书（或已写章节拼接）+ 章节清单 + 逐章评分。点开作品即可看内容。"""
+    """预览：返回已写章节拼接（去噪后的正文）+ 章节清单 + 逐章评分。点开作品即可看内容。
+
+    v4.22.1：不再优先读「成书-*.md」——成书是构建产物，可能是旧版清洗逻辑生成的
+    （含本章概要/修改说明/评分表），也可能在重写后过期。预览一律以章节文件为准，
+    每章都过 writer._clean_chapter_text（正文纯净域）：章题 + 章首引子 + 正文。
+    """
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     book_path = os.path.join(proj.path, f"成书-{plan.get('novelName', '')}.md")
     has_book = os.path.exists(book_path)
-    if has_book:
-        text = open(book_path, encoding="utf-8").read()
-    else:
-        parts = []
-        for ch in plan.get("chapters", []):
-            fp = _chapter_path(proj, ch)
-            if os.path.exists(fp):
-                parts.append(open(fp, encoding="utf-8").read())
-        text = "\n\n---\n\n".join(parts)
+    parts, chapters_full = [], []
+    for ch in plan.get("chapters", []):
+        fp = _chapter_path(proj, ch)
+        if not fp or not os.path.exists(fp):
+            continue
+        try:
+            clean = writer._clean_chapter_text(open(fp, encoding="utf-8").read())
+        except OSError:
+            continue
+        if not clean.strip():
+            continue
+        parts.append(clean)
+        # 逐章原文（对话区「逐章直播打字机」一章一条气泡）：同样只给去噪正文
+        chapters_full.append({"n": ch.get("chapterNumber"), "title": ch.get("title"),
+                              "status": ch.get("status"), "text": clean})
+    text = "\n\n---\n\n".join(parts)
     chapters = [{"n": c.get("chapterNumber"), "title": c.get("title"),
                  "status": c.get("status"), "words": c.get("wordCount"),
                  "continuation": bool(c.get("continuation"))}
                 for c in plan.get("chapters", [])]
-    # v0.7.x：逐章原文（按章序，供对话区「逐章直播打字机」一章一条气泡）——纯读文件，不烧 LLM
-    chapters_full = []
-    for c in plan.get("chapters", []):
-        fp = _chapter_path(proj, c)
-        if fp and os.path.exists(fp):
-            try:
-                chapters_full.append({"n": c.get("chapterNumber"), "title": c.get("title"),
-                                      "status": c.get("status"), "text": open(fp, encoding="utf-8").read()})
-            except Exception:
-                pass
     # v0.5 M1：逐章评分（meta.chapter_scores）挂到每章 + 单独字段
     cs = (plan.get("meta") or {}).get("chapter_scores", {}) or {}
     pl = _preview_pass_line(plan)
@@ -3964,7 +4746,7 @@ def api_review(key: str):
     """返回 13-修订记录.md（五角色审校产物）；无则空。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     fp = os.path.join(proj.path, "13-修订记录.md")
     return {"key": key, "text": open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""}
 
@@ -3973,7 +4755,7 @@ def api_quality(key: str):
     """返回 14-质量报告.md（确定性引擎 + 五角色 + 百分制达标判定）；无则空。"""
     proj = _get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     fp = os.path.join(proj.path, "14-质量报告.md")
     return {"key": key, "text": open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""}
 
@@ -3987,13 +4769,6 @@ async def api_version():
 async def api_mediums():
     """四种文体的注册表：阶段表 / 评估维度 / 目录规范，前端据此渲染选择器。"""
     return {"mediums": medium_mod.registry()}
-
-
-@app.get("/api/medium/detect")
-async def api_medium_detect(text: str = ""):
-    """从一段文本判定文体（给对话入口用）。"""
-    m = medium_mod.detect(text)
-    return {"medium": m, "label": medium_mod.label(m) if m else "", "icon": medium_mod.icon(m) if m else ""}
 
 
 @app.get("/api/skillkit/stats")
@@ -4041,6 +4816,9 @@ async def api_skillkit_add(payload: dict):
     with open(fpath, "w", encoding="utf-8") as f:
         f.write("\n".join(fm) + "\n" + content + "\n")
     skillkit.reload()
+    syslog_mod.log_event("skill", "添加技能",
+                         {"name": f"custom-{name}", "file": os.path.relpath(fpath, ROOT), "medium": media, "stages": stages},
+                         f"添加自定义技能「{title}」")
     return {"ok": True, "path": os.path.relpath(fpath, ROOT), "name": f"custom-{name}"}
 
 
@@ -4053,6 +4831,7 @@ async def api_skillkit_del(name: str):
         return JSONResponse({"error": "自定义技能不存在"}, status_code=404)
     os.remove(fpath)
     skillkit.reload()
+    syslog_mod.log_event("skill", "删除技能", {"name": f"custom-{safe}"}, f"删除自定义技能「{safe}」")
     return {"ok": True}
 
 
@@ -4086,7 +4865,7 @@ async def api_script_create(payload: dict):
 async def api_script_status(key: str):
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -4094,7 +4873,7 @@ async def api_script_status(key: str):
 async def api_script_bible(key: str):
     """创作圣经（S0 引擎 + 圣经头）。"""
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "bible")}
 
 
@@ -4104,7 +4883,7 @@ def api_script_audit(payload: dict):
     key = str(payload.get("key") or "")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import script_state
     report = script_state.audit_script(proj.path)
     script_state.save_audit(proj.path, report)
@@ -4116,7 +4895,7 @@ def api_script_audit_get(key: str):
     """读取上次剧本体检结果（22-剧本体检.json）。"""
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import script_state
     report = script_state.load_audit(proj.path)
     return {"ok": True, "key": key, **report}
@@ -4125,14 +4904,14 @@ def api_script_audit_get(key: str):
 @app.get("/api/script/chars")
 async def api_script_chars(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "chars")}
 
 
 @app.get("/api/script/struct")
 async def api_script_struct(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "struct")}
 
 
@@ -4155,11 +4934,18 @@ def _script_scenes_or_reparse(proj, key=""):
             sc.setdefault("fileName", f"第{sc['no']:03d}场.md")
             sc.setdefault("wordCount", None)
         plan["scenes"] = parsed
+        # v4.23.2：这里原先是 `try: save_plan(...); log(...) except Exception: pass`。
+        # 两个问题：① 写盘失败完全无声，用户下次打开又要重解析一遍，日志里却什么都没留；
+        # ② log 也在 try 里，写盘没成功也会记一条「已回填」——日志说做了，磁盘上没做。
+        # 现在写盘失败打一条带异常类型的 stderr（接口仍返回解析结果，用户至少能看场次），
+        # 只有真的落盘成功才记「已回填」。CI 上 test_script_scenes_reparse_fallback
+        # 偶发「接口对、磁盘没有」，就是被这个 pass 盖住的。
         try:
             proj.save_plan(plan)
+        except Exception as e:
+            print(f"[script] 场次回填写盘失败（{key}）：{e.__class__.__name__}: {e}", flush=True)
+        else:
             proj.log(f"🧭 场次清单重新解析成功：{len(parsed)} 场（原计划里缺失，已回填）")
-        except Exception:
-            pass
         return parsed
     return []
 
@@ -4169,7 +4955,7 @@ async def api_script_scenes(key: str):
     """场次清单（表格 + 解析后的结构化场次）。"""
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     scenes = _script_scenes_or_reparse(proj, key)
     return {"key": key, "text": script_writer.read_file_part(key, "scenes"),
             "scenes": scenes}
@@ -4179,7 +4965,7 @@ async def api_script_scenes(key: str):
 async def api_script_scene(key: str, no: int):
     """单场正文。"""
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "no": no, "text": script_writer.read_scene(key, no)}
 
 
@@ -4192,7 +4978,7 @@ async def api_script_preview(key: str):
     """
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     scenes = []
     for sc in _script_scenes_or_reparse(proj, key):
@@ -4220,7 +5006,7 @@ async def api_script_check(payload: dict):
     """世界观一致性体检：按计划里的时代设定扫圣经/场次表/正文，列出违规词与位置。"""
     key = payload.get("key")
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from bot import script_checker
     if not hasattr(script_checker, "check_project"):
         return JSONResponse({"error": "当前版本不支持剧本体检"}, status_code=501)
@@ -4238,7 +5024,7 @@ async def api_script_rewrite_scenes(payload: dict):
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         nos = sorted({int(n) for n in (payload.get("sceneNos") or [])})
     except (TypeError, ValueError):
@@ -4313,7 +5099,7 @@ async def _assist_stream_response(payload: dict):
     if not key or not message:
         return JSONResponse({"error": "缺少作品或消息"}, status_code=400)
     if not _assist_project(medium, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     sid = str(payload.get("session_id") or uuid.uuid4().hex)
     focus = payload.get("focus") or {}
     history = payload.get("history") or []
@@ -4347,7 +5133,7 @@ async def _assist_stream_response(payload: dict):
         while not ready.is_set():
             try:
                 await asyncio.wait_for(ready.wait(), timeout=2.0)
-            except (TimeoutError, asyncio.TimeoutError):  # v4.7.1 Python<3.11 捕不到会让改稿流报错
+            except TimeoutError:  # v4.7.1 Python<3.11 捕不到会让改稿流报错
                 yield _sse("status", {"stage": "thinking", "text": "仍在推敲改法…"})
 
         ok, value = box[0] if box else (False, RuntimeError("改稿未返回结果"))
@@ -4404,7 +5190,7 @@ async def api_assist_apply(payload: dict):
     medium = _assist_medium(payload)
     key = str(payload.get("key") or "")
     if not _assist_project(medium, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         block = int(payload.get("block"))
     except (TypeError, ValueError):
@@ -4423,7 +5209,7 @@ async def api_assist_versions(key: str, medium: str = "script", doc: str = ""):
 
     med = medium if medium in ("script", "poetry", "prose") else "script"
     if not _assist_project(med, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return assist_mod.list_versions(key, med, doc)
 
 
@@ -4434,7 +5220,7 @@ async def api_assist_restore(payload: dict):
     medium = _assist_medium(payload)
     key = str(payload.get("key") or "")
     if not _assist_project(medium, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     res = assist_mod.restore_version(key, medium, payload.get("doc"),
                                       str(payload.get("version") or ""))
     if not res.get("ok"):
@@ -4449,7 +5235,7 @@ async def api_assist_history(key: str, medium: str = "script"):
 
     med = medium if medium in ("script", "poetry", "prose") else "script"
     if not _assist_project(med, key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return assist_mod.history(key, med)
 
 
@@ -4485,7 +5271,7 @@ async def api_script_assist_versions(key: str, scene: int):
     from bot import assist as assist_mod
 
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     res = assist_mod.list_versions(key, "script", str(scene))
     if not res.get("ok"):
         return res
@@ -4509,7 +5295,7 @@ async def api_script_write(payload: dict):
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     only = payload.get("only")
     if not only and payload.get("sceneNo"):
         only = [int(payload["sceneNo"])]
@@ -4525,14 +5311,14 @@ async def api_script_write(payload: dict):
 @app.get("/api/script/revisions")
 async def api_script_revisions(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "revisions")}
 
 
 @app.get("/api/script/quality")
 async def api_script_quality(key: str):
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "quality")}
 
 
@@ -4543,7 +5329,7 @@ async def api_script_revise(payload: dict):
     key = payload.get("key")
     proj = script_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     def _bg():
         try:
             script_writer.run_revision(proj)
@@ -4558,7 +5344,7 @@ async def api_script_export(key: str):
     """S7 导出定稿全文（text/plain）。"""
     txt = script_writer.export_text(key)
     if not txt:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     from urllib.parse import quote as _q
     return Response(txt, media_type="text/plain; charset=utf-8",
                     headers={"Content-Disposition":
@@ -4572,7 +5358,7 @@ def api_script_storyboard(payload: dict):
     key = str(payload.get("key") or "")
     scene_no = payload.get("sceneNo")
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     def _bg():
         try:
             script_writer.gen_storyboard(key, only_scene=int(scene_no) if scene_no else None)
@@ -4586,7 +5372,7 @@ def api_script_storyboard(payload: dict):
 async def api_script_storyboard_get(key: str):
     """v4.5.0：分镜表数据（结构化 JSON）。"""
     if not script_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "text": script_writer.read_file_part(key, "storyboard"),
             **script_writer.storyboard_data(key)}
 
@@ -4716,7 +5502,7 @@ async def api_script_forms():
 async def api_thesis_status(key: str):
     proj = thesis_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -4725,7 +5511,7 @@ async def api_thesis_part(key: str, part: str = "final"):
     """论文文档：outline/refs/report/final 或 正文章（如 part=ch1）。"""
     proj = thesis_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     mapping = {"outline": thesis_writer.F_OUTLINE, "refs": thesis_writer.F_REFS,
                "report": thesis_writer.F_REPORT, "final": thesis_writer.F_FINAL}
     if part in mapping:
@@ -4873,7 +5659,7 @@ def api_plan_regen(payload: dict):
     mod = importlib.import_module(f"bot.{mod_name}")
     proj = mod.get_project(key)
     if not proj:
-        return JSONResponse({"error": "作品不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     # 清规划阶段（保留正文/定稿）
     plan = proj.plan() or {}
     cs = plan.get("chapterStatus") or {}
@@ -4903,7 +5689,7 @@ async def api_mini_status(key: str):
         proj = mod.get_project(key)
         if proj:
             return proj.status()
-    return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
 
 
 @app.get("/api/mini/part")
@@ -4928,16 +5714,24 @@ async def api_mini_part(key: str, part: str = "final"):
             if hasattr(cls, 'F_CHECK'):
                 mapping["check"] = cls.F_CHECK
             fp = None
-            if part in mapping:
+            known = part in mapping
+            if known:
                 fp = os.path.join(proj.path, mapping[part])
             elif part.endswith(".md"):
-                fp = os.path.join(proj.path, cls.BODY_DIR if hasattr(cls, 'BODY_DIR') else "", part)
-                if not os.path.exists(fp):
-                    fp = os.path.join(proj.path, part)
+                cand = os.path.join(proj.path, cls.BODY_DIR if hasattr(cls, 'BODY_DIR') else "", part)
+                if os.path.exists(cand):
+                    fp = cand
+                else:
+                    alt = os.path.join(proj.path, part)
+                    if os.path.exists(alt):
+                        fp = alt
+            if fp is None and not known:
+                # part 键名不存在（且也不是实际存在的 .md 文件）→ 404，与其他文体 part 端点口径一致
+                return JSONResponse({"error": "part 不存在"}, status_code=404)
             if fp and os.path.exists(fp):
                 return {"key": key, "part": part, "text": open(fp, encoding="utf-8").read()}
             return {"key": key, "part": part, "text": ""}
-    return JSONResponse({"error": "项目不存在"}, status_code=404)
+    return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
 
 
 @app.post("/api/thesis/refs-check")
@@ -4946,7 +5740,7 @@ def api_thesis_refs_check(payload: dict):
     key = str(payload.get("key") or "")
     proj = thesis_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     plan = proj.plan() or {}
     issues = thesis_writer.check_citations(plan, proj.path)
     return {"ok": True, "key": key, "issues": issues,
@@ -4970,7 +5764,7 @@ async def api_poetry_create(payload: dict):
 async def api_poetry_status(key: str):
     proj = poetry_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -4978,7 +5772,7 @@ async def api_poetry_status(key: str):
 async def api_poetry_part(key: str, part: str = "final"):
     """读项目部分：note / imagery / draft / check / final"""
     if not poetry_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "part": part, "text": poetry_writer.read_part(key, part)}
 
 
@@ -4987,23 +5781,11 @@ async def api_poetry_recheck(payload: dict):
     """对当前草稿重新做格律校验。"""
     key = payload.get("key")
     if not poetry_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     try:
         return poetry_writer.recheck(key)
     except Exception as e:
         return JSONResponse({"error": f"校验失败：{e}"}, status_code=500)
-
-
-@app.get("/api/poetry/rhyme")
-async def api_poetry_rhyme(ch: str = ""):
-    """查字的平水韵（韵部 + 平仄）。"""
-    return poetry_writer.rhyme_info(ch)
-
-
-@app.get("/api/poetry/check")
-async def api_poetry_check(poem: str = "", form: str = ""):
-    """纯校验（不建项目）：给一段诗，返回格律报告。"""
-    return poetry_checker.validate(poem, form)
 
 
 @app.get("/api/poetry/forms")
@@ -5028,7 +5810,7 @@ async def api_prose_create(payload: dict):
 async def api_prose_status(key: str):
     proj = prose_writer.get_project(key)
     if not proj:
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return proj.status()
 
 
@@ -5036,7 +5818,7 @@ async def api_prose_status(key: str):
 async def api_prose_part(key: str, part: str = "final"):
     """读项目部分：brief / material / draft / slop / final"""
     if not prose_writer.get_project(key):
-        return JSONResponse({"error": "项目不存在"}, status_code=404)
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     return {"key": key, "part": part, "text": prose_writer.read_part(key, part)}
 
 

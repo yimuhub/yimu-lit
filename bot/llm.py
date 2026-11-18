@@ -28,6 +28,12 @@ def book(key: str, stage: str = ""):
     _TL.stage = stage or "writing"
 
 
+def current_book() -> str:
+    """当前线程正在服务的书 key（llm.book() 标记；未标记返回空串）。
+    供 workflow 流式接线复用——book 上下文与 token 记账同源，调用方无需重复传参。"""
+    return getattr(_TL, "book", None) or ""
+
+
 def set_chapter(no):
     """v2.9.0：标记当前线程正在写哪一章（章号），token 精确归到章。
     传 None 清除（审校/成书阶段不计入任何章）。"""
@@ -95,6 +101,7 @@ def _record_usage(book_key: str, stage: str, usage: dict):
         pass
 
 _CFG_CACHE = {"mtime": 0, "data": {}}
+_CFG_LOCK = threading.Lock()   # _CFG_CACHE 读改写串行化（同 _USAGE_LOCK/_CACHE_LOCK 模式）
 
 
 def _global_defaults() -> dict:
@@ -102,10 +109,11 @@ def _global_defaults() -> dict:
     fp = os.path.join(providers.ROOT, "config.json")
     try:
         mtime = os.path.getmtime(fp)
-        if _CFG_CACHE["mtime"] != mtime:
-            _CFG_CACHE["data"] = json.load(open(fp, encoding="utf-8")).get("defaults", {}) or {}
-            _CFG_CACHE["mtime"] = mtime
-        return _CFG_CACHE["data"]
+        with _CFG_LOCK:
+            if _CFG_CACHE["mtime"] != mtime:
+                _CFG_CACHE["data"] = json.load(open(fp, encoding="utf-8")).get("defaults", {}) or {}
+                _CFG_CACHE["mtime"] = mtime
+            return _CFG_CACHE["data"]
     except Exception:
         return {}
 
@@ -356,15 +364,26 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                 # 代理挂起时若持续滴字节永不触发（实测并行书/百万字规划 25 分钟无动静）。
                 # 请求放独立 daemon 线程，主线程 fut.result(timeout) 强制中断。
                 def _post_once():
+                    # v4.24.16 修复：wall-clock 守卫此前把「在 8 线程池里排队的时间」也计入
+                    # 超时——多书并行 + 评分/规划各岗并发时，后续请求在池里排队，守卫会
+                    # 误杀还没真正发出的请求（fut.cancel 对已运行 future 无效，挂起请求
+                    # 继续占坑，池被慢慢耗尽）。改为 future 实际开始执行后才起算。
+                    _started.set()
                     with httpx.Client(timeout=timeout) as client:
                         return client.post(base + "/chat/completions",
                                            json=body, headers=headers)
+                _started = threading.Event()
                 fut = _HTTP_POOL.submit(_post_once)
                 try:
+                    # 排队宽限 60s（纯等线程）；开始执行后再给完整 timeout+60
+                    if not _started.wait(timeout=60):
+                        fut.cancel()
+                        raise LLMError("LLM 线程池排队超过 60s（并发过载保护，稍后重试）") from None
                     r = fut.result(timeout=timeout + 60)
                 except FuturesTimeoutError:
                     fut.cancel()
-                    raise LLMError(f"LLM 调用总时长超过 {timeout + 60}s（wall-clock 守卫强制中断，防代理挂起）")
+                    # 原始超时异常无附加信息，消息本身已说明原因，不链式挂到外层
+                    raise LLMError(f"LLM 调用总时长超过 {timeout + 60}s（wall-clock 守卫强制中断，防代理挂起）") from None
             if r.status_code == 429:
                 time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值（在 guard 外 sleep，不占名额）
                 last_err = LLMError(f"429 限流: {r.text[:200]}")
@@ -403,6 +422,159 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                 model=model, cached=False, ok=False, error=str(last_err)[:300],
                 latency_ms=int((time.time() - _t0) * 1000))
     raise last_err or LLMError("LLM 调用失败（retries=0）")
+
+def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_thinking=None,
+                json_mode=False, temperature=None, max_tokens=None, retries=3, use_cache=None):
+    """chat() 的流式版：同一套路由/限流/预算/日志；增量文本经 on_delta(text_chunk) 回调；返回完整文本。
+
+    - agent/stage 路由与 chat() 一致（agent 缺省按 stage 推导 planner/writer/reviewer）。
+    - SSE 逐帧解析 choices[0].delta.content，data: [DONE] 结束；末帧 usage 回读进 token 账本。
+    - v4.21.4：delta.reasoning_content（深度思考模型的思维链）经 on_thinking(piece) 单独回调，
+      不混入正文；供应商不给 reasoning 时该回调不触发（前端回退到模板化思考摘要）。
+    - 响应不是 SSE（普通 JSON）→ 取整段文本回调一次并返回（视为不支持流式）。
+    - 流式任何异常（供应商不支持/网络中断/解析失败/超时）→ 丢弃已收文本，回退调 chat() 非流式一次性返回。"""
+    from . import model_rules
+    if agent is None and stage:          # 与 chat() 一致：未显式指定 agent 时按 stage 推导岗位
+        agent = {"planning": "planner", "writing": "writer", "review": "reviewer"}.get(stage, stage)
+    prov, model = providers.agent_resolve(cfg, agent, stage)
+    _trace_prov(prov, model)
+    key = providers.key_of(prov)
+    base = prov["base_url"].rstrip("/")
+    rules = model_rules.effective_rules(prov, model_rules.load_overrides())
+    _mt = max_tokens or prov.get("max_tokens", 12000)
+    if rules.get("max_tokens"):
+        _mt = min(int(_mt), int(rules["max_tokens"]))
+    _msgs = model_rules.clamp_context(messages, rules.get("context", 0))
+    body = {
+        "model": model,
+        "messages": _msgs,
+        "temperature": (temperature if temperature is not None else prov.get("temperature", 0.85)),
+        "max_tokens": _mt,
+        "stream": True,
+        "stream_options": {"include_usage": True},   # OpenAI 兼容：让末帧带 usage，token 账本才不漏记
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    if rules.get("extra_body"):          # 供应商专属参数，与 chat() 同规则合并
+        for _k, _v in rules["extra_body"].items():
+            if _k not in body:
+                body[_k] = _v
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = "Bearer %s" % key
+
+    def _safe_cb(piece):
+        """on_delta 回调绝不阻断生成（消费方异常只丢帧）。"""
+        try:
+            if on_delta and piece:
+                on_delta(piece)
+        except Exception:
+            pass
+
+    def _safe_think(piece):
+        """on_thinking 回调（模型思维链增量），与正文分流、同样绝不阻断生成。"""
+        try:
+            if on_thinking and piece:
+                on_thinking(piece)
+        except Exception:
+            pass
+
+    # 缓存/预算：与 chat() 同一套（缓存命中 → 整段回调一次直接返回，不计费）
+    _ce = _cache_enabled(cfg, use_cache)
+    _ck = _cache_key(body["model"], body["temperature"], json_mode, _msgs,
+                     prov.get("id") or "", prov.get("base_url") or "", body.get("max_tokens")) if _ce else None
+    _bk = getattr(_TL, "book", None)
+    _stage = getattr(_TL, "stage", stage) or (stage or "writing")
+    _hit = _cache_get(_ck)
+    if _hit is not None:
+        _trace_cache(True, model)
+        _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
+                    model=model, cached=True, ok=True, total_tokens=0)
+        _safe_cb(_hit)
+        return _hit
+    _check_budget(_bk)      # 缓存命中不计费，预算检查放在缓存之后（与 chat() 一致）
+    _t0 = time.time()
+    _throttle(cfg)                      # P4/P5：调用前平滑节奏（防 429）
+    model_rules.pace_rpm(rules)         # 按模型规则的 RPM 限流
+    timeout = _llm_timeout(cfg, stage, prov)
+    _guard = providers.ConcurrencyGuard(_max_global())   # 跨线程全局并发 + provider 限流（与 chat() 同一套）
+    got, usage = [], {}
+    try:
+        with _guard.acquire(prov):
+            # wall-clock 守卫：httpx read-timeout 只管「两次读之间」，代理滴字节时靠逐帧 deadline 兜底
+            _deadline = time.time() + timeout + 60
+            with httpx.Client(timeout=timeout) as client:
+                with client.stream("POST", base + "/chat/completions",
+                                   json=body, headers=headers) as r:
+                    if r.status_code != 200:
+                        r.read()
+                        raise LLMError(f"HTTP {r.status_code}: {(r.text or '')[:200]}")
+                    if "text/event-stream" not in (r.headers.get("content-type") or "").lower():
+                        # 供应商不支持流式：普通 JSON 整段回调一次并返回
+                        data = json.loads(r.read().decode("utf-8", "replace"))
+                        _msg0 = data["choices"][0].get("message") or {}
+                        _piece = str(_msg0.get("content") or "")
+                        _think0 = str(_msg0.get("reasoning_content") or _msg0.get("reasoning") or "")
+                        usage = data.get("usage") or {}
+                        got.append(_piece)
+                        _safe_think(_think0)
+                        _safe_cb(_piece)
+                    else:
+                        _done_seen = False
+                        for line in r.iter_lines():
+                            if time.time() > _deadline:
+                                raise LLMError(f"LLM 流式调用总时长超过 {timeout + 60}s（wall-clock 守卫强制中断）")
+                            line = (line or "").strip()
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[len("data:"):].strip()
+                            if not payload:
+                                continue
+                            if payload == "[DONE]":
+                                _done_seen = True
+                                break
+                            try:
+                                ev = json.loads(payload)
+                            except Exception:
+                                # JSONDecodeError 信息量有限，原始帧内容已在消息里，不链接
+                                raise LLMError(f"SSE 帧解析失败: {payload[:120]}") from None
+                            usage = ev.get("usage") or usage
+                            chs = ev.get("choices") or []
+                            if not chs:
+                                continue
+                            _delta = chs[0].get("delta") or {}
+                            _think = _delta.get("reasoning_content") or _delta.get("reasoning") or ""
+                            if _think:
+                                _safe_think(_think)   # 模型思维链增量（与正文分流）
+                            piece = _delta.get("content") or ""
+                            if piece:
+                                got.append(piece)
+                                _safe_cb(piece)   # 增量文本实时回调（在调用线程，emit 侧自带锁）
+                        if not _done_seen:
+                            # 连接提前断开（没收到 [DONE]）= 生成被截断，按失败回退，绝不把半截正文当成功
+                            raise LLMError("流式响应未正常结束（未收到 [DONE]，疑似连接中断）")
+        text = "".join(got)
+        if not text.strip():
+            raise LLMError("流式返回为空")
+        _last_call["ts"] = time.time()
+        if _bk and usage:                  # 回读 usage，归集到该书 token 账本（与 chat() 同路径）
+            _record_usage(_bk, getattr(_TL, "stage", "writing") or "writing", usage)
+        _cache_set(_ck, text)
+        _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
+                    model=model, cached=False, ok=True,
+                    prompt_tokens=int((usage or {}).get("prompt_tokens") or 0),
+                    completion_tokens=int((usage or {}).get("completion_tokens") or 0),
+                    total_tokens=int((usage or {}).get("total_tokens") or 0),
+                    latency_ms=int((time.time() - _t0) * 1000))
+        return text
+    except Exception as _se:
+        # 兜底：流式任何异常 → 丢弃已收文本，回退完整 chat()（其自带超时/重试/用户可读报错）
+        _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
+                    model=model, cached=False, ok=False, error="stream→fallback: " + str(_se)[:280],
+                    latency_ms=int((time.time() - _t0) * 1000))
+        return chat(messages, json_mode=json_mode, temperature=temperature, max_tokens=max_tokens,
+                    retries=retries, cfg=cfg, stage=stage, agent=agent, use_cache=use_cache)
+
 
 def chat_json(messages, temperature=None, cfg=None, stage=None, agent=None, use_cache=None):
     """调用并解析 JSON（容忍模型夹带 markdown 代码块）。cfg 决定供应商/模型；stage 按环节选模型；agent（v0.5）子 Agent 岗位。

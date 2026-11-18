@@ -275,13 +275,6 @@ def stage_names(medium: str) -> dict[str, str]:
     return {c: n for c, n, _ in stages(medium)}
 
 
-def stage_desc(medium: str, code: str) -> str:
-    for c, _n, d in stages(medium):
-        if c == code:
-            return d
-    return ""
-
-
 def all_stage_codes(medium: str) -> list[str]:
     return [c for c, _n, _d in stages(medium)]
 
@@ -355,12 +348,19 @@ def _opts(pairs) -> list[dict]:
 
 
 # 小说：题材一律给出 skillkit 的 craft key（skillkit._genre_key 实测结果），避免静默回落 _index。
-_NOVEL_TONES = ["爽文", "虐", "轻松", "暗黑", "复仇", "燃"]
-_NOVEL_PERSPECTIVES = ["男主", "女主", "不限", "第一人称"]
 _NOVEL_MODES = (
     {"value": "rolling", "label": "滚动规划", "desc": "写一段、看反馈、再规划，适合连载。", "icon": "refresh"},
     {"value": "outline", "label": "大纲优先", "desc": "先定全书骨架，再逐章落地。", "icon": "list"},
     {"value": "one_shot", "label": "一次成稿", "desc": "适合短篇，一次生成再统一打磨。", "icon": "zap"},
+    # v4.24.0：极速模式。这是三个老选项之外**第一个真正驱动流程**的模式——
+    # 老的三张卡片只被写进 plan.mode，没有任何代码读它（长期是假选项）。
+    {"value": "express", "label": "极速模式", "desc": "不评分、不重写，一口气写完；产出初稿。", "icon": "zap"},
+)
+# v4.24.0：非小说文体的「创作节奏」两选一。它们没有「创作模式」这个概念，
+# 单独一张卡片比塞进「一次成稿」更准确。
+_EXPRESS_MODES = (
+    {"value": "standard", "label": "标准", "desc": "逐阶段审校与打磨，慢但成品度高。", "icon": "check"},
+    {"value": "express", "label": "极速", "desc": "不评分、不重写，一口气写完；产出初稿。", "icon": "zap"},
 )
 # 规模快捷项：fill = 该档的章数目标（与前端 DEFAULT_CHAPTERS、longform.resolve_scale 一致）
 _NOVEL_SCALE = (
@@ -373,24 +373,36 @@ _NOVEL_SCALE = (
 _NOVEL_SECTIONS = {
     "style_title": "卖点与风格预设",
     "brief": [
+        # v4.24.12：「创作模式」提到 brief 首位。
+        # 以前它排在第 5 位（题材/基调/视角之后），极速模式这张卡要滚过好几项才看得到，
+        # 实际使用中等于「没有入口」。非小说文体的「创作节奏」本来就在首位，
+        # 小说也得对齐——创作节奏是第一步就该定的事。
+        _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True,
+           effect="express",
+           hint="极速模式：不评分、不重写，一口气写完全部章节，产出初稿（保留章卡与前情摘要，一致性不打折）。"),
         _f("platform", "发布平台", "chips", options_from="platforms", default="", effect="platform",
+           when={"field": "mode", "not_in": ["express"]},
            hint="选平台带入该站的分类习惯与更新节奏，创作不受限制。"),
         _f("genre", "题材", "select", options_from="genres", default="悬疑/刑侦", required=True,
            hint="题材决定注入哪套题材 craft（悬疑/言情/恐怖/玄幻…），之后仍可微调。"),
         _f("tone", "基调", "select", options_from="tones", default="",
+           when={"field": "mode", "not_in": ["express"]},
            hint="留空表示不限。基调与题材共同决定文风预设。"),
-        _f("perspective", "叙事视角", "select", options_from="perspectives", default=""),
-        _f("mode", "创作模式", "cards", options=_NOVEL_MODES, default="rolling", required=True),
+        _f("perspective", "叙事视角", "select", options_from="perspectives", default="",
+           when={"field": "mode", "not_in": ["express"]}),
     ],
     "basic": [
         _f("agents", "专属 Agent", "chips", options_from="agents_novel", multi=True,
+           when={"field": "mode", "not_in": ["express"]},
            hint="选择本作品的创作岗位；未选则默认使用该文体的标准岗位。"),
 
         _f("title", "书名", "text", max_length=40,
+           when={"field": "mode", "not_in": ["express"]},
            hint="留空则由系统生成 8 个候选，创建后可随时换。"),
         _f("idea", "一句话简介", "textarea", rows=4, max_length=2000, required=True,
            hint="写清「谁 / 想要什么 / 被什么挡住」最容易得到可用的规划。"),
         _f("sells", "核心卖点", "chips", options_from="sells", multi=True,
+           when={"field": "mode", "not_in": ["express"]},
            hint="决定正文爽点节拍（写进风格技能）；选 1-3 个最贴的。"),
         _f("scale", "规模", "scale", options=_NOVEL_SCALE, default="1m", required=True,
            custom_key="total_chapters", min=1, max=2000, unit="章",
@@ -404,6 +416,8 @@ _NOVEL_SECTIONS = {
              {"value": "50", "label": "50 章一批"},
              {"value": "all", "label": "全部写完"},
            ], default="1", required=True,
+           # v4.24.0：极速模式不隐藏本项，而是自动选中「全部写完」（见 wizard 的 express 效果）。
+           # 它是必填项，而「必填项不被隐藏」是短表单的硬规则；把「一口气写完」亮出来也更自解释。
            hint="选择每批写的章数。逐章写最灵活，批量写适合快速产出。"),
         _f("min_words_per_chapter", "每章字数", "number", default=3000, min=500, max=10000, unit="字",
            hint="单章目标字数（写入 minWordsPerChapter）；网文通常 2000-4000。"),
@@ -643,8 +657,28 @@ _SCRIPT_SECTIONS = {
            options=_opts(["标准场景头", "动作行现在时", "台词居中", "字幕/画外音标注", "分页每场一页"]),
            default=["标准场景头", "动作行现在时"], multi=True,
            hint="交付格式要求；导出与修订阶段按此核对。"),
-        _f("page_note", "页数换算", "note",
-           text="电影长片 90-120 页；单集剧本 45-60 页；舞台剧按幕/场计，通常 60-90 页。"),
+        # v4.24.7：页数换算按媒介形式联动（此前是静态文案，选 AI 漫剧却显示电影长片的说明）
+        _f("page_note_film", "页数换算", "note",
+           when={"field": "form", "in": ["film"]},
+           text="电影长片 90-120 页，行业惯例约 1 页 ≈ 1 分钟银幕时间。"),
+        _f("page_note_series", "页数换算", "note",
+           when={"field": "form", "in": ["series"]},
+           text="单集剧本 45-60 页（约 45-60 分钟剧集时长）。"),
+        _f("page_note_short", "页数换算", "note",
+           when={"field": "form", "in": ["short"]},
+           text="短片约 20 分钟（20 页当量），节奏紧凑、单线叙事。"),
+        _f("page_note_stage", "页数换算", "note",
+           when={"field": "form", "in": ["stage"]},
+           text="舞台剧按幕/场计，通常 60-90 分钟，以对白与幕间结构驱动。"),
+        _f("page_note_opera", "页数换算", "note",
+           when={"field": "form", "in": ["opera"]},
+           text="戏曲按折计，约 60 分钟，唱腔与曲牌体例按所选剧种。"),
+        _f("page_note_sd", "页数换算", "note",
+           when={"field": "form", "in": ["short_drama"]},
+           text="AI 短剧：竖屏微短剧，每集 3-5 分钟、30 页当量；前 3 秒钩子、逐集反转，写完自动拆分镜头。"),
+        _f("page_note_cd", "页数换算", "note",
+           when={"field": "form", "in": ["comic_drama"]},
+           text="AI 漫剧：每集 30 页当量（约 3-5 分钟阅读）；场景与人物描写兼顾「可绘制性」（构图/表情/色调可提示词化），写完自动生成分镜表。"),
     ],
 }
 
@@ -742,6 +776,14 @@ _WIZARD: dict[str, dict[str, list[dict]]] = {
 }
 
 
+#: v4.24.0 极速模式下收起的可选项（**只收可选，绝不收必填**）。
+#: 这些字段要么影响打磨/排版，要么是可留空的风格偏好，不影响「写什么」。
+_EXPR_HIDE = frozenset({
+    "agents", "title", "notes", "setting_world", "emotion",
+    "audience", "purpose", "tone", "with_notes", "with_translation",
+})
+
+
 def _copy_sections(medium: str) -> dict:
     """深拷贝三段字段，避免调用方改写模块常量。"""
     _extra = {"thesis": _THESIS_WIZARD, "children": _CHILDREN_WIZARD,
@@ -755,12 +797,23 @@ def _copy_sections(medium: str) -> dict:
     out["basic"].insert(0, _f("penname", "作者笔名", "select", options_from="pennames",
                                default="",
                                hint="从设置中的笔名列表选择，或留空用全局默认。"))
+    # v4.24.0：非小说文体加「创作节奏」两选一（小说用「创作模式」卡片，已含极速项）。
+    # 放在 brief 首位——它是第一步就该定的事，不该埋在风格页里。
+    if medium != "novel":
+        out["brief"].insert(0, _f("express", "创作节奏", "cards", options=_EXPRESS_MODES,
+                                  default="standard", required=True, effect="express",
+                                  hint="极速 = 不评分、不重写，一口气写完；产出初稿，可随时切回标准补审校。"))
+    # v4.24.0：极速模式收成短表单——风格页整页收起（它全是打磨/排版设置），
+    # 其余可选项也收起。必填项一律保留，「简单设定」不等于「不给输入」。
+    for f in out["style"]:
+        if f.get("type") not in ("note", "preview"):
+            f.setdefault("when", {"field": "mode" if medium == "novel" else "express",
+                                  "not_in": ["express"]})
+    for f in out["brief"] + out["basic"]:
+        if not f.get("required") and f.get("key") in _EXPR_HIDE:
+            f.setdefault("when", {"field": "mode" if medium == "novel" else "express",
+                                  "not_in": ["express"]})
     return out
-
-
-def wizard_schema(medium: str) -> dict:
-    """某文体的三段向导字段（结构；options_from 指向的词表由调用方注入）。"""
-    return _copy_sections(medium)
 
 
 def novel_genre_options(vocab: dict | None = None) -> list[dict]:
@@ -806,9 +859,14 @@ def wizard_payload(vocab: dict | None = None) -> dict:
                     fld["options"] = (novel_genre_options(vocab) if src == "genres"
                                       else _opts(vocab.get(src) or []))
         # v4.13.0：注入该文体的专属 Agent 词表
+        # v4.24.16 修复：此前写死 basic[0]——v4.15.1 起 basic[0] 是 penname（笔名），
+        # agents 词表会被盖到笔名字段上；改按 key 定位（app.py 早已因同样的事故改按 key 查）。
         agents_key = f"agents_{key}"
         if agents_key in vocab:
-            sections["basic"][0]["options"] = _opts(vocab[agents_key])
+            for _fld in sections["basic"]:
+                if _fld.get("key") == "agents":
+                    _fld["options"] = _opts(vocab[agents_key])
+                    break
         out[key] = sections
     return out
 

@@ -14,12 +14,25 @@ import {
 } from '../core/dom.js';
 import { store, patch, patchUi, patchChat } from '../core/state.js';
 import { navigate, routePath } from '../core/router.js';
-import { isMediumBench, verdictLabel } from '../views/mediumbench.js';
-import { USAGE_MODES, usageLabel } from '../core/constants.js';
-import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
+import {
+  USAGE_MODES,
+  usageLabel,
+  /* v4.22.0：从 views/mediumbench.js 下沉到 constants——只为这两个函数不该整条
+     mediumbench → chatfloat → markdown 链都被拖进首屏。 */
+  isMediumBench,
+  verdictLabel
+} from '../core/constants.js';
+import { toast, confirmDialog, openModal, popoverMenu, registerOverlay, unregisterOverlay } from '../core/ui.js';
 import { api, errorText, IS_MOCK } from '../core/api.js';
-import { createCollabPanel } from './collab.js';
-import { openDistillModal } from './distill.js';
+/* v4.22.0：collab（≈38K，含 skillCatalog）与 distill 都改为按需 import——
+   两者只在用户真正点开「协作」页签 / 「蒸馏风格」时才用得到，
+   静态 import 会把整条链拖进首屏闭包。 */
+import { createCreativeToggle, createExpressButton, createExpressSwitch } from './planbar.js';
+
+/* distill 模块懒加载：保留原函数名，两个调用点零改动。 */
+function openDistillModal(payload) {
+  import('./distill.js').then((m) => m.openDistillModal(payload));
+}
 
 const TABS = [
   { key: 'work', label: '作品', icon: 'book-open' },
@@ -27,11 +40,16 @@ const TABS = [
   { key: 'state', label: '状态', icon: 'activity' },
   { key: 'refs', label: '参考', icon: 'folder' },
   { key: 'skills', label: '技能', icon: 'sparkles' },
-  { key: 'collab', label: '协作', icon: 'layers' }
+  { key: 'collab', label: '协作', icon: 'layers' },
+  { key: 'archive', label: '档案', icon: 'history' }
 ];
+
+/* v4.21.0：对话产出卡「查看本章过程」→ 自动切到档案页签的水位线（每次点击只触发一次切换） */
+let _archiveSeenTs = 0;
 
 /* 协作面板带轮询与订阅，跨 tab / 跨书必须显式销毁，否则 interval 会残留。 */
 let collabInst = null;
+let collabModPromise = null;
 
 function destroyCollab() {
   if (!collabInst) return;
@@ -43,12 +61,28 @@ function destroyCollab() {
   collabInst = null;
 }
 
+function collabLoadingPane() {
+  return h('div', { class: 'rp-section', style: { padding: '18px 4px', textAlign: 'center' } },
+    h('div', { class: 'spinner', style: { width: '18px', height: '18px', margin: '0 auto 8px', border: '2px solid var(--line-2)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' } }),
+    h('span', { class: 'hint-text', text: '协作面板加载中…' }));
+}
+
 function collabPane(ctx) {
   const key = store.get().currentKey || '';
   if (!collabInst || collabInst.key !== key) {
     destroyCollab();
-    collabInst = createCollabPanel(ctx);
-    collabInst.key = key;
+    /* 模块在途时先给占位；到位后若用户仍停在协作页签，再真正挂载并重渲染。 */
+    if (!collabModPromise) collabModPromise = import('./collab.js');
+    collabModPromise.then((m) => {
+      const cur = store.get().currentKey || '';
+      if (store.get().ui.rightTab !== 'collab') return;
+      if (collabInst && collabInst.key === cur) return;
+      destroyCollab();
+      collabInst = m.createCollabPanel(ctx);
+      collabInst.key = cur;
+      if (ctx.rerenderPanel) ctx.rerenderPanel();
+    });
+    return collabLoadingPane();
   }
   return collabInst.el;
 }
@@ -183,20 +217,33 @@ function featureMissing(name) {
 /* ------------------------------------------------------- v2.5.0 弹窗系统 */
 
 function _modalBox(title, bodyNode, opts = {}) {
+  /* v4.24.16 修复：右栏弹窗此前不进 core/ui 的 modalStack——按 Esc 关掉的是底下
+     的 openModal 弹窗而不是当前可见的 rp-modal；且无焦点圈禁。现在登记进统一
+     modalStack（Esc 由 app.js 的 closeTopOverlay 关最顶层），并做最小焦点管理。 */
   const overlay = h('div', { class: 'rp-modal-overlay', on: {
-    click: (e) => { if (e.target === overlay) overlay.remove(); }
+    click: (e) => { if (e.target === overlay) close(); }
   }});
-  const box = h('div', { class: 'rp-modal-box' },
+  const box = h('div', { class: 'rp-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
     h('div', { class: 'rp-modal-head' },
       h('span', { class: 'rp-modal-title', text: title }),
       h('button', { class: 'rp-modal-close', type: 'button', html: icon('x', 14),
-        on: { click: () => overlay.remove() } })
+        on: { click: () => close() } })
     ),
     h('div', { class: 'rp-modal-body' }, bodyNode)
   );
   if (opts.footer) box.append(h('div', { class: 'rp-modal-foot' }, opts.footer));
   overlay.append(box);
   document.body.append(overlay);
+  let closed = false;
+  function close() {
+    if (closed) return;
+    closed = true;
+    overlay.remove();
+    unregisterOverlay({ close });
+  }
+  registerOverlay({ close });
+  const first = box.querySelector('input, textarea, select, button:not(.rp-modal-close)');
+  if (first) setTimeout(() => { try { first.focus(); } catch { /* ignore */ } }, 0);
   return overlay;
 }
 
@@ -286,9 +333,10 @@ function showQualityDetail(ctx, work) {
               setStep(3, -1, 100, `已有评分：${first.score} 分`);
               return;
             }
-            // 轮询进度
+            // 轮询进度（v4.24.16：切书即停——评分结果只属于发起时的那本书）
             for (let i = 0; i < 240; i++) {
               await new Promise(r => setTimeout(r, 2000));
+              if (store.get().currentKey !== key) return;
               let pr;
               try { pr = await api.scoreProgress(key); } catch { continue; }
               if (!pr || !pr.running && !pr.done) continue;
@@ -708,6 +756,7 @@ function mediumWorkPane(work, ctx) {
     h('div', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` })
   );
   pane.append(summary);
+  pane.append(agentsRow(work));   // v4.24.11：绑定岗位一眼可见（非小说同款）
 
   const kv = h('div', { class: 'kv-grid' });
   const cells = [
@@ -743,35 +792,19 @@ function mediumWorkPane(work, ctx) {
       on: { click: () => navigate(`/work/${encodeURIComponent(work.key)}/bench/1`) }
     })
   );
-  /* 断点恢复：服务重启/线程中断后（planning/writing 但没有活动线程），一键续跑。
-     v3.1.0：running 时切换为「创作中」状态展示，动作必须有明确变化。 */
-  if (work.running) {
-    actions.append(
-      h('span', { class: 'status-chip', dataset: { tone: 'running' },
-        text: '创作中…' },
-        h('span', { class: 'hint-text', text: '进度见工作台运行日志' }))
-    );
-  } else if (['planning', 'writing', 'in_progress'].includes(work.state)) {
-    actions.append(
-      h('button', {
-        class: 'btn btn-primary btn-sm',
-        type: 'button',
-        html: `${icon('play', 13)}<span>继续创作</span>`,
-        title: '从上次中断处继续',
-        on: {
-          click: async () => {
-            try {
-              await api.continueWork(work.key);
-              toast('已从中断处恢复创作', { tone: 'success' });
-              ctx && ctx.refreshWork && ctx.refreshWork();
-            } catch (err) {
-              toast(errorText(err, '恢复失败'), { tone: 'danger' });
-            }
-          }
-        }
-      })
-    );
-  }
+  /* 断点恢复 / 暂停控制：v4.20.0 起与其他入口统一三态——
+     running→「创作中」可点击请求暂停（api.pause）；running 且 paused→「暂停中…」disabled；
+     非运行但 planning/writing/in_progress（或 paused）→「继续」（api.resume，后端已全文体统一，
+     对未跑过线程的书会代理到 continue）；空闲/完成→不渲染。乐观反馈与防连点由工厂统一提供。 */
+  const creativeBtn = createCreativeToggle({ work, ctx });
+  if (creativeBtn) actions.append(creativeBtn);
+  /* v4.24.12：极速续写入口——剩余章节一键用极速写完（普通/极速模式都可用）。 */
+  const expressBtn = createExpressButton({ work, ctx, plan: st.plan });
+  if (expressBtn) actions.append(expressBtn);
+  /* v4.24.13：极速开关也补齐到非小说面板——此前只有小说页有，
+     剧本/诗词只能用「续写」顺带切速度，没法先把速度调好再点继续。 */
+  const expressSwitch = createExpressSwitch({ work, ctx, plan: st.plan });
+  if (expressSwitch) actions.append(expressSwitch);
   actions.append(
     h('button', {
       class: 'btn btn-sm',
@@ -877,6 +910,30 @@ function scriptAuditSection(work, ctx) {
   return sec;
 }
 
+/* v4.24.11：绑定岗位徽章行——开书引导「专属 Agent」绑定的岗位在作品面板一眼可见。
+   未绑定不占位；点徽章跳协作页签（那里可增删/绑技能）。 */
+function agentsRow(work) {
+  const row = h('div', { class: 'rp-agents-row', hidden: true });
+  const key = (work && work.key) || store.get().currentKey;   // v4.24.11：非小说 store.work 无 key，回落当前书
+  if (!key) return row;
+  api.bookAgents(key).then((res) => {
+    const list = (res && res.agents) || [];
+    if (!list.length) return;
+    row.hidden = false;
+    row.textContent = '';
+    row.append(h('span', { class: 'rp-agents-label', text: '创作岗位' }));
+    for (const a of list) {
+      row.append(h('button', {
+        class: 'rp-agents-chip', type: 'button',
+        title: `${a.label || a.agent}${a.stage ? ' · ' + a.stage : ''}——开书引导绑定，点这里到「协作」页签可调整`,
+        text: a.label || a.agent,
+        on: { click: () => patchUi({ rightOpen: true, rightTab: 'collab' }) }
+      }));
+    }
+  }).catch(() => {});
+  return row;
+}
+
 function workPane(ctx) {
   const state = store.get();
   const work = state.work || state.library.items.find((i) => i.key === state.currentKey);
@@ -933,6 +990,7 @@ function workPane(ctx) {
     h('div', { class: 'progress-track', html: `<span style="width:${pct}%"></span>` })
   );
   pane.append(summary);
+  pane.append(agentsRow(work));   // v4.24.11：绑定岗位一眼可见
   pane.append(titleCandsSection(ctx));
 
   const kv = h('div', { class: 'kv-grid' });
@@ -962,6 +1020,34 @@ function workPane(ctx) {
       type: 'button',
       html: `${icon('edit', 13)}<span>章节工作台</span>`,
       on: { click: () => ctx.openBench(Math.min(work.done + 1, work.total || 1)) }
+    }),
+    /* v4.22.2：极速模式开关——已存在的书随时切换；打开后未完成章节不评分不重写。
+       v4.24.13：抽成工厂与「极速续写」共用同一套状态判定（含运行中禁用）。 */
+    createExpressSwitch({ work, ctx, plan: state.plan }),
+    h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
+      title: '一致性巡检：扫描全书矛盾、盘点超期未收的坑，产出修复计划',
+      html: `${icon('search', 13)}<span>巡检</span>`,
+      on: { click: async (event) => {
+        const btn = event.currentTarget;
+        const key = store.get().currentKey;
+        if (!key) return;
+        btn.disabled = true;
+        btn.textContent = '巡检中…';
+        try {
+          const res = await api.consistencyAuditRun(key);
+          const r = (res && res.report) || {};
+          const s = r.stats || {};
+          toast(`巡检完成：硬矛盾 ${s.must_fix || 0} 项 · 待填坑 ${s.fill_plan || 0} 个 · 超期伏笔 ${(s.pits || {}).overdue || 0} 个`,
+                { tone: 'info', duration: 6000 });
+          if (ctx && ctx.refreshState) ctx.refreshState();
+        } catch (err) {
+          toast(errorText(err, '巡检失败'), { tone: 'danger' });
+        }
+        btn.disabled = false;
+        btn.innerHTML = `${icon('search', 13)}<span>巡检</span>`;
+      } }
     }),
     h('button', {
       class: 'btn btn-sm',
@@ -1023,23 +1109,11 @@ function workPane(ctx) {
         }
       }
     }),
-    h('button', {
-      class: 'btn btn-sm',
-      type: 'button',
-      html: `${icon(work.running ? 'pause' : 'play', 13)}<span>${work.running ? '暂停' : '继续'}</span>`,
-      on: {
-        click: async () => {
-          try {
-            if (work.running) await api.pause(work.key);
-            else await api.resume(work.key);
-            toast(work.running ? '已暂停创作' : '已继续创作', { tone: 'success' });
-            ctx.refreshWork();
-          } catch (err) {
-            toast(errorText(err, '操作失败'), { tone: 'danger' });
-          }
-        }
-      }
-    }),
+    /* v4.20.0：统一三态创作控制——running→「创作中」（竖杠闪烁、点击请求暂停、乐观反馈）；
+       paused / 线程中断→「继续」（点击恢复）；空闲/完成→隐藏。防连点由工厂统一处理。 */
+    createCreativeToggle({ work, ctx }),
+    /* v4.24.12：极速续写入口——剩余章节一键用极速写完（普通/极速模式都可用）。 */
+    createExpressButton({ work, ctx, plan: state.plan }),
     h('button', {
       class: 'btn btn-sm',
       type: 'button',
@@ -1231,7 +1305,11 @@ function planPane(ctx) {
     { class: 'plan-head' },
     h('span', { class: 'plan-scale', text: `v${plan.version || 1}` }),
     h('span', { class: 'plan-scale', text: plan.scale_label || (plan.target_words ? fmtWords(plan.target_words) : '未设规模') }),
-    h('span', { class: 'chip chip-muted', text: plan.mode || '滚动规划' }),
+    /* v4.24.0：极速模式用强调色标出——产出是初稿，未跑评分/去味/审校 */
+    h('span', {
+      class: plan.express ? 'chip chip-accent' : 'chip chip-muted',
+      text: plan.express ? '⚡ 极速模式 · 初稿' : (plan.mode || '滚动规划')
+    }),
     h('span', { class: 'rp-spring' }),
     /* v4.12.13：全部文体都有重规划（非小说走各自引擎的规划重跑） */
     h('button', {
@@ -1724,8 +1802,17 @@ async function openParallelRewrite(key, ctx) {
         try {
           await api.rewriteParallel({ key, chapters: picked, workers, target: threshold });
           toast('并行改写已启动', { tone: 'success', duration: 4000 });
-          /* 进度轮询 → 完成后逐章汇报进对话框 */
+          /* 进度轮询 → 完成后逐章汇报进对话框
+             v4.24.16 修复：轮询此前无总时长上限、切书/关弹窗也不停（永久 4s 轮询）。
+             加 30 分钟兜底 + 书已切换即退出（完成汇报只属于发起时的那本书）。 */
+          const startedKey = key;
+          let pollTicks = 0;
           const poll = setInterval(async () => {
+            pollTicks += 1;
+            if (store.get().currentKey !== startedKey || pollTicks > 450) {   // 450×4s = 30 分钟
+              clearInterval(poll);
+              return;
+            }
             try {
               const pr = await api.rewriteParallelProgress(key);
               if (pr.rw_running === false && (pr.done || pr.error)) {
@@ -1946,10 +2033,13 @@ async function searchReferences(ctx) {
   }
   panel.refLoading = true;
   ctx.rerenderPanel();
+  const key = store.get().currentKey;   // v4.24.16：切书竞态防护——旧书的检索结果不得画进新书
   try {
-    const res = await api.searchRefs(store.get().currentKey, q, 6);
+    const res = await api.searchRefs(key, q, 6);
+    if (store.get().currentKey !== key) return;
     panel.refHits = (res && res.items) || [];
   } catch (err) {
+    if (store.get().currentKey !== key) return;
     panel.refHits = [];
     toast(errorText(err, '检索失败'), { tone: 'danger' });
   } finally {
@@ -2434,7 +2524,9 @@ function skillsPane(ctx) {
             class: 'btn btn-ghost btn-sm',
             type: 'button',
             text: '驳回',
-            on: async () => {
+            /* v4.24.16 修复：on 传成了裸函数——dom.js 只认 {click: fn}，此前按钮没有任何
+               click 监听，点「驳回」毫无反应（同页 evolution.js 的同功能按钮是正确写法） */
+            on: { click: async () => {
               try {
                 await api.rejectSkill(cand.id, '');
                 toast('已驳回');
@@ -2442,7 +2534,7 @@ function skillsPane(ctx) {
               } catch (err) {
                 toast(errorText(err, '驳回失败'), { tone: 'danger' });
               }
-            }
+            } }
           })
         )
       );
@@ -2543,13 +2635,102 @@ async function promoteSkill(ctx, cand) {
 
 /* --------------------------------------------------------------- shell */
 
+/* v4.21.0：本章创作档案——该章的全部创作事件时间线（岗位/思考/产出，新→旧）。
+   数据源 /api/chapter-steps（bot/steps.chapter_events：内存 ring + 历史 JSONL 去重合并）。 */
+function archivePane(ctx) {
+  const state = store.get();
+  const key = state.currentKey;
+  const work = state.work || {};
+  const total = Number(work.total || 0);
+  const requested = (state.ui.chapterArchive && state.ui.chapterArchive.key === key)
+    ? state.ui.chapterArchive : {};
+  let chapter = Number(requested.chapter || work.current_chapter || 1) || 1;
+  if (total && chapter > total) chapter = total;
+  if (chapter < 1) chapter = 1;
+
+  const pane = h('div', { class: 'arch-pane' });
+  const sel = h('select', { class: 'input arch-select', 'aria-label': '选择章节' });
+  const list = h('div', { class: 'arch-list' });
+  const head = h('div', { class: 'arch-head' },
+    h('span', { class: 'arch-head-label', text: '章节' }), sel,
+    h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => load() } })
+  );
+  pane.append(head, list);
+
+  function paint(items) {
+    list.textContent = '';
+    if (items == null) {
+      list.append(h('div', { class: 'hint-text', style: 'padding:12px 4px', text: '档案加载失败，请重试。' }));
+      return;
+    }
+    if (!items.length) {
+      list.append(h('div', { class: 'hint-text', style: 'padding:12px 4px',
+        text: '这一章还没有记录。创作过程中每个岗位的动作（规划/写作/审校/去味）都会逐步沉淀到这里。' }));
+      return;
+    }
+    for (const e of items) list.append(archRow(e));
+  }
+
+  function archRow(e) {
+    const wrap = h('div', { class: 'arch-entry' });
+    const mark = e.phase === 'start' ? '▶' : (e.phase === 'warn' ? '⚠' : '✓');
+    const msTxt = e.ms ? ` · ${(e.ms / 1000).toFixed(1)}s` : '';
+    const row = h('div', { class: 'arch-row' },
+      h('span', { class: 'arch-time mono', text: String(e.time || '').slice(0, 8) || '—' }),
+      h('span', { class: 'arch-badge', dataset: { agent: e.agent || 'system' }, text: e.agent_label || e.agent || '系统' }),
+      h('span', { class: 'arch-title', text: `${mark} ${e.title || ''}${msTxt}` })
+    );
+    const det = [e.thinking, e.output].filter(Boolean).join('\n');
+    if (det) {
+      const pre = h('pre', { class: 'arch-detail', style: 'display:none', text: det });
+      row.classList.add('arch-expandable');
+      row.title = '点击展开/收起详情';
+      row.addEventListener('click', () => {
+        pre.style.display = pre.style.display === 'none' ? '' : 'none';
+      });
+      wrap.append(row, pre);
+    } else {
+      wrap.append(row);
+    }
+    return wrap;
+  }
+
+  async function load() {
+    list.textContent = '';
+    list.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-50' })));
+    try {
+      const res = await fetch(`/api/chapter-steps?key=${encodeURIComponent(key || '')}&chapter=${chapter}`,
+        { credentials: 'include' });
+      const data = await res.json();
+      paint(data && data.ok ? (data.items || []) : null);
+    } catch {
+      paint(null);
+    }
+  }
+
+  /* 章号下拉：有总量就列全章；否则只列当前章 */
+  sel.append(h('option', { value: String(chapter), text: `第 ${chapter} 章`, selected: true }));
+  if (total > 1) {
+    sel.textContent = '';
+    for (let n = 1; n <= total; n++) {
+      sel.append(h('option', { value: String(n), selected: n === chapter, text: `第 ${n} 章` }));
+    }
+  }
+  sel.addEventListener('change', () => {
+    chapter = Number(sel.value) || 1;
+    load();
+  });
+  load();
+  return pane;
+}
+
 export function renderRightPanel(container, ctx) {
   const state = store.get();
   resetPanelFor(state.currentKey);
   const mediumBench = isMediumBench(state.workMedium);
   const available = TABS.filter((item) => {
     /* v4.6.2：规划/状态/参考/协作全部文体都有（数据源按文体分流到各自引擎） */
-    if (mediumBench && !['work', 'skills', 'refs', 'collab', 'plan', 'state'].includes(item.key)) return false;
+    if (mediumBench && !['work', 'skills', 'refs', 'collab', 'plan', 'state', 'archive'].includes(item.key)) return false;
     if (item.key === 'plan') return state.features.plan !== false;
     if (item.key === 'state') return state.features.state !== false;
     if (item.key === 'refs') return state.features.references !== false;
@@ -2557,7 +2738,14 @@ export function renderRightPanel(container, ctx) {
     return true;
   });
   const requested = state.ui.rightTab || 'work';
-  const tab = available.some((t) => t.key === requested) ? requested : 'work';
+  let tab = available.some((t) => t.key === requested) ? requested : 'work';
+  /* v4.21.0：对话产出卡点了「查看本章过程」→ 本次渲染直接落到档案页签（ts 水位线保证只切一次） */
+  const _ca = state.ui.chapterArchive;
+  if (_ca && _ca.ts && _ca.ts > _archiveSeenTs && _ca.key === state.currentKey
+      && available.some((t) => t.key === 'archive')) {
+    _archiveSeenTs = _ca.ts;
+    tab = 'archive';
+  }
   if (tab !== 'collab') destroyCollab();
   const scrollTop = (() => {
     const body = container.querySelector('.rp-body');
@@ -2606,6 +2794,7 @@ export function renderRightPanel(container, ctx) {
   else if (tab === 'state') pane = statePane(ctx);
   else if (tab === 'refs') pane = refsPane(ctx);
   else if (tab === 'collab') pane = collabPane(ctx);
+  else if (tab === 'archive') pane = archivePane(ctx);
   else pane = skillsPane(ctx);
   body.append(pane);
   wrap.append(body);

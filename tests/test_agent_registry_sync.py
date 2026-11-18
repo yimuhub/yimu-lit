@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """岗位注册一致性门禁（v4.15.3）。
 
 medium.MEDIUMS 派生的 MEDIUM_AGENTS_LABELS 与 agents.AGENTS / DEFAULT_AGENT_SKILLS

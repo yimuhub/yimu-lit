@@ -7,10 +7,10 @@ import json
 import os
 import re
 
-from bot.safeio import atomic_write_text, atomic_write_json, safe_join
+from bot.safeio import atomic_write_text, safe_join
 
 from . import llm
-from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project
+from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project, run_pipeline
 
 F_PLAN = "儿童文学计划.json"
 F_OUTLINE = "00-分级设定.md"
@@ -80,6 +80,7 @@ def resume_project(key: str):
             proj.log("✅ 已定稿，无需恢复")
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
+        llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账失活
         _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
@@ -89,7 +90,6 @@ def resume_project(key: str):
 def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
-    meta = plan["meta"]
     age = cfg.get("age") or "7-9"
     ctype = TYPES.get(cfg.get("ctype") or "fable", "寓言故事")
     plan["bookName"] = cfg.get("title") or cfg.get("idea") or "未命名故事"
@@ -106,25 +106,7 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
         ("C4", "插图提示词", lambda: _stage_illustration(proj, pdir, cfg, plan)),
         ("C5", "定稿", lambda: _stage_final(proj, pdir, cfg, plan)),
     ]
-    for code, label, fn in stages:
-        if (plan.get("chapterStatus") or {}).get(code) == "completed":
-            continue
-        proj.log(f"📋 {code} {label}…")
-        meta["stage"] = code
-        proj.save_plan(plan)
-        try:
-            fn()
-            plan.setdefault("chapterStatus", {})[code] = "completed"
-        except Exception as e:
-            proj.log(f"⚠️ {code} 失败：{e}")
-            plan.setdefault("chapterStatus", {})[code] = "failed"
-        meta["stage"] = code
-        plan["meta"] = meta
-        proj.save_plan(plan)
-    plan["status"] = "completed"
-    meta["stage"] = "F"
-    proj.save_plan(plan)
-    proj.log("✅ 儿童故事定稿完成")
+    run_pipeline(proj, cfg, stages, plan=plan, done_msg="✅ 儿童故事定稿完成")
 
 
 def _stage_outline(proj, pdir, cfg, plan, age, ctype):
@@ -209,7 +191,6 @@ def _stage_illustration(proj, pdir, cfg, plan):
     if cfg.get("with_illustration") is False:
         return
     outline = plan.get("outline") or {}
-    sections = outline.get("sections") or []
     out = llm.chat([{"role": "user", "content":
         f"为以下儿童故事的每个单元出 2-4 张插画提示词（中文描述画面/构图/色调/角色表情，"
         "可直接转 AI 绘图）。故事提纲：" + (outline.get("outline") or "")[:1500] +
@@ -224,13 +205,12 @@ def _stage_final(proj, pdir, cfg, plan):
     sections = outline.get("sections") or []
     body_dir = os.path.join(pdir, F_BODY_DIR)
     parts = [f"# {plan.get('bookName')}\n"]
-    for sec in sections:
-        fp = os.path.join(body_dir, f"{_safe(sec)}.md")
-        for attempt in [(f"{i:02d}-{_safe(sec)}.md") for i in range(1, len(sections) + 1)]:
-            alt = os.path.join(body_dir, attempt)
-            if os.path.exists(alt):
-                parts.append("\n\n---\n\n" + _read(alt))
-                break
+    # v4.23.2：_stage_write 的落盘名就是「序号-单元名.md」，这里直接用同一套规则拼，
+    # 不再先算一个永远不存在的 `{单元名}.md` 再内层遍历 1..N 猜序号（原来每条都白读一次路径）。
+    for i, sec in enumerate(sections, 1):
+        fp = os.path.join(body_dir, f"{i:02d}-{_safe(sec)}.md")
+        if os.path.exists(fp):
+            parts.append("\n\n---\n\n" + _read(fp))
     interactive = _read(os.path.join(pdir, F_INTERACTIVE.split(".md")[0] + ".md"))
     if interactive.strip():
         parts.append("\n\n---\n\n" + interactive)

@@ -17,7 +17,7 @@ import re
 
 from bot.safeio import atomic_write_text, atomic_write_json, safe_join
 
-from . import llm
+from . import llm, express
 from .llm import book as llm_book
 
 F_PLAN = "论文计划.json"
@@ -26,8 +26,6 @@ F_REFS = "01-参考文献.md"
 F_BODY_DIR = "02-正文"
 F_FINAL = "04-论文定稿.md"
 F_REPORT = "03-查重报告.md"
-
-STAGES = [("T1", "提纲"), ("T2", "撰写"), ("T3", "引用核查"), ("T4", "降味"), ("T5", "定稿")]
 
 
 class ThesisProject:
@@ -97,7 +95,19 @@ DEGREES = {"undergrad": "本科毕业论文", "master": "硕士论文", "journal
 
 
 def _gen(stage: str, task: str, cfg: dict, stage_code: str = "planning", max_tokens: int = 6000) -> str:
-    """v4.12.16：加超时保护——LLM 挂死时不再无限等待。"""
+    """v4.12.16：加超时保护——LLM 挂死时不再无限等待。
+    v4.24.10：流式 + 活动流接线（线程书标记存在时走 chat_stream，失败回退 chat）。"""
+    try:
+        from . import steps as _steps
+        _bk = llm.current_book()
+        if _bk:
+            out = llm.chat_stream([{"role": "user", "content": task}], cfg=cfg, stage=stage_code,
+                                  max_tokens=max_tokens,
+                                  on_delta=lambda chunk: _steps.emit_delta(_bk, "writer", 0, chunk, title=stage))
+            _steps.emit_delta(_bk, "writer", 0, "", done=True, title=stage)
+            return out
+    except Exception:
+        pass
     import threading as _th
     result = [""]
     def _call():
@@ -284,13 +294,14 @@ def resume_project(key: str) -> Optional["ThesisProject"]:
             proj.log("✅ 论文已定稿，无需恢复")
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
+        llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账与流式接线全部失活
         _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
     return proj
 
 
-def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = None):
+def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = None):
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
     meta = plan["meta"]
@@ -299,6 +310,12 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = 
     # ---- T1 提纲 ----
     outline = plan.get("outline") or {}
     if not outline.get("chapters"):
+        # v4.20.0：步骤间检查暂停位——点「暂停」后当前步骤做完即停
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return plan
         proj.log("📐 T1：生成提纲与引用池…")
         outline = gen_outline(cfg)
         plan["outline"] = {"title": outline.get("title"), "abstract": outline.get("abstract"),
@@ -325,8 +342,24 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = 
         no = int(ch.get("no") or 0)
         if plan.get("chapterStatus", {}).get(str(no)) == "completed":
             continue
+        # v4.20.0：章间检查暂停位
+        if (plan.get("meta") or {}).get("paused"):
+            plan["status"] = "paused"
+            proj.save_plan(plan)
+            proj.log("⏸ 已暂停，点「继续」可从当前进度恢复")
+            return plan
         proj.log(f"✍️ T2：撰写第 {no} 章「{ch.get('title')}」…")
         body = write_chapter(cfg, plan.get("outline") or {}, ch, plan.get("refs") or [])
+        # v4.24.16 修复：_gen 超时/异常会静默返回空串——此前空章照样写盘并标 completed，
+        # resume 因 completed 跳过永不重试，T5 定稿把空章拼进正式论文。
+        # 现在空稿标 failed 不写盘，resume（无 completed 标记）会自动重写该章。
+        if not (body or "").strip():
+            proj.log(f"⚠️ 第 {no} 章生成失败（空稿），标记 failed——点「继续」可重写本章")
+            plan.setdefault("chapterStatus", {})[str(no)] = "failed"
+            meta["stage"] = "T2"
+            plan["meta"] = meta
+            proj.save_plan(plan)
+            continue
         _write(os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md"), body)
         plan.setdefault("chapterStatus", {})[str(no)] = "completed"
         meta["stage"] = "T2"
@@ -350,9 +383,28 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = 
     proj.save_plan(plan)
 
     # ---- T4 降 AIGC 润色 ----
+    # v4.24.0：极速模式跳过 T4（逐章拟人化改写），字数统计走 else 分支照常做
+    # v4.24.16：补断点标记——此前 T4 无 chapterStatus 标记，中途中断后 resume
+    # 会对所有章再跑一遍全文改写（多次恢复=多次叠加改写，行文漂移+双倍 token）。
     total_words = 0
     report_lines = ["# 降 AIGC 润色报告\n"]
-    if cfg.get("humanize", True) is not False:
+    _expr = express.on(cfg)
+    if plan.get("chapterStatus", {}).get("T4") == "completed":
+        proj.log("🧪 T4：已完成（断点恢复，跳过）")
+        for ch in chapters:
+            no = int(ch.get("no") or 0)
+            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            if os.path.exists(fp):
+                total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
+    elif _expr:
+        proj.log("⚡ 极速模式：跳过 T4 降 AIGC 润色（保留引用核查结果）")
+        for ch in chapters:
+            no = int(ch.get("no") or 0)
+            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            if os.path.exists(fp):
+                total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
+        report_lines.append("- 极速模式：本阶段已跳过，正文为 T2 原始产出\n")
+    elif cfg.get("humanize", True) is not False:
         for ch in chapters:
             no = int(ch.get("no") or 0)
             fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
@@ -370,6 +422,7 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: Optional[dict] = 
             fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
             if os.path.exists(fp):
                 total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
+    plan.setdefault("chapterStatus", {})["T4"] = "completed"   # v4.24.16：断点标记
     meta["stage"] = "T5"
     proj.save_plan(plan)
 
@@ -409,7 +462,6 @@ def discover_projects() -> list[dict]:
             plan = json.load(open(os.path.join(pdir, F_PLAN), encoding="utf-8"))
         except Exception:
             pass
-        meta = plan.get("meta") or {}
         out.append({"key": d, "name": plan.get("thesisName", d), "medium": "thesis",
                     "form": plan.get("degreeLabel", ""),
                     "total": plan.get("totalChapters", 0),

@@ -8,25 +8,27 @@ import {
 } from './core/state.js';
 import { initTheme, setTheme, toggleTheme } from './core/theme.js';
 import { loadPrefs, persistLayout } from './core/prefs.js';
-import { startRouter, navigate, routePath, parseHash } from './core/router.js';
+import { startRouter, navigate, routePath } from './core/router.js';
 import { api, errorText } from './core/api.js';
 import { installHotkeys } from './core/hotkeys.js';
 import { createLiveWatcher, pollBookLive } from './core/sse.js';
 import { toast, closeTopOverlay, closePopover } from './core/ui.js';
-import { clamp, h } from './core/dom.js';
+import { clamp, h, debounce } from './core/dom.js';
+import { isMediumBench } from './core/constants.js';
+import { loadCss } from './core/loadcss.js';
 import { renderSidebar } from './components/sidebar.js';
 import { renderTopbar } from './components/topbar.js';
 import { renderRightPanel } from './components/rightpanel.js';
-import { openCommand, closeCommand, isCommandOpen } from './components/command.js';
-import { openWizard as openWizardModal } from './views/wizard.js';
+/* 命令面板（Cmd+K）按需加载；视图模块在 renderView 里按路由动态 import，
+   首屏只保留 welcome/session（对话主界面）及其组件链。 */
 import { renderWelcome } from './views/welcome.js';
 import { renderSession } from './views/session.js';
-import { renderLibrary } from './views/library.js';
-import { renderSettings } from './views/settings.js';
-import { renderEvolution } from './views/evolution.js';
-import { renderSkillLib } from './views/skilllib.js';
-import { renderBench } from './views/bench.js';
-import { renderMediumBench, isMediumBench } from './views/mediumbench.js';
+
+/* 路由级 CSS 与 JS 共用同一份版本号，必须与 index.html 里所有 `?v=` 相同。
+   **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
+   缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
+   tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
+const CSS_V = '299';
 
 const els = {
   app: document.getElementById('app'),
@@ -42,6 +44,19 @@ const els = {
 
 let currentView = null;
 let wizardModal = null;
+/* 命令面板模块（Cmd+K 才加载）：commandModP 是加载 promise，commandMod 只在
+   加载完成后才有值——Escape 判断 isCommandOpen 时模块没加载就等于没打开。 */
+let commandMod = null;
+let commandModPromise = null;
+function loadCommand() {
+  if (!commandModPromise) {
+    commandModPromise = import('./components/command.js').then((m) => {
+      commandMod = m;
+      return m;
+    });
+  }
+  return commandModPromise;
+}
 let liveStop = null;
 let pollStop = null;
 let progressTimer = null;
@@ -117,15 +132,54 @@ async function resolveMedium(key) {
 
 /* ---------------------------------------------------------------- ctx */
 
+/* 五份 refresh（work/plan/state/refs/skills）的同构骨架：
+   inflight 防重入 → loader 拉数 → 成功 onOk / 404 降级 onMissing / 报错 errorKey。
+   各自的差异全部收敛进回调——refreshWork 的 merge 也只是自定义 onOk。
+   v4.24.16 修复切书竞态：①inflight 按 name+key 维度去重——此前旧书的在途请求会挡住
+   新书的同名刷新（新书页面长期显示旧书数据）；②await 返回后校验 currentKey——
+   用户已切书时旧响应直接丢弃，不再把旧书数据 patch 进新书的 plan/lore/refs/work。 */
+async function guardedRefresh(name, key, { requireKey = true, loader, onOk, onMissing = null, errorKey, errorFallback }) {
+  const inflightKey = `${name}:${key || ''}`;
+  if (inflight.has(inflightKey)) return;
+  if (requireKey && !key) return;
+  inflight.add(inflightKey);
+  try {
+    const res = await loader(key);
+    if (requireKey && store.get().currentKey !== key) return;   // 已切书：丢弃过期响应
+    onOk(res);
+  } catch (err) {
+    if (requireKey && store.get().currentKey !== key) return;   // 过期请求的错误也不落新书
+    if (err && err.isMissing && onMissing) onMissing();
+    else patch(errorKey, errorText(err, errorFallback));
+  } finally {
+    inflight.delete(inflightKey);
+  }
+  syncShell(store.get());
+}
+
 const ctx = {
   navigate,
+  /* v4.24.12：当前打开的作品 key。创作状态按钮等工厂在 work 尚未并库时靠它定位作品，
+     避免「work.key 还没到 → 按钮不渲染」的窗口。 */
+  get currentKey() {
+    return store.get().currentKey || '';
+  },
   /* 刚创建的作品还没落进作品库，先告诉路由它是什么文体，省一次"作品不存在"的竞态。 */
   rememberMedium(key, medium) {
     if (key) mediumCache.set(key, medium || 'novel');
   },
-  openWizard(preset = {}) {
+  /* 向导模块按需加载（views/wizard.js 不属于首屏闭包）。打开中的窗口直接复用；
+     await 之后再查一次 wizardModal，双击/连点不会开出两个。 */
+  async openWizard(preset = {}) {
     if (wizardModal) return wizardModal;
-    wizardModal = openWizardModal(ctx, preset);
+    /* v4.23.1：向导样式（.wiz-* / .genre-card / .wizard .modal-header）全在
+       settings.css 里，而 settings.css 是按路由加载的——从作品库或首页点
+       「新建作品」时它根本没被加载过，弹窗会裸奔：没有 .wiz-body 的
+       min-height，也没有卡片的边框与间距。这里补一次，loadCss 自身幂等。 */
+    loadCss(`/v2/css/settings.css?v=${CSS_V}`);
+    const mod = await import('./views/wizard.js');
+    if (wizardModal) return wizardModal;
+    wizardModal = mod.openWizard(ctx, preset);
     const inner = wizardModal.close;
     wizardModal.close = () => {
       wizardModal = null;
@@ -272,6 +326,16 @@ const ctx = {
         patch('library', { loading: false, loaded: true, error: null });
       }
       if (items.some((i) => i.pending)) schedulePendingPoll();
+      /* v4.24.12：自愈——刷新页面时 /api/status 先回、/api/library 后回，
+         先到的那份 work 可能没有 key（创作状态按钮因此不渲染）。作品库一到，
+         若当前 work 仍缺 key 就补拉一次 status，把按钮点亮，
+         不用等用户手动刷新第二次。 */
+      {
+        const s = store.get();
+        if (s.currentKey && (!s.work || !s.work.key) && !inflight.has('work')) {
+          ctx.refreshWork();
+        }
+      }
     } catch (err) {
       patch('library', { loading: false, error: errorText(err, '作品库加载失败') });
     }
@@ -280,115 +344,102 @@ const ctx = {
 
   async refreshWork() {
     const key = store.get().currentKey;
-    if (!key || inflight.has('work')) return;
-    inflight.add('work');
-    try {
-      const status = await api.status(key);
-      const item = store.get().library.items.find((i) => i.key === key) || null;
-      const merged = {
-        ...(item || {}),
-        ...(status || {}),
-        total_words: (item && item.total_words) || (status && status.words) || 0,
-        status_label: (status && status.status_label) || (item && item.status_label) || '',
-        quality: item ? item.quality : null,
-        favorite: item ? item.favorite : false,
-        tags: (item && item.tags) || []
-      };
-      patch('work', merged);
-      patch('workError', null);
-    } catch (err) {
-      patch('workError', errorText(err, '作品状态加载失败'));
-    } finally {
-      inflight.delete('work');
-    }
-    syncShell(store.get());
+    await guardedRefresh('work', key, {
+      loader: () => api.status(key),
+      onOk: (status) => {
+        /* status 只带进度；侧栏条目带收藏/标签/字数——两者合并成一份 work。
+           v4.24.12：key 以本次请求的 key 为准（status 自带 key，library 条目也带 key，
+           两边一致；这里显式落一次，避免任一侧缺失时 work.key 变 undefined，
+           创作状态按钮（继续/暂停）会因「定位不到作品」而整颗不渲染）。 */
+        const item = store.get().library.items.find((i) => i.key === key) || null;
+        const merged = {
+          ...(item || {}),
+          ...(status || {}),
+          key,
+          total_words: (item && item.total_words) || (status && status.words) || 0,
+          status_label: (status && status.status_label) || (item && item.status_label) || '',
+          quality: item ? item.quality : null,
+          favorite: item ? item.favorite : false,
+          tags: (item && item.tags) || []
+        };
+        patch('work', merged);
+        patch('workError', null);
+      },
+      errorKey: 'workError',
+      errorFallback: '作品状态加载失败'
+    });
   },
 
   async refreshPlan() {
     const key = store.get().currentKey;
-    if (!key || inflight.has('plan')) return;
-    inflight.add('plan');
-    try {
-      const res = await api.plan(key);
-      patch('plan', res || null);
-      patch('planError', null);
-      patch('features', { plan: true });
-    } catch (err) {
-      if (err && err.isMissing) {
+    await guardedRefresh('plan', key, {
+      loader: () => api.plan(key),
+      onOk: (res) => {
+        patch('plan', res || null);
+        patch('planError', null);
+        patch('features', { plan: true });
+      },
+      onMissing: () => {
         patch('plan', null);
         patch('features', { plan: false });
-      } else {
-        patch('planError', errorText(err, '规划加载失败'));
-      }
-    } finally {
-      inflight.delete('plan');
-    }
-    syncShell(store.get());
+      },
+      errorKey: 'planError',
+      errorFallback: '规划加载失败'
+    });
   },
 
   async refreshState() {
     const key = store.get().currentKey;
-    if (!key || inflight.has('state')) return;
-    inflight.add('state');
-    try {
-      const res = await api.state(key);
-      patch('lore', res || null);
-      patch('loreError', null);
-      patch('features', { state: true });
-    } catch (err) {
-      if (err && err.isMissing) {
+    await guardedRefresh('state', key, {
+      loader: () => api.state(key),
+      onOk: (res) => {
+        patch('lore', res || null);
+        patch('loreError', null);
+        patch('features', { state: true });
+      },
+      onMissing: () => {
         patch('lore', null);
         patch('features', { state: false });
-      } else {
-        patch('loreError', errorText(err, '状态库加载失败'));
-      }
-    } finally {
-      inflight.delete('state');
-    }
-    syncShell(store.get());
+      },
+      errorKey: 'loreError',
+      errorFallback: '状态库加载失败'
+    });
   },
 
   async refreshRefs() {
     const key = store.get().currentKey;
-    if (!key || inflight.has('refs')) return;
-    inflight.add('refs');
-    try {
-      const res = await api.references(key);
-      patch('refs', Array.isArray(res) ? res : (res && res.items) || []);
-      patch('refsError', null);
-      patch('features', { references: true });
-    } catch (err) {
-      if (err && err.isMissing) {
+    await guardedRefresh('refs', key, {
+      loader: () => api.references(key),
+      onOk: (res) => {
+        patch('refs', Array.isArray(res) ? res : (res && res.items) || []);
+        patch('refsError', null);
+        patch('features', { references: true });
+      },
+      onMissing: () => {
         patch('refs', []);
         patch('features', { references: false });
-      } else {
-        patch('refsError', errorText(err, '参考资料加载失败'));
-      }
-    } finally {
-      inflight.delete('refs');
-    }
-    syncShell(store.get());
+      },
+      errorKey: 'refsError',
+      errorFallback: '参考资料加载失败'
+    });
   },
 
   async refreshSkills() {
-    if (inflight.has('skills')) return;
-    inflight.add('skills');
-    try {
-      const res = await api.skillsEvolution();
-      patch('skills', res || null);
-      patch('skillsError', null);
-      patch('features', { skills: true });
-    } catch (err) {
-      if (err && err.isMissing) {
+    await guardedRefresh('skills', null, {
+      requireKey: false,
+      loader: () => api.skillsEvolution(),
+      onOk: (res) => {
+        patch('skills', res || null);
+        patch('skillsError', null);
+        patch('features', { skills: true });
+      },
+      onMissing: () => {
         patch('skills', null);
         patch('features', { skills: false });
-      } else {
-        patch('skillsError', errorText(err, '技能数据加载失败'));
-      }
-    } finally {
-      inflight.delete('skills');
-    }
-    syncShell(store.get());
+      },
+      errorKey: 'skillsError',
+      errorFallback: '技能数据加载失败'
+    });
   }
 };
 
@@ -612,10 +663,17 @@ function syncShell(state, force = false) {
     state.currentKey,
     state.ui.rightTab,
     state.ui.rightOpen,
+    /* v4.21.0：对话产出卡「查看本章过程」→ 右栏档案页签联动 */
+    (state.ui.chapterArchive && state.ui.chapterArchive.ts) || 0,
     JSON.stringify(state.features),
     state.work ? [state.work.running, state.work.done, state.work.total, state.work.state].join('~') : '',
+    /* v4.24.12：key 进签名——刷新后 key 晚到（work 先无 key、后有 key）时要重绘右栏，
+       否则「继续/暂停」按钮会一直缺席到下一次状态变化。 */
+    (state.work && state.work.key) || '',
     state.workError || '',
     plan.version || 0,
+    /* v4.24.12：极速开关切换后要重绘右栏——「切回标准」那一项的可用状态跟着变。 */
+    plan.express ? 1 : 0,
     Array.isArray(plan.chapters) ? plan.chapters.length : 0,
     ((state.plan && state.plan.proposals) || []).map((p) => `${p.id}:${p.status}`).join(','),
     (state.refs || []).map((r) => `${r.id}:${r.usage_mode}:${r.analyzed ? 1 : 0}`).join(','),
@@ -631,7 +689,18 @@ function syncShell(state, force = false) {
 
 /* -------------------------------------------------------------- view */
 
-function renderView(route) {
+/* 渲染序号：renderView 变 async 后，动态 import 的 await 窗口里用户可能已切
+   到别的路由——旧渲染完成后 seq 对不上就直接丢弃，绝不覆盖新路由的视图。 */
+let renderSeq = 0;
+
+function spinnerViewEl(text) {
+  return h('div', { class: 'view-scroll', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' } },
+    h('div', { style: { textAlign: 'center' } },
+      h('div', { class: 'spinner', style: { width: '24px', height: '24px', margin: '0 auto 12px', border: '3px solid var(--line-2)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' } }),
+      h('p', { class: 'hint-text', text })));
+}
+
+function destroyCurrentView() {
   if (currentView && currentView.destroy) {
     try {
       currentView.destroy();
@@ -640,21 +709,40 @@ function renderView(route) {
     }
   }
   currentView = null;
-  els.view.textContent = '';
+}
 
+async function renderView(route) {
+  const seq = ++renderSeq;
+  destroyCurrentView();
+
+  /* medium 在任何 await 之前读定：模块加载期间 store 再怎么变，本次渲染口径不变。 */
   const medium = route.key ? store.get().workMedium : '';
   /* v4.12.15：首次加载 library 未到 → mediumOf(key) 返回 '' → 不渲染错误视图，
-     改为渲染加载态，library 到位后 store 触发重渲染 */
+     改为渲染加载态，library 到位后由 store 订阅触发重渲染（替代原 setTimeout hack，
+     避免深链首屏渲染两次与 currentView=null 导致的订阅泄漏） */
   if (!medium && (route.name === 'work' || route.name === 'bench')) {
-    if (currentView && currentView.destroy) currentView.destroy();
-    const loadingEl = h('div', { class: 'view-scroll', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' } },
-      h('div', { style: { textAlign: 'center' } },
-        h('div', { class: 'spinner', style: { width: '24px', height: '24px', margin: '0 auto 12px', border: '3px solid var(--line-2)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' } }),
-        h('p', { class: 'hint-text', text: '正在加载作品…' })));
+    /* v4.24.16 修复：library 已到但仍认不出该作品的文体 → key 不存在/已删除，
+       直接渲染明确错误态。此前两种坏况都无出口：①等待条件要求 items.length，
+       library 失败时（loaded=true 但 items=[]）spinner 永不解除；②本分支在 loaded
+       后重渲染时 medium 仍为空 → 再次进入等待，永远转圈。 */
+    if (store.get().library.loaded) {
+      const errEl = h('div', { class: 'view-scroll', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' } },
+        h('div', { style: { textAlign: 'center' } },
+          h('p', { style: { fontSize: '15px', marginBottom: '6px' }, text: '作品不存在或已被删除' }),
+          h('p', { class: 'hint-text', text: '可能已被移入回收站或链接过期——回到作品库看看。' }),
+          h('button', { class: 'btn btn-primary', type: 'button', style: { marginTop: '14px' },
+            text: '去作品库', on: { click: () => navigate('#/library') } })));
+      els.view.textContent = '';
+      els.view.append(errEl);
+      currentView = { el: errEl, destroy() {} };
+      return;
+    }
+    const loadingEl = spinnerViewEl('正在加载作品…');
     els.view.textContent = '';
     els.view.append(loadingEl);
+    /* 等待条件只看 library.loaded（含失败态——失败时由上面的错误分支接管渲染）。 */
     const unsub = store.subscribe((s2) => {
-      if (s2.library.loaded && s2.library.items.length) {
+      if (s2.library.loaded) {
         unsub();
         renderView(route);
       }
@@ -662,17 +750,49 @@ function renderView(route) {
     currentView = { el: loadingEl, destroy() { unsub(); } };
     return;
   }
-  let handle = null;
-  if (route.name === 'library') handle = renderLibrary(els.view, ctx);
-  else if (route.name === 'settings') handle = renderSettings(els.view, ctx);
-  else if (route.name === 'evolution') handle = renderEvolution(els.view, ctx);
-  else if (route.name === 'skills') handle = renderSkillLib(els.view, ctx);
-  /* v4.12.1：全部文体默认走对话界面；工作台通过 #/work/<key>/bench/<n> 路由或右栏按钮进入 */
-  else if (isMediumBench(medium) && route.name === 'bench') handle = renderMediumBench(els.view, ctx);
-  else if (route.name === 'bench') handle = renderBench(els.view, ctx);
-  else if (route.name === 'work') handle = renderSession(els.view, ctx);
-  else handle = renderWelcome(els.view, ctx);
-  currentView = handle;
+
+  /* render: (container) => view handle。welcome/session 是首屏静态模块；
+     其余路由视图按需 import，同时补上各自的按需 CSS。 */
+  let render = null;
+  if (route.name === 'work') render = renderSession;
+  else if (route.name === 'welcome') render = renderWelcome;
+  else {
+    els.view.textContent = '';
+    els.view.append(spinnerViewEl('正在加载…'));
+    try {
+      if (route.name === 'library') render = (await import('./views/library.js')).renderLibrary;
+      else if (route.name === 'settings') {
+        loadCss(`/v2/css/settings.css?v=${CSS_V}`);
+        render = (await import('./views/settings.js')).renderSettings;
+      }
+      else if (route.name === 'evolution') render = (await import('./views/evolution.js')).renderEvolution;
+      else if (route.name === 'skills') {
+        loadCss(`/v2/css/skills.css?v=${CSS_V}`);
+        render = (await import('./views/skilllib.js')).renderSkillLib;
+      }
+      /* v4.12.1：全部文体默认走对话界面；工作台通过 #/work/<key>/bench/<n> 路由或右栏按钮进入 */
+      else if (isMediumBench(medium) && route.name === 'bench') {
+        loadCss(`/v2/css/chatfloat.css?v=${CSS_V}`);
+        render = (await import('./views/mediumbench.js')).renderMediumBench;
+      }
+      else if (route.name === 'bench') {
+        /* 章节工作台同样挂对话浮窗（views/bench.js 内 mountChatFloat）。 */
+        loadCss(`/v2/css/chatfloat.css?v=${CSS_V}`);
+        render = (await import('./views/bench.js')).renderBench;
+      }
+      if (seq !== renderSeq) return;
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      console.error('[view] load failed', err);
+      els.view.textContent = '';
+      els.view.append(spinnerViewEl('视图加载失败，请刷新重试'));
+      return;
+    }
+  }
+
+  if (seq !== renderSeq) return;
+  els.view.textContent = '';
+  currentView = render(els.view, ctx);
 
   const state = store.get();
   const item = state.library.items.find((i) => i.key === state.currentKey);
@@ -685,14 +805,9 @@ function renderView(route) {
 
 /* 冷启动深链只带 key，文体要问一次后端；这期间先占位，避免把剧本当小说渲染。 */
 function renderPendingView() {
-  if (currentView && currentView.destroy) {
-    try {
-      currentView.destroy();
-    } catch (err) {
-      console.error('[view] destroy failed', err);
-    }
-  }
-  currentView = null;
+  /* 占位也是一次"渲染"：作废仍在 await 模块的旧渲染，防止它完成时覆盖占位。 */
+  renderSeq++;
+  destroyCurrentView();
   els.view.textContent = '';
   const box = h('div', { class: 'view-scroll' }, h('div', { class: 'session-loading' }, h('span', { class: 'skeleton skeleton-line', style: { width: '40%' } })));
   els.view.append(box);
@@ -747,29 +862,175 @@ function startLive(key) {
       } catch { /* 不影响主流程 */ }
     }
   });
-  pollStop = pollBookLive(
-    key,
-    (data) => {
-      patch('work', (w) => {
-        if (!w) return w;
-        const prog = data.progress || {};
+  /* v4.21 创作活动流：book-live 轮询内联化——同一份返回体既喂原有进度逻辑，
+     也喂对话里的步骤卡（steps）与实时输出（stream）。请求带上 state 里的
+     steps_cursor / stream_offset 续传游标；节奏与原 pollBookLive 一致：
+     2.5s 间隔、页面隐藏暂停、防重入、错误静默（404/501 旧后端优雅降级）。
+     mock 模式继续走原 pollBookLive（api.bookLive → mock 数据，无 steps/stream）。 */
+  const applyLive = (data) => {
+    patch('work', (w) => {
+      if (!w) return w;
+      const prog = data.progress || {};
+      return {
+        ...w,
+        running: Boolean(data.running),
+        paused: Boolean(data.paused),
+        done: prog.done != null ? prog.done : w.done,
+        total: prog.total != null ? prog.total : w.total,
+        phase: data.phase || w.phase
+      };
+    });
+    const lines = (data && data.live_log) || [];
+    if (lines.length) {
+      patch('live', (arr) => (arr.length >= lines.length ? arr : lines.map((m) => ({ message: m, level: 'info', at: Date.now() }))));
+    }
+  };
+
+  /* steps 增量合并：首个返回批只作基线推进游标（进入书页不回放历史，
+     历史在右栏「本章档案」查），之后按 no 去重追加，cap 300 条防内存。 */
+  const mergeSteps = (bookKey, data) => {
+    if (bookKey !== store.get().currentKey) return;
+    const steps = data && data.steps;
+    if (!steps || !Array.isArray(steps.items)) return;
+    patch('steps', (prev) => {
+      const incoming = steps.items.filter(Boolean);
+      const maxNo = incoming.reduce((acc, it) => Math.max(acc, Number(it.no) || 0), 0);
+      const srvCursor = Number(steps.cursor) || 0;
+      /* v4.21.3：首批不再吞历史——回放最近 60 条（创作过程要求刷新后永久可见；
+         更早的在右栏「本章档案」）。cursor 仍推进到服务端位置，之后走增量。 */
+      if (!prev.baselined) {
         return {
-          ...w,
-          running: Boolean(data.running),
-          paused: Boolean(data.paused),
-          done: prog.done != null ? prog.done : w.done,
-          total: prog.total != null ? prog.total : w.total,
-          phase: data.phase || w.phase
+          baselined: true,
+          cursor: srvCursor || maxNo || prev.cursor || 0,
+          items: incoming.slice(-60)
         };
-      });
-      const lines = (data && data.live_log) || [];
-      if (lines.length) {
-        patch('live', (arr) => (arr.length >= lines.length ? arr : lines.map((m) => ({ message: m, level: 'info', at: Date.now() }))));
       }
-    },
-    () => {},
-    2500
-  );
+      const seen = new Set(prev.items.map((it) => Number(it.no) || 0));
+      const fresh = incoming.filter((it) => {
+        const no = Number(it.no) || 0;
+        return no > 0 && !seen.has(no);
+      });
+      const nextCursor = srvCursor || Math.max(prev.cursor || 0, maxNo);
+      if (!fresh.length && nextCursor === prev.cursor) return prev;
+      return {
+        baselined: true,
+        cursor: nextCursor,
+        items: [...prev.items, ...fresh].slice(-300)
+      };
+    });
+  };
+
+  /* stream 合并：text 按 offset 增量累加到本地缓冲；active=false 时 offset 归零
+     （缓冲停止增长，文本保留给完成卡），下一轮流式开始（epoch+1）时重置缓冲。 */
+  const mergeStream = (bookKey, data) => {
+    if (bookKey !== store.get().currentKey) return;
+    const stream = data && data.stream;
+    if (!stream || typeof stream !== 'object') return;
+    const piece = typeof stream.text === 'string' ? stream.text : '';
+    /* v4.21.4：模型思维链（reasoning）独立增量流——与正文分开累积、分开游标 */
+    const tpiece = typeof stream.thinking === 'string' ? stream.thinking : '';
+    const active = Boolean(stream.active) && !stream.done;
+    patch('stream', (prev) => {
+      if (active) {
+        const starting = !prev.active;
+        const text = (starting ? '' : prev.text || '') + piece;
+        const srvOffset = Number(stream.offset);
+        const offset =
+          Number.isFinite(srvOffset) && srvOffset > 0
+            ? srvOffset
+            : (starting ? 0 : prev.offset || 0) + Array.from(piece).length;
+        const thinking = (starting ? '' : prev.thinking || '') + tpiece;
+        const srvThink = Number(stream.think_offset);
+        const thinkOffset =
+          Number.isFinite(srvThink) && srvThink > 0
+            ? srvThink
+            : (starting ? 0 : prev.thinkOffset || 0) + Array.from(tpiece).length;
+        return {
+          key: bookKey,
+          active: true,
+          doneAt: 0,
+          epoch: starting ? (prev.epoch || 0) + 1 : prev.epoch || 1,
+          agent: stream.agent || prev.agent || '',
+          agent_label: stream.agent_label || prev.agent_label || '',
+          title: stream.title || prev.title || '',
+          chapter: Number(stream.chapter) || 0,
+          offset,
+          text,
+          thinkOffset,
+          thinking
+        };
+      }
+      if (!prev.active) {
+        return prev.offset === 0 && prev.thinkOffset === 0
+          ? prev
+          : { ...prev, offset: 0, thinkOffset: 0 };
+      }
+      return { ...prev, active: false, offset: 0, thinkOffset: 0, doneAt: Date.now() };
+    });
+  };
+
+  if (store.get().mock) {
+    pollStop = pollBookLive(key, applyLive, () => {}, 2500);
+  } else {
+    let liveTimer = 0;
+    let liveStopped = false;
+    let liveBusy = false;
+
+    const liveTick = async () => {
+      if (liveStopped || liveBusy || document.hidden) return;
+      if (store.get().currentKey !== key) return;
+      liveBusy = true;
+      try {
+        const s = store.get();
+        const qs = new URLSearchParams({
+          key,
+          steps_cursor: String((s.steps && s.steps.cursor) || 0),
+          stream_offset: String((s.stream && s.stream.offset) || 0),
+          /* v4.24.16：思维链独立增量游标——后端 stream_state 一直支持，HTTP 层此前
+             从未传，导致模型思考每 1.5s 全量重发（最多 30k 字符/次） */
+          stream_think_offset: String((s.stream && s.stream.thinkOffset) || 0)
+        });
+        const ctrl = new AbortController();
+        const kill = setTimeout(() => ctrl.abort(), 12000);
+        let data = null;
+        try {
+          const res = await fetch(`/api/book-live?${qs.toString()}`, {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' },
+            signal: ctrl.signal
+          });
+          if (res.ok) data = await res.json().catch(() => null);
+          /* 404/501（旧后端）等非 2xx：静默降级，与原 pollBookLive 的 isMissing 一致 */
+        } catch {
+          /* 网络抖动 / 超时：静默，下个周期重试 */
+        } finally {
+          clearTimeout(kill);
+        }
+        if (liveStopped || document.hidden || !data) return;
+        applyLive(data);
+        mergeSteps(key, data);
+        mergeStream(key, data);
+      } finally {
+        liveBusy = false;
+      }
+    };
+
+    const liveLoop = () => {
+      if (liveStopped) return;
+      liveTick();
+      liveTimer = setTimeout(liveLoop, 2500);
+    };
+    const liveOnVisibility = () => {
+      if (!document.hidden) liveTick();
+    };
+    document.addEventListener('visibilitychange', liveOnVisibility);
+    liveLoop();
+    pollStop = () => {
+      liveStopped = true;
+      clearTimeout(liveTimer);
+      document.removeEventListener('visibilitychange', liveOnVisibility);
+    };
+  }
 
   /* 全界面进度自动刷新：每 10 秒拉取一次规划状态、作品库列表与状态库，
      让左侧菜单栏进度、对话界面上方整体进度、右侧面板进度都实时更新，
@@ -879,7 +1140,9 @@ function onRoute(route) {
 
 function installHotkeyHandlers() {
   installHotkeys({
-    onPalette: () => openCommand(ctx),
+    onPalette: () => {
+      loadCommand().then((m) => m.openCommand(ctx));
+    },
     onToggleSidebar: () => ctx.toggleSidebar(),
     onToggleRight: () => ctx.toggleRight(),
     onNewWork: () => ctx.openWizard(),
@@ -888,9 +1151,12 @@ function installHotkeyHandlers() {
     },
     onEscape: () => {
       if (closeTopOverlay()) return;
-      if (isCommandOpen()) {
-        closeCommand();
-        return;
+      /* 面板模块没加载过就等于没打开过，不必为 Escape 事件预加载它。 */
+      if (commandMod) {
+        if (commandMod.isCommandOpen()) {
+          commandMod.closeCommand();
+          return;
+        }
       }
       closePopover();
       const ui = store.get().ui;
@@ -908,7 +1174,7 @@ function installGlobalListeners() {
 
   window.addEventListener(
     'resize',
-    debounce_(() => {
+    debounce(() => {
       applyLayout();
       sigs.topbar = '';
       syncShell(store.get(), true);
@@ -917,14 +1183,6 @@ function installGlobalListeners() {
 
   els.rightBackdrop.addEventListener('click', () => ctx.closeRight());
   els.drawerBackdrop.addEventListener('click', () => ctx.closeDrawer());
-}
-
-function debounce_(fn, wait = 140) {
-  let timer = 0;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), wait);
-  };
 }
 
 async function loadBootstrap() {
@@ -956,17 +1214,11 @@ async function loadBootstrap() {
     const list = Array.isArray(mediums.value) ? mediums.value : mediums.value.mediums || [];
     if (list.length) patch('mediums', list);
   }
-  // v4.12.15：library 到位后重新渲染当前路由——首次加载时 mediumOf(key) 因
-  // library 为空返回 ''，导致剧本/诗词等走不到 mediumbench（白屏）。
-  // 必须延迟到下一个 tick 才能等 applyLayout 完成后再触发。
-  setTimeout(() => {
-    const cr = parseHash();
-    if (cr.name === 'work' || cr.name === 'bench') {
-      // 强制重渲染（清除 currentView 缓存）
-      currentView = null;
-      onRoute(cr);
-    }
-  }, 50);
+  // v4.12.15 → v4.22.0：library 到位后不再用 setTimeout(50ms) 强制重渲染。
+  // 旧 hack 有两个问题：(1) 把 currentView 置 null，renderView 不再走 destroy，
+  // 旧视图的 store.subscribe/定时器全部泄漏；(2) 深链首屏渲染两次。
+  // 现在 work/bench 的 library 未到分支本身就挂着 store 订阅，library patch
+  // 一到就触发一次干净的 renderView（含 destroy），双渲染竞态随之消除。
   if (styles.status === 'fulfilled' && styles.value) {
     /* /api/styles 回的是 {items:[...]}，不是 {styles:[...]} */
     const list = Array.isArray(styles.value)

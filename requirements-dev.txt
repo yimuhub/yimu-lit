@@ -1,4 +1,8 @@
 # 开发/CI 依赖（生产只需 requirements.txt）
 pytest>=8.0
 ruff>=0.6
+# pyflakes 是 tools/static_check.sh 的门禁后端，必须声明：
+# 以前没写在这一行，新工作树里没有 `.venv` 或没装它，门禁就静默空转成
+# 「✅ undefined name: 0」——检查等于没做。
+pyflakes>=3.2
 pip-audit>=2.7

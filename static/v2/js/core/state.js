@@ -45,6 +45,26 @@ const initialChat = () => ({
   lastUserText: ''
 });
 
+/* v4.21 创作活动流：steps 存当前打开书的增量步骤（cursor 供轮询续传），
+   stream 存进行中的一段实时输出（offset 供轮询续传，text 为本地累积缓冲，
+   epoch 标识第几轮流式，doneAt 标记收尾时刻供完成卡展示）。 */
+const initialSteps = () => ({ baselined: false, cursor: 0, items: [] });
+
+const initialStream = () => ({
+  key: '',
+  active: false,
+  doneAt: 0,
+  epoch: 0,
+  agent: '',
+  agent_label: '',
+  title: '',
+  chapter: 0,
+  offset: 0,
+  text: '',
+  thinkOffset: 0,
+  thinking: ''
+});
+
 export const initialState = {
   booted: false,
   mock: MOCK,
@@ -89,6 +109,9 @@ export const initialState = {
 
   chat: initialChat(),
 
+  steps: initialSteps(),
+  stream: initialStream(),
+
   live: [],
   liveConnected: false,
 
@@ -120,6 +143,27 @@ export const store = createStore(initialState);
 /* 调试出口（只读使用）：控制台可 window.__store.get() 检查状态。 */
 if (typeof window !== 'undefined') window.__store = store;
 
+/* 创作活动流（steps/stream）只属于当前打开的书：currentKey 变化（进入 / 离开 /
+   切换作品）即清空——与 app.js onRoute 里 work/live 等字段的重置保持同一时机。 */
+let liveFlowKey = initialState.currentKey;
+let liveFlowResetting = false;
+store.subscribe((state) => {
+  if (liveFlowResetting || state.currentKey === liveFlowKey) return;
+  liveFlowKey = state.currentKey;
+  const stepsIdle =
+    !state.steps || (!state.steps.baselined && !state.steps.cursor && !(state.steps.items || []).length);
+  const streamIdle =
+    !state.stream ||
+    (!state.stream.active && !state.stream.offset && !state.stream.text && !state.stream.epoch);
+  if (stepsIdle && streamIdle) return;
+  liveFlowResetting = true;
+  try {
+    store.set({ steps: initialSteps(), stream: initialStream() });
+  } finally {
+    liveFlowResetting = false;
+  }
+});
+
 export function patch(key, value) {
   store.set((state) => {
     const base = state[key];
@@ -143,10 +187,6 @@ export function patchChat(patchValue) {
 
 export function resetChat() {
   store.set((state) => ({ ...state, chat: initialChat() }));
-}
-
-export function setFeature(name, available) {
-  store.set((state) => ({ ...state, features: { ...state.features, [name]: available } }));
 }
 
 /* chat message helpers */
@@ -175,11 +215,3 @@ export function removeMessage(id) {
   patchChat((chat) => ({ messages: chat.messages.filter((m) => m.id !== id) }));
 }
 
-export function setMessages(messages) {
-  patchChat({ messages });
-}
-
-export const selectors = {
-  activeWork: (s) => (s.currentKey ? s.library.items.find((i) => i.key === s.currentKey) || null : null),
-  isWide: () => typeof window !== 'undefined' && window.innerWidth >= 1200
-};

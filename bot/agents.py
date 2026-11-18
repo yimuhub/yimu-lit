@@ -23,6 +23,8 @@ AGENTS = {
     "title":    {"label": "拟题师", "stage": None,       "desc": "书名/标题生成"},
     "deslopper": {"label": "去味师", "stage": "review",   "desc": "AI 腔定点改写（slop 报告 → 最小改法逐条修）"},
     "editor":    {"label": "总编",   "stage": "review",   "desc": "全书终审/跨章一致性/红线扫描"},
+    # v4.26.0：总编辑——统领创作全程的监制岗（bot/supervisor.py 看护线程），对整体负责到交成品
+    "supervisor": {"label": "总编辑", "stage": None,      "desc": "统领全程：停滞自愈/质量闸门/坑账盯梢/完稿终审，每个决定在对话流汇报"},
     # v4.12.4：非小说文体专属岗位（每个文体至少 1 个写作 + 1 个审校）
     "script_writer":    {"label": "编剧",     "stage": "writing", "desc": "写场次/对白/动作行；竖屏短剧与分镜"},
     "script_checker":   {"label": "审剧人",   "stage": "review",  "desc": "剧本时代/人物在场/场号连续性体检"},
@@ -81,6 +83,10 @@ def set_binding(agent, provider_id=None, model=None):
 # v3.0.0：内置默认技能包。岗位从未配置过技能时首次读取自动填入并落盘
 # （用户显式绑定过——包括清空为空列表——则完全尊重用户配置）。
 DEFAULT_AGENT_SKILLS = {
+    # v4.23.2：planner 原绑的这两个技能名此前在 skillkit 里没有对应文件（git 全历史也搜不到），
+    # 注入时静默失效，等于规划岗没有专属技能。已补齐真实文件：
+    #   skillkit/novel/references/guides/卷弧结构与滚动规划.md
+    #   skillkit/novel/references/guides/多线叙事与视角调度.md
     "planner":   ["novel-volume-arc-planning", "novel-multithread-pov", "core-longform-continuity"],
     "writer":    ["novel-references-guides-golden3", "novel-references-guides-dialogue-writing",
                   "novel-hangup-curve", "core-anti-slop"],
@@ -146,24 +152,28 @@ def book_skill_bindings(pdir):
 
 def set_book_skills(pdir, agent, names):
     """把某本书的岗位技能绑定写进 02-写作计划.json 的 meta.agent_skills。
-    空列表 = 清空该岗位的本书绑定（回落全局绑定）。"""
-    import json, os, datetime
+    空列表 = 清空该岗位的本书绑定（回落全局绑定）。
+    v4.24.16：读-改-写纳入按书串行锁——协作页签操作与写作线程并发时不再互相覆盖整份计划。"""
+    import json, os, datetime, threading
     from .safeio import atomic_write_json as _aw
+    from .writer import _acq_book
     cleaned = _clean_skills(names)
     _check_skills_exist(cleaned)
     fp = os.path.join(pdir, "02-写作计划.json")
-    try:
-        plan = json.load(open(fp, encoding="utf-8"))
-    except Exception:
-        raise ValueError("作品计划缺失或不可读（仅支持小说作品的按作品绑定）")
-    meta = plan.setdefault("meta", {})
-    binds = meta.get("agent_skills")
-    if not isinstance(binds, dict):
-        binds = {}
-    binds[agent] = cleaned
-    meta["agent_skills"] = binds
-    plan["updatedAt"] = datetime.datetime.now().isoformat()
-    _aw(fp, plan)
+    key = os.path.basename(pdir)
+    with _acq_book(key):
+        try:
+            plan = json.load(open(fp, encoding="utf-8"))
+        except Exception:
+            raise ValueError("作品计划缺失或不可读（仅支持小说作品的按作品绑定）") from None
+        meta = plan.setdefault("meta", {})
+        binds = meta.get("agent_skills")
+        if not isinstance(binds, dict):
+            binds = {}
+        binds[agent] = cleaned
+        meta["agent_skills"] = binds
+        plan["updatedAt"] = datetime.datetime.now().isoformat()
+        _aw(fp, plan)
     return binds
 
 def _clean_skills(names):
@@ -248,11 +258,16 @@ def bindings_view():
         medium_map = dict(_medium_mod.MEDIUM_AGENTS)   # {agent: medium}
     except Exception:
         medium_map = {}
+    disabled = disabled_agents()
+    custom = _load_custom_agents()
     for agent, meta in all_agents.items():
         b = binds.get(agent, {}) or {}
         out.append({"agent": agent, "label": meta["label"], "stage": meta["stage"], "desc": meta["desc"],
                     "provider_id": b.get("provider_id"), "model": b.get("model"),
                     "medium": medium_map.get(agent, ""),
+                    # v4.20：状态（启用中/已停用）+ 是否自定义岗位（前端渲染启停/删除按钮用）
+                    "enabled": agent not in disabled,
+                    "custom": agent in custom,
                     "effective": ("已绑定 " + (b.get("model") or "?")) if (b.get("provider_id") or b.get("model")) else "回落 stage/默认",
                     "skills": _skills_of(sbinds, agent)})
     return {"agents": out, "max_global_agents": _max_global()}
@@ -283,9 +298,86 @@ def set_max_global(n):
     return c["defaults"]["max_global_agents"]
 
 
-def _custom_agents_path():
-    import os
-    return os.path.join(providers.ROOT, "config.json")
+# ---------- 岗位启停（v4.20：四大核心岗位默认全启用；用户可停用，作家除外） ----------
+
+# 作家是创作引擎本体（所有正文都由 writer 产出），只能换模型、不能停用。
+UNTOGGLEABLE_AGENTS = {"writer"}
+
+def _load_disabled():
+    """读 config.json defaults.agent_disabled（停用岗位名单）。异常一律空列表。"""
+    import json
+    try:
+        v = json.load(open(_config_path(), encoding="utf-8")).get("defaults", {}).get("agent_disabled", [])
+        return [str(x) for x in v if isinstance(x, str)] if isinstance(v, list) else []
+    except Exception:
+        return []
+
+def disabled_agents():
+    """已停用岗位集合。停用语义 = 流水线里跳过该岗位的环节（不是换模型），
+    由调用点（workflow.deslop_chapter / chapter_review 等）各自检查。"""
+    return set(_load_disabled())
+
+def set_agent_enabled(agent, enabled):
+    """启用/停用某岗位；返回最新停用名单（sorted list）。
+    writer 传 False 时拒绝：作家岗位是创作引擎，不能停用。"""
+    agent = str(agent or "").strip()
+    if agent not in AGENTS and agent not in _load_custom_agents():
+        raise ValueError(f"未知岗位：{agent!r}")
+    if not enabled and agent in UNTOGGLEABLE_AGENTS:
+        raise ValueError("作家岗位是创作引擎，不能停用")
+    import json
+    p = _config_path()
+    try:
+        c = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        c = {}
+    d = c.setdefault("defaults", {})
+    cur = {x for x in (d.get("agent_disabled") or []) if isinstance(x, str)}
+    if enabled:
+        cur.discard(agent)
+    else:
+        cur.add(agent)
+    d["agent_disabled"] = sorted(cur)
+    atomic_write_json(p, c)
+    return sorted(cur)
+
+def remove_custom_agent(name):
+    """删除自定义岗位（仅 defaults.custom_agents 里的可删；内置岗位只能停用不能删）。
+    顺带清掉该岗位的模型/技能绑定与停用状态，返回被删的岗位定义。"""
+    name = str(name or "").strip()
+    custom = _load_custom_agents()
+    if name not in custom:
+        if name in AGENTS:
+            raise ValueError(f"内置岗位「{name}」不能删除，只能停用")
+        raise ValueError(f"未知岗位：{name!r}")
+    removed = custom.pop(name)
+    _save_custom_agents(custom)
+    import json
+    p = _config_path()
+    try:
+        c = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        c = {}
+    d = c.setdefault("defaults", {})
+    changed = False
+    for key in ("agent_models", "agent_skills"):
+        m = d.get(key)
+        if isinstance(m, dict) and name in m:
+            m.pop(name, None)
+            changed = True
+    dis = d.get("agent_disabled")
+    if isinstance(dis, list) and name in dis:
+        d["agent_disabled"] = [x for x in dis if x != name]
+        changed = True
+    if changed:
+        atomic_write_json(p, c)
+    return removed
+
+def is_known_agent(name):
+    """内置或自定义岗位都算已知（书级 agents 名单等校验用）。"""
+    n = str(name or "").strip()
+    return n in AGENTS or n in _load_custom_agents()
+
 
 def _load_custom_agents():
     """从 config.json defaults.custom_agents 读取自定义 Agent 列表。"""

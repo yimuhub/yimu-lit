@@ -113,7 +113,7 @@ def test_medium_decided_by_each_engines_own_plan_file(tmp_path, monkeypatch, med
 def test_library_item_unknown_key_is_404(four_works):
     r = client.get("/api/library/ghost_key")
     assert r.status_code == 404
-    assert r.json()["error"] == "作品不存在"
+    assert r.json()["error"] == "项目不存在或未加载，请刷新作品库"
 
 
 # ---------------------------------------------------------------- 契约 2：status shape
@@ -175,7 +175,7 @@ def test_script_scene_ghost_key_is_404(four_works):
     """/api/script/scene 与同级端点同口径：项目不存在即 404，前端据此判"作品已删"。"""
     r = client.get("/api/script/scene", params={"key": "ghost_key", "no": 9})
     assert r.status_code == 404
-    assert r.json() == {"error": "项目不存在"}
+    assert r.json() == {"error": "项目不存在或未加载，请刷新作品库"}
 
 
 @pytest.mark.parametrize("url", [
@@ -185,7 +185,7 @@ def test_script_scene_ghost_key_is_404(four_works):
 def test_doc_endpoints_unknown_key_is_404(four_works, url):
     r = client.get(url, params={"key": "ghost_key"})
     assert r.status_code == 404
-    assert r.json()["error"] == "项目不存在"
+    assert r.json()["error"] == "项目不存在或未加载，请刷新作品库"
 
 
 # ---------------------------------------------------------------- 契约 4：裸计划目录

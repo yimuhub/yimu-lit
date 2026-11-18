@@ -16,6 +16,9 @@ import { api, errorText } from '../core/api.js';
 import { toast, confirmDialog, skeletonBlock, openModal } from '../core/ui.js';
 import { navigate } from '../core/router.js';
 import { renderMarkdownInto } from '../core/markdown.js';
+/* isMediumBench / verdictLabel 已下沉 core/constants.js（rightpanel 只为它们
+   就得静态加载本文件，太重了）；这里只复用两张标签表。 */
+import { OPERATION_LABELS, VERDICT_LABELS } from '../core/constants.js';
 import { mountChatFloat } from '../components/chatfloat.js';
 import { openDistillModal } from '../components/distill.js';
 
@@ -35,7 +38,10 @@ const BENCH = {
   },
   other: {
     title: '创作工作台',
-    tabs: [['outline', '大纲'], ['final', '正文'], ['report', '打磨报告'], ['final', '定稿']],
+    /* v4.24.16 修复：此前有两个 id='final' 的页签——paintTabs 按 id 比对高亮，
+       点「定稿」与「正文」同时亮、第二次点击静默无响应；且后端 miniPart 只有一个
+       final 文件，两个页签内容完全相同。去重保留「定稿」。 */
+    tabs: [['outline', '大纲'], ['report', '打磨报告'], ['final', '定稿']],
     defaultTab: 'final',
     status: (key) => api.miniStatus(key),
     doc: (key, tab) => api.miniPart(key, tab)
@@ -49,14 +55,16 @@ const BENCH = {
   },
   news: {
     title: '新闻稿工作台',
-    tabs: [['outline', '素材'], ['final', '正文'], ['check', '事实核查'], ['final', '定稿']],
+    /* v4.24.16：同 other——去掉重复的 final 页签 */
+    tabs: [['outline', '素材'], ['check', '事实核查'], ['final', '定稿']],
     defaultTab: 'final',
     status: (key) => api.miniStatus(key),
     doc: (key, tab) => api.miniPart(key, tab)
   },
   copy: {
     title: '文案工作台',
-    tabs: [['outline', '需求'], ['hooks', '钩子'], ['final', '文案'], ['titles', '标题标签'], ['final', '定稿']],
+    /* v4.24.16：同 other——去掉重复的 final 页签 */
+    tabs: [['outline', '需求'], ['hooks', '钩子'], ['titles', '标题标签'], ['final', '定稿']],
     defaultTab: 'final',
     status: (key) => api.miniStatus(key),
     doc: (key, tab) => api.miniPart(key, tab)
@@ -92,14 +100,9 @@ const STATE_LABELS = {
 const SETTLED = new Set(['completed', 'failed']);
 
 /* status 里的 operation/verdict 是引擎内部的码（写/审的码、pass|fail|unclear），
-   直接上屏等于把流水线术语丢给用户；这里只留各自的短标签。
-   stage 是 S5/F 这类阶段码，引擎侧没有标签表，进度条已有 done/total，不再显示。 */
-const OPERATION_LABELS = { write: '写', review: '审', refactor: '改', recreate: '重写' };
-const VERDICT_LABELS = { pass: '通过', fail: '未过', unclear: '存疑' };
+   标签表在 core/constants.js（verdictLabel 也供右侧面板使用）。 */
 /* 场次状态是计划文件里的码，pending/failed 直接上屏没人看得懂。 */
 const SCENE_STATE_LABELS = { pending: '待写', in_progress: '写作中', failed: '失败' };
-
-export const MEDIUM_BENCHES = Object.keys(BENCH);
 
 /* 诗词/散文里能按段改的页签：这两个文件就是副驾能落盘的两份文档。 */
 const PARAGRAPH_TABS = new Set(['draft', 'final']);
@@ -112,15 +115,6 @@ function splitParagraphs(text) {
     .split(/\n\s*\n/)
     .map((s) => s.trim())
     .filter(Boolean);
-}
-
-/* 格律判定在库列表项里也是原始码，右侧面板同样需要一个中文说法。 */
-export function verdictLabel(verdict) {
-  return VERDICT_LABELS[verdict] || verdict || '';
-}
-
-export function isMediumBench(medium) {
-  return MEDIUM_BENCHES.includes(medium);
 }
 
 /* 场次计划里是 内/外 + 地点 + 时间，没有单独的标题字段；预览接口给的是 heading。 */

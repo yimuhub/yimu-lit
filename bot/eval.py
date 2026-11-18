@@ -17,8 +17,8 @@ import json
 import os
 import re
 import secrets
-from datetime import datetime, timezone
-UTC = timezone.utc  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；与 timezone.utc 等价）
+from datetime import datetime, UTC
+UTC = UTC  # v4.7.1 兼容 Python 3.9/3.10（datetime.UTC 自 3.11 起才有；与 timezone.utc 等价）
 
 from . import llm
 from . import medium as medium_mod
@@ -290,13 +290,6 @@ def list_cases(medium: str = "") -> list[dict]:
             continue
         out.append(json.loads(json.dumps(case, ensure_ascii=False)))
     return out
-
-
-def _case_by_id(case_id: str) -> dict | None:
-    for case in CASES:
-        if case["id"] == case_id:
-            return case
-    return None
 
 
 def _messages(case: dict, skill_text: str = "") -> list[dict]:

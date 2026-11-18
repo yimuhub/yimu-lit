@@ -26,10 +26,6 @@ export function isHttpUrl(raw) {
   }
 }
 
-export function safeUrl(raw) {
-  return isHttpUrl(raw) ? raw : '';
-}
-
 export function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
   if (attrs) {
@@ -59,13 +55,6 @@ export function h(tag, attrs, ...children) {
   return el;
 }
 
-export function fragment(html) {
-  const t = document.createElement('template');
-  t.innerHTML = html;
-  return t.content;
-}
-
-export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 export function clear(el) {
@@ -78,15 +67,6 @@ export function on(el, type, handler, opts) {
   return () => el.removeEventListener(type, handler, opts);
 }
 
-export function delegate(root, selector, type, handler) {
-  const fn = (event) => {
-    const target = event.target instanceof Element ? event.target.closest(selector) : null;
-    if (target && root.contains(target)) handler(event, target);
-  };
-  root.addEventListener(type, fn);
-  return () => root.removeEventListener(type, fn);
-}
-
 export function debounce(fn, wait = 300) {
   let timer = 0;
   const wrapped = (...args) => {
@@ -95,26 +75,6 @@ export function debounce(fn, wait = 300) {
   };
   wrapped.cancel = () => clearTimeout(timer);
   return wrapped;
-}
-
-export function throttle(fn, wait = 80) {
-  let last = 0;
-  let timer = 0;
-  return (...args) => {
-    const now = Date.now();
-    const remain = wait - (now - last);
-    if (remain <= 0) {
-      clearTimeout(timer);
-      last = now;
-      fn(...args);
-    } else if (!timer) {
-      timer = setTimeout(() => {
-        timer = 0;
-        last = Date.now();
-        fn(...args);
-      }, remain);
-    }
-  };
 }
 
 export function uid(prefix = 'id') {
@@ -143,7 +103,7 @@ export function fmtPct(n) {
   return `${Math.round(v)}%`;
 }
 
-export function pad2(n) {
+function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
@@ -184,7 +144,7 @@ export function relTime(value) {
   return fmtDate(d);
 }
 
-export function dayStart(date = new Date()) {
+function dayStart(date = new Date()) {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
@@ -227,7 +187,7 @@ export function statusMeta(state, label) {
 
 export const MEDIUM_LABELS = { novel: '小说', script: '剧本', poetry: '诗词', prose: '散文', thesis: '论文', children: '儿童文学', news: '新闻稿', copy: '文案', other: '其他' };
 /* 各文体的进度单位不同：小说计章、剧本计场、诗词计改稿轮、散文计阶段。 */
-export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段', thesis: '章', children: '篇', news: '份', copy: '篇', other: '篇' };
+export const MEDIUM_UNITS = { novel: '章', script: '场', poetry: '轮', prose: '阶段', thesis: '章', children: '篇', news: '阶段', copy: '阶段', other: '阶段' };   // v4.24.16：news/copy/other 是单文档多阶段管线，进度按阶段计
 
 export function mediumChip(medium) {
   /* v4.2.0：四文体全部显示彩色标签（此前小说不显示） */
@@ -256,17 +216,11 @@ export function mediumGlyph(item) {
   return glyph || null;
 }
 
-export function bytes(n) {
-  const v = Number(n) || 0;
-  if (v > 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB`;
-  if (v > 1024) return `${Math.round(v / 1024)} KB`;
-  return `${v} B`;
-}
 
 const TEXT_EXT = ['.txt', '.md', '.markdown', '.json', '.csv', '.log'];
 const DOC_EXT = ['.docx', '.doc', '.pdf', '.epub', '.rtf', '.html', '.htm'];
 export const ATTACH_ACCEPT = [...TEXT_EXT, ...DOC_EXT].join(',');
-export const ATTACH_MAX_BYTES = 20 * 1024 * 1024;
+const ATTACH_MAX_BYTES = 20 * 1024 * 1024;
 
 export function validateFile(file) {
   if (!file) return { ok: false, message: '没有读取到文件' };
@@ -332,7 +286,7 @@ export function trapFocus(container) {
   return () => container.removeEventListener('keydown', onKey);
 }
 
-export function isMac() {
+function isMac() {
   return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 }
 

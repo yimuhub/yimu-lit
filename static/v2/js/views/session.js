@@ -68,6 +68,11 @@ function finishSteps(process, { title, duration, tokens, stage = 'done' } = {}) 
   };
 }
 
+/* v4.21.1：创作活动流去重水位（模块级，跨双挂载也生效）——
+   mountKey -> Set(事件 no)；creatorAction 用 mountKey -> ts。 */
+const _seenSteps = new Map();
+const _seenCreatorTs = new Map();
+
 export function renderSession(container, ctx = {}) {
   const mountKey = store.get().currentKey;
   const el = h('div', { class: 'session-view' });
@@ -139,10 +144,38 @@ export function renderSession(container, ctx = {}) {
     // v4.12.1：8 文体都拉聊天历史（chat_log.jsonl 全文体留档）
     try {
       const res = await api.chatHistory(key);
+      // v4.24.16 修复切书竞态：await 期间用户已切书 → 旧书聊天记录不得全量替换新书对话区
+      if (store.get().currentKey !== key) return;
       if (res && res.ok && Array.isArray(res.items)) {
         patchChat((cs) => {
           // 正在流式输出的对话不覆盖；其余情况以落盘记录为准全量替换
           if (cs.streaming) return cs;
+          // v4.21.6：按时间正序重排（历史章节卡回填的时间戳可能乱序）
+          res.items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+          /* v4.21.9 章节卡归位与去重：
+             ① 先从全部记录算出每章「首次完成时刻」（同章多记录 ts 最小值，重写不改变它）；
+             ② 同章只保留 ts 最大的一条（最新正文/评分/token）；
+             ③ 章节卡排序用首次完成时刻 → 重写后永远归位在原序列。 */
+          const _chFirst = new Map();
+          for (const it of res.items) {
+            if (it.type === 'chapter' && it.no != null) {
+              const prev = _chFirst.has(it.no) ? _chFirst.get(it.no) : Infinity;
+              _chFirst.set(it.no, Math.min(prev, it.ts || 0));
+            }
+          }
+          const _chLatest = new Map();
+          res.items = res.items.filter((it) => {
+            if (it.type !== 'chapter' || it.no == null) return true;
+            const cur = _chLatest.get(it.no);
+            if (!cur || (it.ts || 0) > (cur.ts || 0)) _chLatest.set(it.no, it);
+            return false;   // 章节记录全部移出，最新一条稍后放回
+          });
+          for (const it of _chLatest.values()) res.items.push(it);
+          const _sortKey = (it) => {
+            if (it.type === 'chapter' && it.no != null && _chFirst.has(it.no)) return _chFirst.get(it.no);
+            return it.ts || 0;
+          };
+          res.items.sort((a, b) => _sortKey(a) - _sortKey(b));
           const msgs = res.items.map((item, i) => {
             const base = {
               id: `hist_${i}_${item.ts || 0}`,
@@ -150,6 +183,8 @@ export function renderSession(container, ctx = {}) {
               content: item.content || '',
               ts: item.ts || 0,
               historical: true,
+              // v4.21.3：创作按钮气泡（继续/暂停）的落盘副标注，刷新后原样回放
+              ...(item.note ? { creatorNote: item.note } : {}),
             };
             // v2.9.0：章节完成记录 → 章节卡片（默认折叠，可展开/复制/分支）
             if (item.type === 'chapter') {
@@ -190,7 +225,13 @@ export function renderSession(container, ctx = {}) {
     patchUi({ pendingFirstMessage: null });
     runTurn({ text: String(pending.text || '') }, { appendUser: true });
   }
-  setTimeout(maybeSendPendingFirstMessage, 400);
+  /* v4.24.16 修复：400ms 定时器此前不进 destroy 清理、回调不查 disposed——
+     work↔bench 往返（同 key 重挂载）时新旧两个定时器构成双发送窗口，
+     已销毁视图也会发出首条消息。 */
+  const firstMsgTimer = setTimeout(() => {
+    if (disposed) return;
+    maybeSendPendingFirstMessage();
+  }, 400);
 
   // v2.3 对话绑定提示：小说且当前打开了作品时，composer 上方挂一枚「已绑定《X》」chip。
   // 纯展示，判断口径与 buildStreamPayload 的 withWork 一致；不碰追章流逻辑。
@@ -223,12 +264,20 @@ export function renderSession(container, ctx = {}) {
     const state = store.get();
     if (state.currentKey !== mountKey) return;
     const work = state.work;
+    /* v4.20.0：签名加入 paused / state——暂停请求发出后 planbar 也要重绘（三态按钮收敛） */
     const sig = JSON.stringify({
       k: state.currentKey,
+      /* v4.24.12：work.key 进签名——刷新后 work 可能先无 key、后有 key（并库晚到），
+         若签名看不出这个变化，目标条不会重绘，创作状态按钮就一直缺席。 */
+      wk: work && work.key,
       r: work && work.running,
+      p: work && work.paused,
+      s: work && work.state,
       d: work && work.done,
       t: work && work.total,
       v: state.plan && state.plan.plan && state.plan.plan.version,
+      /* v4.24.12：极速开关进了签名——「切回标准」那一项的可用状态要跟着重绘。 */
+      x: state.plan && state.plan.plan && state.plan.plan.express ? 1 : 0,
       c: state.plan && Array.isArray(state.plan.plan && state.plan.plan.chapters)
         ? (state.plan.plan.chapters.find((c) => c.status === 'in_progress') || {}).title
         : ''
@@ -831,6 +880,253 @@ export function renderSession(container, ctx = {}) {
     }
   }
 
+  // ---------- v4.21 创作活动流：步骤卡 / 实时输出 / 创作按钮回显 ----------
+  // app.js 的 book-live 轮询把 steps / stream 写进 store；这里只负责把增量转成
+  // 对话消息：steps 按 no 水位线追加，stream 维护一条「实时输出」卡片（正文走
+  // 直改 DOM，与追章 paintChapter 同款套路）。进入书页不回放历史：水位线初始
+  // 取当前 items 的最大 no（重挂载也不回放；历史在右栏「本章档案」查）。
+  const maxStepNo = (list) =>
+    (list || []).reduce((acc, it) => Math.max(acc, Number(it && it.no) || 0), 0);
+  let lastStepNo = maxStepNo(store.get().steps && store.get().steps.items);
+  let replayBatch = true;   // v4.21.7：挂载后的第一批为历史回放（章内过程不散落，进章节卡下拉）
+  let streamEpoch = 0;
+  let streamMsgId = '';
+  let streamDoneTimer = 0;
+  let creatorTs = (store.get().ui && store.get().ui.creatorAction && store.get().ui.creatorAction.ts) || 0;
+
+  function paintSteps() {
+    const state = store.get();
+    if (state.currentKey !== mountKey) return;
+    const items = (state.steps && state.steps.items) || [];
+    if (!items.length) {
+      /* 被重置过（切书）：水位线归零，等新书的增量 */
+      lastStepNo = 0;
+      return;
+    }
+    /* v4.21.1：模块级已见集合——即使极端场景下出现双订阅/双挂载，
+       同一事件也只进一次对话流（此前重复事件成对出现）。 */
+    let seen = _seenSteps.get(mountKey);
+    if (!seen) {
+      seen = new Set();
+      _seenSteps.set(mountKey, seen);
+    }
+    const fresh = items.filter((it) => {
+      const no = Number(it && it.no) || 0;
+      /* v4.24.16：去重键带事件时间戳——服务端重启后 no 从 1 重新编号，纯 no 键会把
+         新 boot 的新事件误判为已见而丢弃；带 ts 后同一条事件（同 no 同 ts）仍去重，
+         重启后的新事件（同 no 不同 ts）正常上屏。 */
+      const dedupKey = `${no}@${it && it.ts || ''}`;
+      if (!it || no <= lastStepNo || seen.has(dedupKey)) return false;
+      /* v4.21.6：作家「（正文全文）」事件不再回放为朴素卡——其内容由章节完成卡承载 */
+      if (it.agent === 'writer' && /（正文全文）$/.test(String(it.title || '')) && Number(it.chapter) > 0) {
+        return false;
+      }
+      /* v4.21.7：回放批次跳过「章内过程」事件（chapter>0）——同一章所有 Agent 的
+         思考/工作/产出已收进章节完成卡的「本章过程」下拉，不再散落刷屏；
+         实时创作批次不受影响（保持当前逐步展示形式）。 */
+      if (replayBatch && Number(it.chapter || 0) > 0) {
+        return false;
+      }
+      return true;
+    });
+    if (!fresh.length) return;
+    replayBatch = false;   // 首批之后都是实时增量（逐步展示）
+    lastStepNo = maxStepNo(items);
+    const addedIds = [];
+    let writerDoneCh = 0;
+    for (const item of fresh) {
+      const no = Number(item.no) || 0;
+      seen.add(`${no}@${item.ts || ''}`);   // v4.24.16：与过滤侧同键（no@ts）
+      const added = addMessage({ kind: 'step', role: 'assistant', step: { ...item }, content: '' });
+      addedIds.push(added.id);
+      /* v4.22.2：作家完成事件（含极速模式）→ 3 秒后重载对话历史，
+         章节完成卡（含 tokens/评分）无需手动刷新即出现。 */
+      if (item.agent === 'writer' && item.phase === 'done' && Number(item.chapter || 0) > 0) {
+        writerDoneCh = Number(item.chapter);
+      }
+    }
+    scrollIfNear();
+    if (writerDoneCh) {
+      setTimeout(() => {
+        if (disposed || store.get().currentKey !== mountKey) return;
+        try { loadChatHistory(); } catch { /* ignore */ }
+        try { ctx.refreshWork && ctx.refreshWork(); } catch { /* ignore */ }
+      }, 3000);
+    }
+    /* v4.21.1 渲染看门狗：消息已进 store 但 1.2s 后仍未出现在消息流 DOM
+       （极端场景下 chat 视图签名失步）→ 强制整流重渲染一次，保证收敛。 */
+    const lastId = addedIds[addedIds.length - 1];
+    setTimeout(() => {
+      if (disposed || !lastId) return;
+      if (!chat.el.querySelector(`.msg-step[data-id="${lastId}"]`)) {
+        console.warn('[session] 步骤卡未上屏，强制重渲染消息流');
+        try { chat.refresh(); } catch { /* ignore */ }
+      }
+    }, 1200);
+  }
+
+  function paintStreamNode(text, thinking) {
+    if (!streamMsgId || disposed) return;
+    requestAnimationFrame(() => {
+      if (disposed) return;
+      const card = chat.el.querySelector(`.msg-step[data-id="${streamMsgId}"]`);
+      if (!card) return;
+      /* v4.21.4：模型思维链实时流（思考区在正文上方，默认展开随流滚动） */
+      const thinkNode = card.querySelector('.step-stream-think-text');
+      if (thinkNode) {
+        const tk = thinking || '';
+        if (thinkNode.dataset.raw !== tk) {
+          thinkNode.dataset.raw = tk;
+          thinkNode.textContent = tk || '（等待模型思维链…）';
+          thinkNode.parentElement.hidden = !tk;
+        }
+        const tbox = thinkNode.parentElement;
+        if (tbox && !tbox.hidden) tbox.scrollTop = tbox.scrollHeight;
+      }
+      const node = card.querySelector('.step-stream-text');
+      if (!node) return;
+      if (node.dataset.raw !== text) {
+        node.dataset.raw = text;
+        node.textContent = text || '正在输出…';
+      }
+      const box = node.parentElement;
+      if (box) box.scrollTop = box.scrollHeight;
+    });
+  }
+
+  function paintStream() {
+    const state = store.get();
+    if (state.currentKey !== mountKey) return;
+    const st = state.stream || {};
+    const epoch = st.epoch || 0;
+
+    if (st.active && st.key === state.currentKey) {
+      let msg = streamMsgId ? state.chat.messages.find((m) => m.id === streamMsgId) : null;
+      if (epoch !== streamEpoch || !msg) {
+        streamEpoch = epoch;
+        if (streamDoneTimer) {
+          clearTimeout(streamDoneTimer);
+          streamDoneTimer = 0;
+        }
+        const wantedId = `step-live-${epoch}`;
+        msg = state.chat.messages.find((m) => m.id === wantedId);
+        if (msg) {
+          /* 重挂载等场景：同一条流已在对话里，直接接管 */
+          streamMsgId = msg.id;
+          if ((msg.content || '') !== (st.text || '')) {
+            updateMessage(msg.id, { content: st.text || '' });
+          }
+        } else {
+          const created = addMessage({
+            id: wantedId,
+            kind: 'step',
+            role: 'assistant',
+            stream: true,
+            withThinking: true,   // v4.21.4：实时卡带模型思维链区（renderStepMessage 输出）
+            step: {
+              agent: st.agent || 'system',
+              agent_label: st.agent_label || '实时输出',
+              title: st.title || (st.chapter ? `第${st.chapter}章` : '实时输出'),
+              chapter: st.chapter || 0,
+              phase: 'start',
+              streaming: true,
+              ts: Math.floor(Date.now() / 1000)
+            },
+            content: st.text || ''
+          });
+          streamMsgId = created.id;
+          scrollIfNear();
+        }
+      } else if ((msg.content || '') !== (st.text || '')) {
+        /* 只同步 content 供重渲染兜底；视觉更新交给 paintStreamNode 直改 DOM */
+        updateMessage(streamMsgId, { content: st.text || '' });
+      }
+      paintStreamNode(st.text || '', st.thinking || '');
+      return;
+    }
+
+    /* 一轮输出收尾：转完成态（✓ + 耗时 + 全文），1.5s 后收起为可展开完成卡 */
+    if (streamMsgId && epoch === streamEpoch && (st.text || '')) {
+      const msg = state.chat.messages.find((m) => m.id === streamMsgId);
+      if (msg && msg.step && msg.step.streaming) {
+        const durationMs = Math.max(0, Date.now() - (Number(msg.step.ts) || 0) * 1000);
+        /* v4.21.6：作家正文流完成 → 直接转回「原版章节完成卡」（renderChapterCard 渲染链：
+           默认收缩显示摘录 + 完成时间/字数，展开看全文，复制本章/从此章分支/章节工作台）。
+           评分在卡生成之后进行，刷新后由落盘记录补上分数。 */
+        if (st.agent === 'writer' && Number(st.chapter) > 0) {
+          const _no = Number(st.chapter);
+          updateMessage(streamMsgId, (m) => ({
+            ...m,
+            kind: undefined,
+            stream: false,
+            chapter: _no,
+            tag: `第${_no}章`,
+            collapsed: true,
+            chapterMeta: {
+              no: _no,
+              title: String(st.title || `第${_no}章`).replace(/^写第\d+章$/, `第${_no}章`),
+              words: Array.from(m.content || '').filter((c) => /[\u4e00-\u9fff]/.test(c)).length,
+              tokens: null,
+              quality: null,
+              ts: String(Math.floor(Date.now() / 1000))
+            }
+          }));
+          streamMsgId = '';
+          scrollIfNear();
+          /* v4.22.1：写完一章自动刷新——章节记录落盘后重新拉对话历史，
+             章节完成卡（预览/字数/tokens/评分）无需手动刷新即可出现在对话流。 */
+          setTimeout(() => {
+            if (disposed) return;
+            try { loadChatHistory(); } catch { /* ignore */ }
+            try { ctx.refreshWork && ctx.refreshWork(); } catch { /* ignore */ }
+          }, 6000);
+          return;
+        }
+        updateMessage(streamMsgId, (m) => ({
+          ...m,
+          content: st.text || '',
+          step: {
+            ...(m.step || {}),
+            phase: 'done',
+            streaming: false,
+            ms: durationMs > 500 ? Math.round(durationMs / 100) * 100 : 0
+          }
+        }));
+        if (!streamDoneTimer) {
+          streamDoneTimer = setTimeout(() => {
+            streamDoneTimer = 0;
+            if (!disposed) updateMessage(streamMsgId, { collapsed: true });
+          }, 1500);
+        }
+        scrollIfNear();
+      }
+    }
+  }
+
+  /* 创作按钮（继续/暂停）成功后 planbar 会写 ui.creatorAction；这里转成
+     创作者视角的用户气泡，ts 水位线去重（含挂载时跳过旧事件；
+     v4.21.1 水位线模块级化——双挂载场景也不重复插气泡）。 */
+  function paintCreatorAction() {
+    const state = store.get();
+    if (state.currentKey !== mountKey) return;
+    const act = state.ui && state.ui.creatorAction;
+    if (!act || !act.ts || act.ts <= creatorTs) return;
+    const seenTs = _seenCreatorTs.get(mountKey);
+    if (seenTs && act.ts <= seenTs) return;
+    _seenCreatorTs.set(mountKey, act.ts);
+    creatorTs = act.ts;
+    if (act.key !== mountKey) return;
+    const text = String(act.text || '').trim();
+    if (!text) return;
+    addMessage({
+      role: 'user',
+      content: text,
+      creatorNote: '来自创作按钮',
+      created_at: new Date().toISOString()
+    });
+    scrollIfNear();
+  }
+
   function retryMessage(msg) {
     if (msg && msg.chapter) {
       toast('章节内容是对话生成的，不能单独重试', { duration: 2200 });
@@ -932,6 +1228,9 @@ export function renderSession(container, ctx = {}) {
     paintPlan();
     paintBanner();
     paintBind();
+    paintSteps();
+    paintStream();
+    paintCreatorAction();
     if (state.plan && !state.chat.approval) deriveApproval();
   });
 
@@ -970,6 +1269,11 @@ export function renderSession(container, ctx = {}) {
     destroy() {
       disposed = true;
       epoch += 1;
+      if (firstMsgTimer) clearTimeout(firstMsgTimer);   // v4.24.16：首条消息定时器入清理
+      if (streamDoneTimer) {
+        clearTimeout(streamDoneTimer);
+        streamDoneTimer = 0;
+      }
       if (turn && turn.clockTimer) clearInterval(turn.clockTimer);
       if (turn && turn.controller) {
         try {

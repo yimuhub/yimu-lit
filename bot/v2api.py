@@ -114,6 +114,65 @@ def _load_chat_log(proj, limit: int = 500) -> list:
     """读取项目的聊天历史。"""
     return _read_jsonl(_chat_log_path(proj), limit=limit)
 
+def _backfill_chapter_records(proj):
+    """v4.21.6：补齐缺失的章节完成卡记录（type=chapter）。
+    活动流改版前/旧版本完成的章节没有留档，导致对话里看不到章节卡；
+    加载历史时幂等回填（已有记录的章号跳过），一次性补齐历史章节。"""
+    try:
+        # 注意：_clean_chapter_text 定义在 bot.writer（v2api 内只有别的函数的懒导入，
+        # 模块命名空间里没有）——必须显式导入，否则 NameError 被吞、回填静默失败。
+        from bot.writer import _clean_chapter_text
+        plan = proj.plan() or {}
+        chs = [c for c in (plan.get("chapters") or []) if c.get("status") == "completed"]
+        if not chs:
+            return
+        existing = set()
+        for rec in _load_chat_log(proj, limit=5000):
+            if isinstance(rec, dict) and rec.get("type") == "chapter" and rec.get("no") is not None:
+                try:
+                    existing.add(int(rec["no"]))
+                except (TypeError, ValueError):
+                    pass
+        meta_scores = (plan.get("meta") or {}).get("chapter_scores") or {}
+        added = 0
+        for c in sorted(chs, key=lambda x: x.get("chapterNumber") or 0):
+            no = c.get("chapterNumber")
+            try:
+                no = int(no)
+            except (TypeError, ValueError):
+                continue
+            if no in existing:
+                continue
+            fp = os.path.join(proj.path, c.get("filePath") or "")
+            if not os.path.isfile(fp):
+                continue
+            try:
+                raw = open(fp, encoding="utf-8", errors="replace").read()
+            except Exception:
+                continue
+            body = _clean_chapter_text(raw)
+            if len(body.strip()) < 200:   # 空章不生成卡
+                continue
+            sc = (meta_scores.get(str(no)) or {}).get("score")
+            # ts 用章节真实完成时间（回放排序需要时间正序；解析失败用当前时间）
+            try:
+                import datetime as _dt
+                _ts = int(_dt.datetime.fromisoformat(c.get("completedAt")).timestamp()) if c.get("completedAt") else int(_dt.datetime.now().timestamp())
+            except Exception:
+                _ts = int(_dt.datetime.now().timestamp()) if True else 0
+            _save_chat_msg(proj, "assistant", body, {"type": "chapter", "no": no,
+                "title": c.get("title") or f"第{no}章", "words": c.get("wordCount"),
+                "tokens": c.get("tokens"), "quality": sc, "ts": _ts,
+                "completedAt": c.get("completedAt") or ""})
+            added += 1
+        if added:
+            try:
+                proj.log(f"📚 已回填 {added} 张章节完成卡到对话流（历史章节补档）")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 def _project(get_project, key):
     """定位项目；返回 (proj, None) 或 (None, 响应)。"""
@@ -312,6 +371,29 @@ def _plan_view(proj, plan: dict) -> dict:
         plan["scale_label"] = (f"{words / 10000:g} 万字 · {chs} 章" if words >= 10000 and chs
                                else (f"{words} 字 · {chs} 章" if words and chs
                                      else (sc.get("label") or "")))
+    # v4.24.0：显式告诉前端这本书是不是极速模式。判据取「写作计划里的 config」——
+    # 02c 总规划的 mode 存的是原始 token（rolling/…），且非小说走 _medium_plan_view
+    # 时 mode 被换成了文体标签，不能拿来判断。
+    # v4.24.14：`config.express` 是**唯一**判据。旧实现在这里 OR 了 02c 的 `mode`
+    # （v4.24.0 起向导把 `mode:"express"` 写进总规划，之后没有任何代码更新它），
+    # 于是「曾经用极速开过书」的作品，开关被这条只读记录永久锁成「开」：
+    # 用户点一次 ⚡ 发出的是 on=false（按钮读到的仍为 true，界面永远显示「极速 · 开」），
+    # 引擎却按 config.express=false 跑标准流程——逐章评分、多轮重写全回来了。
+    # 只有「config 里 express / mode 两个字段都没有」的老计划才回落到 02c 的 token。
+    try:
+        from . import express as _express
+        _cfg_src = (disk_plan.get("config") if isinstance(disk_plan, dict) else None) or {}
+        if not isinstance(_cfg_src, dict):
+            _cfg_src = {}
+        _cfg_has_flag = ("express" in _cfg_src) or bool(str(_cfg_src.get("mode") or "").strip())
+        plan["express"] = (_express.on(_cfg_src) if _cfg_has_flag
+                           else _express.on({"mode": plan.get("mode")}))
+        # 已切回标准时，02c 里的 "express" 只是历史 token：别原样吐给前端，
+        # 目标条会照抄成「创作模式：express」。
+        if not plan["express"] and str(plan.get("mode") or "").strip().lower() == "express":
+            plan["mode"] = _express.STANDARD_MODE
+    except Exception:
+        plan["express"] = False
     volumes = plan.get("volumes")
     if not isinstance(volumes, list):
         return plan
@@ -380,7 +462,7 @@ def _medium_state_payload(proj, key: str, q: str = "") -> dict:
     """v4.6.2：非小说的状态 pane 数据（剧本用剧本状态库；诗词/散文/论文给阶段/产物映射）。"""
     if str(key).startswith("s_"):
         return _script_state_payload(proj, key, q)
-    from bot import writer as _wr, medium as _medium_mod
+    from bot import writer as _wr
     med = {"p_": "poetry", "e_": "prose", "t_": "thesis",
            "c_": "children", "n_": "news", "k_": "copy", "o_": "other"}.get(str(key)[:2], "prose")
     it = _wr.library_item(key) or {}
@@ -391,7 +473,6 @@ def _medium_state_payload(proj, key: str, q: str = "") -> dict:
         from bot import thesis_writer
         tp = thesis_writer.get_project(key)
         plan = (tp.plan() if tp else None) or {}
-        status_map = plan.get("chapterStatus") or {}
         for ch in (plan.get("outline") or {}).get("chapters") or []:
             no = int(ch.get("no") or 0)
             timeline.append({"chapter": no, "time": "", "event": ch.get("title") or f"第{no}章",
@@ -487,7 +568,7 @@ def _medium_stage_pairs(med: str) -> list[tuple[str, str]]:
 def _medium_plan_view(proj, key: str, med: str) -> dict:
     """v4.12.5：非小说计划 → 规划树。每文体有自己的阶段名与完成状态。"""
     from bot import (script_writer, poetry_writer, prose_writer, thesis_writer,
-                     children_writer, news_writer, copy_writer)
+                     children_writer, news_writer, copy_writer, express)
     def _chapter(no, title, status, words, extra=""):
         return {"n": no, "title": title or f"第{no}步", "status": status,
                 "word_count": words, "goal": extra}
@@ -549,7 +630,9 @@ def _medium_plan_view(proj, key: str, med: str) -> dict:
            "chapters": [c["n"] for c in chapters],
            "chapter_cards": chapters}
     return {"version": 1, "mode": mode, "scale_label": f"{len(chapters)} 步",
-            "premise": "", "volumes": [{"no": 1, "title": vol_title, "arcs": [arc]}]}
+            "premise": "", "volumes": [{"no": 1, "title": vol_title, "arcs": [arc]}],
+            # v4.24.0：极速模式标识（判据是 plan.config，与 novel 的 _plan_view 一致）
+            "express": bool(express.on((plan or {}).get("config") or {}))}
 
 
 _NAME_KEYS = {"children": "bookName", "news": "newsName", "copy": "copyName",
@@ -1061,28 +1144,7 @@ def register_v2_routes(app, get_project, chat_func=None):
         except Exception as e:
             return _bad(f"读取反馈失败：{e}", 500)
 
-    @app.get("/api/feedback/summary")
-    def api_feedback_summary():
-        fb, err = _mod("feedback")
-        if err:
-            return err
-        try:
-            summary = fb.aggregate()
-            _persist_learning(summary)
-            return {"ok": True, "summary": summary}
-        except Exception as e:
-            return _bad(f"汇总反馈失败：{e}", 500)
-
     # ------------------------------------------------------------ 技能与进化
-    @app.get("/api/skills")
-    def api_skills(medium: str = "", stage: str = ""):
-        try:
-            from bot import skillkit
-            return {"ok": True, "items": skillkit.list_skills(medium, stage),
-                    "stats": skillkit.stats()}
-        except Exception as e:
-            return _bad(f"读取技能库失败：{e}", 500)
-
     @app.get("/api/skills/tree")
     def api_skills_tree(medium: str = ""):
         """技能库导航树：文体 → 题材分组（前端 #/skills 左栏）。"""
@@ -1146,15 +1208,6 @@ def register_v2_routes(app, get_project, chat_func=None):
                     "stage": st, "items": items, "injected_preview": preview}
         except Exception as e:
             return _bad(f"读取本书技能失败：{e}", 500)
-
-    @app.get("/api/skills/validate")
-    def api_skills_validate():
-        try:
-            from bot import skillkit
-            fn = getattr(skillkit, "validate_all", None)
-            return {"ok": True, "result": fn() if fn else {"note": "当前版本无全库校验"}}
-        except Exception as e:
-            return _bad(f"校验技能库失败：{e}", 500)
 
     @app.get("/api/skills/evolution")
     def api_skills_evolution(status: str = ""):
@@ -1330,9 +1383,11 @@ def register_v2_routes(app, get_project, chat_func=None):
 
         def _bg_score():
             try:
-                from bot import continuity as _cont
+                # v4.23.2：删掉这里原先单独跑的一次 continuity.run_project——
+                # 它的返回值从来没被使用，而紧接着的 validate_project → _run_layered
+                # 内部会以同样的参数再跑一遍并把 findings 交给评审。等于全书扫描做了两次、
+                # 扔一次。进度文案保留，实际 L1 在 validate_project 里跑。
                 _prog.update({"stage": "一致性体检（L1）", "pct": 8, "detail": "扫描人物/伏笔/设定冲突"})
-                l1 = _cont.run_project(pdir)
                 _prog.update({"stage": "分层采样评审", "pct": 20, "detail": "五角色审校团分段并行评审"})
                 # 走 validate_project（内部自动选分层评审/单次评审 + 双轨合成 + 写 14/13 报告）
                 def _review_cb(total, done=None):
@@ -1358,42 +1413,6 @@ def register_v2_routes(app, get_project, chat_func=None):
 
         _th.Thread(target=_bg_score, daemon=True).start()
         return {"ok": True, "started": True, "msg": "评分已启动（过程可视化，请看弹窗进度）"}
-    # ------------------------------------------------------------ 固定评测
-    @app.get("/api/eval/cases")
-    def api_eval_cases(medium: str = ""):
-        ev, err = _mod("eval")
-        if err:
-            return err
-        try:
-            return {"ok": True, "items": ev.list_cases(medium)}
-        except Exception as e:
-            return _bad(f"读取评测集失败：{e}", 500)
-
-    @app.get("/api/eval/runs")
-    def api_eval_runs(limit: int = 20):
-        ev, err = _mod("eval")
-        if err:
-            return err
-        try:
-            return {"ok": True, "items": ev.list_runs(min(max(limit, 1), 100))}
-        except Exception as e:
-            return _bad(f"读取评测记录失败：{e}", 500)
-
-    @app.post("/api/eval/compare")
-    def api_eval_compare(payload: dict):
-        ev, err = _mod("eval")
-        if err:
-            return err
-        try:
-            res = ev.compare(str(payload.get("baseline") or ""),
-                             str(payload.get("candidate") or ""),
-                             payload.get("case_ids"), cfg=_cfg())
-            if isinstance(res, dict) and res.get("ok") is False:
-                return _bad(str(res.get("error") or "评测失败"))
-            return {"ok": True, "result": res}
-        except Exception as e:
-            return _bad(f"评测失败：{e}", 500)
-
     # ------------------------------------------------------------ 会话流式
     @app.post("/api/chat/stream")
     async def api_chat_stream(request: Request):
@@ -1485,7 +1504,7 @@ def register_v2_routes(app, get_project, chat_func=None):
             while not ready.is_set():
                 try:
                     await asyncio.wait_for(ready.wait(), timeout=_HEARTBEAT_SECS)
-                except (TimeoutError, asyncio.TimeoutError):  # v4.7.1 Python<3.11 时 asyncio.TimeoutError 不是内置 TimeoutError 子类
+                except TimeoutError:  # Python 3.11+ 起 asyncio.TimeoutError 即内置 TimeoutError（本仓库下限 3.13）
                     pushed_line = ""
                     if _log_file and os.path.exists(_log_file):
                         try:
@@ -1626,11 +1645,20 @@ def register_v2_routes(app, get_project, chat_func=None):
     def api_chat_history(key: str):
         """读取作品的全部聊天历史（JSONL 格式，按时间正序）。
         v2.8.0 修复：_project 返回 (proj, err) 元组，此前直接当 proj 用导致
-        AttributeError → /api/chat/history 恒 500，聊天记录永远读不出来。"""
+        AttributeError → /api/chat/history 恒 500，聊天记录永远读不出来。
+        v4.22.1：章节卡内容读时也过正文净化——旧版留档里混进去的
+        「本章概要/修改说明/评分表」不会再被前端「复制本章」带走。"""
         proj, err = _project(get_project, key)
         if err:
             return err
+        _backfill_chapter_records(proj)   # v4.21.6：历史章节卡补档（幂等）
         items = _load_chat_log(proj, limit=5000)
+        for it in items:
+            if isinstance(it, dict) and it.get("type") == "chapter":
+                try:
+                    it["content"] = _clean_chapter_text(it.get("content") or "")
+                except Exception:
+                    pass
         return {"ok": True, "items": items}
 
     @app.post("/api/chat/clear")
@@ -1671,7 +1699,7 @@ def register_v2_routes(app, get_project, chat_func=None):
             gitcfg = os.path.join(ROOT, ".git", "config")
             if os.path.exists(gitcfg):
                 try:
-                    for line in open(gitcfg, "r", errors="ignore"):
+                    for line in open(gitcfg, errors="ignore"):
                         line = line.strip()
                         if "github.com:" in line and ".git" in line:
                             # git@github.com:user/repo.git

@@ -93,7 +93,7 @@ def test_build_ctx_injects_book_skills(tmp_path, monkeypatch):
     """写作路径：_build_ctx 把计划 meta.agent_skills 注入 cfg。"""
     from bot import writer
     skills = {"writer": ["novel-hangup-curve"]}
-    pdir = _mk_book(tmp_path, skills=skills)
+    _mk_book(tmp_path, skills=skills)
     proj = appmod._get_project(KEY)
     assert proj is not None
     monkeypatch.setattr(workflow, "gen_chapter_plan", lambda *a, **k: "", raising=False)

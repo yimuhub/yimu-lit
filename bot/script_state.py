@@ -29,10 +29,6 @@ def _scene_body(pdir, sc):
     return _read(pdir, os.path.join("04-正文", fn))
 
 
-def _cn_name_re():
-    return re.compile(r"(?:人物|角色|出场)[:：]?\s*([^\n，,。;；]{1,30})")
-
-
 def build_state(pdir: str) -> dict:
     """登记人物表 / 场景表。人物来源优先级：场次表 cast 列 > 创作圣经。"""
     plan = {}
@@ -78,13 +74,6 @@ def build_state(pdir: str) -> dict:
     return state
 
 
-def load_state(pdir: str) -> dict:
-    try:
-        return json.load(open(os.path.join(pdir, STATE_FILE), encoding="utf-8")) or {}
-    except Exception:
-        return {}
-
-
 def audit_script(pdir: str) -> dict:
     """逐场体检。返回 {at, scope:'script', issues:[...], stats:{...}}。"""
     from . import script_checker
@@ -101,7 +90,8 @@ def audit_script(pdir: str) -> dict:
     nos = [sc.get("no") for sc in scenes if isinstance(sc.get("no"), int)]
     if nos and nos != sorted(nos):
         issues.append("场次清单顺序与场次号不一致")
-    for a, b in zip(nos, nos[1:]):
+    # 相邻两场比较差值，长度天然差 1，显式 strict=False 表明是刻意为之
+    for a, b in zip(nos, nos[1:], strict=False):
         if b - a > 1:
             issues.append(f"第{a}场与第{b}场之间缺号（跳场）")
     if len(nos) != len(set(nos)):

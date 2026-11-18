@@ -161,14 +161,14 @@ def _write_cards(proj, cards: dict[int, dict]) -> None:
     for n in sorted(cards):
         card = _norm_card(cards[n], n)
         lines.append(json.dumps(card, ensure_ascii=False, separators=(",", ":")))
-    atomic_write_text(os.path.join(_pdir(proj), CARD_FILE), "\n".join(lines) + ("\n" if lines else ""))
-
-
-def _write_one_card_on_disk(proj, card: dict) -> None:
-    """单章卡更新：内存有全部卡时整写；此函数仅作为兜底接口。"""
-    cards = _load_cards(proj)
-    cards[card["n"]] = _norm_card(card)
-    _write_cards(proj, cards)
+    # v4.24.16：与 _upsert_summary_line 同款锁——并行写章各自读改写整份章卡会互相覆盖
+    payload = "\n".join(lines) + ("\n" if lines else "")
+    lock = getattr(proj, "lock", None)
+    if lock is not None:
+        with lock:
+            atomic_write_text(os.path.join(_pdir(proj), CARD_FILE), payload)
+    else:
+        atomic_write_text(os.path.join(_pdir(proj), CARD_FILE), payload)
 
 
 def _norm_status_card(v) -> str:
@@ -290,15 +290,6 @@ def _cn_no(n: int) -> str:
         return head + ("零" if rest < 10 else "") + _cn_no(rest)
     return str(n)
 
-
-_VOL_WORDS = [
-    "起势", "入局", "暗涌", "裂变", "远征", "迷局", "争锋", "转折", "低谷", "反攻",
-    "登临", "风雷", "危局", "破晓", "归墟", "余烬", "新章", "长夜", "曙光", "潮涌",
-    "逆流", "孤城", "星火", "深渊", "彼岸", "天堑", "残局", "旧梦", "远山", "风起",
-    "云涌", "归途", "破阵", "重光", "无声", "惊雷", "落子", "终局", "余波", "回响",
-]
-_ARC_WORDS = ["破局", "试探", "交锋", "转机", "危机", "反击", "真相", "抉择", "收束", "余波", "暗线", "合流"]
-
 # v2.5.0: 多套题材化弧模板——每本书根据题材选择不同的弧名序列，不再千篇一律
 _ARC_TEMPLATES = {
     "fantasy": ["觉醒", "试炼", "结盟", "异变", "鏖战", "觉醒", "破围", "代价", "逆转", "飞升", "暗涌", "收束"],
@@ -322,25 +313,47 @@ _VOL_TEMPLATES = {
 }
 
 
-def _arc_words_for(cfg: dict) -> list:
-    """v2.5.0: 根据题材/类型选择弧名模板，避免所有作品千篇一律。"""
+# v4.24.16 修复：题材化卷/弧名模板此前用英文 key 对中文 genre 做子串匹配——
+# 向导给的 genre 全是中文（悬疑/刑侦、玄幻…），除手填英文外全部落 default，v2.5.0 特性静默失效。
+# 现经 skillkit._genre_key 归一成英文 key，再补引擎模板与 craft key 的别名映射。
+_TEMPLATE_KEY_ALIASES = {
+    "xuanhuan": "fantasy", "xianxia": "fantasy", "wuxia": "history",
+    "military": "history", "horror": "mystery", "workplace": "urban",
+}
+
+
+def _genre_template_key(cfg: dict) -> str:
+    """中文/英文题材名 → 模板 key（fantasy/urban/mystery/romance/history/scifi）；未命中返回 ''。"""
     genre = ""
     if isinstance(cfg, dict):
-        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "").lower()
-    for key in _ARC_TEMPLATES:
-        if key in genre:
-            return _ARC_TEMPLATES[key]
+        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "")
+    if not genre:
+        return ""
+    try:
+        from .skillkit import _genre_key
+        gkey = _genre_key(genre)
+    except Exception:
+        gkey = genre.strip().lower()
+    if not gkey or gkey == "_index":
+        return ""
+    if gkey in _TEMPLATE_KEY_ALIASES:
+        return _TEMPLATE_KEY_ALIASES[gkey]
+    return gkey
+
+
+def _arc_words_for(cfg: dict) -> list:
+    """v2.5.0: 根据题材/类型选择弧名模板，避免所有作品千篇一律。"""
+    gkey = _genre_template_key(cfg)
+    if gkey and gkey in _ARC_TEMPLATES:
+        return _ARC_TEMPLATES[gkey]
     return _ARC_TEMPLATES["default"]
 
 
 def _vol_words_for(cfg: dict) -> list:
     """v2.5.0: 根据题材/类型选择卷名模板。"""
-    genre = ""
-    if isinstance(cfg, dict):
-        genre = str(cfg.get("genre") or cfg.get("type") or cfg.get("category") or "").lower()
-    for key in _VOL_TEMPLATES:
-        if key in genre:
-            return _VOL_TEMPLATES[key]
+    gkey = _genre_template_key(cfg)
+    if gkey and gkey in _VOL_TEMPLATES:
+        return _VOL_TEMPLATES[gkey]
     return _VOL_TEMPLATES["default"]
 _STAGES = [(0.0, "开局铺陈"), (0.15, "试炼升级"), (0.35, "全面对抗"),
            (0.55, "至暗低谷"), (0.72, "绝地反攻"), (0.88, "终局收束")]
@@ -844,6 +857,96 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
     return {"ok": True, "start": s, "end": e, "updated": updated,
             "source": "llm" if llm_cards else "deterministic",
             "reason": reason, "cards": [cards[n]["title"] for n in range(s, e + 1) if n in cards]}
+
+
+# ---------- 章卡占位检测 + 临写补规划（v4.22.2 长篇统一性）----------
+# 病根：plan_window 在 LLM 返回空时会用 _default_goal() 兜一张「承接本弧…」的套话卡，
+# 这种卡没有任何本章目标与冲突，等于**无大纲写作**——模型自由发挥，几十章后必然跑偏
+# （《入赘三年》第41–50章 conflict 全空，写到90章已变成高维代码科幻）。所以：
+#   ① 认出占位卡；② 临写前针对该章补一张真卡；③ 补不出来就明确告警，不再静默糊过去。
+_PLACEHOLDER_MARKS = ("本章为弧内第", "本章推进本卷目标", "承接本弧", "承接「")
+
+
+def card_is_placeholder(card) -> bool:
+    """章卡是否为占位卡（只有弧目标套话，没有本章真实目标/冲突）。"""
+    if not isinstance(card, dict):
+        return True
+    goal = str(card.get("goal") or "").strip()
+    conflict = str(card.get("conflict") or "").strip()
+    if not goal:
+        return True
+    if any(m in goal for m in _PLACEHOLDER_MARKS):
+        return True
+    # 有目标但无冲突、且目标很短 = 基本没规划（真章卡至少写清对抗双方）
+    if not conflict and len(goal) < 100:
+        return True
+    return False
+
+
+def load_cards(proj) -> dict:
+    """公开别名：给 writer / 体检脚本读章卡。"""
+    return _load_cards(proj)
+
+
+def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
+    """临写前给第 n 章补一张真章卡（单章规划，带前情/弧目标/伏笔）。
+
+    plan_window 是按窗口批量规划，窗口一旦落空整段章节就没大纲。这里是「最后一道
+    规划闸门」：只针对正要写的那一章，上下文更聚焦，成功率也更高。
+    返回写好的卡（仍为占位则返回 {}）。
+    """
+    n = max(1, _int(n, 1))
+    cfg = cfg if isinstance(cfg, dict) else _flat_config(proj)
+    plan = _read_plan(proj)
+    cards = _load_cards(proj)
+    card = cards.get(n) or _empty_card(n)
+    if not card_is_placeholder(card):
+        return card
+    st = state_mod.load(_pdir(proj))
+    recent = _recent_summaries(proj, 4, before=n)
+    v, a = _find_arc(plan, n)
+    row = _outline_rows(proj).get(n) or {}
+    due = state_mod.foreshadow_due(st, n, lookahead=20)
+    due_lines = [f"[{x.get('id')}] {str(x.get('description') or '')[:70]}"
+                 for x in (due["overdue"] + due["due"])][:8]
+    total = max(1, _int((plan.get("scale") or {}).get("chapters"), n))
+    user = (
+        f"全书 {total} 章，现在只规划**第 {n} 章**这一张章卡（不要规划别的章）。\n"
+        f"卷目标：{_text((v or {}).get('goal'), 300) or '（无）'}\n"
+        f"弧目标：{_text((a or {}).get('goal'), 300) or '（无）'}\n"
+        f"大纲里本章标题：{_text(row.get('title') or card.get('title'), 60) or '（无）'}\n"
+        f"大纲里本章原意：{_text(row.get('goal'), 300) or '（无）'}\n"
+        f"最近四章摘要：\n" + ("\n".join(f"- 第{x}章：{t[:150]}" for x, t in recent) or "- （无）") + "\n"
+        f"待兑现伏笔：\n" + ("\n".join(f"- {x}" for x in due_lines) or "- 无") + "\n"
+        '只输出 JSON：{"title":"","goal":"本章主角要达成什么（具体、可验收）",'
+        '"conflict":"谁/什么在阻止他，代价是什么","turn":"本章转折",'
+        '"payoff":"兑现哪条旧伏笔","cliffhanger":"章末钩子"}\n'
+        "要求：必须紧扣卷/弧目标与本书题材，**不得引入世界观之外的新元素**"
+        "（例如古代权谋不得出现高维空间/代码/科幻设定）；goal 与 conflict 都必须写满，"
+        "不许写「承接本弧」这类套话。"
+    )
+    out = _llm_json("你是长篇网文的章卡细纲师，只输出严格 JSON。", user, cfg,
+                    "longform_chapter", 1200, agent="planner")
+    if not isinstance(out, dict) or not out:
+        return {}
+    for key in ("title", "goal", "conflict", "turn", "payoff", "cliffhanger"):
+        val = _text(out.get(key), 500)
+        if val:
+            card[key] = _clean_title(val, val) if key == "title" else val
+    if card_is_placeholder(card):
+        return {}
+    card["updated_at"] = _now()
+    card["planned_by"] = "on_demand"
+    cards[n] = card
+    _fill_card_positions(plan, cards)
+    _write_cards(proj, cards)
+    return card
+
+
+def placeholder_chapters(proj, limit: int = 200) -> list:
+    """体检用：列出所有还是占位卡的章号（按序）。"""
+    cards = _load_cards(proj)
+    return [n for n in sorted(cards) if card_is_placeholder(cards[n])][:limit]
 
 
 # ---------- 重规划提案 ----------
@@ -1585,6 +1688,16 @@ def summarize_and_extract(proj, ch_no: int, text: str, cfg=None) -> dict:
 
 def _upsert_summary_line(proj, n: int, record: dict) -> None:
     path = os.path.join(_pdir(proj), CHAPTER_SUMMARY)
+    # v4.24.16 修复：并行写章时多线程同时 读全量→改自己那行→整文件重写 会互相覆盖丢摘要；
+    # 与 _append_replan_log 同款——能拿 proj.lock 就上锁（串行/老调用方无 lock 属性时退化为原子写）。
+    lock = getattr(proj, "lock", None)
+    if lock is not None:
+        with lock:
+            return _upsert_summary_line_locked(path, n, record)
+    return _upsert_summary_line_locked(path, n, record)
+
+
+def _upsert_summary_line_locked(path: str, n: int, record: dict) -> None:
     rows: dict[int, dict] = {}
     try:
         for line in open(path, encoding="utf-8").read().splitlines():

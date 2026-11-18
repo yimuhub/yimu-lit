@@ -7,10 +7,10 @@ import json
 import os
 import re
 
-from bot.safeio import atomic_write_text, atomic_write_json, safe_join
+from bot.safeio import atomic_write_text, safe_join
 
 from . import llm
-from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project
+from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project, run_pipeline
 
 F_PLAN = "新闻稿计划.json"
 F_OUTLINE = "00-素材与信源.md"
@@ -73,6 +73,7 @@ def resume_project(key: str):
             proj.log("✅ 已定稿，无需恢复")
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
+        llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账失活
         _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
@@ -82,7 +83,6 @@ def resume_project(key: str):
 def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     plan = plan if isinstance(plan, dict) and plan else (proj.plan() or {})
     plan.setdefault("meta", {})
-    meta = plan["meta"]
     ntype = TYPES.get(cfg.get("ntype") or "product", "产品/新品发布")
     plan["newsName"] = cfg.get("title") or f"{cfg.get('org') or ''}{ntype}新闻稿"
     plan["typeLabel"] = ntype
@@ -102,25 +102,7 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
         ("N4", "多版本", lambda: _stage_versions(proj, pdir, cfg, plan)),
         ("N5", "定稿", lambda: _stage_final(proj, pdir, cfg, plan)),
     ]
-    for code, label, fn in stages:
-        if (plan.get("chapterStatus") or {}).get(code) == "completed":
-            continue
-        proj.log(f"📋 {code} {label}…")
-        meta["stage"] = code
-        proj.save_plan(plan)
-        try:
-            fn()
-            plan.setdefault("chapterStatus", {})[code] = "completed"
-        except Exception as e:
-            proj.log(f"⚠️ {code} 失败：{e}")
-            plan.setdefault("chapterStatus", {})[code] = "failed"
-        meta["stage"] = code
-        plan["meta"] = meta
-        proj.save_plan(plan)
-    plan["status"] = "completed"
-    meta["stage"] = "F"
-    proj.save_plan(plan)
-    proj.log("✅ 新闻稿定稿完成")
+    run_pipeline(proj, cfg, stages, plan=plan, done_msg="✅ 新闻稿定稿完成")
 
 
 def _stage_material(proj, pdir, cfg, plan, facts, org):
@@ -156,14 +138,16 @@ def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
         "新闻语体：第三人称、客观、无形容词堆砌；数字精确；引语用直接引语。\n"
         "输出 markdown 正文（含 ## 分节）。"}],
         cfg=cfg, stage="writing", max_tokens=4000)
-    atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
-    # v4.16.3：字数守护——不足时从结尾续写拼接（增量保证）
+    # v4.24.16 修复：落盘必须在字数守护续写之后——此前先写 F_FINAL 再续写拼接内存变量，
+    # 续写内容永远进不了文件，而 meta.words 统计的是含续写的全文，文件与统计永久分叉。
+    # 字数守护——不足时从结尾续写拼接（增量保证，v4.16.3）
     if _wg.cn_len(body) < _min_words:
         _cont = _wg.clean_continuation(llm.chat([{"role": "user", "content":
             _wg.continue_prompt((body or "")[-600:], max(300, _min_words - _wg.cn_len(body) + 150))}],
             cfg=cfg, stage="writing", max_tokens=2500) or "")
         if _wg.cn_len(_cont) >= 80:
             body = (body or "").rstrip() + "\n\n" + _cont
+    atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
     meta = plan.setdefault("meta", {})
     meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", body or ""))
     proj.save_plan(plan)
@@ -171,12 +155,16 @@ def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
 
 def _stage_check(proj, pdir, cfg, plan):
     final = _read(os.path.join(pdir, F_FINAL))
+    if not final.strip():
+        return          # v4.23.2：没有正文不核查（此前会拿空文本让模型凭空"核查"）
     w = plan.get("five_w1h") or {}
     report = llm.chat([{"role": "user", "content":
         f"对以下新闻稿做事实核查。原始 5W1H：{json.dumps(w, ensure_ascii=False)}\n"
         "逐项检查：1) 时间是否一致 2) 数字是否前后一致 3) 人名/机构名是否一致 "
         "4) 引语是否标注了说话者 5) 是否有形容词堆砌或主观判断（应客观）。\n"
-        "输出 markdown：## 核查结果（逐项 ✓/⚠️）+ ## 修正建议。"}],
+        "输出 markdown：## 核查结果（逐项 ✓/⚠️）+ ## 修正建议。\n\n"
+        # v4.23.2 修真 bug：此前只读了正文没拼进来，核查报告是对着空中做的（必然全 ✓）
+        f"【待核查稿件】\n{final[:6000]}"}],
         cfg=cfg, stage="review")
     atomic_write_text(os.path.join(pdir, F_CHECK), (report or "（核查失败）").strip())
 
@@ -200,8 +188,6 @@ def _stage_versions(proj, pdir, cfg, plan):
 def _stage_final(proj, pdir, cfg, plan):
     final = _read(os.path.join(pdir, F_FINAL))
     check = _read(os.path.join(pdir, F_CHECK))
-    versions_fp = os.path.join(pdir, F_FINAL.replace(".md", "-多版本.md"))
-    versions = _read(versions_fp)
     meta = plan.setdefault("meta", {})
     meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", final))
     if check.strip() and "⚠️" in check:

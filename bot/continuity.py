@@ -5,8 +5,6 @@ import json, os, re
 
 from .safeio import atomic_write_json
 
-SEV_RANK = {"info": 0, "warning": 1, "critical": 2}
-
 def _read(pdir, name):
     p = os.path.join(pdir, name)
     return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
