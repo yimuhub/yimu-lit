@@ -521,6 +521,25 @@ def resolve(cfg=None):
     raise ProviderError("尚未绑定任何可用的模型供应商，请先绑定一个供应商")
 
 
+def fallback_config(cfg=None, *, exclude_provider: str = "", exclude_model: str = ""):
+    """429 降级用的下一组供应商/模型。只返回 active 且不同于当前的一组；无则 None。
+
+    这是“单供应商被限流时不把整本书写崩”的最低保障：调用方拿到 cfg 后递归 chat，
+    由正常路径重新走超时/重试；不会改动用户默认设置。
+    """
+    data = load_data()
+    provs = data.get("providers") or []
+    for p in provs:
+        if not p.get("active"):
+            continue
+        if exclude_provider and p.get("id") == exclude_provider:
+            continue
+        model = p.get("default_model") or (p.get("models") or [""])[0]
+        if model and model != exclude_model:
+            return {"_provider_id": p.get("id"), "_model": model}
+    return None
+
+
 def stage_resolve(cfg, stage):
     """P4 按环节选模型：优先读运行期 cfg 的 defaults.stage_models[stage]（含 cfg_overrides），
     缺失再回落磁盘 config.json；命中则用该环节指定的供应商/模型，否则回落默认 resolve(cfg)。

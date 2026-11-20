@@ -139,6 +139,18 @@ def _ctx(stage: str, cfg: dict | None = None) -> str:
     block = (cfg or {}).get("_reference_block")
     if block:
         text += "\n\n" + str(block)
+    # v5.2：题面必须进入每一个创作阶段。旧版只有 I 释读带了用户输入，
+    # P 规划/C 起草拿不到题面，会自行另起一个题目（实测：用户写秋夜登山，
+    # 成稿却是「雪夜听钟」）。这里把用户输入设为所有阶段的硬约束。
+    idea = str((cfg or {}).get("idea") or "").strip()
+    title = str((cfg or {}).get("title") or "").strip()
+    if idea or title:
+        text += "\n\n【用户输入（必须遵守）】"
+        if title:
+            text += f"\n标题：{title}"
+        if idea:
+            text += f"\n题面/情境：{idea}"
+        text += "\n要求：诗的题目、场景、人物与情感都必须从这里生长，不得改写成另一个题材。"
     return text
 
 
@@ -359,7 +371,9 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
     proj.log("✍️ 阶段 C：起草…")
     draft = gen_draft(cfg, plan_md or "")
     if not draft.strip():
-        draft = "（起草失败，请重试）"
+        raise ValueError("诗稿起草为空，停止定稿")
+    if len(re.findall(r"[\u4e00-\u9fff]", draft)) < 20:
+        proj.log("⚠️ 诗稿偏短（不足 20 字），继续校验但可能影响成稿")
     _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
     plan["meta"]["stage"] = "K"
     proj.save_plan(plan)
@@ -372,6 +386,10 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
     """K→R 循环 + F 定稿 + 附产（create_project 与断点恢复共用）。"""
     pdir = proj.path
     name = plan.get("poemName") or proj.name
+    if not text.strip():
+        raise ValueError("诗稿正文为空，停止定稿")
+    if len(re.findall(r"[\u4e00-\u9fff]", text)) < 20:
+        proj.log("⚠️ 诗稿偏短（不足 20 字），继续校验但可能影响成稿")
     max_rounds = int(cfg.get("maxRounds", plan.get("maxRounds", 3)))
     # v4.24.0：极速模式——K 格律校验是纯 CPU 的确定性检查，必须保留（格律错就是废稿）；
     # 砍掉的是 R 评改（LLM 改稿）和 F 里的审美评分。
@@ -518,7 +536,11 @@ def resume_project(key: str) -> PoetryProject | None:
         if _hit_pause():
             return proj
         proj.log("✍️ 阶段 C：起草…")
-        draft = gen_draft(cfg, plan_md) or "（起草失败，请重试）"
+        draft = gen_draft(cfg, plan_md)
+        if not draft.strip():
+            raise ValueError("诗稿起草为空，停止定稿")
+        if len(re.findall(r"[\u4e00-\u9fff]", draft)) < 20:
+            proj.log("⚠️ 诗稿偏短（不足 20 字），继续校验但可能影响成稿")
         _write(os.path.join(pdir, F_DRAFT), draft.strip() + "\n")
 
     if _hit_pause():

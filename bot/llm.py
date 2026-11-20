@@ -2,7 +2,7 @@
 
 未带 cfg 时安全回落到默认 active 供应商，不破坏旧行为。
 """
-import json, os, sys, time, threading
+import json, os, random, sys, time, threading
 from urllib.parse import urlparse
 
 from .paths import DATA_ROOT
@@ -398,8 +398,33 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                     # 原始超时异常无附加信息，消息本身已说明原因，不链式挂到外层
                     raise LLMError(f"LLM 调用总时长超过 {timeout + 60}s（wall-clock 守卫强制中断，防代理挂起）") from None
             if r.status_code == 429:
-                time.sleep(_backoff * (i + 1))   # v0.3 P4：按供应商退避基值（在 guard 外 sleep，不占名额）
+                # v5.1：429 不再只做线性 sleep——读 Retry-After、指数退避+抖动，
+                # 末次仍 429 时切到另一组 active 供应商/模型（不覆盖用户默认配置）。
+                _ra = 0
+                try:
+                    _ra = int(float(r.headers.get("retry-after") or 0))
+                except (TypeError, ValueError):
+                    _ra = 0
+                _wait = max(_ra, _backoff * (2 ** i)) + random.uniform(0.2, 1.0)
+                _wait = min(float(_wait), 90.0)
                 last_err = LLMError(f"429 限流: {r.text[:200]}")
+                if i >= retries - 1 and not (cfg or {}).get("_fallback_used"):
+                    _fb = providers.fallback_config(cfg, exclude_provider=prov.get("id") or "",
+                                                     exclude_model=model)
+                    if _fb:
+                        _c2 = dict(cfg or {})
+                        _c2.update(_fb)
+                        _c2["_fallback_used"] = True
+                        try:
+                            _log_llm_error(prov.get("id") or "", model, base, 429,
+                                           f"fallback→{_fb.get('_provider_id')}/{_fb.get('_model')}",
+                                           book=_bk or "", stage=_stage or "")
+                        except Exception:
+                            pass
+                        return chat(messages, json_mode=json_mode, temperature=temperature,
+                                    max_tokens=max_tokens, retries=2, cfg=_c2, stage=stage,
+                                    agent=agent, use_cache=use_cache)
+                time.sleep(_wait)
                 continue
             if r.status_code in (401, 403):
                 # v4.16.8：鉴权失败给出可行动的中文提示，并记入全局错误日志

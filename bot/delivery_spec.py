@@ -21,6 +21,16 @@ SPEC_VERSION = "1.1"
 LATIN_ALLOW = {
     "INT", "EXT", "EST", "BGM", "SFX", "VO", "POV", "CU", "ECU", "LS", "MS",
     "FS", "OS", "AI", "TTS", "JSON", "JSONL", "CSV", "ID", "EP", "CUT", "FADE",
+    # v5 走查补充：中文小说里合法的通用缩写/设备名，不应触发 N01。
+    "ICU", "DNA", "RNA", "GPS", "CT", "MRI", "AED", "ATM", "POS", "APP",
+    "VIP", "KTV", "CBD", "CEO", "CFO", "HR", "PR", "UI", "UX", "USB",
+    "PDF", "DOCX", "XLSX", "PPT", "HTML", "HTTP", "HTTPS", "API", "SDK",
+    "SIM", "PIN", "OTP", "SHA", "MD5", "SSL", "TLS", "VPN", "WIFI", "SMS",
+    "CPU", "RAM", "ROM", "SSD", "HDD", "PC", "TV", "GPRS", "NFC",
+    "LED", "LCD", "OLED", "CCTV", "DVD", "VCD", "CD", "MP3", "MP4", "AVI",
+    # v5.2 走查补充：商务/品牌/平台交付里的合法通用词。
+    "LOGO", "YIMU", "AIGC", "DOI", "URL", "KPI", "SOP", "ROI", "CTA", "FAQ",
+    "SAAS", "V5", "V6",
 }
 RE_LATIN_TOKEN = re.compile(r"(?<![A-Za-z])[A-Za-z]{3,}(?![A-Za-z])")
 

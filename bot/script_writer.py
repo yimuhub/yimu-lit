@@ -75,6 +75,19 @@ FORMS = {
     "custom": {"label": "自定义", "scenes": "场", "unit": "页", "target_pages": 60},
 }
 
+#: 真正按「集」组织的形态。电影/短片/舞台/戏曲只有一个交付单元，
+#: 场就是场，不能被当成「第 N 集」，也不能默认 12 集。
+SERIES_FORMS = frozenset(("series", "short_drama", "comic_drama"))
+
+
+def episode_count(form: str, episodes=None) -> int:
+    if str(form or "") not in SERIES_FORMS:
+        return 1
+    try:
+        return max(1, int(episodes or 12))
+    except (TypeError, ValueError):
+        return 12
+
 # 入口路径
 ENTRY_PATHS = {
     "material": "有参考材料（原著/素材/真实事件）",
@@ -817,6 +830,37 @@ def _run_planning(proj: "ScriptProject", plan: dict, cfg: dict) -> None:
 
     proj.log("🎬 阶段 S0：生成创作引擎…")
     premise = gen_premise(cfg)
+    # v5.2：引擎会在前提里给出《片名（暂定）》。把它写回计划，
+    # 作品库/导出不再显示整段 logline 作为片名。
+    _m = re.search(r"片名[（(]暂定[）)]\s*[：:]\s*《([^》]{1,32})》", premise or "")
+    if not _m:
+        _m = re.search(r"《([^》]{1,32})》", premise or "")
+    if not _m:
+        # 实测模型常写成「# 创作引擎：雨夜证词」而不带书名号；不能因此把整句 idea
+        # 一直当片名。这里只认创作引擎标题行。
+        _m = re.search(r"(?m)^#\s*创作引擎[：:]\s*《?([^》\n]{1,32})》?", premise or "")
+    if _m:
+        _title = _m.group(1).strip()
+        if _title:
+            plan["scriptName"] = _title
+            name = _title
+            proj.name = _title
+            proj.save_plan(plan)
+    if not _m:
+        # v5.2：模型没按格式给片名时，单独拟一个，不能把整段 idea 当剧名。
+        try:
+            _t = llm.chat([{"role": "user", "content":
+                f"根据下面的剧本创作引擎，拟一个 2-6 个汉字的片名，只输出《片名》，不要解释：\n\n"
+                f"{(premise or '')[:1800]}"}], cfg=cfg, stage="planning", max_tokens=80) or ""
+            _tm = re.search(r"《([^》]{1,20})》", _t)
+            if _tm:
+                _title = _tm.group(1).strip()
+                plan["scriptName"] = _title
+                name = _title
+                proj.name = _title
+                proj.save_plan(plan)
+        except Exception:
+            pass
     bible_text = _bible_header(cfg, name) + "\n\n" + (premise or "（引擎生成失败，请重试）")
     _write(os.path.join(pdir, F_BIBLE), bible_text)
     plan["stages"]["S0"] = {"done": bool(premise), "at": datetime.datetime.now().isoformat()}
@@ -858,6 +902,9 @@ def _run_planning(proj: "ScriptProject", plan: dict, cfg: dict) -> None:
         sc["fileName"] = f"第{sc['no']:03d}场.md"
         sc["wordCount"] = None
     plan["scenes"] = scenes
+    for _sc in plan["scenes"]:
+        if not str(_sc.get("heading") or "").strip():
+            _sc["heading"] = scene_heading(_sc)
     plan["stages"]["S4"] = {"done": bool(scenes), "at": datetime.datetime.now().isoformat()}
     if not guard["ok"]:
         # 场次表持续与时代冲突：暂停自动写作，把冲突留给用户确认，绝不静默开写。
@@ -887,8 +934,8 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
         "form": form, "formLabel": FORMS.get(form, FORMS["film"])["label"],
         "entryPath": cfg.get("entryPath", "idea"),
         "totalScenes": int(cfg.get("scenes") or 30),
-        "targetPages": int(cfg.get("pages") or 100),
-        "episodes": int(cfg.get("episodes") or 12),
+        "targetPages": int(cfg.get("pages") or FORMS.get(form, FORMS["film"])["target_pages"]),
+        "episodes": episode_count(form, cfg.get("episodes")),
         "createdAt": datetime.datetime.now().isoformat(),
         "status": "planning", "stages": {}, "scenes": [],
         "meta": {"setting": {
@@ -910,7 +957,7 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
         _write(os.path.join(pdir, F_SEASON), f"# {name} 季弧与分集\n\n"
                + _read(os.path.join(pdir, F_STRUCT)))
 
-    proj.log(f"✅ 规划就绪：《{name}》{len(plan.get('scenes') or [])} 场")
+    proj.log(f"✅ 规划就绪：《{plan.get('scriptName') or name}》{len(plan.get('scenes') or [])} 场")
     # v1.2.2：规划完成后自动开写全部场次（后台线程），状态 planning → writing
     import threading as _th
     def _auto():
@@ -988,10 +1035,12 @@ def _bible_header(cfg: dict, name: str) -> str:
     era = _era_of(cfg)
     era_label = script_checker.ERA_LABELS.get(era, "未指定")
     world = str(cfg.get("setting_world") or "").strip() or "（未填写）"
+    _target = cfg.get("pages") or form["target_pages"]
+    _scenes = cfg.get("scenes") or 30
     return (
         f"# {name} · 创作圣经\n\n"
         f"> 媒介形式：{form['label']} ｜ 入口路径：{entry}\n"
-        f"> 目标规模：{cfg.get('pages', 100)} 页 / {cfg.get('scenes', 30)} 场\n"
+        f"> 目标规模：{_target} {form['unit']} / {_scenes} 场\n"
         f"> 时代：{era_label} ｜ 世界观：{world}\n"
         f"> 生成时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
     )

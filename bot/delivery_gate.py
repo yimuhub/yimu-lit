@@ -79,9 +79,23 @@ def _craft_findings(text: str, n) -> list[dict]:
     return out
 
 
-def _latin_hits(text: str) -> list[str]:
-    return [w for w in spec.RE_LATIN_TOKEN.findall(text or "")
-            if w.upper() not in spec.LATIN_ALLOW]
+_FILE_LIKE_RE = re.compile(
+    r"[A-Za-z0-9_\-]{2,}\.(?:wav|mp3|m4a|mp4|mov|txt|md|csv|json|pdf|docx?|xlsx?|pptx?|jpg|jpeg|png|webp)",
+    re.I)
+
+
+def _latin_hits(text: str, allowed_latin: set[str] | None = None) -> list[str]:
+    # v5 走查修复：故事内文件名（finaltruth0517.wav）不是代码残留。
+    # N01 只抓裸露的拉丁词/代码，不抓带扩展名的真实文件名。
+    # v5.1：作品级专有名词（人名/公司名/网络 ID）走 plan.meta.latin_allow
+    # 或事实源动态白名单——否则 Linjx2014 / SHEN MEDICAL 这类剧情内英文
+    # 会被当代码残留，导致整本书永远过不了投稿闸门。
+    clean = _FILE_LIKE_RE.sub("", text or "")
+    allow = set(spec.LATIN_ALLOW)
+    if allowed_latin:
+        allow |= {str(x).strip().upper() for x in allowed_latin if str(x).strip()}
+    return [w for w in spec.RE_LATIN_TOKEN.findall(clean)
+            if w.upper() not in allow]
 
 
 # 元信息词分两档（v4.36.0）：
@@ -195,10 +209,11 @@ PURITY_BLOCK_CODES = ("N01", "N02", "N15")
 
 
 def chapter_purity_blocks(text: str, *, title: str = "", chapter_no: int = 0,
-                          banned_terms: list | None = None) -> list[dict]:
+                          banned_terms: list | None = None,
+                          allowed_latin: set[str] | None = None) -> list[dict]:
     """写章热路径用：只返回会污染正文的禁止项（N01/N02/N15），命中即应回灌重写。"""
     out = [f for f in check_chapter(text, title=title, chapter_no=chapter_no,
-                                    profile="universal")
+                                    profile="universal", allowed_latin=allowed_latin)
            if f["severity"] == "block" and f["code"] in PURITY_BLOCK_CODES]
     for t in (banned_terms or []):
         t = str(t).strip()
@@ -209,12 +224,12 @@ def chapter_purity_blocks(text: str, *, title: str = "", chapter_no: int = 0,
 
 
 def check_chapter(text: str, *, title: str = "", chapter_no: int = 0,
-                  profile: str = "universal") -> list[dict]:
+                  profile: str = "universal", allowed_latin: set[str] | None = None) -> list[dict]:
     loc = f"第{chapter_no}章" if chapter_no else "正文"
     out: list[dict] = []
     body = text or ""
 
-    hits = _latin_hits(body)
+    hits = _latin_hits(body, allowed_latin)
     if hits:
         out.append(_finding("N01", loc, f"{len(hits)} 处，例：{', '.join(dict.fromkeys(hits))[:80]}"))
     meta = _meta_hits(body)
@@ -314,14 +329,15 @@ def numeric_findings(rows: list[dict]) -> list[dict]:
 
 
 def check_novel(chapters: list[dict], *, book_title: str = "", claim_term: str = "",
-                entity_aliases: dict | None = None, profile: str = "novel_submission") -> dict:
+                entity_aliases: dict | None = None, profile: str = "novel_submission",
+                allowed_latin: set[str] | None = None) -> dict:
     findings: list[dict] = []
     rows = [c for c in (chapters or []) if isinstance(c, dict)]
     for c in rows:
         n = c.get("n") or 0
         _base = check_chapter(c.get("text") or "", title=c.get("title") or "",
                               chapter_no=int(n) if str(n).isdigit() else 0,
-                              profile=profile)
+                              profile=profile, allowed_latin=allowed_latin)
         _craft = _craft_findings(c.get("text") or "", n)
         if _craft:
             # 工艺闸门给的条目带原文证据，比 check_chapter 的「命中 N 类」更有用；
@@ -405,12 +421,17 @@ SCENE_SAFE_BLOCK_CODES = ("S01", "S02", "S03", "S11", "N02", "N03")
 
 
 def scene_block_findings(text: str, *, scene_no: int = 0) -> list[dict]:
-    """单场定稿前的行级污染检查（不套整集预算/钩子口径）。"""
-    return [f for f in check_episode(text, ep_no=scene_no)
+    """单场定稿前的行级污染检查（不套整集预算/钩子口径）。
+
+    单场不是「一集」：这里显式关闭集预算/集钩子检查，否则每场都会因
+    「场数不足 2」被判 S04（实测 3 场电影每场都报一次）。
+    """
+    return [f for f in check_episode(text, ep_no=scene_no, episodic=False)
             if f["severity"] == "block" and f["code"] in SCENE_SAFE_BLOCK_CODES]
 
 
-def check_episode(text: str, *, ep_no: int = 0, profile: str = "universal") -> list[dict]:
+def check_episode(text: str, *, ep_no: int = 0, profile: str = "universal",
+                  episodic: bool = True) -> list[dict]:
     loc = f"第{ep_no}集" if ep_no else "剧本"
     out: list[dict] = []
     body = text or ""
@@ -433,7 +454,8 @@ def check_episode(text: str, *, ep_no: int = 0, profile: str = "universal") -> l
 
     spoken = _spoken_chars(body)
     scenes = _scene_count(body)
-    if spoken > int(spec.threshold("episode_max_spoken_chars", profile)) or scenes < int(spec.threshold("min_scenes", profile)):
+    if episodic and (spoken > int(spec.threshold("episode_max_spoken_chars", profile))
+                     or scenes < int(spec.threshold("min_scenes", profile))):
         out.append(_finding("S04", loc, f"对白 {spoken} 字 / {scenes} 场，超出档位预算"))
 
     kinds = _heading_kinds(body)
@@ -466,9 +488,9 @@ def check_episode(text: str, *, ep_no: int = 0, profile: str = "universal") -> l
     head = body[:int(spec.threshold("open_conflict_chars", profile))]
     tail = body[-int(spec.threshold("tail_hook_chars", profile)):]
     miss = []
-    if not any(k in head for k in spec.OPEN_CONFLICT):
+    if episodic and not any(k in head for k in spec.OPEN_CONFLICT):
         miss.append("集首无强冲突")
-    if not any(k in tail for k in spec.HOOK_SIGNALS):
+    if episodic and not any(k in tail for k in spec.HOOK_SIGNALS):
         miss.append("集尾无钩子")
     if miss:
         out.append(_finding("S10", loc, "、".join(miss)))
@@ -500,7 +522,8 @@ def _canonical_place(p: str) -> str:
 
 
 def check_script(episodes: list[dict], *, assets: dict | None = None,
-                 shots: list[dict] | None = None, profile: str = "script_production") -> dict:
+                 shots: list[dict] | None = None, profile: str = "script_production",
+                 episodic: bool = True) -> dict:
     rows = [e for e in (episodes or []) if isinstance(e, dict)]
     findings: list[dict] = []
     total_seconds = 0.0
@@ -508,7 +531,7 @@ def check_script(episodes: list[dict], *, assets: dict | None = None,
         n = e.get("n") or 0
         text = e.get("text") or ""
         no = int(n) if str(n).isdigit() else 0
-        findings.extend(check_episode(text, ep_no=no, profile=profile))
+        findings.extend(check_episode(text, ep_no=no, profile=profile, episodic=episodic))
         total_seconds += _spoken_chars(text) / float(spec.threshold("chars_per_second", profile))
 
     # S02 一次性说话人占比
@@ -516,7 +539,7 @@ def check_script(episodes: list[dict], *, assets: dict | None = None,
     for e in rows:
         names.update(sp for sp, _ in _dialogue(e.get("text") or ""))
     once = sum(1 for v in names.values() if v == 1)
-    if names and once / len(names) > float(spec.threshold("max_speaker_once_ratio", profile)):
+    if episodic and names and once / len(names) > float(spec.threshold("max_speaker_once_ratio", profile)):
         findings.append(_finding("S02", "全剧",
                                  f"{once}/{len(names)} 个说话人只出现一次（>{spec.threshold('max_speaker_once_ratio', profile):.0%}）"))
 
@@ -566,7 +589,7 @@ def check_script(episodes: list[dict], *, assets: dict | None = None,
     mx = float(spec.threshold("ep_seconds_max", profile))
     over = [i + 1 for i, e in enumerate(rows)
             if _spoken_chars(e.get("text") or "") / float(spec.threshold("chars_per_second", profile)) > mx]
-    if over:
+    if episodic and over:
         findings.append(_finding("S12", "全剧", f"{len(over)} 集 >{mx:.0f} 秒，例：第 {over[:5]} 集"))
 
     metrics = {"episodes": len(rows), "speakers": len(names),
@@ -595,20 +618,23 @@ def _report(kind: str, profile: str, findings: list[dict], metrics: dict) -> dic
 
 
 def check_delivery(chapters: list[dict], *, title: str = "", kind: str = "novel",
-                   profile: str | None = None) -> dict:
+                   profile: str | None = None, allowed_latin: set[str] | None = None,
+                   script_form: str = "") -> dict:
     """导出前统一入口：按文体路由到对应校验器，产出《交付就绪报告》。"""
     prof = profile or ("script_production" if kind == "script" else
                        "novel_submission" if kind == "novel" else "universal")
     if kind == "script":
-        return check_script(chapters, profile=prof)
+        episodic = str(script_form or "") in ("series", "short_drama", "comic_drama")
+        return check_script(chapters, profile=prof, episodic=episodic)
     if kind == "novel":
-        return check_novel(chapters, book_title=title, profile=prof)
+        return check_novel(chapters, book_title=title, profile=prof,
+                           allowed_latin=allowed_latin)
     findings = []
     for c in chapters or []:
         loc = f"第{c.get('n') or 1}节"
         t = c.get("text") or ""
-        if _latin_hits(t):
-            findings.append(_finding("N01", loc, f"{len(_latin_hits(t))} 处非中文残留"))
+        if _latin_hits(t, allowed_latin):
+            findings.append(_finding("N01", loc, f"{len(_latin_hits(t, allowed_latin))} 处非中文残留"))
         if _meta_hits(t):
             findings.append(_finding("N02", loc, "元信息泄漏"))
         bad, why = _tail_state(t)

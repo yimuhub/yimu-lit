@@ -148,6 +148,26 @@ def gen_outline(cfg: dict) -> dict:
     out = llm.chat_json([{"role": "user", "content": task}], cfg=cfg, stage="planning")
     if not isinstance(out, dict) or not out.get("chapters"):
         raise ValueError("提纲生成失败（模型未返回结构化提纲）")
+    # v5.2：模型常无视总字数，按“每章 2000”硬写 5 章；这里按总预算重排章节与单章额度。
+    try:
+        _total = max(300, int(cfg.get("target_words") or 8000))
+    except Exception:
+        _total = 8000
+    _chs = out.get("chapters") or []
+    if _total < 1500 and len(_chs) > 2:
+        _first, _last = _chs[0], _chs[-1]
+        out["chapters"] = [
+            {"no": 1, "title": _first.get("title") or "引言",
+             "sections": (_first.get("sections") or [])[:2],
+             "target_words": max(150, int(_total * 0.35))},
+            {"no": 2, "title": _last.get("title") or "结论与建议",
+             "sections": (_last.get("sections") or [])[-2:],
+             "target_words": max(200, int(_total * 0.65))},
+        ]
+    elif _chs:
+        _per = max(350, _total // len(_chs))
+        for _ch in _chs:
+            _ch["target_words"] = _per
     return out
 
 
@@ -167,9 +187,11 @@ def write_chapter(cfg: dict, outline: dict, ch: dict, refs: list) -> str:
         f"全文摘要：{outline.get('abstract')}\n"
         f"可用文献（正文引注一律用 [编号] 对应下列条目，不得编造编号外的文献）：\n{ref_lines}\n\n"
         "学术写作纪律：\n"
+        "- **只写本章**：只输出第 {no} 章「{title}」的内容，不得输出其他章节的标题或正文；\n"
+        "- 本章必须完整可读，禁止写“将在数据收集后撰写”“待补”“略”等占位；\n"
         "- 平实准确的学术语体；论证有据；引注格式 [n]；\n"
         "- 只用正常中文标点，禁止 markdown 加粗/斜体/列表符号；小节用「一、二、」或普通段落；\n"
-        "- 不确定的事实留「有待进一步验证」而非编造。"
+        "- 不确定的事实留「有待进一步验证」而非编造。".format(no=ch.get("no"), title=ch.get("title"))
     )
     body = _gen(f"论文 · 第{ch.get('no')}章", task, cfg, "writing", max_tokens=8000)
     for _i in range(2):
@@ -190,6 +212,29 @@ def write_chapter(cfg: dict, outline: dict, ch: dict, refs: list) -> str:
                         cfg, "writing", max_tokens=8000)
             if _wg.adoption_ok(body, _new, _tw):
                 body = _new
+    # v5.2：单章也要有上限，否则总字数 800 会被写成 14000。
+    _max_tw = _tw + max(60, int(_tw * 0.08))
+    if _wg.cn_len(body) > _max_tw:
+        _compressed = ""
+        try:
+            _compressed = _gen(
+                f"论文 · 第{ch.get('no')}章 压缩",
+                f"把下面这章压缩到不超过 {_max_tw} 字（硬性上限），保留核心论据与引注 [n]，"
+                f"只输出正文，不要解释：\n\n{body[:9000]}",
+                cfg, "writing", max_tokens=4000) or ""
+        except Exception:
+            _compressed = ""
+        if _wg.cn_len(_compressed) >= max(80, _tw // 2) and _wg.cn_len(_compressed) <= _max_tw:
+            body = _compressed.strip()
+        else:
+            _out = ""
+            for _sent in re.split(r"(?<=[。！？!?])", body):
+                if _wg.cn_len(_out + _sent) > _max_tw:
+                    break
+                _out += _sent
+            body = (_out or body[:_max_tw]).strip()
+    # v5.2：清掉“将在后续撰写”的占位段，否则短论文会出现空结论再拼真结论。
+    body = re.sub(r"(?m)^.*(?:将在.{0,20}后撰写|待补|占位).*$\n?", "", body).strip()
     return body
 
 

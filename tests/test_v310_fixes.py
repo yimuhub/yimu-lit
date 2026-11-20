@@ -162,7 +162,10 @@ def test_set_chapter_title_updates_plan_and_file(tmp_path):
     assert writer._set_chapter_title(proj, 3, "夜行者") is True
     plan = json.loads((pdir / "02-写作计划.json").read_text(encoding="utf-8"))
     assert plan["chapters"][2]["title"] == "夜行者"
-    head = (pdir / "第03章.md").read_text(encoding="utf-8").splitlines()[0]
+    # v5.1：计划标题是唯一事实源，文件必须同步改名；读计划里的新 filePath。
+    fp = pdir / plan["chapters"][2]["filePath"]
+    assert fp.name == "第03章-夜行者.md"
+    head = fp.read_text(encoding="utf-8").splitlines()[0]
     assert head == "# 第03章 夜行者"
 
 

@@ -152,6 +152,9 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
             raise ValueError("大纲生成失败")
         plan["outline"] = out
         plan["totalChapters"] = len(out["sections"])
+        # v5.2：大纲生成的正式标题回写作品名（极速模式不再用整段主题当标题）。
+        if str(out.get("title") or "").strip():
+            plan["otherName"] = str(out["title"]).strip()[:48]
         plan["chapterStatus"]["O1"] = "completed"
         plan["meta"]["stage"] = "O2"
         proj.save_plan(plan)

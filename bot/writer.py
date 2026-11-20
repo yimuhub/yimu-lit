@@ -1,8 +1,9 @@
 """写作引擎：阶段3 疯狂创作 + 阶段4 自动校验（后台线程，事件推送）；v0.6 增并行章节创作（总架构+工作池）"""
 from typing import Optional
-import json, os, re, datetime, threading, queue, time
+import hashlib, json, os, re, datetime, threading, queue, time, inspect
 from . import (workflow, skill, continuity, llm, versions, steps, purity, journal,
-               express, delivery_gate, lexicon_ledger, checkup, final_review, book_health)
+               express, delivery_gate, lexicon_ledger, checkup, final_review, book_health,
+               chapter_identity)
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 from .paths import DATA_ROOT as ROOT, DATA_ROOT as DATA_ROOT_N
@@ -21,6 +22,7 @@ def _skeleton_refresh(key):
 
 _RUNNING_BOOKS: set = set()
 _RUNNING_LOCK = threading.Lock()
+_START_LOCK = threading.Lock()   # v5.1：start_writing 的 check+set 必须原子，双击/双入口只允许一条线程
 
 
 def _book_running(key):
@@ -99,17 +101,26 @@ def reconcile_completed_chapters(plan, pdir):
         fp = os.path.join(pdir, os.path.basename(str(ch.get("filePath"))))
         try:
             with open(fp, encoding="utf-8", errors="replace") as f:
-                real_words = len(f.read().strip())
+                raw = f.read()
+            real_words = purity._cn_len(purity.chapter_body(raw))
         except OSError:
             continue
         if ch.get("status") != "completed":
             ch["status"] = "completed"
             ch.setdefault("completedAt", now)
             fixed += 1
-        # supervisor 打回时会把 wordCount 清成 None；用文件实测值补回，
-        # 否则下一轮校验又会按 0 字把它判成 failed、陷入「打回→重写」循环。
-        if not ch.get("wordCount"):
+        # 统一正文口径：计划字数只代表读者可见正文。旧数据即使 wordCount 非空，
+        # 也可能把“本章概要/章节备注”算进去；每次对账都按磁盘正文重算。
+        if ch.get("wordCount") != real_words:
             ch["wordCount"] = real_words
+    # 总字数也按同一口径回填：旧实现只改章级 wordCount，计划头仍是规划期估值，
+    # 于是“章加起来 45,414、计划写 45,505”，用户与导出看到两套总数。
+    try:
+        total = sum(int(c.get("wordCount") or 0) for c in (plan.get("chapters") or []))
+        if total and plan.get("totalWords") != total:
+            plan["totalWords"] = total
+    except Exception:
+        pass
     return fixed
 
 
@@ -323,6 +334,72 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
+_LATIN_CODE_WORDS = {
+    "DEF", "CLASS", "IMPORT", "FROM", "FUNCTION", "CONST", "LET", "VAR", "RETURN",
+    "CONSOLE", "PRINT", "TODO", "FIXME", "TRACEBACK", "NULL", "NONE", "TRUE", "FALSE",
+    "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "TABLE", "HTTP", "HTTPS", "LOCALHOST",
+}
+
+
+def latin_allowlist(proj) -> set[str]:
+    """作品级 N01 白名单：计划 meta 显式配置 + 00-事实源/人物档案中出现的专名。
+
+    为什么需要：N01 原本是抓“代码残留”，但中文小说里合法的网络 ID（Linjx2014）、
+    公司英文名（SHEN MEDICAL）、剧情内缩写（IPO/FINAL HOURS）会被误杀，导致整本
+    书永远过不了投稿闸门。这里把“作品自己声明过的拉丁词”视作设定，而不是污染。
+    """
+    allow: set[str] = set()
+    try:
+        plan = proj.plan() or {}
+        meta = plan.get("meta") or {}
+        for key in ("latin_allow", "latinAllow"):
+            vals = meta.get(key) or []
+            if isinstance(vals, str):
+                vals = re.split(r"[,，、\s]+", vals)
+            if isinstance(vals, list):
+                allow |= {str(x).strip().upper() for x in vals if str(x).strip()}
+        cfg = plan.get("config") or {}
+        vals = cfg.get("latin_allow") or []
+        if isinstance(vals, list):
+            allow |= {str(x).strip().upper() for x in vals if str(x).strip()}
+    except Exception:
+        pass
+    def _collect(txt: str):
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", txt or ""):
+            if tok.upper() in _LATIN_CODE_WORDS:
+                continue
+            allow.add(tok.upper())
+            # N01 的 token 只抓连续字母（Linjx2014 会被拆成 Linjx + 数字）；
+            # 专名带数字后缀时，同时放行字母前缀，否则永远误报。
+            _m = re.match(r"[A-Za-z]{3,}", tok)
+            if _m:
+                allow.add(_m.group(0).upper())
+
+    # 从事实源/人物档案动态收集：JSON 只扫 value，不扫 schema 键（避免把 ALIASES 这类键名放行）
+    for fn in ("00-作品事实源.json", "00-人物档案.md", "01-故事契约.json"):
+        fp = os.path.join(getattr(proj, "path", ""), fn)
+        try:
+            if not os.path.exists(fp):
+                continue
+            if fn.endswith(".json"):
+                data = json.load(open(fp, encoding="utf-8", errors="replace"))
+                def _walk(v):
+                    if isinstance(v, dict):
+                        for x in v.values():
+                            _walk(x)
+                    elif isinstance(v, list):
+                        for x in v:
+                            _walk(x)
+                    elif isinstance(v, str):
+                        _collect(v)
+                _walk(data)
+            else:
+                _collect(open(fp, encoding="utf-8", errors="replace").read())
+        except Exception:
+            continue
+    return allow
+
+
 def _clean_chapter_text(text, fallback_title=""):
     """成书/复制/导出的唯一取文口径：章题 + 章首引子 + 正文。
 
@@ -463,7 +540,15 @@ def create_project(cfg, titles, pdir=None, name=None):
     cfg_outline = dict(cfg2)
     if total > 60:
         cfg_outline["chapters"] = 40
-    outline = workflow.gen_outline(cfg_outline)
+    outline = None
+    try:
+        _params = inspect.signature(workflow.gen_outline).parameters
+    except (TypeError, ValueError):
+        _params = {}
+    if "characters" in _params:
+        outline = workflow.gen_outline(cfg_outline, characters=characters)
+    else:   # 兼容旧签名/测试桩
+        outline = workflow.gen_outline(cfg_outline)
     open(os.path.join(pdir, "01-大纲.md"), "w", encoding="utf-8").write(
         f"# {name} 大纲\n\n" + outline)
     _evt(_ek, "planner", phase="done", title="生成全书大纲",
@@ -564,6 +649,7 @@ def create_project(cfg, titles, pdir=None, name=None):
     plan = {
         "version": 1, "novelName": name, "projectPath": pdir,
         "totalChapters": total, "minWordsPerChapter": int(cfg.get("min_words_per_chapter") or 3000),
+        "totalWords": 0,
         "createdAt": datetime.datetime.now().isoformat(),
         "status": "planning", "writingMode": "serial", "config": cfg,
         "titles": titles,
@@ -653,6 +739,28 @@ def _ensure_writable_plan(proj) -> dict | None:
     plan = proj.plan()
     if plan and (plan.get("chapters") or []):
         return plan
+    # v5.0 修复：/api/create 先写 0 章骨架再后台规划；此时用户点「开始/继续」
+    # 不能另起一套 create_project。两套规划并发会互相覆盖人物档案、事实源和章卡
+    # （本次走查实证：20:46–20:49 同一本书被重建了三次）。
+    meta = (plan or {}).get("meta") or {}
+    # 只用「真的有规划线程在跑」作判据；单看 status=planning 会把服务重启后残留的
+    # 空计划永久当成在途（走查实测：空计划恢复测试因此 180 秒后返回 None）。
+    try:
+        from . import livejob as _lj
+        _row = _lj.get(proj.path) or {}
+        _planning_active = (bool(_row) and not _row.get("finished")
+                            and str(_row.get("kind") or "") == "planning")
+    except Exception:
+        _planning_active = False
+    if _planning_active or meta.get("planning_running"):
+        proj.log("⏳ 规划仍在进行，等待现有规划完成（不另起一套）…")
+        for _ in range(90):
+            time.sleep(2)
+            plan = proj.plan() or {}
+            if plan.get("chapters"):
+                return plan
+        proj.log("⚠️ 等待规划超时；不并发重建，交由用户「继续」或重试")
+        return None
     proj.log("📐 写作计划缺失或没有章卡（规划中断）：先重建规划…")
     try:
         cfg = dict((plan or {}).get("config") or {})
@@ -680,10 +788,13 @@ def start_writing(proj: Project, batch_size=None) -> bool:
     """启动写作线程。返回 True=已启动；False=被防重入拦截（已有线程在写）。
     v4.20.1：此前被拦时静默返回 None，调用方无法区分「已启动」和「已在写」。"""
     _bk = os.path.basename(proj.path)
-    if proj.running or _book_running(_bk):
-        return False   # v4.12.16：双重防重入（实例 + 共享注册表）
-    _set_book_running(_bk, True)
-    proj.running = True
+    # v5.1：旧实现先查后设，两个入口同时点「创建/继续」会同时通过，起两条写线程。
+    # 现在把 check+set 放进同一把进程锁；线程内仍保留原有实例/注册表双保险。
+    with _START_LOCK:
+        if proj.running or _book_running(_bk):
+            return False
+        _set_book_running(_bk, True)
+        proj.running = True
     threading.Thread(target=_write_loop, args=(proj, batch_size), daemon=True).start()
     return True
 
@@ -1636,11 +1747,29 @@ def _ensure_card_planned(proj, no, tries: int = 2) -> bool:
         from . import longform as _lf
         cards = _lf.load_cards(proj)
         card = cards.get(int(no))
-        if card and not _lf.card_is_placeholder(card):
+
+        def _v5_card_ok(c):
+            # v5 新项目：旧占位卡即使有 goal，也可能缺 cast/locations/场景链，
+            # 必须用质量内核同一套 card_lint 判定，不能只看 goal/conflict。
+            try:
+                from . import story_kernel as _v5
+                if _v5.enabled(proj):
+                    return not [x for x in _v5.card_lint(proj, c, int(no), cards)
+                                if x.get("level") == "block"]
+            except Exception:
+                return True
             return True
+
+        if card and not _lf.card_is_placeholder(card):
+            if _v5_card_ok(card):
+                return True
+            proj.log(f"🧭 第{no}章章卡是旧版占位结构，按 v5 契约补全…")
         for i in range(max(1, tries)):
             got = _lf.plan_chapter_now(proj, int(no), cfg, reason="before_write")
             if isinstance(got, dict) and got and not _lf.card_is_placeholder(got):
+                if not _v5_card_ok(got):
+                    proj.log(f"⚠️ 第{no}章补规划第 {i + 1} 次：章卡仍缺 v5 硬字段")
+                    continue
                 proj.log(f"🧭 第{no}章补出真章卡：《{got.get('title') or ''}》"
                          f"（目标：{str(got.get('goal') or '')[:40]}…）")
                 _evt(_bkey(proj), "planner", phase="done", title=f"第{no}章临写补规划",
@@ -1850,7 +1979,8 @@ def _append_title_candidates(proj, items) -> int:
 # ---------- v3.1.0：章名回流（默认“第N章”的章写完/里程碑时起真名） ----------
 
 def _set_chapter_title(proj, no, title):
-    """回填章名：计划 + 章节文件头 + 02d 章卡（best-effort）。filePath 不动（保护版本/快照）。"""
+    """回填章名：计划 + 章节文件头 + 02d 章卡 + 规范文件名（v5.1 起 filePath 跟随计划）。
+    旧文件改名前后会先复制到 .versions/chNNN，版本/快照仍可回溯。"""
     title = re.sub(r'[\\/:*?"<>|\n\r]', "", str(title or "").strip())[:16]
     if not title:
         return False
@@ -1896,6 +2026,11 @@ def _set_chapter_title(proj, no, title):
                 out.append(json.dumps(d, ensure_ascii=False))
             if changed:
                 atomic_write_text(cards_fp, "\n".join(out) + "\n")
+    except Exception:
+        pass
+    # v5.1：计划标题是唯一事实源；改名后同步文件名/正文 H1，避免三套标题漂移。
+    try:
+        chapter_identity.sync_project(proj, rename=True, persist=True)
     except Exception:
         pass
     return True
@@ -2224,10 +2359,13 @@ def score_chapter(proj, ch_no):
             plan["meta"] = {}
         cs = plan["meta"].setdefault("chapter_scores", {})
         pl = _pass_line()
+        _body_sha = hashlib.sha1(
+            _clean_chapter_text(body).encode("utf-8", "replace")).hexdigest()
         cs[str(ch_no)] = {"score": total, "dims": r.get("scores", {}) if r else {},
                           "weak": (r.get("weak", []) if r else []), "verdict": (r.get("verdict", "") if r else ""),
                           "evidence": (r.get("evidence") or [])[:6] if r else [],
                           "conflicts": (r.get("conflicts") or [])[:6] if r else [],
+                          "sha": _body_sha,
                           "status": "unscored" if total is None else ("pass" if total >= pl else "below"),
                           "ts": int(datetime.datetime.now().timestamp())}
         proj.save_plan(plan)
@@ -2812,7 +2950,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
     # 污染类残留（diagonally、「继续写」式独白）进稿的成本远高于一次重写调用。
     _purity_txt = purity.chapter_body(body)
     _purity = delivery_gate.chapter_purity_blocks(_purity_txt, title=ch["title"], chapter_no=no,
-                                                  banned_terms=_banned)
+                                                  banned_terms=_banned,
+                                                  allowed_latin=latin_allowlist(proj))
     if _purity and not _from_draft:
         proj.log(f"🚨 第{no}章落盘预检命中 {', '.join(f['code'] for f in _purity)}（{_purity[0]['name']}），带指令回灌重写…")
         _evt(_bk, "writer", phase="warn", title="落盘前三查命中，回灌重写",
@@ -2825,7 +2964,8 @@ def _write_chapter(proj, ch, min_words, max_retries):
             purity.sanitize_chapter(_strip_chatter(workflow.write_chapter(ctx3))))
         _purity3 = delivery_gate.chapter_purity_blocks(purity.chapter_body(body3),
                                                        title=ch["title"], chapter_no=no,
-                                                       banned_terms=_banned)
+                                                       banned_terms=_banned,
+                                                       allowed_latin=latin_allowlist(proj))
         if not _purity3:
             body = body3
             proj.log(f"✅ 第{no}章重写后落盘预检通过")
@@ -4591,7 +4731,19 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
                     _body_after = ""
                 _changed = _body_after.strip() != _body_before.strip()
                 delta = (after or 0) - (before or 0)
-                kept = _changed and (before is None or after is None or (after or 0) > (before or 0))
+                # v5 走查修复：评分为 None 时，旧逻辑只要改稿内容有变化就保留，
+                # 会把 2265 字的合格稿换成 1124 字的残缺稿（走查实录总提升 -62.5）。
+                # 评分不可用 ≠ 可以无条件接受；至少要求改稿不短于原稿 90%。
+                _len_ok = True
+                if _changed and _body_before.strip():
+                    _old_n = len("".join(_body_before.split()))
+                    _new_n = len("".join(_body_after.split()))
+                    # 分数提高也不能以砍掉 10% 以上正文为代价：走查实录第13章
+                    # 74→76 分，正文却从 2500+ 缩到 1785，随后又要靠续写补。
+                    _len_ok = _new_n >= int(_old_n * 0.9)
+                    if not _len_ok:
+                        proj.log(f"⚠️ 第{ch_no}章改稿 {_new_n} 字 < 原稿 {_old_n} 字的 90%，即使提分也回滚")
+                kept = _changed and _len_ok and (before is None or after is None or (after or 0) > (before or 0))
                 r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1),
                      "kept": kept,
                      **({"note": "评分不可用，按内容完整度保留"} if (kept and after is None) else {})}
@@ -5261,7 +5413,9 @@ def pick_title(key, title):
     if target != proj.path and not os.path.exists(target):
         os.rename(proj.path, target); proj.path = target
         record_rename(base, os.path.basename(target))   # v4.15.13：旧 key 别名，旧请求自动跳新 key
-    plan["novelName"] = title; proj.save_plan({**plan, "meta": meta, "novelName": title})
+    plan["novelName"] = title
+    plan["projectPath"] = proj.path
+    proj.save_plan({**plan, "meta": meta, "novelName": title, "projectPath": proj.path})
     # v4.15.2：尊重批量写作设置
     start_writing(proj, batch_size=((plan.get("config") or {}).get("batch_size")))
     return os.path.basename(proj.path)

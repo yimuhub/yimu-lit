@@ -499,7 +499,7 @@ def _apply_title(key, title):
     # 剧本/诗词/散文改名完全无效。改走 writer._plan_of 按文体写各自的 *Name 字段。
     _med, _plan_fp, _plan_data = writer._plan_of(target)
     if _med and _plan_fp and isinstance(_plan_data, dict):
-        _name_key = {"script": "scriptName", "poetry": "poemName", "prose": "proseName"}.get(_med, "novelName")
+        _name_key = dict(getattr(writer, "_NAME_KEY", {})).get(_med, "novelName")
         _plan_data[_name_key] = title
         _plan_data["projectPath"] = target
         atomic_write_json(_plan_fp, _plan_data)
@@ -1965,6 +1965,24 @@ def _express_into(cfg: dict, payload: dict) -> dict:
     return cfg
 
 
+def _short_title(idea: str, limit: int = 14) -> str:
+    """极速模式隐藏书名时，用一个短、可命名的占位标题，不把整段简介当作品名。
+
+    只做确定性切分：优先第一句/第一逗号；首段太短再借下一段前 10 字；仍过长则截断。
+    引擎随后产出的正式标题会覆盖它（剧本/儿童/新闻等）。
+    """
+    text = re.sub(r"\s+", "", str(idea or "").strip())
+    text = text.strip("「」“”‘’《》<>【】")
+    if not text:
+        return "未命名"
+    parts = [p for p in re.split(r"[，,。；;：:！？!?\\n]", text) if p]
+    cand = parts[0] if parts else text
+    if len(cand) < 6 and len(parts) > 1:
+        cand += parts[1][:10]
+    cand = re.sub(r"[\\/:*?\"<>|]+", "", cand).strip("。！？!?，,、；;：:")
+    return (cand[:limit] or "未命名")
+
+
 def _style_prompt_of(style_id) -> str:
     """蒸馏风格卡的技法文本。剧本/诗词/散文没有 style_ref.json 注入点，折进素材说明里交给提示词。"""
     card = distill.get_style((style_id or "").strip())
@@ -1992,6 +2010,10 @@ def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: s
     """
     import threading as _th
     from datetime import datetime as _dt
+    # v5.2：极速模式隐藏标题时，不要把整段 idea 当作品名/目录名。
+    # 用一个短占位标题；引擎生成正式标题后会回写计划。
+    if medium != "novel" and not str(cfg.get("title") or "").strip():
+        cfg["title"] = _short_title(cfg.get("idea") or "")
     display = (cfg.get("title") or cfg.get("idea") or default_name or "").strip()
     display = (display.splitlines()[0] if display else default_name)[:40] or default_name
     _name = safe_fn(cfg.get("title") or cfg.get("idea") or default_name)
@@ -2011,6 +2033,17 @@ def _spawn_project(medium: str, prefix: str, create_fn, safe_fn, default_name: s
             # 完全看不出是哪一步），补完整堆栈。
             _tb = traceback.format_exc()
             print(f"[bg] {medium}创作失败: {e}\n{_tb}", flush=True)
+            # 引擎在建项目时抛错（限流/空稿/JSON 失败）不能只留 status=planning 让前端永远转圈。
+            try:
+                _med, _fp, _pl = writer._plan_of(os.path.join(writer.PROJECTS_DIR, base))
+                if _fp and isinstance(_pl, dict):
+                    _pl["status"] = "failed"
+                    _pm = _pl.setdefault("meta", {})
+                    _pm["error"] = str(e)[:200]
+                    _pm["stage"] = _pm.get("stage") or "create"
+                    atomic_write_json(_fp, _pl)
+            except Exception:
+                pass
         finally:
             writer.mark_pipeline(base, False)
 
@@ -2116,6 +2149,9 @@ def _spawn_simple_writer(medium: str, mod, payload: dict) -> dict:
         cfg.setdefault("defaults", {})["model"] = payload["model"]
 
     prefix = {"children": "c_", "news": "n_", "copy": "k_", "other": "o_"}[medium]
+    # v5.2：极速模式隐藏标题时用短占位标题，不再把整段 idea 当目录名。
+    if not str(cfg.get("title") or "").strip():
+        cfg["title"] = _short_title(cfg.get("idea") or "")
     display = (cfg.get("title") or cfg.get("idea") or "未命名").strip()[:40] or "未命名"
     _name = re.sub(r'[\/:*?"<>|\s]+', "", display)[:24] or "未命名"
     base = f"{prefix}{_dt.now().strftime('%Y%m%d-%H%M%S')}-{_name}"
@@ -2267,7 +2303,9 @@ def api_create(payload: dict):
     import threading as _th
     from datetime import datetime as _dt
     _ts = _dt.now().strftime('%Y%m%d-%H%M%S')
-    _safe_name = re.sub(r'[/:*?"<>|\s]+', '', title or (payload.get('idea') or '未命名'))[:24]
+    _express_mode = bool(cfg.get("express"))
+    _provisional = _short_title(payload.get('idea') or title or '未命名')
+    _safe_name = re.sub(r'[/:*?"<>|\s]+', '', title or _provisional)[:24]
     base = f"{_ts}-{_safe_name}" or f"bk_{_ts}"
     # 去掉路径分隔符/空白，书名不参与目录命名以外的用途
     try:
@@ -2275,12 +2313,13 @@ def api_create(payload: dict):
     except ValueError:
         return JSONResponse({"error": "书名包含非法字符"}, status_code=400)
     os.makedirs(pdir, exist_ok=True)
-    skeleton_plan = {"version": 1, "novelName": title or (payload.get("idea") or "未命名"),
+    skeleton_plan = {"version": 1, "novelName": title or _provisional,
                      "projectPath": pdir, "status": "planning",
                      "chapters": [], "totalChapters": total, "totalWords": 0,
                      "minWordsPerChapter": int(cfg.get("min_words_per_chapter") or 3000),
                      "config": {k: v for k, v in cfg.items() if k != "api_key"},
-                     "meta": {"awaiting_title": bool(not title), "title_candidates": [],
+                     "meta": {"awaiting_title": bool(not title and not _express_mode),
+                              "title_candidates": [],
                               "planning_running": True},
                      "createdAt": _dt.now().isoformat()}
     atomic_write_json(os.path.join(pdir, "02-写作计划.json"), skeleton_plan)
@@ -2297,15 +2336,36 @@ def api_create(payload: dict):
                 titles = [{"title": title, "technique": "指定书名", "why": "用户指定"}]
                 cands = []
             else:
-                cands = workflow.gen_titles(cfg2, n=n) or [{"title": "未命名", "technique": "", "why": ""}]
-                titles = [{"title": (payload.get("idea") or "未命名")[:20], "technique": "占位", "why": ""}]
+                cands = workflow.gen_titles(cfg2, n=n) or [{"title": _provisional, "technique": "", "why": "候选生成失败，沿用短标题"}]
+                if _express_mode:
+                    # v5.2：极速模式 = 一键直接开写。书名由引擎候选自动定第一个，
+                    # 不再把用户拦在 awaiting_title 里等选名，也不把整段 idea 当书名。
+                    titles = [{"title": (cands[0].get("title") or _provisional),
+                               "technique": "极速自动选名", "why": "极速模式自动采用首个候选"}]
+                else:
+                    titles = [{"title": _provisional, "technique": "占位", "why": ""}]
             # 关键：把 create_project 写到同一个骨架目录，避免“接口返回 key A、实际建了目录 B”
             proj = writer.create_project(cfg2, titles, pdir=pdir)
             _attach_style_ref(proj, style_id)
             _link_references(os.path.basename(proj.path), ref_ids)
             plan = proj.plan() or {}
             meta = plan.get("meta") or {}
-            if title:
+            if _express_mode and not title:
+                # 极速路径：把占位目录改名为正式书名（旧 key 记别名，前端旧请求自动跳转），
+                # 并立即开写。pick_title 会写入 novelName / selected_title。
+                best = str(titles[0].get("title") or _provisional)
+                newkey = writer.pick_title(base, best) or base
+                proj = writer.Project(writer._project_dir(newkey), newkey)
+                plan = proj.plan() or {}
+                meta = plan.get("meta") or {}
+                meta["title_candidates"] = cands
+                meta["title_picked"] = True
+                meta["awaiting_title"] = False
+                meta["planning_running"] = False
+                plan["meta"] = meta
+                proj.save_plan(plan)
+                proj.log(f"✅ 极速模式：自动定名《{best}》并开始创作")
+            elif title:
                 plan["meta"] = meta
                 proj.save_plan(plan)
                 # v4.20.0：开书第一批也要遵守「一次写几张」设置（此前漏传 → 第一批直接全写完）
@@ -2353,8 +2413,9 @@ def api_create(payload: dict):
             livejob.finish(base, ok=True, detail="规划线程结束")   # v4.34.1：收口登记
     _th.Thread(target=_bg, daemon=True).start()
     return {"project": base, "pid": base, "key": base,
-            "awaiting_title": bool(not title), "async": True,
-            "candidates": [] if title else [{"title": "候选生成中…", "technique": "", "why": ""}]}
+            "awaiting_title": bool(not title and not _express_mode), "express": _express_mode,
+            "async": True,
+            "candidates": [] if (title or _express_mode) else [{"title": "候选生成中…", "technique": "", "why": ""}]}
 
 # ---------- 新手指引：加载内置示例书 ----------
 @app.post("/api/sample")
@@ -5466,6 +5527,112 @@ class _ExportError(Exception):
         return d
 
 
+def _delivery_checklist(plan: dict, chapters: list[dict], rep: dict, *, kind: str,
+                        forced: bool = False, ranged: bool = False) -> list[dict]:
+    """可执行的交付状态清单：每一项都有真实值，不是“已完成”三个字。
+
+    v5 走查里 22-交付就绪报告只列 N01/N07 告警，不回答“这本书到底能不能交”。
+    这里把商务交付必须核对的 8 项固化成机器可读清单，导出报告与 API 共用。
+    """
+    cfg = (plan.get("config") or {}) if isinstance(plan, dict) else {}
+    meta = (plan.get("meta") or {}) if isinstance(plan, dict) else {}
+    min_w = int(plan.get("minWordsPerChapter") or 0) or int(cfg.get("minWordsPerChapter") or 0) or 0
+    # 终审有自己的全书线（默认 75），与逐章 validation.pass_line（80）不是一个尺；
+    # 交付清单以终审实际使用的那条线为准，避免“61.5/80”与“61.5/75”两套结论。
+    pass_line = int(((meta.get("final_review") or {}).get("book") or {}).get("pass_line")
+                    or (cfg.get("validation") or {}).get("pass_line") or 80)
+    fq = meta.get("final_quality")
+    try:
+        fq = float(fq) if fq is not None else None
+    except (TypeError, ValueError):
+        fq = None
+    rows = []
+    rows.append({"item": "章节完整", "ok": len(chapters) >= int(plan.get("totalChapters") or plan.get("chapterCount") or cfg.get("defaults", {}).get("chapters") or len(chapters)),
+                 "value": f"{len(chapters)} 章", "detail": "计划章节全部落盘" if len(chapters) else "没有可导出章节"})
+    if min_w:
+        short = []
+        for c in chapters:
+            wc = purity._cn_len(c.get("text") or "")
+            if wc < int(min_w * 0.7):
+                short.append(f"第{c.get('n')}章 {wc}")
+        rows.append({"item": "逐章字数", "ok": not short, "value": f"下限 {int(min_w*0.7)} 字",
+                     "detail": "全部达标" if not short else "、".join(short[:8])})
+    else:
+        rows.append({"item": "逐章字数", "ok": True, "value": "未设下限", "detail": "作品未设单章下限"})
+    rows.append({"item": "终审评分", "ok": (fq is not None and fq >= pass_line),
+                 "value": f"{fq if fq is not None else '未评'} / {pass_line}",
+                 "detail": "达到放行线" if (fq is not None and fq >= pass_line) else "低于放行线，只能作为初稿"})
+    counts = (rep or {}).get("counts") or {}
+    rows.append({"item": "交付禁止项", "ok": int(counts.get("block") or 0) == 0,
+                 "value": f"{counts.get('block', 0)} 项阻断 / {counts.get('warn', 0)} 项告警",
+                 "detail": "无硬阻断" if not counts.get("block") else "存在阻断，投稿会被拒"})
+    # 标题/文件一致性（计划 filePath 是否等于规范名）
+    try:
+        from bot import chapter_identity as _ci
+        bad = []
+        for ch in (plan.get("chapters") or []):
+            if not isinstance(ch, dict):
+                continue
+            fp = str(ch.get("filePath") or "")
+            want = _ci.canonical_name(int(ch.get("chapterNumber") or 0), str(ch.get("title") or ""))
+            if fp and os.path.basename(fp) != want:
+                bad.append(f"第{ch.get('chapterNumber')}章")
+        rows.append({"item": "标题/文件一致", "ok": not bad, "value": f"{len(bad)} 章漂移",
+                     "detail": "计划=文件名=正文题头" if not bad else "、".join(bad[:8])})
+    except Exception:
+        rows.append({"item": "标题/文件一致", "ok": False, "value": "未校验", "detail": "identity 模块异常"})
+    # 生产标记泄漏
+    leak = 0
+    for c in chapters:
+        t = c.get("text") or ""
+        if any(k in t for k in ("本章概要", "章节备注", "创作说明", "写作说明")):
+            leak += 1
+    rows.append({"item": "生产标记泄漏", "ok": leak == 0, "value": f"{leak} 章", "detail": "正文纯净" if not leak else "含生产小节，需清理"})
+    # 平台规格（有配置才算）
+    platform = str(cfg.get("platform") or plan.get("platform") or "")
+    rows.append({"item": "平台规格", "ok": True, "value": platform or "通用",
+                 "detail": "已绑定平台" if platform else "未绑定平台，按通用稿导出"})
+    rows.append({"item": "导出模式", "ok": not forced,
+                 "value": "强制内部稿" if forced else ("分章" if ranged else "整书"),
+                 "detail": "force=1 仅供内部审阅，不能对外投稿" if forced else "按当前闸门口径导出"})
+    return rows
+
+
+def _checklist_markdown(rows: list[dict], verdict: str) -> str:
+    out = ["", "## 交付状态清单（机器可读）", "",
+           f"**结论：{verdict}**", "",
+           "| 项 | 状态 | 实测 | 说明 |", "|---|---|---|---|"]
+    for r in rows:
+        out.append(f"| {r['item']} | {'通过' if r.get('ok') else '未通过'} | {r.get('value','')} | {r.get('detail','')} |")
+    return "\n".join(out) + "\n"
+
+
+def _export_busy_reason(key: str) -> str:
+    """整书导出前必须没有写/审作业在跑。
+
+    v5 走查实证：终审正在重写第 3 章（中间态 880 字）时点导出，闸门读到的是
+    “1,218→880 的短章”，同一章随后回到 1,942 字——导出读到了撕裂的中间态。
+    这里直接拒绝并给用户明确状态，不再赌“读的时候刚好写完”。
+    """
+    try:
+        from bot import livejob as _lj
+        row = _lj.get(key) or {}
+        if row and not row.get("finished"):
+            kind = str(row.get("kind") or "")
+            if kind in ("planning", "resume", "review", "rewrite", "release", "export"):
+                label = {"planning": "规划中", "resume": "创作中", "review": "终审中",
+                         "rewrite": "改写中", "release": "放行重写中", "export": "导出中"}.get(kind, kind)
+                return f"《{os.path.basename(str(key))}》正在{label}，请等本轮结束后再导出"
+    except Exception:
+        pass
+    try:
+        if writer.pipeline_running(key):
+            return "该书正在写作/终审，章节处于中间态，暂不能导出"
+    except Exception:
+        pass
+    return ""
+
+
 def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0,
                   strict_high: int = 0, mode: str = ""):
     """构建导出产物（v4.32.0 从 GET /api/export 抽出，桌面保存对话框复用）。
@@ -5479,6 +5646,9 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
     proj = _get_project(key)
     if not proj:
         raise _ExportError("项目不存在或未加载，请刷新作品库", 404)
+    _busy = _export_busy_reason(key)
+    if _busy:
+        raise _ExportError(_busy, 409, "busy", {"state": "busy"})
     fmt = (fmt or "docx").lower()
     # v4.31.0：文体三分类——此前非小说一律按剧本取场次，散文/诗词/论文等
     # 单文档文体导出必 400（用户点导出即见裸 JSON 错误页）。
@@ -5509,7 +5679,19 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
         try:
             from bot import export_repair as _export_repair
             _clean = _export_repair.repair(proj)
+            # v5.1：导出前把章节身份对齐到计划标题（文件名/正文 H1 同一事实源）；
+            # 这一步是确定性迁移，失败不阻断导出，只记录。
+            try:
+                # 只对已盖交付规格章的新作品做身份迁移；历史作品保持旧文件名，
+                # 避免“打开旧书导出一次就批量改名”的不可预期副作用。
+                if plan.get("deliverySpecVersion"):
+                    from bot import chapter_identity as _identity
+                    _identity.sync_project(proj, rename=True, persist=True)
+            except Exception as _ie:
+                proj.log(f"⚠️ 章节身份对齐失败：{_ie}")
             if _clean.get("changed"):
+                chapters = export_mod.novel_chapters(proj)
+            else:
                 chapters = export_mod.novel_chapters(proj)
         except Exception as _e:
             _clean = {}
@@ -5521,8 +5703,9 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
         sproj = script_writer.ScriptProject(proj.path, proj.name)
         plan = sproj.plan() or plan
         title = plan.get("scriptName") or proj.name
-        chapters = [{"n": sc["no"], "title": sc["heading"], "text": sc["text"]}
-                    for sc in export_mod.script_scenes(sproj)]
+        # v5.2：场景不再冒充「集」；电影/短片/舞台按一整部分组，剧集才按集分组。
+        chapters = [{"n": e["n"], "title": e["title"], "text": e["text"]}
+                    for e in export_mod.script_episodes(sproj)]
     else:
         # 单文档文体（诗词/散文/论文/儿童文学/新闻稿/文案/其他创作）：
         # 计划里的 *Name 字段做标题，04-*定稿.md 优先、02-*稿.md 兜底。
@@ -5579,9 +5762,27 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
     from bot import delivery_gate as _dg, delivery_spec as _ds
     _kind = "script" if is_script else ("novel" if novel else "mini")
     _declared = "novel_submission" if _v5_submit else (str(plan.get("deliveryProfile") or "").strip() or _ds.profile_for(_kind))
+    if _kind == "script":
+        # 电影/短片/舞台不是「短剧出片档」：用通用正文洁净档，避免 S04 集预算误杀。
+        try:
+            _form = str(plan.get("form") or "")
+            if _form not in script_writer.SERIES_FORMS:
+                _declared = "universal"
+        except Exception:
+            pass
     _stamped = bool(plan.get("deliverySpecVersion"))
     _enforce = "enforcing" if (_stamped and not (frm or to) and not force) else "advisory"
-    _rep = _dg.check_delivery(chapters, title=title, kind=_kind, profile=_declared)
+    _rep = _dg.check_delivery(chapters, title=title, kind=_kind, profile=_declared,
+                         allowed_latin=writer.latin_allowlist(proj),
+                         script_form=(str(plan.get("form") or "") if _kind == "script" else ""))
+    _cl = _delivery_checklist(plan, chapters, _rep, kind=_kind,
+                              forced=bool(force), ranged=bool(frm or to))
+    _rep["checklist"] = _cl
+    _all_ok = all(x.get("ok") for x in _cl)
+    _rep["verdict"] = ("可投稿交付" if _all_ok and not force else
+                       "内部稿（强制导出）" if force else
+                       "初稿（存在未通过项）" if not _all_ok else "可交付")
+    _rep["ready"] = bool(_all_ok and not force)
     # v4.36.0：报告开头先说标尺（形态 + 平台基准），再看禁止项。
     _taste_info = {}
     if _kind == "novel":
@@ -5599,6 +5800,7 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
     try:
         with open(os.path.join(proj.path, "22-交付就绪报告.md"), "w", encoding="utf-8") as _f:
             _f.write(_dg.report_markdown(_rep))
+            _f.write(_checklist_markdown(_cl, _rep["verdict"]))
     except OSError:
         pass
     _notice = []
@@ -5740,6 +5942,32 @@ def _export_settle(key: str, frm: int, to: int):
         writer.stop_creation(key, reason="已出书（整本导出），创作流程已停止")
     except Exception:
         pass
+
+
+@app.get("/api/delivery-status")
+def api_delivery_status(key: str):
+    """交付状态清单（只读）：前端在导出前就能看到“能不能交、差在哪”。
+
+    v5.1 新增：旧流程只有点导出被 409 后才知道阻断项；这里把同一份
+    delivery_gate 报告 + 8 项商务清单前置，不触发写盘、不调 LLM。
+    """
+    proj = _get_project(key)
+    if not proj:
+        raise _ExportError("项目不存在或未加载，请刷新作品库", 404)
+    plan = proj.plan() or {}
+    is_script = bool(plan.get("scenes"))
+    chapters = export_mod.novel_chapters(proj) if not is_script else []
+    kind = "script" if is_script else "novel"
+    from bot import delivery_gate as _dg
+    rep = _dg.check_delivery(chapters, title=proj.name, kind=kind,
+                                       profile="novel_submission" if not is_script else None,
+                                       allowed_latin=writer.latin_allowlist(proj))
+    cl = _delivery_checklist(plan, chapters, rep, kind=kind)
+    scores = writer.per_chapter_scores(proj) if not is_script else []
+    return {"ok": True, "verdict": ("可投稿交付" if all(x.get("ok") for x in cl)
+                                    else "初稿（存在未通过项）"),
+            "counts": rep.get("counts") or {}, "checklist": cl,
+            "scores": scores, "findings": (rep.get("findings") or [])[:60]}
 
 
 @app.get("/api/export")

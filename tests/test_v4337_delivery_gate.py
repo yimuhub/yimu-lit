@@ -251,6 +251,9 @@ def test_export_gate_blocks_new_works_but_not_legacy(monkeypatch, tmp_path):
     assert c.get("/api/export?key=book&fmt=md&force=1").status_code == 200
     assert "交付就绪报告" in (pdir / "22-交付就绪报告.md").read_text(encoding="utf-8")
 
+    # v5.1：盖章作品导出会把章节文件对齐为规范名；磁盘计划已更新 filePath，
+    # 必须重新读盘再改 legacy 标记，否则会用旧 filePath 覆盖。
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
     plan.pop("deliverySpecVersion")
     plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
     appmod.PROJECT_INDEX.clear()

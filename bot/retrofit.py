@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 
-from . import canon, craft_check, engine_check, longform, state as state_mod
+from . import canon, craft_check, engine_check, longform
 
 REPORT_JSON = "27-旧书整改方案.json"
 REPORT_MD = "27-旧书整改方案.md"
@@ -50,17 +50,12 @@ def _score_map(proj) -> dict:
 
 
 def plan(proj, top_n: int = TOP_N) -> dict:
-    pdir = _pdir(proj)
     chapters = _chapters(proj)
     cards = {}
     try:
         cards = longform.load_cards(proj)
     except Exception:
         pass
-    try:
-        st = state_mod.load(pdir)
-    except Exception:
-        st = state_mod.empty_state()
     canon_data = {}
     try:
         canon_data = canon.scan(proj)
@@ -72,7 +67,6 @@ def plan(proj, top_n: int = TOP_N) -> dict:
     except Exception:
         pass
     scores = _score_map(proj)
-    cfg = (proj.plan() or {}).get("config") or {}
     min_words = int((proj.plan() or {}).get("minWordsPerChapter") or 3000)
 
     # 逐章确定性指标

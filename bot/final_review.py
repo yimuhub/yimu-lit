@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import time
 
 from . import book_health, craft_check, llm, medium, purity, steps, versions, wordguard, workflow
 
@@ -38,6 +39,10 @@ POLICY = {
 #: 一轮终审里自动重写的上限（防止一次跑掉几小时；超出的如实写进报告，可再点继续）
 MAX_REWRITE = 24
 MAX_WORD_FIX = 40
+
+#: 评分算法版本。维度分按「该维度自己的满分（权重）」打，总评 = 各维度分直接相加。
+#: v5.2 修复：旧版把维度分再按 /10×权重 放大，85 分会被记成 219 分（超出百分制）。
+SCORE_VERSION = 2
 
 _STAGE_LABEL = {
     "verifying": "字数达标", "scoring": "逐章评分", "rewriting": "定向重写",
@@ -209,7 +214,7 @@ def run_novel(proj, policy: dict | None = None, trigger: str = "auto") -> dict:
     try:
         from . import story_kernel as _sk
         _cfg = plan.get("config") if isinstance(plan.get("config"), dict) else {}
-        if _sk.enabled(proj, _cfg):
+        if _sk.enabled(proj):
             _chs = []
             for c in chapters:
                 _n = int(c.get("chapterNumber") or c.get("n") or 0)
@@ -242,7 +247,21 @@ def run_novel(proj, policy: dict | None = None, trigger: str = "auto") -> dict:
     _write_report_novel(proj, plan, result)
     try:
         p = proj.plan() or {}
-        p.setdefault("meta", {})["final_review"] = result
+        _meta = p.setdefault("meta", {})
+        _meta["final_review"] = result
+        # v5.1：终审总评必须落到唯一质量字段，导出清单/前端/放行判断都读它。
+        # 旧实现只存 meta.final_review，meta.final_quality 永远 None，导致
+        # 成书清单显示“未评/80”、导出误判“未放行”。
+        try:
+            _meta["final_quality"] = float((book or {}).get("total"))
+        except (TypeError, ValueError):
+            pass
+        # 终审重写会改变章长；计划头 totalWords 必须同步，否则导出/看板又是旧总数。
+        try:
+            p["totalWords"] = sum(int(c.get("wordCount") or 0)
+                                  for c in (p.get("chapters") or []))
+        except (TypeError, ValueError):
+            pass
         proj.save_plan(p)
     except Exception:
         pass
@@ -268,7 +287,7 @@ def _word_pass(proj, plan, key) -> dict:
             still.append(no)
             continue
         body = _read(fp)
-        wc = _cn(writer._clean_chapter_text(body))
+        wc = _cn(purity.chapter_body(body))
         ch["wordCount"] = wc
         if wc >= floor:
             continue
@@ -349,12 +368,22 @@ def _score_pass(proj, plan, pol, changed, key) -> dict:
         # 复用只认「同一份正文」：旧数据没有 sha 时保守重评一次，不拿别的正文的分冒充
         need = (score is None or no in changed or ent.get("sha") != sha)
         if need:
-            try:
-                score = writer.score_chapter(proj, no)
-                fresh += 1
-            except Exception as e:
-                proj.log(f"⚠️ 终审第{no}章评分失败：{e}")
-                score = None
+            # v5.1：评分模型偶发返回不可解析的 JSON 时，score_chapter 会返回 None。
+            # 旧实现直接 continue，账面“fresh=19”但 1 章永远无分；这里最多再评一次，
+            # 仍失败才标记 unscored，不让静默缺分变成全书总评的隐形偏差。
+            score = None
+            for _try in range(2):
+                try:
+                    score = writer.score_chapter(proj, no)
+                    if score is not None:
+                        fresh += 1
+                        break
+                except Exception as e:
+                    proj.log(f"⚠️ 终审第{no}章评分失败（第{_try+1}次）：{e}")
+                if _try == 0:
+                    time.sleep(1.0)
+            if score is None:
+                proj.log(f"⚠️ 终审第{no}章评分两次均失败，标记 unscored（不参与总评）")
         else:
             reused += 1
         # 记内容 sha：以后同一份正文不再重复花 token 评分
@@ -445,7 +474,7 @@ def _final_word_facts(proj, plan) -> dict:
         if not fp or not os.path.exists(fp):
             continue
         total += 1
-        wc = _cn(writer._clean_chapter_text(_read(fp)))
+        wc = _cn(purity.chapter_body(_read(fp)))
         if wc >= floor:
             ok += 1
         else:
@@ -694,8 +723,8 @@ def _run_other(key: str, med: str, pol: dict) -> dict:
 
     sha = _sha(full)
     old = ((plan.get("meta") or {}).get("final_review") or {})
-    if old.get("ok") and old.get("text_sha") == sha:
-        return old   # 幂等：同一份正文不重复烧 token
+    if old.get("ok") and old.get("score_version") == SCORE_VERSION and old.get("text_sha") == sha:
+        return old   # 幂等：同一份正文 + 同一版评分算法，不重复烧 token
 
     _emit(key, "editor", "成书终审开始", phase="start",
           thinking=f"{medium.label(med)}：①字数 → ②分件评分（<{pol['immediate']} 立即改）→ ③全篇校验")
@@ -719,11 +748,15 @@ def _run_other(key: str, med: str, pol: dict) -> dict:
     whole = _rubric_score(full[:20000], med, cfg, scope="全篇")
     piece_scores = [p["score"] for p in score["pieces"] if isinstance(p.get("score"), (int, float))]
     piece_avg = (sum(piece_scores) / len(piece_scores)) if piece_scores else None
-    book_total = whole.get("total") or 0
-    if piece_avg is not None and len(score["pieces"]) > 1:
+    book_total = whole.get("total")
+    if book_total is None:
+        # 评分不可用（限流/空响应）不等于 0 分：绝不能写进 final_quality 把作品判死。
+        book_total = None
+    elif piece_avg is not None and len(score["pieces"]) > 1:
         book_total = int(round(piece_avg * 0.6 + (whole.get("total") or 0) * 0.4))
     checks = _other_checks(proj, plan, mod, med, full, cfg)
-    structure_ok = book_total >= pol["book_pass"] and not checks.get("blocked")
+    structure_ok = (book_total is not None and book_total >= pol["book_pass"]
+                    and not checks.get("blocked"))
 
     deferred_decision = "none"
     rewritten = []
@@ -743,7 +776,8 @@ def _run_other(key: str, med: str, pol: dict) -> dict:
                 whole = _rubric_score(full[:20000], med, cfg, scope="全篇")
                 checks = _other_checks(proj, plan, mod, med, full, cfg)
                 book_total = whole.get("total") or book_total
-                structure_ok = book_total >= pol["book_pass"] and not checks.get("blocked")
+                structure_ok = (book_total is not None and book_total >= pol["book_pass"]
+                                and not checks.get("blocked"))
 
     # 分件文件改过 → 重新编译交付用的整稿，避免「终审改了正文、定稿文件还是旧的」
     if score.get("rewritten_immediate") or rewritten:
@@ -754,6 +788,7 @@ def _run_other(key: str, med: str, pol: dict) -> dict:
 
     result = {
         "ok": True, "at": _now(), "medium": med, "label": medium.label(med),
+        "score_version": SCORE_VERSION,
         "policy": pol, "words": words, "text_sha": _sha(full),
         "scores": {"pieces": score["pieces"], "piece_avg": piece_avg, "whole": whole,
                    "reused": 0, "fresh": len(score["pieces"])},
@@ -765,7 +800,16 @@ def _run_other(key: str, med: str, pol: dict) -> dict:
     _write_report_other(proj, med, result)
     try:
         p = proj.plan() or {}
-        p.setdefault("meta", {})["final_review"] = result
+        _meta = p.setdefault("meta", {})
+        _meta["final_review"] = result
+        # v5.1：终审总评必须落到唯一质量字段，导出清单/前端/放行判断都读它。
+        if book_total is None:
+            _meta.pop("final_quality", None)
+        else:
+            try:
+                _meta["final_quality"] = float(book_total)
+            except (TypeError, ValueError):
+                pass
         proj.save_plan(p)
     except Exception:
         pass
@@ -800,13 +844,45 @@ def _refresh_compiled(proj, mod, med: str, plan: dict) -> None:
 
 
 def _other_words(proj, pieces, plan, med, full, target, cfg) -> dict:
-    """全篇字数达标核验。target=0 表示未设目标，只统计不判达标。"""
+    """全篇字数达标核验。target=0 表示未设目标，只统计不判达标。
+
+    total 必须是「件数」而不是恒为 1：剧本按场、论文按正文章、儿童按故事单元。
+    否则界面会出现「剧本 3 场，字数达标 0/1」这种自相矛盾的口径。
+    """
     floor = int(target * 0.9) if target else 0
     actual = _cn(full)
+    unit_texts = []
+    if med == "script":
+        body_dir = os.path.join(proj.path, "04-正文")
+        for sc in plan.get("scenes") or []:
+            fp = os.path.join(body_dir, os.path.basename(sc.get("fileName") or ""))
+            if os.path.isfile(fp):
+                unit_texts.append(_read(fp))
+    elif med == "thesis":
+        body_dir = os.path.join(proj.path, "02-正文")
+        if os.path.isdir(body_dir):
+            for fn in sorted(os.listdir(body_dir)):
+                if fn.endswith(".md"):
+                    unit_texts.append(_read(os.path.join(body_dir, fn)))
+    elif med == "children":
+        body_dir = os.path.join(proj.path, "02-故事")
+        if os.path.isdir(body_dir):
+            for fn in sorted(os.listdir(body_dir)):
+                if fn.endswith(".md"):
+                    unit_texts.append(_read(os.path.join(body_dir, fn)))
+    total = len(unit_texts) or 1
+    if target and unit_texts:
+        per_floor = floor / total
+        passed = sum(1 for t in unit_texts if _cn(t) >= per_floor)
+        ok = passed
+    else:
+        passed = 0
+        ok = (1 if (target and actual >= floor) else 0)
     return {
         "target": target, "floor": floor,
-        "total": 1,
-        "ok": (1 if (target and actual >= floor) else 0),
+        "total": total,
+        "ok": ok,
+        "passed": passed,
         "actual": actual,
         "note": ("剧本按每页约 350 字估算总目标" if med == "script" and target else
                  ("未设置目标字数，仅统计实际字数" if not target else "")),
@@ -819,7 +895,9 @@ def _rubric_score(text: str, med: str, cfg: dict, scope: str = "") -> dict:
         return {"scores": {}, "total": None, "weak": [], "fixes": [], "verdict": "无法评分"}
     prompt = (
         f"给下面这份{medium.label(med)}{scope}打分（百分制）。维度与权重：\n"
-        + "\n".join(f"- {n}：{w} 分" for n, w in dims) + "\n\n"
+        + "\n".join(f"- {n}：本维度满分 {w} 分" for n, w in dims) + "\n\n"
+        "评分口径：每个维度只按它自己的满分打分（例如「意象」满分 30，就给 0-30 分，"
+        "不要按 100 分折算，也不要超过本维度满分）。总评由系统把各维度分相加。\n"
         "严格评分：85 以上意味着可以直接交付。只输出 JSON：\n"
         '{"scores":{' + ",".join(f'"{n}":0' for n, _ in dims) + '},'
         '"weak":["最弱维度"],"verdict":"一句话总评","fixes":["最重要的三条修改建议"],'
@@ -834,14 +912,22 @@ def _rubric_score(text: str, med: str, cfg: dict, scope: str = "") -> dict:
     if not isinstance(out, dict):
         return {"scores": {}, "total": None, "weak": [], "fixes": [],
                 "verdict": "评分失败", "logic_issues": []}
+    # 429/空响应时 chat_json 可能返回 {}；旧代码把它当“全 0 分”，
+    # 新闻实测因此被记 0/100 并触发整篇重写。空结果必须表示“未评”，不能表示 0。
+    got = out.get("scores")
+    if not out or not isinstance(got, dict) or not got:
+        return {"scores": {}, "total": None, "weak": [], "fixes": [],
+                "verdict": "评分失败", "logic_issues": []}
     total = 0.0
-    got = out.get("scores") or {}
     for n, w in dims:
         try:
-            total += (float(got.get(n)) / 10.0) * w
+            # 维度分是「本维度满分 w 分」的直接得分，总评 = 各维度得分相加。
+            # 旧算法再 ×(w/10) 会把 85 分放大成 219 分。
+            total += min(max(float(got.get(n)), 0.0), float(w))
         except (TypeError, ValueError):
             pass
     out["total"] = round(total, 1)
+    out["score_version"] = SCORE_VERSION
     out["pass_line"] = medium.pass_line(med)
     return out
 
@@ -998,7 +1084,8 @@ def _write_report_other(proj, med: str, result: dict) -> None:
         + (f"（{w['note']}）" if w.get("note") else ""),
         "",
         "## ② 分件评分与重写",
-        f"- 全篇总评 **{b['total']}** / 100；分件均分 {s.get('piece_avg')}",
+        f"- 全篇总评 **{b['total'] if b.get('total') is not None else '未评（模型未返回评分）'}** / 100；"
+        f"分件均分 {s.get('piece_avg') if s.get('piece_avg') is not None else '未评'}",
         f"- 低于 {result['policy']['immediate']} 分立即重写：见下方分件表",
         f"- {result['policy']['immediate']}–{result['policy']['defer']} 分："
         + ("不改（全篇与校验通过）" if result["deferred_decision"] == "keep"

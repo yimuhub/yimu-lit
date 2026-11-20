@@ -634,6 +634,10 @@ export const api = {
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
   restoreChapter: (key, n, id) => request('/api/chapter/restore', { ...jsonBody({ key, n, id }), timeout: 60000 }),
 
+  /* v5.1：导出前只读交付清单——用户在弹窗里先看到“能不能交、差在哪”，
+     不用点了导出才知道 409。 */
+  deliveryStatus: (key) => request('/api/delivery-status', { query: { key }, timeout: 15000 }),
+
   exportUrl(key, fmt = 'docx', frm = 0, to = 0, force = 0, strictHigh = false, mode = '') {
     /* v4.27.3：frm/to 章节范围（0=不限），侧栏「导出」弹窗选章用
        v4.35.0：force=1 是「未放行也导出」的显式通道，由恢复弹窗触发

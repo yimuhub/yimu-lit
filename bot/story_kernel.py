@@ -19,7 +19,7 @@ import json
 import os
 import re
 
-from .safeio import atomic_write_json, atomic_write_text
+from .safeio import atomic_write_json
 
 FACTS_FILE = "00-作品事实源.json"
 CONTRACT_FILE = "01-故事契约.json"
@@ -110,16 +110,19 @@ def load_contract(proj) -> dict:
 # ---------------------------------------------------------------- 人物档案解析
 
 def _parse_cast(text: str) -> list[dict]:
-    """从 00-人物档案.md 的 `## 人物：X` 小节抽结构化人物卡。"""
+    """从 00-人物档案.md 的 `## 人物：X` / `## 人物档案：X` 小节抽结构化人物卡。"""
     out = []
     if not text:
         return out
-    blocks = re.split(r"(?m)^##\s*人物[：:]\s*", text)
+    blocks = re.split(r"(?m)^##\s*(?:人物档案|人物)[：:]\s*", text)
     for block in blocks[1:]:
         lines = block.splitlines()
         if not lines:
             continue
         name = _text(lines[0], 40)
+        # 常见标题是「沈默（主角）」「林婉（配角·关键线索）」——括号里是角色位，
+        # 不是姓名。旧解析把整串当 cast 名，v5 写前闸门 V5C12 永远判主角不在场。
+        name = re.sub(r"[（(][^）)]*[）)]", "", name).strip()
         if not name or len(name) > 12:
             continue
         fields = {}
@@ -176,7 +179,49 @@ def ensure_project(proj, cfg: dict | None = None, *, name: str = "",
     if not pdir:
         return {}
     if os.path.exists(facts_path(proj)):
-        return load_facts(proj)
+        facts = load_facts(proj)
+        _generic = ("主角", "主人公", "男主", "女主", "")
+        if facts and str(facts.get("protagonist") or "").strip() in _generic:
+            # 旧版解析器不认 `## 人物档案：沈默（主角）`，事实源落成 protagonist="主角"，
+            # 之后每张章卡都被 V5C12 判“主角不在 cast 里”，书永远卡在写前闸门。
+            txt = characters_text or _read(os.path.join(pdir, "00-人物档案.md"))
+            fresh = _parse_cast(txt)
+            if fresh:
+                facts["protagonist"] = fresh[0]["name"]
+                if len(fresh) > 1 and not facts.get("deuteragonist"):
+                    facts["deuteragonist"] = fresh[1]["name"]
+                facts["core_cast"] = fresh
+                facts["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+                atomic_write_json(facts_path(proj), facts)
+        # v5.0 修复：开书阶段人物档案可能被并发规划覆盖，事实源不能只 trust
+        # 第一次 seed。尚未进入写作（status=seed）时，把最新档案里新增的人物
+        # 合进 core_cast，否则写前闸门会拿旧 cast 判“人物档案有、事实源没登记”。
+        if facts and facts.get("status") == "seed":
+            txt = characters_text or _read(os.path.join(pdir, "00-人物档案.md"))
+            fresh = _parse_cast(txt)
+            if fresh:
+                names = {str(c.get("name") or "") for c in (facts.get("core_cast") or [])}
+                changed = False
+                for c in fresh:
+                    if c["name"] not in names:
+                        (facts.setdefault("core_cast", [])).append(c)
+                        names.add(c["name"])
+                        changed = True
+                if changed:
+                    facts["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+                    atomic_write_json(facts_path(proj), facts)
+                    con = load_contract(proj) or {}
+                    arcs = [a for a in (con.get("character_arcs") or []) if isinstance(a, dict)]
+                    anames = {str(a.get("name") or "") for a in arcs}
+                    for c in fresh:
+                        if c["name"] not in anames:
+                            arcs.append({"name": c["name"], "start_lie": c.get("flaw") or "",
+                                         "want": c.get("want") or "", "need": c.get("need") or "",
+                                         "break_point": "", "final_choice": ""})
+                    con["character_arcs"] = arcs[:12]
+                    con["updated_at"] = facts["updated_at"]
+                    atomic_write_json(contract_path(proj), con)
+        return facts
     plan = _plan(proj)
     cfg = cfg if isinstance(cfg, dict) else _cfg(proj)
     title = _text(name or plan.get("novelName") or getattr(proj, "name", "") or "未命名", 80)
@@ -363,7 +408,11 @@ def fact_lint(proj) -> list[dict]:
     cast = facts.get("core_cast") or []
     names = {str(c.get("name") or "").strip() for c in cast if isinstance(c, dict)}
     prof = _read(os.path.join(_pdir(proj), "00-人物档案.md"), 20000)
-    pnames = set(re.findall(r"(?m)^##\s*人物[：:]\s*([^\n]{1,12})", prof))
+    pnames = set()
+    for _nm in re.findall(r"(?m)^##\s*(?:人物档案|人物)[：:]\s*([^\n]{1,40})", prof):
+        _nm = re.sub(r"[（(][^）)]*[）)]", "", _nm).strip()
+        if _nm:
+            pnames.add(_nm)
     missing = sorted(x.strip() for x in pnames if x.strip() and x.strip() not in names)
     if missing:
         out.append(_f("block", "V5F04",
@@ -440,7 +489,7 @@ def card_lint(proj, card: dict, no: int = 0, prev_cards: dict | None = None) -> 
     cast = [str(x).strip() for x in (c.get("cast") or []) if str(x).strip()]
     if len(cast) < 2:
         out.append(_f("block", "V5C11", f"cast 少于 2 人（当前 {len(cast)}）", "", n))
-    if protagonist and cast and protagonist not in cast:
+    if protagonist and protagonist not in ("主角", "主人公", "男主", "女主") and cast and protagonist not in cast:
         out.append(_f("block", "V5C12", f"主角「{protagonist}」不在本章 cast 里", "", n))
     if not c.get("locations"):
         out.append(_f("block", "V5C13", "本章没有地点（locations 为空）", "", n))
@@ -546,8 +595,11 @@ def post_gate(proj, no: int, text: str, card: dict | None = None, cfg: dict | No
     body = text or ""
     target = int(facts.get("target_words_per_chapter") or 3000)
     w = _cn(body)
-    if w and (w < int(target * 0.7) or w > int(target * 1.4)):
-        blocks.append(_f("block", "V5Q01", f"本章 {w} 汉字，目标 {target}（允许 70%–140%）", "", no))
+    if w and w < int(target * 0.7):
+        blocks.append(_f("block", "V5Q01", f"本章 {w} 汉字，低于目标 {target} 的 70%", "", no))
+    elif w and w > int(target * 1.4):
+        # 写长不是质量事故；只需提醒（避免 3083 字被 3080 字上限卡死）。
+        warns.append(_f("warn", "V5Q01W", f"本章 {w} 汉字，超过目标 {target} 的 140%，建议拆场/压缩", "", no))
     p = str(facts.get("protagonist") or "").strip()
     if p and p not in body:
         blocks.append(_f("block", "V5Q02", f"主角「{p}」在本章 0 次出现", "", no))

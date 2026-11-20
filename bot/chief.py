@@ -224,7 +224,7 @@ scope 语义：
   "understanding": "一句话复述你理解到的真实诉求（含隐含条件和指代）",
   "reply": "直接对作者说的话：自然、具体、像总编辑。不要复述 JSON，不要列第1步/第2步，不要说「我将调用…」",
   "actions": [
-    {{"action": "动作名", "params": {{}}, "brief": {{}}}} 
+    {{"action": "动作名", "params": {{}}, "brief": {{}}}}
   ],
   "confidence": 0.0-1.0
 }}

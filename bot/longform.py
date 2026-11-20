@@ -73,6 +73,20 @@ def _int(v, default: int = 0) -> int:
             return default
 
 
+SCENE_TYPES = ("谈判", "核验", "动作", "揭示", "关系", "余波", "调查", "舆论", "家庭", "独处")
+
+
+def _one_scene_type(v) -> str:
+    """模型经常把枚举提示原样抄成「谈判|调查」，只保留一个合法类型。"""
+    s = _text(v, 60).replace("｜", "|").replace("/", "|")
+    parts = [x.strip() for x in re.split(r"\||、|，|,|；|;", s) if x.strip()]
+    for x in parts:
+        for t in SCENE_TYPES:
+            if t in x:
+                return t
+    return ""
+
+
 def _text(v, cap: int = 600) -> str:
     if v is None:
         return ""
@@ -280,7 +294,7 @@ def _norm_card(raw, n: int = 0) -> dict:
         "scenes": _norm_scenes(f.get("scenes")),
         "engine": _norm_engine(f.get("engine")),
         "elements": _str_list(f.get("elements"), 40, 8),
-        "scene_type": _text(f.get("scene_type"), 20),
+        "scene_type": _one_scene_type(f.get("scene_type")),
         "story_time": _text(f.get("story_time") or f.get("time"), 80),
         "protagonist_action": _text(f.get("protagonist_action"), 300),
         "relationship_delta": _text(f.get("relationship_delta"), 300),
@@ -896,7 +910,7 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             f"本次原因：{reason}\n"
             '只输出 JSON：{"cards":[{"n":章号,"title":"","goal":"","conflict":"","turn":"",'
             '"payoff":"","cliffhanger":"","foreshadow_setup":[],"foreshadow_payoff":[],'
-            '"cast":[],"locations":[],"scene_type":"谈判|核验|动作|揭示|关系|余波|调查|舆论|家庭|独处",'
+            '"cast":[],"locations":[],"scene_type":"谈判",'
             '"story_time":"第X日 上午/下午/晚","protagonist_action":"主角本章主动做了什么",'
             '"relationship_delta":"谁和谁的关系发生了什么变化",'
             '"threads_advance":[{"thread":"主线/副线","change":"具体变化","irreversible":true}],'
@@ -913,7 +927,7 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             "所有字段都要具体，不许留空、不许写「待定」。只规划给定章号。"
         )
         out = _llm_json("你是长篇网文的分卷细纲师，只输出严格 JSON。", user, cfg,
-                        "longform_window", 4000)
+                        "longform_window", min(16000, max(4000, 1800 * (e - s + 1) + 1200)))
         for item in _list(out.get("cards")):
             if not isinstance(item, dict):
                 continue
@@ -1020,8 +1034,20 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
     plan = _read_plan(proj)
     cards = _load_cards(proj)
     card = cards.get(n) or _empty_card(n)
+    _prev_types = [str((cards.get(x) or {}).get("scene_type") or "").strip()
+                   for x in (n - 2, n - 1) if x >= 1]
     if not card_is_placeholder(card):
-        return card
+        # v5 新项目：旧章卡可能已有 goal/conflict，却缺场景类型/主角行动/线程推进；
+        # 这类卡不能直接返回，必须继续走一次 on-demand 细纲补齐硬字段。
+        try:
+            from . import story_kernel as _v5
+            _need_v5 = _v5.enabled(proj) and [
+                x for x in _v5.card_lint(proj, card, n, cards) if x.get("level") == "block"
+            ]
+        except Exception:
+            _need_v5 = False
+        if not _need_v5:
+            return card
     st = state_mod.load(_pdir(proj))
     recent = _recent_summaries(proj, 4, before=n)
     v, a = _find_arc(plan, n)
@@ -1054,13 +1080,15 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
         f"大纲里本章原意：{_text(row.get('goal'), 300) or '（无）'}\n"
         f"最近四章摘要：\n" + ("\n".join(f"- 第{x}章：{t[:150]}" for x, t in recent) or "- （无）") + "\n"
         f"待兑现伏笔：\n" + ("\n".join(f"- {x}" for x in due_lines) or "- 无") + "\n"
+        f"最近两章场景类型：{'、'.join([x for x in _prev_types if x]) or '无'}；"
+        "本章 scene_type 必须与它们不同，避免连续三章同一场景。\n"
         f"可用的具名对手（冲突优先从他们中间选）：\n" + ("\n".join(f"- {x}" for x in opps) or "- 无（请补一个具名对手，不要写抽象环境压力）") + "\n"
         f"尚未兑现的书名/主题承诺：\n" + ("\n".join(f"- {x}" for x in promises) or "- 无") + "\n"
         + (f"可选故事元件（只挑 1–3 个真正服务本章的，不要全用）：\n{element_menu}\n" if element_menu else "")
         + '只输出 JSON：{"title":"","goal":"本章主角要达成什么（具体、可验收）",'
         '"conflict":"谁/什么在阻止他，代价是什么（必须点名具体对手）","turn":"本章转折",'
         '"payoff":"兑现哪条旧伏笔","cliffhanger":"章末钩子",'
-        '"scene_type":"谈判|核验|动作|揭示|关系|余波|调查|舆论|家庭|独处",'
+        '"scene_type":"谈判",'
         '"story_time":"第X日 上午/下午/晚","cast":["具体人名"],"locations":["具体地点"],'
         '"protagonist_action":"主角本章主动做了什么","relationship_delta":"谁和谁的关系变化",'
         '"threads_advance":[{"thread":"主线/副线","change":"具体变化","irreversible":true}],'
@@ -1072,7 +1100,8 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
         "要求：必须紧扣卷/弧目标与本书题材，**不得引入世界观之外的新元素**"
         "（例如古代权谋不得出现高维空间/代码/科幻设定）；goal 与 conflict 都必须写满，"
         "scenes 给 3–5 个，每个都必须有 choice 和 cost；cast 至少 2 个具体人名，"
-        "locations 至少 1 个具体地点；protagonist_action 必须写；threads_advance 至少 1 条，"
+        "locations 至少 1 个具体地点；scene_type 只能填 谈判、核验、动作、揭示、关系、余波、调查、舆论、家庭、独处 中的一个，"
+        "不要用竖线分隔多个；protagonist_action 必须写；threads_advance 至少 1 条，"
         "且必须有一条 irreversible=true；不许写「承接本弧」这类套话，不许留空或写「待定」。"
     )
     out = _llm_json("你是长篇网文的章卡细纲师，只输出严格 JSON。", user, cfg,
@@ -1093,9 +1122,19 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
     if elems:
         card["elements"] = elems
     for key in ("scene_type", "story_time", "protagonist_action", "relationship_delta"):
-        val = _text(out.get(key), 300)
+        val = _one_scene_type(out.get(key)) if key == "scene_type" else _text(out.get(key), 300)
         if val:
             card[key] = val
+    if card.get("scene_type") and _prev_types and all(x == card["scene_type"] for x in _prev_types if x):
+        # 确定性兜底：模型仍连续三章同类型时，按本章目标换一个合适类型，
+        # 避免 preflight 直接把整本书卡死；内容仍由章卡 scenes 约束。
+        goal = str(card.get("goal") or "")
+        if any(k in goal for k in ("协议", "证据", "档案", "账本", "监控", "原件", "账目")):
+            card["scene_type"] = "调查"
+        elif any(k in goal for k in ("父亲", "母亲", "妻子", "丈夫", "感情", "关系")):
+            card["scene_type"] = "关系"
+        else:
+            card["scene_type"] = "余波"
     for key, cap in (("cast", 16), ("locations", 12), ("beats", 20)):
         val = _str_list(out.get(key), 300 if key == "beats" else 80, cap)
         if val:

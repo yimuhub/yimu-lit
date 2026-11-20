@@ -585,3 +585,40 @@ def is_clean(text: str) -> bool:
     """自检：给定文本是否已经不含任何非正文小节（供测试与诊断用）。"""
     _head, secs = _split_sections(strip_model_noise(text))
     return all(s[0] in _KIND_CONTENT or s[0] == "unknown" for s in secs)
+
+
+# ---------------------------------------------------------------- 交付物洁净化（v5.2）
+# 内部工作稿允许用 [待补：…] / [占位：…] 标记事实缺口，但**对外交付文件里绝不能出现**。
+# 这些标记不是内容，是生产状态；交付时应移除并把缺口另存为《待核实清单》。
+_PLACEHOLDER_RE = re.compile(
+    r"[\[【]\s*(?:待补|待核实|待确认|待查|占位|TODO|TBD|PLACEHOLDER)"
+    r"[^\]】\n]{0,160}[\]】]", re.I)
+_PREACHY_OPEN_RE = re.compile(
+    r"^(?:好的[，,]\s*)?(?:以下|下面|这里)(?:是|为|为您|为你)[^\n]{0,60}(?:：|:)$")
+
+
+def extract_placeholders(text: str) -> tuple[str, list[str]]:
+    """从交付文本中移除 [待补/占位/TODO…] 标记，返回（净化文本, 缺口清单）。
+
+    只删标记本身，不删句子——「桌上放着一只表。[待补：表盘细节]」会变成
+    「桌上放着一只表。」，读者不会看到生产状态。缺口另存，供作者补充。
+    """
+    raw = text or ""
+    gaps = [m.group(0).strip() for m in _PLACEHOLDER_RE.finditer(raw)]
+    clean = _PLACEHOLDER_RE.sub("", raw)
+    # 行首的客套导语（“这里为您将……：”）不属于正文，只在它是独立首行时去掉。
+    lines = clean.splitlines()
+    if lines and _PREACHY_OPEN_RE.match(lines[0].strip()):
+        lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    clean = "\n".join(lines)
+    # 删除标记后可能留下「，，」或空括号；做最小整理，不改变正文语义。
+    clean = re.sub(r"[ \t]+\n", "\n", clean)
+    clean = re.sub(r"([，,、；;])\s*([，,、；;])", r"\1", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, gaps
+
+
+def strip_placeholders(text: str) -> str:
+    return extract_placeholders(text)[0]

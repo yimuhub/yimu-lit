@@ -1559,12 +1559,15 @@ export function openWizard(ctx, preset = {}, { onClosed } = {}) {
       if (ctx.addPendingWork) ctx.addPendingWork({ key, name: res.name, medium: med });
       if (ctx.refreshLibrary) await ctx.refreshLibrary().catch(() => {});
       patchUi({ medium: model.medium, rightTab: 'work' });
-      // v3.1.0：把所选配置合成首条用户消息，进入对话后由 session 自动发出
-      patchUi({ pendingFirstMessage: { key, text: buildFirstMessage(payload, Boolean(res.awaiting_title)) } });
+      const isExpress = Boolean(res && res.express) || payload.express === 'express' || payload.mode === 'express';
+      // v5.2：极速模式是一件启动，不要再发一条「开新书《》」的对话消息去等书名。
+      if (!isExpress) {
+        patchUi({ pendingFirstMessage: { key, text: buildFirstMessage(payload, Boolean(res.awaiting_title)) } });
+      }
       modal.close();
       ctx.navigate(`/work/${encodeURIComponent(key)}`);
       if (med === 'novel') {
-        if (!failures.length) toast('作品已创建，正在生成规划与书名', { tone: 'success' });
+        if (!failures.length) toast(isExpress ? '极速模式已创建，自动定名并直接开写' : '作品已创建，正在生成规划与书名', { tone: 'success' });
         if (res.awaiting_title) {
           toast('书名候选生成中，可在作品页继续处理', { duration: 3000 });
         }

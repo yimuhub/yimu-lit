@@ -137,7 +137,7 @@ def gen_characters(cfg):
     return llm.chat([{"role": "system", "content": sys_p},
                      {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
 
-def gen_outline(cfg, book_key=""):
+def gen_outline(cfg, book_key="", characters=""):
     # v4.36.0：出版型与连载型的结构模板不同，不能共用一套「每章都要钩子」的提示。
     # 连载读者按章投票，出版读者整本买断——前者要钩子密度，后者要结构闭合。
     _is_book, _struct, _disc = False, "", ""
@@ -180,6 +180,11 @@ def gen_outline(cfg, book_key=""):
               f"【情节结构方法摘录】\n{skill.guide('plot-structures')[:2800]}\n"
               f"【故事引擎与承诺契约】\n{skill.guide('story-engine')[:1400]}\n"
               f"【平台适配要点】\n{skill.guide('platform-fit')[:900]}")
+    if characters:
+        # v5.2：人物档案先生成，大纲不得再另起一套姓名/身份。实测同一本书
+        # 人物档案写「沈默」、大纲与章卡写「林远」，v5 写前闸门直接判主角不在场。
+        user_p += ("\n【已定人物档案（姓名、身份、关系必须与此一致；不得另起名字）】\n"
+                   + str(characters)[:4000])
     planner_skills = agent_skills_block("planner", cfg, "P0")
     if planner_skills:
         sys_p += "\n\n" + planner_skills

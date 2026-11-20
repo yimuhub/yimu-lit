@@ -8,6 +8,7 @@ import glob
 import html
 import json
 import io
+import math
 import os
 import re
 import uuid
@@ -72,6 +73,34 @@ def script_scenes(proj) -> list[dict]:
 
 # ---------------------------------------------------------------- 交付闸门
 
+
+
+def script_episodes(proj) -> list[dict]:
+    """把剧本场次按交付单元分组：剧集按集，电影/短片/舞台按一整部。
+
+    旧导出把「场景」当成「集」送进交付闸门，导致每一场都被判 S04（场数不足 2），
+    电影永远无法正常导出。这里按 plan.form 明确分组，场景不再冒充集。
+    """
+    plan = proj.plan() or {}
+    scenes = script_scenes(proj)
+    if not scenes:
+        return []
+    form = str(plan.get("form") or "")
+    if form not in ("series", "short_drama", "comic_drama"):
+        return [{"n": 1, "title": plan.get("scriptName") or proj.name,
+                 "text": "\n\n".join(str(x.get("text") or "") for x in scenes)}]
+    try:
+        eps = max(1, int(plan.get("episodes") or 1))
+    except (TypeError, ValueError):
+        eps = 1
+    per = max(1, math.ceil(len(scenes) / eps))
+    out = []
+    for i in range(0, len(scenes), per):
+        group = scenes[i:i + per]
+        out.append({"n": len(out) + 1, "title": f"第{len(out) + 1}集",
+                    "text": "\n\n".join(str(x.get("text") or "") for x in group)})
+    return out
+
 def delivery_report(proj) -> dict:
     """统一交付标准：按作品实际文体产出《交付就绪报告》（只读）。
 
@@ -81,11 +110,15 @@ def delivery_report(proj) -> dict:
     if is_script(proj):
         from . import script_writer
         sproj = script_writer.ScriptProject(proj.path, proj.name)
-        rows = [{"n": sc["no"], "title": sc["heading"], "text": sc["text"]}
-                for sc in script_scenes(sproj)]
+        rows = [{"n": e["n"], "title": e["title"], "text": e["text"]}
+                for e in script_episodes(sproj)]
+        _prof = plan.get("deliveryProfile") or None
+        if str(plan.get("form") or "") not in script_writer.SERIES_FORMS:
+            _prof = "universal"
         return delivery_gate.check_delivery(rows, title=plan.get("scriptName") or proj.name,
                                             kind="script",
-                                            profile=plan.get("deliveryProfile") or None)
+                                            profile=_prof,
+                                            script_form=str(plan.get("form") or ""))
     _plan_files = [f for f in glob.glob(os.path.join(proj.path, "*计划.json"))
                    if os.path.basename(f) != "02-写作计划.json"]
     kind = "mini" if _plan_files and not (plan.get("chapters") or []) else "novel"

@@ -147,7 +147,11 @@ function openExportDialog(item) {
     h('div', { class: 'hint-text', style: { marginTop: '6px' },
       text: 'v5 新项目默认按投稿标准导出：事实源/章卡/结构/终局证据有阻断项时拒绝导出。' }));
 
+  const statusBox = h('div', { class: 'hint-text', style: { marginTop: '10px', lineHeight: '1.7' },
+    text: '正在读取交付状态…' });
   const body = h('div', { class: 'exp-form' },
+    h('div', { class: 'evo-sub', text: '交付状态' }),
+    statusBox,
     h('div', { class: 'evo-sub', text: '范围' }),
     rangeSeg,
     rangeBox,
@@ -163,6 +167,21 @@ function openExportDialog(item) {
     rangeBox.style.display = 'none';
   }
   const modal = openModal({ title: `导出《${item.name}》`, body, size: 'sm' });
+  /* v5.1：交付状态前置。失败只提示“状态暂不可用”，不阻断导出。 */
+  if (isNovel) {
+    Promise.resolve()
+      .then(() => api.deliveryStatus(item.key))
+      .then((r) => {
+        statusBox.textContent = '';
+        statusBox.append(h('div', { text: `结论：${r.verdict || '未判定'} · ${r.counts?.block || 0} 项阻断 / ${r.counts?.warn || 0} 项告警` }));
+        const bad = (r.checklist || []).filter((x) => !x.ok);
+        for (const row of bad.slice(0, 4)) {
+          statusBox.append(h('div', { text: `· ${row.item}：${row.value}（${row.detail}）` }));
+        }
+        if (!bad.length) statusBox.append(h('div', { text: '· 全部交付项通过。' }));
+      })
+      .catch(() => { statusBox.textContent = '交付状态暂不可用，仍可直接导出（后端会再次校验）。'; });
+  }
   body.addEventListener('click', (e) => {
     const seg = e.target.closest('.seg-btn');
     if (seg) {

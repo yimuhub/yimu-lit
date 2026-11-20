@@ -22,6 +22,7 @@ import re
 import threading
 
 from . import llm, skillkit, express
+from . import purity
 from . import slop_checker
 from . import writer as novel_writer
 from bot.safeio import atomic_write_json, atomic_write_text, safe_join
@@ -312,7 +313,8 @@ def gen_draft(cfg: dict, brief: str, material: str, operation: str,
         f"2. 具体优先：能用具体的东西就不用抽象词。\n"
         f"3. 不写 AI 腔套话（至关重要/不可或缺/不仅……更是/让我们一起）与元话语。\n"
         f"4. 每段一件事；段首句是这一段的主张；不要用总结句收尾。\n"
-        f"5. 事实按素材里的用；缺的地方保留 `[待补：…]` 标记，不要用模糊表述填空。\n"
+        f"5. 事实按素材里的用；素材没给的具体事实不要虚构，用概括带过；"
+        f"**正文中不要写 `[待补：…]` 之类的生产标记**，缺口会另存到《待核实清单》。\n"
         f"6. 结尾落在一个具体的画面或结论上，不落在「总而言之」。\n\n"
         f"Brief：\n{brief[:2000]}\n\n"
         f"素材：\n{material[:1800]}"
@@ -475,11 +477,18 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
     proj.save_plan(plan)
 
     proj.log("📋 阶段 F：定稿…")
-    _write(os.path.join(pdir, F_FINAL), f"# {name}\n\n" + polished.strip() + "\n")
+    # v5.2：交付稿移除 [待补] 标记；缺口另存清单，不把生产状态交给读者。
+    if not polished.strip() or len(re.findall(r"[\u4e00-\u9fff]", polished)) < 80:
+        raise ValueError("散文正文为空或过短，停止定稿")
+    clean, gaps = purity.extract_placeholders(polished.strip())
+    if gaps:
+        _write(os.path.join(pdir, "06-待核实清单.md"),
+               "# 待核实清单\n\n" + "\n".join(f"- {g}" for g in gaps) + "\n")
+    _write(os.path.join(pdir, F_FINAL), f"# {name}\n\n" + clean + "\n")
     plan["status"] = "completed"
     plan["meta"]["stage"] = "F"
     plan["meta"]["stageIdx"] = 5
-    plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", polished))
+    plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", clean))
     proj.save_plan(plan)
     proj.log("✅ 定稿完成")
     # v4.38.0：定稿后自动成书终审（字数 → 评分/重写 → 全篇校验）
@@ -589,11 +598,18 @@ def resume_project(key: str) -> ProseProject | None:
                                 "summary": slop_rep.get("summary", "")}
 
     proj.log("📋 阶段 F：定稿…")
-    _write(os.path.join(pdir, F_FINAL), f"# {name}\n\n" + polished.strip() + "\n")
+    # v5.2：交付稿移除 [待补] 标记；缺口另存清单，不把生产状态交给读者。
+    if not polished.strip() or len(re.findall(r"[\u4e00-\u9fff]", polished)) < 80:
+        raise ValueError("散文正文为空或过短，停止定稿")
+    clean, gaps = purity.extract_placeholders(polished.strip())
+    if gaps:
+        _write(os.path.join(pdir, "06-待核实清单.md"),
+               "# 待核实清单\n\n" + "\n".join(f"- {g}" for g in gaps) + "\n")
+    _write(os.path.join(pdir, F_FINAL), f"# {name}\n\n" + clean + "\n")
     plan["status"] = "completed"
     plan["meta"]["stage"] = "F"
     plan["meta"]["stageIdx"] = 5
-    plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", polished))
+    plan["meta"]["words"] = len(re.findall(r"[\u4e00-\u9fff]", clean))
     proj.save_plan(plan)
     proj.log("✅ 定稿完成")
     # v4.38.0：定稿后自动成书终审（字数 → 评分/重写 → 全篇校验）

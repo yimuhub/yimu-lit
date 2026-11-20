@@ -101,10 +101,10 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
 
     stages = [
         ("K1", "需求", lambda: _stage_brief(proj, pdir, cfg, plan, ktype, platform, tone)),
-        ("K2", "钩子库", lambda: _stage_hooks(proj, pdir, cfg, plan)),
+        ("K2", "钩子库", lambda: _stage_hooks(proj, pdir, cfg, plan), True),
         ("K3", "正文", lambda: _stage_body(proj, pdir, cfg, plan, ktype, platform, tone)),
-        ("K4", "标题标签", lambda: _stage_titles(proj, pdir, cfg, plan, platform)),
-        ("K5", "适配", lambda: _stage_adapt(proj, pdir, cfg, plan, platform)),
+        ("K4", "标题标签", lambda: _stage_titles(proj, pdir, cfg, plan, platform), True),
+        ("K5", "适配", lambda: _stage_adapt(proj, pdir, cfg, plan, platform), True),
     ]
     run_pipeline(proj, cfg, stages, plan=plan, done_msg="✅ 文案定稿完成")
 
@@ -114,7 +114,7 @@ def _stage_brief(proj, pdir, cfg, plan, ktype, platform, tone):
                       f"# 需求单\n\n类型：{ktype}\n平台：{platform}\n语气：{tone}\n"
                       f"主题/产品：{cfg.get('title') or ''}\n"
                       f"卖点与受众：{cfg.get('idea') or ''}\n"
-                      + (f"口播时长：{cfg.get('duration_secs') or 60} 秒\n" if ktype == "voice" else ""))
+                      + (f"口播时长：{cfg.get('duration_secs') or cfg.get('duration') or 60} 秒\n" if ktype == "口播稿" else ""))
 
 
 def _stage_hooks(proj, pdir, cfg, plan):
@@ -132,34 +132,103 @@ def _stage_hooks(proj, pdir, cfg, plan):
 def _stage_body(proj, pdir, cfg, plan, ktype, platform, tone):
     hooks_fp = os.path.join(pdir, F_HOOKS)
     hooks = _read(hooks_fp)[:1500] if os.path.exists(hooks_fp) else ""
-    duration = cfg.get("duration_secs") or 60
+    duration = cfg.get("duration_secs") or cfg.get("duration") or 60
     prompt = f"写一篇{ktype}。平台：{platform}。语气：{tone}。\n"
-    if ktype == "voice":
-        prompt += (f"口播时长约 {duration} 秒（约 {duration * 4} 字）。\n"
+    if ktype == "口播稿":
+        prompt += (f"口播时长约 {duration} 秒。\n"
                    "格式：用 [停顿] [重音] [语速加快] 等标注节奏；分段对应画面切换。"
                    "开头 3 秒必须有钩子；结尾有 CTA（关注/点击/购买）。")
-    elif ktype == "planting":
+    elif ktype == "种草笔记":
         prompt += "小红书风格：emoji 适量、分段短、有「亲测」「真实感受」的口吻、结尾带标签。"
-    elif ktype == "marketing":
+    elif ktype == "营销长文":
         prompt += "营销长文：AIDA 或 PAS 框架；有数据/案例支撑；段落清晰。"
     else:
         prompt += "宣传文案：正式但有温度；突出核心卖点与差异化。"
     prompt += f"\n主题：{cfg.get('title')}\n卖点与受众：{cfg.get('idea')}\n"
+    prompt += ("\n合规红线：遵守广告法，不使用“0成本/专治/治疗/100%有效”等绝对化或医疗功效表述；"
+               "不得编造价格、销量、检测报告；价格与规格必须前后一致，未提供时不要写。")
     if hooks:
         prompt += f"\n钩子参考（选一个最好的用，不要全用）：\n{hooks}\n"
-    # v4.16.3：字数守护——口播按时长（约 4 字/秒）给下限；其他类型默认 400 字
+    # v4.16.3：字数守护——口播按时长（约 4 字/秒）给区间；其他类型默认 400 字
     from bot import wordguard as _wg
-    _dur = int(cfg.get("duration_secs") or 0)
-    _min_words = max(300, _dur * 4) if _dur else 400
-    prompt += f"\n**硬性字数下限：不少于 {_wg.target_of(_min_words)} 字**（交稿前自查）。"
+    _dur = int(cfg.get("duration_secs") or cfg.get("duration") or 0)
+    # v5.2：30 秒口播约 120 字；旧逻辑硬性 300 字会把 30 秒稿写成 75 秒。
+    if ktype == "口播稿" and _dur:
+        _min_words = max(100, _dur * 4)
+        _max_words = max(_min_words + 20, _dur * 5)
+        prompt += (f"\n**字数区间：{_min_words}-{_max_words} 字（硬性区间，少于下限或多于上限都不合格）**"
+                   "（交稿前自查；不要解释规则，直接写文案）。")
+    else:
+        _min_words = 400
+        _max_words = 0
+        prompt += f"\n**硬性字数下限：不少于 {_wg.target_of(_min_words)} 字**（交稿前自查）。"
     body = llm.chat([{"role": "user", "content": prompt}], cfg=cfg, stage="writing", max_tokens=3000)
-    if _wg.cn_len(body) < _min_words:
+    # v5.2：模型被矛盾规则绕晕时会输出「字数冲突说明」，必须重生成而不是当正文。
+    def _meta_reply(t: str) -> bool:
+        return bool(re.search(r"逻辑矛盾|字数上限冲突|无法直接满足|作为(?:一个)?AI|我不能同时满足", (t or "")[:300]))
+    if _meta_reply(body):
+        body = llm.chat([{"role": "user", "content":
+            "直接输出成品文案正文，不要解释任何规则、字数或冲突。\n\n" + prompt}],
+            cfg=cfg, stage="writing", max_tokens=3000) or ""
+    # v5.2：免费模型经常无视字数下限；最多补写两次，避免 30 秒口播只剩 70 字。
+    for _ in range(2):
+        if _wg.cn_len(body) >= _min_words:
+            break
+        _need = (_max_words - _wg.cn_len(body) + 20) if (_max_words and ktype == "口播稿") \
+            else max(250, _min_words - _wg.cn_len(body) + 120)
         _cont = _wg.clean_continuation(llm.chat([{"role": "user", "content":
-            _wg.continue_prompt((body or "")[-500:], max(250, _min_words - _wg.cn_len(body) + 120))}],
+            _wg.continue_prompt((body or "")[-500:], max(60, _need))}],
             cfg=cfg, stage="writing", max_tokens=2000) or "")
-        if _wg.cn_len(_cont) >= 60:
-            body = (body or "").rstrip() + "\n\n" + _cont
-    atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
+        if _wg.cn_len(_cont) < 30:
+            break
+        body = (body or "").rstrip() + "\n\n" + _cont
+    if _meta_reply(body):
+        raise ValueError("文案生成失败：模型反复解释字数规则，未输出正文")
+    body = (body or "").strip()
+    # v5.2：模型偶尔把内部「钩子选择」说明写进正文，发布稿必须清掉。
+    body = re.sub(r"\s*（钩子(?:选择)?[：:][^）]*）", "", body).strip()
+    if not body:
+        raise ValueError("文案正文为空，停止后续阶段")
+    # v5.2：30 秒口播写 300+ 字会变成 80 秒视频；超上限先要求模型压缩，失败再按句截断。
+    if ktype == "口播稿" and _dur:
+        if _wg.cn_len(body) > _max_words:
+            compressed = ""
+            try:
+                compressed = llm.chat([{"role": "user", "content":
+                    f"把下面这条口播压缩到不超过 {_max_words} 字（硬性上限），保留开头钩子和结尾 CTA，"
+                    f"只输出正文，不要解释：\n\n{body}"}],
+                    cfg=cfg, stage="writing", max_tokens=1200) or ""
+            except Exception as e:
+                proj.log(f"⚠️ 口播压缩失败（{e}），按句截断")
+            if compressed and _min_words <= _wg.cn_len(compressed) <= _max_words + 10:
+                body = compressed.strip()
+            else:
+                out = ""
+                for sent in re.split(r"(?<=[。！？!?])", body):
+                    if _wg.cn_len(out + sent) > _max_words:
+                        break
+                    out += sent
+                body = (out or body[:_max_words]).strip()
+    # v5.2：补写可能把新段落接在 CTA 后面，发布稿要保证行动指令落在最后。
+    body = body.replace("**", "")
+    body = re.sub(r"(?m)^\s*【画面[^】]*】\s*\n?", "", body).strip()
+    _cta = re.search(r"[^。！？!?]*?(?:点击|小黄车|下单|购买|关注|链接|购物车|橱窗|主页)[^。！？!?]*[。！？!?]", body)
+    if _cta and _cta.end() < len(body.rstrip()) - 16:
+        _cta_text = _cta.group(0).strip()
+        body = (body[:_cta.start()] + body[_cta.end():]).strip()
+        body = body.rstrip() + "\n\n" + _cta_text
+    elif not _cta:
+        _cta_text = "想要同款或了解更多，点击下方链接；关注我，下期继续分享。"
+        _budget = max(80, (_max_words if ktype == "口播稿" and _dur else 400) - _wg.cn_len(_cta_text) - 2)
+        if _wg.cn_len(body) > _budget:
+            _out = ""
+            for _sent in re.split(r"(?<=[。！？!?])", body):
+                if _wg.cn_len(_out + _sent) > _budget:
+                    break
+                _out += _sent
+            body = (_out or body[:_budget]).strip()
+        body = body.rstrip() + "\n\n" + _cta_text
+    atomic_write_text(os.path.join(pdir, F_FINAL), body)
     meta = plan.setdefault("meta", {})
     meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", body or ""))
     proj.save_plan(plan)

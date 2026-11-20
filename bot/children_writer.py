@@ -12,6 +12,7 @@ import re
 from bot.safeio import atomic_write_text, safe_join
 
 from . import llm
+from . import purity
 from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project, run_pipeline
 
 F_PLAN = "儿童文学计划.json"
@@ -104,8 +105,8 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     stages = [
         ("C1", "选题分级", lambda: _stage_outline(proj, pdir, cfg, plan, age, ctype)),
         ("C2", "故事创作", lambda: _stage_write(proj, pdir, cfg, plan, age, ctype)),
-        ("C3", "互动设计", lambda: _stage_interactive(proj, pdir, cfg, plan, age)),
-        ("C4", "插图提示词", lambda: _stage_illustration(proj, pdir, cfg, plan)),
+        ("C3", "互动设计", lambda: _stage_interactive(proj, pdir, cfg, plan, age), True),
+        ("C4", "插图提示词", lambda: _stage_illustration(proj, pdir, cfg, plan), True),
         ("C5", "定稿", lambda: _stage_final(proj, pdir, cfg, plan)),
     ]
     run_pipeline(proj, cfg, stages, plan=plan, done_msg="✅ 儿童故事定稿完成")
@@ -113,17 +114,27 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
 
 def _stage_outline(proj, pdir, cfg, plan, age, ctype):
     guide = AGE_GUIDES.get(age, AGE_GUIDES["7-9"])
-    out = llm.chat_json([{"role": "user", "content":
-        f"为 {age} 岁儿童设计一个{ctype}的故事提纲。主题：{cfg.get('idea') or cfg.get('title') or '自行设计'}。\n"
-        f"语言分级要求：{guide}\n"
-        "价值观红线：" + (cfg.get("values_note") or "正面引导，无说教，无暴力。") + "\n"
-        '输出 JSON：{"title":"故事标题","sections":["第1个故事单元标题",...],"outline":"每个单元 2-3 句概要"}\n'
-        "3-6 岁出 2-3 个单元（每个 300-500 字）；7-9 岁出 3-5 个单元（每个 500-800 字）；10-12 岁出 4-6 个单元。只输出 JSON。"}],
-        cfg=cfg, stage="planning")
+    try:
+        out = llm.chat_json([{"role": "user", "content":
+            f"为 {age} 岁儿童设计一个{ctype}的故事提纲。主题：{cfg.get('idea') or cfg.get('title') or '自行设计'}。\n"
+            f"语言分级要求：{guide}\n"
+            "价值观红线：" + (cfg.get("values_note") or "正面引导，无说教，无暴力。") + "\n"
+            '输出 JSON：{"title":"故事标题","sections":["第1个故事单元标题",...],"outline":"每个单元 2-3 句概要"}\n'
+            "3-6 岁出 2-3 个单元（每个 300-500 字）；7-9 岁出 3-5 个单元（每个 500-800 字）；10-12 岁出 4-6 个单元。只输出 JSON。"}],
+            cfg=cfg, stage="planning")
+    except Exception as e:
+        proj.log(f"⚠️ C1 提纲生成失败，改用单单元兜底：{e}")
+        out = {}
     if not isinstance(out, dict) or not out.get("sections"):
-        raise ValueError("提纲生成失败")
+        # 429/网络/JSON 异常时不能让“提纲为空”一路带病走到定稿。
+        # 用用户输入直接起一个单单元故事，保住核心交付。
+        out = {"title": plan.get("bookName") or cfg.get("title") or "未命名故事",
+               "sections": ["完整故事"],
+               "outline": str(cfg.get("idea") or cfg.get("title") or "一个温暖的小故事")}
     plan["outline"] = out
-    plan["bookName"] = out.get("title") or plan["bookName"]
+    title = str(out.get("title") or "").strip()
+    if title:
+        plan["bookName"] = title
     plan["totalChapters"] = len(out["sections"])
     plan["meta"]["stage"] = "C2"
     proj.save_plan(plan)
@@ -172,6 +183,11 @@ def _stage_write(proj, pdir, cfg, plan, age, ctype):
     meta["words"] = sum(len(re.findall(r"[\u4e00-\u9fff]", t)) for t in all_text)
     plan["meta"] = meta
     proj.save_plan(plan)
+    # C2 是核心交付：一个没有正文的「儿童故事」绝不能继续走到互动/定稿。
+    # 注意：儿童故事多为短句分行的韵文，不能用「连续 40 个汉字」判断；
+    # 实测 2.4KB 的完整故事因换行/标点被判为空，整条管线被误停。
+    if not any(len(re.findall(r"[\u4e00-\u9fff]", t or "")) >= 40 for t in all_text):
+        raise ValueError("故事正文为空或不足 40 字，停止后续阶段")
 
 
 def _stage_interactive(proj, pdir, cfg, plan, age):
@@ -179,14 +195,27 @@ def _stage_interactive(proj, pdir, cfg, plan, age):
         return
     outline = plan.get("outline") or {}
     sections = outline.get("sections") or []
+    if not sections:
+        return
+    # v5.2：把故事正文（不是只有单元标题）交给互动设计。旧版只给标题，
+    # 模型看不到故事，会反问“请提供故事列表”，并把这段反问写进定稿。
+    body_dir = os.path.join(pdir, F_BODY_DIR)
+    story_parts = []
+    for i, sec in enumerate(sections, 1):
+        fp = os.path.join(body_dir, f"{i:02d}-{_safe(sec)}.md")
+        if os.path.isfile(fp):
+            story_parts.append(_read(fp))
+    story_text = "\n\n".join(story_parts)[:6000]
     tasks = []
     for sec in sections:
         tasks.append(f"故事单元「{sec}」：出 2 个亲子讨论问题 + 1 个知识点（{age} 岁能懂）。")
     out = llm.chat([{"role": "user", "content":
         "为以下儿童故事各出亲子互动内容。\n" + "\n".join(tasks) +
-        "\n输出 markdown，按单元分节。"}], cfg=cfg, stage="review")
+        f"\n\n故事正文：\n{story_text}"
+        "\n输出 markdown，按单元分节；只输出互动内容，不要反问、不要要求用户补充材料。"}],
+        cfg=cfg, stage="review")
     atomic_write_text(os.path.join(pdir, F_INTERACTIVE.split(".md")[0] + ".md"),
-                      f"# 亲子互动与知识\n\n{out or '（生成失败）'}")
+                      f"# 亲子互动与知识\n\n{purity.strip_placeholders(out or '').strip() or '（本阶段未生成）'}")
 
 
 def _stage_illustration(proj, pdir, cfg, plan):
@@ -207,16 +236,23 @@ def _stage_final(proj, pdir, cfg, plan):
     sections = outline.get("sections") or []
     body_dir = os.path.join(pdir, F_BODY_DIR)
     parts = [f"# {plan.get('bookName')}\n"]
+    found = 0
     # v4.23.2：_stage_write 的落盘名就是「序号-单元名.md」，这里直接用同一套规则拼，
     # 不再先算一个永远不存在的 `{单元名}.md` 再内层遍历 1..N 猜序号（原来每条都白读一次路径）。
     for i, sec in enumerate(sections, 1):
         fp = os.path.join(body_dir, f"{i:02d}-{_safe(sec)}.md")
         if os.path.exists(fp):
-            parts.append("\n\n---\n\n" + _read(fp))
-    interactive = _read(os.path.join(pdir, F_INTERACTIVE.split(".md")[0] + ".md"))
-    if interactive.strip():
-        parts.append("\n\n---\n\n" + interactive)
-    atomic_write_text(os.path.join(pdir, F_FINAL), "\n".join(parts))
+            body = _read(fp).strip()
+            if body:
+                parts.append("\n\n---\n\n" + body)
+                found += 1
+    if not found:
+        raise ValueError("没有故事正文，不能定稿")
+    # v5.2：定稿只装故事。互动/插图是附产，单独成文件；旧版把互动区整段拼进
+    # 故事定稿，一次 C3 的“请提供故事列表”反问就能污染整本交付稿。
+    text = "\n".join(parts)
+    text, _gaps = purity.extract_placeholders(text)
+    atomic_write_text(os.path.join(pdir, F_FINAL), text + "\n")
     meta = plan.setdefault("meta", {})
-    meta["words"] = sum(len(re.findall(r"[\u4e00-\u9fff]", p)) for p in parts)
+    meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", text))
     proj.save_plan(plan)

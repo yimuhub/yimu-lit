@@ -146,7 +146,10 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
     # v4.24.0：极速模式——按文体跳过评审/打磨阶段（express._SKIP_STAGES 是唯一口径）
     _expr = _express.on(cfg)
     _medium = str(getattr(proj, "MEDIUM", "") or "")
-    for code, label, fn in stages:
+    _core_failed = False
+    for stage in stages:
+        code, label, fn = stage[0], stage[1], stage[2]
+        optional = bool(stage[3]) if len(stage) > 3 else False
         if _expr and _express.skip_stage(_medium, code):
             plan["chapterStatus"][code] = "skipped"
             proj.log(f"⚡ 极速模式：跳过 {code} {label}")
@@ -175,17 +178,33 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
         except NotImplementedError:
             plan["chapterStatus"][code] = "skipped"
         except Exception as e:
-            proj.log(f"⚠️ {code} 失败（不阻断后续）：{e}")
-            plan["chapterStatus"][code] = "failed"
-            _stage_err = str(e)[:120]
+            if optional:
+                # 可选增值阶段（互动/插图/钩子库/多版本）失败不应把整部作品打成 paused；
+                # 核心阶段失败才需要用户点「继续」重跑。
+                plan["chapterStatus"][code] = "skipped"
+                meta.setdefault("optional_failures", []).append(
+                    {"code": code, "label": label, "error": str(e)[:160]})
+                proj.log(f"⚠️ {code} {label} 为可选阶段，失败已跳过：{e}")
+                _stage_err = f"可选阶段已跳过：{str(e)[:100]}"
+                _steps.emit(_bk, "system", "warn", title=f"{code} {label} 可选阶段失败，已跳过",
+                            output=str(e)[:120])
+            else:
+                proj.log(f"⚠️ {code} 失败（核心阶段，已停在当前进度）：{e}")
+                plan["chapterStatus"][code] = "failed"
+                _stage_err = str(e)[:120]
+                # 核心阶段失败后不再让定稿阶段拿半成品拼“已完成”：
+                # 断点恢复会只重跑 failed 阶段，用户点「继续」即可补齐。
+                _core_failed = True
         meta["stage"] = code
         plan["meta"] = meta
         proj.save_plan(plan)
         _steps.emit(_bk, "writer",
                     phase="warn" if _stage_err else "done",
-                    title=f"{code} {label} 完成" if not _stage_err else f"{code} 失败（不阻断后续）",
+                    title=f"{code} {label} 完成" if not _stage_err else f"{code} 失败，已停在该阶段",
                     chapter=0, ms=int((_time.time() - _t0) * 1000),
                     output=_stage_err or "")
+        if _core_failed:
+            break
     # v4.24.16 修复：有阶段失败不再谎报「已完成」（此前 except 只记 failed 照样 completed，
     # 一本空书显示「已完成」）——置 paused 给出真实重试路径：点「继续」跳过已完成阶段、
     # 只重跑 failed 阶段（chapterStatus 断点语义本来就支持）。
@@ -197,7 +216,10 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
         plan["status"] = "completed"
     meta["stage"] = "F"
     proj.save_plan(plan)
-    proj.log(done_msg)
+    if plan.get("status") == "completed":
+        proj.log(done_msg)
+    else:
+        proj.log(f"⏸ 流水线停在未完成阶段（{'、'.join(_failed) or '中断'}），点「继续」从失败阶段续跑")
     # v4.38.0：定稿后自动成书终审（字数 → 分件评分/重写 → 全篇校验）
     if plan.get("status") == "completed":
         try:

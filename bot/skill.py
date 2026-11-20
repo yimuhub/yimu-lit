@@ -9,7 +9,7 @@ genre / golden_rules / golden3 / anti_slop / check_words）供既有代码无感
 import json, os, re
 from functools import cache
 
-from . import skillkit, wordcount
+from . import skillkit, wordcount, purity
 
 from .paths import RESOURCE_ROOT, DATA_ROOT, CONFIG_PATH
 
@@ -133,9 +133,15 @@ def golden3():
 
 
 def check_words(path, min_words=3000):
-    """原创字数统计（汉字口径）。返回 (是否通过, 字数)。"""
+    """正文汉字数（只统计读者可见正文，剔除本章概要/备注等生产元信息）。
+
+    走查实证：旧口径把工作文件里的“本章概要/章首引子/章节备注”也算进 wordCount，
+    计划显示 2,437 字、导出正文只有 2,181 字，导致“完成”与“导出闸门”两套事实。
+    """
     try:
-        words = wordcount.file_count(path)
+        with open(path, encoding="utf-8", errors="replace") as f:
+            body = purity.chapter_body(f.read())
+        words = wordcount.count(body)
         return words >= min_words, words
     except Exception:
         return False, 0

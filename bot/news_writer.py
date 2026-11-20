@@ -12,6 +12,7 @@ import re
 from bot.safeio import atomic_write_text, safe_join
 
 from . import llm
+from . import purity
 from .mini_writer_base import MiniWriterProject, _safe, _read, make_get_project, run_pipeline
 
 F_PLAN = "新闻稿计划.json"
@@ -100,8 +101,8 @@ def _pipeline(proj, pdir: str, cfg: dict, plan: dict | None = None):
     stages = [
         ("N1", "素材与信源", lambda: _stage_material(proj, pdir, cfg, plan, facts, org)),
         ("N2", "倒金字塔撰写", lambda: _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts)),
-        ("N3", "事实核查", lambda: _stage_check(proj, pdir, cfg, plan)),
-        ("N4", "多版本", lambda: _stage_versions(proj, pdir, cfg, plan)),
+        ("N3", "事实核查", lambda: _stage_check(proj, pdir, cfg, plan), True),
+        ("N4", "多版本", lambda: _stage_versions(proj, pdir, cfg, plan), True),
         ("N5", "定稿", lambda: _stage_final(proj, pdir, cfg, plan)),
     ]
     run_pipeline(proj, cfg, stages, plan=plan, done_msg="✅ 新闻稿定稿完成")
@@ -135,8 +136,8 @@ def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
         "2. 导语（第一段，含 who/what/when/where，50-80 字）\n"
         "3. 主体（按重要性递减排列，含数据与引语）\n"
         "4. 引语（至少 1 条，格式：XX表示：「引语内容」）\n"
-        "5. 背景（公司/产品简介， boilerplate）\n"
-        "6. 媒体联系方式（占位）\n\n"
+        "5. 背景（公司/产品简介， boilerplate）\n\n"
+        "不要写媒体联系方式、联系人、邮箱、电话、地址；没有提供的发布信息一律省略。\n"
         "新闻语体：第三人称、客观、无形容词堆砌；数字精确；引语用直接引语。\n"
         "输出 markdown 正文（含 ## 分节）。"}],
         cfg=cfg, stage="writing", max_tokens=4000)
@@ -149,9 +150,23 @@ def _stage_write(proj, pdir, cfg, plan, ntype, style, org, facts):
             cfg=cfg, stage="writing", max_tokens=2500) or "")
         if _wg.cn_len(_cont) >= 80:
             body = (body or "").rstrip() + "\n\n" + _cont
-    atomic_write_text(os.path.join(pdir, F_FINAL), (body or "（撰写失败）").strip())
+    # v5.2：交付稿不能带 [占位：联系人] / [待补：数据] 这类生产标记。
+    raw = (body or "").strip()
+    clean, gaps = purity.extract_placeholders(raw)
+    # 没有联系人字段可填，媒体联系方式整节必须省略，不能保留空标题或占位行。
+    clean = re.sub(r"(?ms)^#{2,4}\s*媒体联系[^\n]*\n.*?(?=^#{2,4}\s|\Z)", "", clean).rstrip()
+    if gaps:
+        atomic_write_text(os.path.join(pdir, "05-待核实清单.md"),
+                          "# 待核实清单\n\n" + "\n".join(f"- {g}" for g in gaps) + "\n")
+    if not clean or len(re.findall(r"[\u4e00-\u9fff]", clean)) < 80:
+        raise ValueError("新闻稿正文为空或过短，停止定稿")
+    atomic_write_text(os.path.join(pdir, F_FINAL), clean.strip())
+    # 用真正的新闻标题做作品名：第一行 `# 标题` 或 `## 标题`；没有标题才保留发布主体+类型。
+    m = re.search(r"(?m)^#{1,2}\s+(.+)$", clean)
+    if m:
+        plan["newsName"] = m.group(1).strip()[:48]
     meta = plan.setdefault("meta", {})
-    meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", body or ""))
+    meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", clean or ""))
     proj.save_plan(plan)
 
 
@@ -189,10 +204,14 @@ def _stage_versions(proj, pdir, cfg, plan):
 
 def _stage_final(proj, pdir, cfg, plan):
     final = _read(os.path.join(pdir, F_FINAL))
-    check = _read(os.path.join(pdir, F_CHECK))
+    # v5.2：事实核查报告是审稿记录，不是新闻稿正文。旧版只要核查里有「⚠️」
+    # 就把整份核查报告追加到定稿，交付稿因此混入审稿意见。现在只保留正文。
+    clean, gaps = purity.extract_placeholders(final)
+    clean = re.sub(r"(?ms)^#{2,4}\s*媒体联系[^\n]*\n.*?(?=^#{2,4}\s|\Z)", "", clean).rstrip()
+    atomic_write_text(os.path.join(pdir, F_FINAL), clean + "\n")
+    if gaps:
+        atomic_write_text(os.path.join(pdir, "05-待核实清单.md"),
+                          "# 待核实清单\n\n" + "\n".join(f"- {g}" for g in gaps) + "\n")
     meta = plan.setdefault("meta", {})
-    meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", final))
-    if check.strip() and "⚠️" in check:
-        # 有警告 → 附加修正建议到定稿末尾
-        atomic_write_text(os.path.join(pdir, F_FINAL), final + "\n\n---\n\n" + check)
+    meta["words"] = len(re.findall(r"[\u4e00-\u9fff]", clean))
     proj.save_plan(plan)
