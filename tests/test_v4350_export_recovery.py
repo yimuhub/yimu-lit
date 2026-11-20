@@ -51,11 +51,24 @@ def _client(monkeypatch, tmp_path):
     return appmod, TestClient(appmod.app)
 
 
-def test_not_released_error_is_structured(monkeypatch, tmp_path):
+def test_low_score_no_longer_blocks_default_export(monkeypatch, tmp_path):
+    """v4.41.4：评分低于达标线默认只提醒，不再拦整书导出（导的是原稿）。"""
     _make_book(tmp_path, released=False, final_quality=35.5)
     _, c = _client(monkeypatch, tmp_path)
 
     r = c.get("/api/export?key=book&fmt=md")
+    assert r.status_code == 200
+    notice = r.headers.get("x-export-notice", "")
+    assert notice, "低分导出必须带提醒头，前端才能告诉作者"
+    assert "35.5" in notice and "80" in notice
+
+
+def test_strict_high_blocks_until_pass_line(monkeypatch, tmp_path):
+    """作者勾选「强制高分」时才按达标线拦下，并给出结构化数据。"""
+    _make_book(tmp_path, released=False, final_quality=35.5)
+    _, c = _client(monkeypatch, tmp_path)
+
+    r = c.get("/api/export?key=book&fmt=md&strict_high=1")
     assert r.status_code == 409
     body = r.json()
     assert body["code"] == "not_released"
@@ -63,7 +76,7 @@ def test_not_released_error_is_structured(monkeypatch, tmp_path):
     assert body["pass_line"] == 80
     assert body["chapters"] == 1
     assert isinstance(body["below"], int)
-    assert "放行" in body["error"]
+    assert "强制高分" in body["error"]
 
 
 def test_force_export_marks_unreleased_draft(monkeypatch, tmp_path):
@@ -77,8 +90,8 @@ def test_force_export_marks_unreleased_draft(monkeypatch, tmp_path):
 
 
 def test_block_findings_are_structured(monkeypatch, tmp_path):
-    # 正文里出现英文 → N01 非中文残留（block），先于放行门禁拦下
-    _make_book(tmp_path, released=True, body="林野听见 Host 的声音。")
+    # v4.41.4：只拦硬伤 N03（半句截断）；N01 英文残留只记录，不阻断
+    _make_book(tmp_path, released=True, body="林野推开木门，风从石阶上掠过，他")
     _, c = _client(monkeypatch, tmp_path)
 
     r = c.get("/api/export?key=book&fmt=md")
@@ -119,7 +132,7 @@ def test_save_endpoint_returns_same_structure(monkeypatch, tmp_path):
     appmod, c = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(appmod.desktop_bridge, "is_desktop", lambda: True)
 
-    r = c.post("/api/save", json={"kind": "export", "key": "book", "fmt": "md"})
+    r = c.post("/api/save", json={"kind": "export", "key": "book", "fmt": "md", "strict_high": 1})
     assert r.status_code == 409
     body = r.json()
     assert body["code"] == "not_released"

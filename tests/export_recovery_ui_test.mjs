@@ -5,9 +5,10 @@
 // 作者在导出页既拿不到书，也不知道下一步该做什么。
 //
 // 本用例真加载 api.js 跑一遍：
-//   1) 409 not_released → 弹窗出现，标题点明「评分不足」；
-//   2) 点「强制导出」→ 第二次请求带 force=1，书稿拿到；
-//   3) 点「重写低评分章节」→ 调 /api/rewrite-parallel，不导出。
+// v4.41.4：默认导出不再拦低分，只有勾选「强制高分」才拦。
+//   1) strict_high=1 + 409 not_released → 弹窗出现；
+//   2) 点「取消强制高分，直接导原稿」→ 带 force=1 拿到书稿；
+//   3) 点「重写到达标线」→ 调 /api/rewrite-parallel 并自动重试导出。
 import { JSDOM, VirtualConsole } from 'jsdom';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -137,21 +138,21 @@ const api = await import(pathToFileURL(path.join(root, 'static/v2/js/core/api.js
 // ---------------------------------------------------------------- 场景一：强制导出
 {
   calls.length = 0;
-  const pending = api.exportWork('book', 'md', { name: '复仇太妃' });
+  const pending = api.exportWork('book', 'md', { name: '复仇太妃', strictHigh: true });
 
-  await waitFor(() => modalTitle().includes('评分不足'), '评分不足弹窗出现');
-  ok(true, '放行门禁拦截后弹出「评分不足，是否强制导出？」');
-  ok(modalTitle().includes('评分不足'), `弹窗标题：${modalTitle()}`);
+  await waitFor(() => modalTitle().includes('强制高分'), '强制高分弹窗出现');
+  ok(true, '勾选强制高分且未达线时弹出恢复弹窗');
+  ok(modalTitle().includes('尚未达标'), `弹窗标题：${modalTitle()}`);
 
   const bodyText = document.querySelector('#overlays .modal-body').textContent;
   ok(bodyText.includes('35.5') && bodyText.includes('80'), '弹窗正文写明当前分数与达标线');
   ok(!calls.some((c) => c.url.includes('force=1')), '弹窗出现前没有偷偷带 force 重试');
 
-  clickByText('强制导出');
+  clickByText('直接导原稿');
   await pending;
 
   const forced = calls.filter((c) => c.url.includes('/api/export') && c.url.includes('force=1'));
-  ok(forced.length === 1, '点「强制导出」后带 force=1 重新请求一次');
+  ok(forced.length === 1, '点「直接导原稿」后带 force=1 重新请求一次');
   ok(!document.querySelector('#overlays .modal'), '导出成功后弹窗自动关闭');
 }
 
@@ -159,13 +160,13 @@ const api = await import(pathToFileURL(path.join(root, 'static/v2/js/core/api.js
 {
   calls.length = 0;
   rewrote = false;
-  const pending = api.exportWork('book', 'docx', { name: '复仇太妃' });
-  await waitFor(() => modalTitle().includes('评分不足'), '第二次弹窗');
-  clickByText('重写低评分章节');
+  const pending = api.exportWork('book', 'docx', { name: '复仇太妃', strictHigh: true });
+  await waitFor(() => modalTitle().includes('强制高分'), '第二次弹窗');
+  clickByText('重写到达标线');
   const r = await pending;
 
   const rw = calls.filter((c) => c.url.includes('/api/rewrite-parallel') && !c.url.includes('/progress'));
-  ok(rw.length === 1 && rw[0].method === 'POST', '点「重写低评分章节」调用 /api/rewrite-parallel');
+  ok(rw.length === 1 && rw[0].method === 'POST', '点「重写到达标线」调用 /api/rewrite-parallel');
   ok(!calls.some((c) => c.url.includes('/api/export') && c.url.includes('force=1')),
      '重写分支不会顺手带 force 把稿子导出去');
   const exports_ = calls.filter((c) => c.url.includes('/api/export'));
@@ -178,8 +179,8 @@ const api = await import(pathToFileURL(path.join(root, 'static/v2/js/core/api.js
 {
   calls.length = 0;
   rewrote = false;
-  const pending = api.exportWork('book', 'md');
-  await waitFor(() => modalTitle().includes('评分不足'), '第三次弹窗');
+  const pending = api.exportWork('book', 'md', { strictHigh: true });
+  await waitFor(() => modalTitle().includes('强制高分'), '第三次弹窗');
   clickByText('取消');
   const r = await pending;
   ok(!calls.some((c) => c.url.includes('force=1')), '取消后不发强制导出请求');

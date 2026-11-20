@@ -525,15 +525,15 @@ function showSkillDetail(ctx, skill, type) {
   _modalBox(`技能详情 · ${skill.name}`, body);
 }
 
-async function exportWork(ctx, key, fmt, label, name = '') {
+async function exportWork(ctx, key, fmt, label, name = '', { strictHigh = false } = {}) {
   if (IS_MOCK) {
     toast(`演示模式不生成文件；正式环境会导出 ${label}`, { duration: 2600 });
     return;
   }
   /* v4.32.0：桌面端走原生「存储」对话框选位置，网页端走浏览器下载 */
   try {
-    toast(`正在导出 ${label}…`, { duration: 2000 });
-    const r = await api.exportWork(key, fmt, { name });
+    toast(strictHigh ? `正在检查评分并按「强制高分」导出 ${label}…` : `正在导出 ${label}…`, { duration: 2000 });
+    const r = await api.exportWork(key, fmt, { name, strictHigh });
     if (r && r.cancelled) return;
     const where = r && r.saved ? `已保存到 ${r.saved}` : `${label} 已开始下载`;
     toast(where, { tone: 'success', duration: 3200 });
@@ -855,7 +855,8 @@ function mediumWorkPane(work, ctx) {
               { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(ctx, work.key, 'docx', 'Word', work.name) },
               { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(ctx, work.key, 'md', 'Markdown', work.name) },
               { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(ctx, work.key, 'epub', 'EPUB', work.name) },
-              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(ctx, work.key, 'print', '打印版', work.name) }
+              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(ctx, work.key, 'print', '打印版', work.name) },
+              { label: '强制高分导出（Word）', icon: 'shield', onSelect: () => exportWork(ctx, work.key, 'docx', 'Word（强制高分）', work.name, { strictHigh: true }) }
             ],
             { align: 'start', label: '导出整本' }
           );
@@ -1113,7 +1114,8 @@ function workPane(ctx) {
               { label: 'Word 文档（.docx）', icon: 'file-text', onSelect: () => exportWork(ctx, work.key, 'docx', 'Word', work.name) },
               { label: 'Markdown（.md）', icon: 'file', onSelect: () => exportWork(ctx, work.key, 'md', 'Markdown', work.name) },
               { label: 'EPUB 电子书', icon: 'book', onSelect: () => exportWork(ctx, work.key, 'epub', 'EPUB', work.name) },
-              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(ctx, work.key, 'print', '打印版', work.name) }
+              { label: '打印版（.html）', icon: 'grid', onSelect: () => exportWork(ctx, work.key, 'print', '打印版', work.name) },
+              { label: '强制高分导出（Word）', icon: 'shield', onSelect: () => exportWork(ctx, work.key, 'docx', 'Word（强制高分）', work.name, { strictHigh: true }) }
             ],
             { align: 'start', label: '导出整本' }
           );

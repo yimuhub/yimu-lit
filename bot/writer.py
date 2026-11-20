@@ -2383,14 +2383,19 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
             break
         weak = ((proj.plan().get("meta") or {}).get("chapter_scores", {}).get(str(ch_no), {}).get("weak", []))
         body = open(fp, encoding="utf-8").read()
-        if not weak:
+        _eng = _engine_directives(proj, ch_no, body, plan.get("config") or {})
+        # v4.41.4：只有「评分给出的弱项」才敢改，是旧版重写频繁空转的原因——
+        # 评分解析失败/未评分时 weak 为空，系统直接 break，作者看到的就是「重写失败」。
+        # 现在：显式审稿问题、故事引擎/工艺硬指令都能驱动改写；三者都没有才不做。
+        if not weak and not extra_dims and not _eng:
             break
         fix = "\n".join(f"【第{ch_no}章·主攻】提升【{w}】维度" for w in weak[:3])
         if extra_dims:
             fix += "\n【审稿问题（逐条落实）】\n" + "\n".join(f"- {d}" for d in extra_dims[:6])
-        _eng = _engine_directives(proj, ch_no, body, plan.get("config") or {})
         if _eng:
             fix += "\n【故事引擎/工艺（逐条消除，不许只改措辞）】\n" + "\n".join(f"- {d}" for d in _eng)
+        if not fix.strip():
+            fix = f"【第{ch_no}章·主攻】在不改变情节走向的前提下，提升本章的可读性与完成度"
         _db = _director_brief(proj, ch_no)
         if _db:
             fix += "\n" + _db
@@ -2422,8 +2427,16 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
         try:
             sc2 = score_chapter(proj, ch_no)
         except Exception:
-            sc2 = None   # 评分失败也要走还原分支，不能把没验证的稿子留在磁盘
-        if (sc2 is not None and sc is not None and sc2 > sc):
+            sc2 = None
+        if sc2 is None or sc is None:
+            # v4.41.4：评分服务不可用（JSON 解析失败/超时/供应商异常）时，
+            # 旧逻辑一律回滚——于是「重写很多次都失败」，作者永远看不到改稿。
+            # 改稿已过写盘门禁（完整正文、完整收尾、篇幅不塌陷），按内容保留，
+            # 并明确告知「未验证分数」，等评分恢复后可再评。
+            _guard_drop(proj, ch_no)
+            proj.log(f"📌 第{ch_no}章评分不可用，改稿已过完整性门禁，保留改稿（分数待复核）")
+            break
+        if sc2 > sc:
             _guard_drop(proj, ch_no)
             proj.log(f"🔁 第{ch_no}章 {sc}→{sc2}（提分，保留），按[{','.join(weak[:3])}]局部重写（第{rounds+1}/{max_rounds}轮）")
             # v4.26.1 分数停滞止损：提分 <2 分视为模型能力已到顶（实测分数在 ±5 内随机震荡，
@@ -2444,8 +2457,9 @@ def _auto_rewrite_chapter(proj, ch_no, max_rounds=None, pass_line=None, extra_di
         final = score_chapter(proj, ch_no)
     except Exception:
         final = base_score
-    # 若最终分低于最初基线，还原到原章基线（保守：只进不退）
-    if (final or 0) < (base_score or 0):
+    # 若最终分低于最初基线，还原到原章基线（保守：只进不退）。
+    # 分数为 None 时绝不按 0 分处理——那会把「评分失败」误判成「改差了」。
+    if base_score is not None and final is not None and final < base_score:
         book_health.save_chapter(proj, ch_no, orig_body, label="评分回退备份",
                                  kind="revert")
         final = base_score
@@ -4231,6 +4245,8 @@ _RW_CANCEL = set()  # 请求取消的重写 key（逐章检查点生效）
 # 于是出现「说继续，却接着改 250 多章旧队列」的局面。代际不匹配即停。
 _RW_GEN: dict = {}
 _RW_GEN_LOCK = threading.Lock()
+#: v4.41.4 供应商级中断：同一代际里出现鉴权/超时/404，后续章不必再重试（重试也不会成功）
+_RW_ABORT: dict = {}
 
 def rewrite_progress(key):
     """R2：返回该书重写 job 的实时逐章进度（纯读，供 /api/rewrite-progress 轮询）。"""
@@ -4432,6 +4448,7 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
         _RW_GEN[key] = int(_RW_GEN.get(key) or 0) + 1
         my_gen = _RW_GEN[key]
     _RW_CANCEL.discard(key)
+    _RW_ABORT.pop(key, None)
     pass_line = _pass_line()
     # 低分章：未指定时取全部低于达标线的章（有评分的）
     if not chapters:
@@ -4473,23 +4490,54 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
                     return {"ch": ch_no, "kept": False, "delta": 0, "note": "已暂停"}
                 if key in _RW_CANCEL:
                     return {"ch": ch_no, "kept": False, "delta": 0, "note": "已取消"}
+                if _RW_ABORT.get(key) == my_gen:
+                    return {"ch": ch_no, "kept": False, "delta": 0,
+                            "abort": True, "note": "模型连接失败，本批改写已停止"}
                 # v4.21.9：改写消耗计入该章 token 账本 + 过程并入本章创作活动流
                 llm.set_chapter(ch_no)
                 _evt(key, "rewriter", phase="start", title=f"定向重写第{ch_no}章", chapter=ch_no,
                      thinking="按审稿问题清单逐条定点改写——改写分必须高于原分，否则自动回滚原稿")
                 before = score_chapter(proj, ch_no)
                 dims = findings_by_ch.get(ch_no) or []
+                # 用磁盘内容判断「改稿是否保留」——评分不可用时不能把改稿当没发生
+                _body_before = ""
+                try:
+                    _ch0 = next((c for c in (proj.plan().get("chapters") or [])
+                                 if c.get("chapterNumber") == ch_no), None)
+                    if _ch0 and _ch0.get("filePath"):
+                        _body_before = open(os.path.join(proj.path, _ch0["filePath"]), encoding="utf-8").read()
+                except Exception:
+                    _body_before = ""
                 # v4.17.3：target 驱动——改写评分达到目标分即停（每章最多 2 轮，不烧 token）
                 _stop_at = max(_pass_line(), int(target)) if target else _pass_line()
                 try:
                     _auto_rewrite_chapter(proj, ch_no, max_rounds=max_rounds, pass_line=_stop_at, extra_dims=dims or None)
                 except Exception as e:
+                    _note = provider_error_note(e)
+                    if _note:
+                        _RW_ABORT[key] = my_gen
+                        proj.log(f"⛔ 第{ch_no}章改写中止：{_note}")
+                        return {"ch": ch_no, "kept": False, "delta": 0, "abort": True, "note": _note}
                     proj.log(f"⚠️ 第{ch_no}章并行改写异常：{e}")
                 after = score_chapter(proj, ch_no)
+                _body_after = ""
+                try:
+                    _ch1 = next((c for c in (proj.plan().get("chapters") or [])
+                                 if c.get("chapterNumber") == ch_no), None)
+                    if _ch1 and _ch1.get("filePath"):
+                        _body_after = open(os.path.join(proj.path, _ch1["filePath"]), encoding="utf-8").read()
+                except Exception:
+                    _body_after = ""
+                _changed = _body_after.strip() != _body_before.strip()
                 delta = (after or 0) - (before or 0)
-                kept = (after or 0) > (before or 0)
-                r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1), "kept": kept}
-                proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '已回滚原稿，质量优先'}）")
+                kept = _changed and (before is None or after is None or (after or 0) > (before or 0))
+                r = {"ch": ch_no, "before": before, "after": after, "delta": round(delta, 1),
+                     "kept": kept,
+                     **({"note": "评分不可用，按内容完整度保留"} if (kept and after is None) else {})}
+                if kept and after is None:
+                    proj.log(f"📌 第{ch_no}章评分不可用，改稿已过完整性门禁，保留改稿")
+                else:
+                    proj.log(f"{'✅' if kept else '🔒'} 第{ch_no}章 {before}→{after}（{'保留改稿' if kept else '未改动/已回滚，质量优先'}）")
                 _evt(key, "rewriter", phase="done" if kept else "warn",
                      title=f"定向重写第{ch_no}章", chapter=ch_no,
                      output=f"{before}→{after} 分（{'保留改稿' if kept else '已回滚原稿'}）")
@@ -4529,10 +4577,17 @@ def run_parallel_rewrite(key, chapters=None, workers=3, max_rounds=1, target=Non
     results = prog.get("results") or []
     improved = sum(1 for r in results if r.get("kept"))
     total_delta = sum(r.get("delta") or 0 for r in results)
-    proj.log(f"⚡ 并行改写完成：{improved}/{len(results)} 章提分，总提升 {total_delta} 分"
-             f"（未提分章节已全部回滚原稿，质量只进不退）")
+    _aborted = any(r.get("abort") for r in results)
+    if _aborted:
+        proj.log(f"⛔ 并行改写中止：{improved}/{len(results)} 章已改，模型连接不可用，其余未再重试")
+        return {"ok": False, "results": results, "improved": improved,
+                "aborted": True, "total_delta": round(total_delta, 1),
+                "msg": "模型连接失败，改写已停止；已改好的章节保留，可直接导出原稿"}
+    proj.log(f"⚡ 并行改写完成：{improved}/{len(results)} 章保留改稿，总提升 {total_delta} 分"
+             f"（未提分/未验证的章节按完整性判定）")
     return {"ok": True, "results": results, "improved": improved,
-            "total_delta": round(total_delta, 1), "msg": f"并行改写完成：{improved}/{len(results)} 章提分（其余已回滚原稿）"}
+            "total_delta": round(total_delta, 1),
+            "msg": f"并行改写完成：{improved}/{len(results)} 章保留改稿"}
 
 
 def short_chapters(proj, below_words=3000):
@@ -4692,6 +4747,128 @@ def expand_short_chapter(proj, ch_no, target_words=3000, max_rounds=3):
          output=f"{before_words}→{cur_w} 字")
     return {"ch": ch_no, "kept": True, "before_words": before_words,
             "after_words": cur_w, "before": base_score, "after": after_score}
+
+
+_PROVIDER_FAIL_HINTS = (
+    "API 密钥无效", "密钥无效", "HTTP 401", "HTTP 403", "404 Not Found",
+    "timed out", "Timeout", "连接被拒绝", "Connection refused", "无法连接",
+)
+
+
+def provider_error_note(e) -> str:
+    """把供应商/网络错误识别出来：这类失败重试 100 次也不会成功，必须立刻停手。
+
+    返回 "" 表示不是供应商问题（内容不达标等），可以继续下一轮；否则返回人话提示。
+    """
+    s = str(e or "")
+    if any(h.lower() in s.lower() for h in _PROVIDER_FAIL_HINTS):
+        return (f"模型连接失败：{s[:120]}。请先在「设置 → 模型与供应商」测试连接，"
+                f"修好后再重写；这次可以直接导出原稿。")
+    return ""
+
+
+def _drop_overlap(tail: str, cont: str) -> str:
+    """续写稿开头常把已有结尾复读一遍：摘掉与原文尾部重叠的部分，避免章内复读。"""
+    a = (tail or "").strip()
+    b = (cont or "").strip()
+    if not a or not b:
+        return b
+    for n in range(min(len(a), len(b), 120), 10, -1):
+        if a[-n:] == b[:n]:
+            return b[n:].lstrip()
+    # 近似重叠：比对末句与续写首句
+    _last = re.split(r"(?<=[。！？…])", a)[-1].strip()
+    if len(_last) >= 12 and b.startswith(_last[:12]):
+        k = b.find(_last)
+        if 0 <= k <= 40:
+            return b[k + len(_last):].lstrip()
+    return b
+
+
+def finish_truncated_chapter(proj, ch_no, max_rounds=2, need_words=1200):
+    """硬伤修复：只补结尾，不重写全章（v4.41.4）。
+
+    导出被 N03（半句截断）拦下时，正确动作是「接着写完整」——
+    整章重写会重烧 token，还可能把已经合格的章节改坏、评分没涨又被回滚。
+    这里从当前正文的真实断点续写，拼回原章，只要求「结尾收在完整句」，
+    不以分数作为保留条件（完整性优先于评分）。
+    """
+    plan = proj.plan() or {}
+    ch = next((c for c in (plan.get("chapters") or [])
+               if int(c.get("chapterNumber") or 0) == int(ch_no)), None)
+    if not ch or not ch.get("filePath"):
+        return {"ch": ch_no, "kept": False, "note": "章节不存在"}
+    fp = os.path.join(proj.path, ch["filePath"])
+    if not os.path.exists(fp):
+        return {"ch": ch_no, "kept": False, "note": "正文文件缺失"}
+    recover_pending_rewrites(proj, ch_no)
+    try:
+        body = open(fp, encoding="utf-8").read()
+    except OSError as e:
+        return {"ch": ch_no, "kept": False, "note": f"读取失败：{e}"}
+    if looks_like_model_note(body):
+        txt, w, ts = restore_best_version(proj, ch_no, min_words=int(need_words))
+        if not txt:
+            return {"ch": ch_no, "kept": False,
+                    "note": "原稿是模型说明文字，版本库没有可还原的正文"}
+        body = txt
+    if _ends_clean(body):
+        return {"ch": ch_no, "kept": False, "note": "结尾已完整，无需补全",
+                "before_words": len(re.sub(r"\s+", "", body)), "after_words": len(re.sub(r"\s+", "", body))}
+    try:
+        ctx = _build_ctx(proj, ch)
+    except Exception:
+        ctx = {}
+    base = body
+    cur = body
+    tried = 0
+    for i in range(max(1, int(max_rounds))):
+        tried = i + 1
+        try:
+            cont = workflow.continue_chapter(cur, ctx, need_words=int(need_words))
+        except Exception as e:
+            note = provider_error_note(e)
+            if note:
+                proj.log(f"⚠️ 第{ch_no}章补全中断：{note}")
+                return {"ch": ch_no, "kept": False, "abort": True, "note": note,
+                        "before_words": len(re.sub(r"\s+", "", base)),
+                        "after_words": len(re.sub(r"\s+", "", cur))}
+            proj.log(f"⚠️ 第{ch_no}章补全第{tried}轮失败：{str(e)[:100]}")
+            continue
+        cont = _clean_chapter_text(cont or "")
+        cont = _drop_overlap(cur[-400:], cont)
+        if len(re.sub(r"\s+", "", cont)) > int(need_words) * 3:
+            # 模型把「续写」当成了「整章重写」：拼上去必然章内复读，这一轮不收
+            proj.log(f"⚠️ 第{ch_no}章补全第{tried}轮返回了整章稿（不是续写），跳过")
+            continue
+        if not cont.strip() or looks_like_model_note(cont):
+            proj.log(f"⚠️ 第{ch_no}章补全第{tried}轮不合格（空稿/说明文字），重试")
+            continue
+        cand = cur.rstrip() + cont
+        if len(re.sub(r"\s+", "", cand)) <= len(re.sub(r"\s+", "", cur)) + 80:
+            proj.log(f"⚠️ 第{ch_no}章补全第{tried}轮没增加有效内容，重试")
+            continue
+        cur = cand
+        if _ends_clean(cur):
+            break
+        proj.log(f"⚠️ 第{ch_no}章补全第{tried}轮结尾仍未收全，继续补")
+    before_w = len(re.sub(r"\s+", "", base))
+    after_w = len(re.sub(r"\s+", "", cur))
+    if not _ends_clean(cur) or after_w <= before_w + 80:
+        return {"ch": ch_no, "kept": False,
+                "note": "补全未成功（模型没有把结尾写完）", "before_words": before_w,
+                "after_words": after_w}
+    w = book_health.save_chapter(proj, ch_no, cur, label="补全前", kind="expand", orig=base)
+    if not w.get("ok"):
+        return {"ch": ch_no, "kept": False,
+                "note": f"补全稿被门禁拒绝：{w.get('reason') or '未知原因'}",
+                "before_words": before_w, "after_words": after_w}
+    proj.log(f"🩹 第{ch_no}章硬伤补全：{before_w}→{after_w} 字（只补结尾，未整章重写）")
+    _evt(os.path.basename(proj.path), "rewriter", phase="done",
+         title=f"补全第{ch_no}章截断结尾", chapter=ch_no,
+         output=f"{before_w}→{after_w} 字（局部补全）")
+    return {"ch": ch_no, "kept": True, "before_words": before_w, "after_words": after_w,
+            "note": "已局部补全结尾"}
 
 
 def run_short_expand(key, chapters=None, below_words=3000, workers=2):

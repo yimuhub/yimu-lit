@@ -135,6 +135,13 @@ function openExportDialog(item) {
       h('input', { class: 'input', type: 'number', min: '1', value: String(Math.max(1, done)), dataset: { role: 'to' } }),
       h('span', { text: ' 章' })),
     h('div', { class: 'hint-text', text: `当前已完成 ${done} 章；范围外的章不会导出。` }));
+  const strictBox = h('div', { class: 'exp-strict', style: { marginTop: '12px' } },
+    h('label', { class: 'exp-fmt', style: { display: 'flex', alignItems: 'flex-start', gap: '8px' } },
+      h('input', { type: 'checkbox', dataset: { role: 'strict-high' } }),
+      h('span', { text: '强制高分（低于达标线的章节重写到达标后才允许导出）' })),
+    h('div', { class: 'hint-text', style: { marginTop: '6px' },
+      text: '不勾选时：只修硬伤（半句截断/没写完）即可导出原稿，评分不足只提醒。' }));
+
   const body = h('div', { class: 'exp-form' },
     h('div', { class: 'evo-sub', text: '范围' }),
     rangeSeg,
@@ -144,6 +151,7 @@ function openExportDialog(item) {
       ...fmts.map(([v, label], i) => h('label', { class: 'exp-fmt' },
         h('input', { type: 'radio', name: 'exp-fmt', value: v, checked: i === 0 ? true : undefined }),
         h('span', { text: label })))));
+  if (isNovel) body.append(strictBox);
 
   if (!isNovel) {
     rangeSeg.style.display = 'none';
@@ -171,8 +179,9 @@ function openExportDialog(item) {
         /* v4.31.0：fetch+blob 下载，报错走 toast 而不是把窗口导航到错误页 */
         (async () => {
           try {
-            toast('正在导出下载…', { duration: 2000 });
-            const r = await api.exportWork(item.key, fmt, { name: item.name, frm: isNovel ? frm : 0, to: isNovel ? to : 0 });
+            const strictHigh = !!(body.querySelector('[data-role="strict-high"]') || {}).checked;
+            toast(strictHigh ? '正在检查评分并按「强制高分」导出…' : '正在导出原稿…', { duration: 2200 });
+            const r = await api.exportWork(item.key, fmt, { name: item.name, frm: isNovel ? frm : 0, to: isNovel ? to : 0, strictHigh });
             if (!r || !r.cancelled) {
               const where = r && r.saved ? `已保存到 ${r.saved}` : '已开始下载';
               toast(where, { tone: 'success', duration: 3200 });

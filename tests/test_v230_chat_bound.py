@@ -217,3 +217,21 @@ def test_state_payload_injects_last_audit(tmp_path, monkeypatch):
     assert r.status_code == 200
     la = (r.json().get("state") or {}).get("last_audit")
     assert la and la["scope"] == "book" and la["issues"] == ["人物A地点未登记"]
+
+
+def test_completed_book_continue_never_mass_rewrites(monkeypatch, tmp_path):
+    """v4.41.4：全书已完成时说「继续」，不得自动把 <80 分章节全部重写。"""
+    proj = _mk_proj(tmp_path, done=5)
+    plan = proj.plan()
+    plan["status"] = "completed"
+    proj.save_plan(plan)
+    monkeypatch.setattr(appmod, "_get_project", lambda key: proj if key == KEY else None)
+    monkeypatch.setattr(appmod.writer, "PROJECTS_DIR", str(tmp_path))
+
+    def _boom(*a, **k):
+        raise AssertionError("已完成的书点「继续」绝不允许启动批量重写")
+
+    monkeypatch.setattr(appmod.writer, "start_task", _boom)
+    monkeypatch.setattr(appmod.writer, "run_parallel_rewrite", _boom)
+    r = appmod.chat("s9", "继续", KEY)
+    assert "已完成" in r and "不会自动重写" in r

@@ -222,14 +222,16 @@ def test_stamp_plan_only_marks_new_works():
 
 
 def test_export_gate_blocks_new_works_but_not_legacy(monkeypatch, tmp_path):
-    """盖章新作品整书导出必过闸；历史作品只报告；force=1 是显式取回通道。"""
+    """盖章新作品：只有硬伤（N03 半句截断）拦整书导出；格式问题只记录；
+    force=1 是显式取回通道；历史作品一律只报告。"""
     import app as appmod
     from fastapi.testclient import TestClient
     from bot import writer
 
     pdir = tmp_path / "book"
     pdir.mkdir()
-    (pdir / "第001章.md").write_text("林野听见 Host 的声音，握紧了拳头。", encoding="utf-8")
+    # v4.41.4：只拦「硬伤」——非中文残留（N01）不再阻断导出，半句截断（N03）才拦。
+    (pdir / "第001章.md").write_text("林野听见 Host 的声音，握紧了拳头，他", encoding="utf-8")
     plan = {"novelName": "测试书", "status": "completed",
             "deliverySpecVersion": spec.SPEC_VERSION,
             "deliveryProfile": "novel_submission",
@@ -241,7 +243,11 @@ def test_export_gate_blocks_new_works_but_not_legacy(monkeypatch, tmp_path):
     appmod.PROJECT_INDEX.clear()
     c = TestClient(appmod.app)
 
-    assert c.get("/api/export?key=book&fmt=md").status_code == 409
+    r = c.get("/api/export?key=book&fmt=md")
+    assert r.status_code == 409
+    body = r.json()
+    assert body["code"] == "not_ready"
+    assert all(f["code"] == "N03" for f in body["findings"]), body["findings"]
     assert c.get("/api/export?key=book&fmt=md&force=1").status_code == 200
     assert "交付就绪报告" in (pdir / "22-交付就绪报告.md").read_text(encoding="utf-8")
 

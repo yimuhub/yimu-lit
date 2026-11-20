@@ -325,13 +325,12 @@ async function waitBackgroundRewrite(key, timeoutMs = 15 * 60 * 1000) {
 }
 
 /* v4.35.0：导出被闸门拦下时的恢复弹窗。
-   以前后端只回一句「成书未过放行门禁（35.5 分 < 达标线 80）」，界面当成普通
-   错误 toast 掉，作者在导出页没有任何出口——既导不出，也不知道该去改哪
-   （《复仇太妃》实拍：31 万字写完，卡在导出上无路可走）。现在把两条路摆出来：
-   · 强制导出：带 force=1，内容完整，书名标注「未放行初稿」；
-   · 重写低评分章节：直接调 /api/rewrite-parallel，按低分章逐章返工。
-   返回 'force' | 'rewrite' | ''（取消）。 */
-async function offerExportRecovery(info = {}, key = '') {
+   v4.41.4 新交付口径：
+   · 默认导出 = 原稿，只要求「硬伤」（N03 半句截断/没写完）修完；评分不足只提醒；
+   · 只有作者勾选「强制高分」时，评分不足才会拦下，弹窗给「重写到达标 / 直接导原稿」；
+   · 「强制导出原稿」任何时候都有，不会被死锁。
+   返回 'force' | 'plain' | 'finish' | 'rewrite' | ''（取消）。 */
+async function offerExportRecovery(info = {}, key = '', { strictHigh = false } = {}) {
   const [{ openModal }, { h }] = await Promise.all([import('./ui.js'), import('./dom.js')]);
   return new Promise((resolve) => {
     let done = false;
@@ -341,6 +340,7 @@ async function offerExportRecovery(info = {}, key = '') {
     const below = info.below || 0;
     const findings = Array.isArray(info.findings) ? info.findings : [];
     const hasTruncated = blocked && findings.some((f) => f.code === 'N03');
+    const hasOther = blocked && findings.some((f) => f.code !== 'N03');
 
     const settle = (value) => {
       if (done) return;
@@ -352,11 +352,11 @@ async function offerExportRecovery(info = {}, key = '') {
     const body = h('div', { class: 'confirm-body' });
     if (blocked) {
       body.append(h('div', {
-        text: `本书有 ${findings.length || info.blocking || 0} 项禁止项（正文硬伤），交付闸门不放行整书导出。`
+        text: `本书有 ${findings.length || info.blocking || 0} 项硬伤，交付前需要修完整。`
       }));
       body.append(h('div', {
         class: 'warn-note',
-        text: '常见的有：非中文字符残留、元信息泄漏（正文里写了「第几章」）、半句截断。修完这些才能当定稿交付。'
+        text: '硬伤指：写到一半没有下文、停在半句、场景没写完。系统只补结尾，不整章重写（省 token，也不改坏全文）。'
       }));
       if (info.repaired) {
         body.append(h('div', {
@@ -377,16 +377,21 @@ async function offerExportRecovery(info = {}, key = '') {
       }
     } else {
       body.append(h('div', {
-        text: `本书最终质量 ${fq} 分，低于放行线 ${pl} 分${below ? `（${below} 章未达标）` : ''}。`
+        text: `已勾选「强制高分」：本书最终质量 ${fq} 分，低于达标线 ${pl} 分${below ? `（${below} 章未达标）` : ''}。`
       }));
       body.append(h('div', {
         class: 'warn-note',
-        text: '强制导出：内容完整，书名会标注「未放行初稿」，适合先拿稿校对。重写：自动按低分章返工，完成后可再导出。'
+        text: '重写到达标线：只改低于线下的章，改完自动重试导出。直接导原稿：取消强制高分，随时可以导出，导出后仍会显示低分提醒。'
       }));
+      if (info.repaired) {
+        body.append(h('div', {
+          style: { marginTop: '8px', fontSize: '12.5px', opacity: '0.85' },
+          text: `本次导出已自动清理 ${info.repaired} 章格式残留。`
+        }));
+      }
     }
 
-    /* v4.36.0：先摆标尺，再谈问题。作者要知道自己被拿什么标准衡量，
-       否则下面那串禁止项只像挑刺。形态与平台基准都由后端 bot.taste 给出。 */
+    /* v4.36.0：先摆标尺，再谈问题。 */
     if (info.form_label || info.benchmark) {
       const yard = h('div', { style: { marginTop: '10px', fontSize: '12.5px', opacity: '0.85' } });
       if (info.form_label) {
@@ -403,28 +408,28 @@ async function offerExportRecovery(info = {}, key = '') {
       { style: { display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end', flexWrap: 'wrap' } },
       h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => settle('') } }),
       ...(hasTruncated ? [h('button', {
-        class: 'btn',
+        class: 'btn btn-primary',
         type: 'button',
         text: '补全截断章节并重试',
         on: { click: () => settle('finish') }
       })] : []),
-      h('button', {
+      ...((!blocked || hasOther) ? [h('button', {
         class: 'btn',
         type: 'button',
-        text: blocked ? '重写相关章节' : '重写低评分章节',
+        text: blocked ? '重写其他问题章节' : '重写到达标线',
         on: { click: () => settle('rewrite') }
-      }),
+      })] : []),
       h('button', {
-        class: 'btn btn-primary',
+        class: 'btn' + (hasTruncated ? '' : ' btn-primary'),
         type: 'button',
-        text: '强制导出',
+        text: blocked ? '强制导出原稿' : '取消强制高分，直接导原稿',
         dataset: { autofocus: '' },
         on: { click: () => settle('force') }
       })
     );
 
     const modal = openModal({
-      title: blocked ? '交付未就绪：有禁止项' : '评分不足，是否强制导出？',
+      title: blocked ? '有硬伤未修完' : '强制高分：尚未达标',
       body,
       footer,
       size: 'md',
@@ -629,13 +634,15 @@ export const api = {
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
   restoreChapter: (key, n, id) => request('/api/chapter/restore', { ...jsonBody({ key, n, id }), timeout: 60000 }),
 
-  exportUrl(key, fmt = 'docx', frm = 0, to = 0, force = 0) {
+  exportUrl(key, fmt = 'docx', frm = 0, to = 0, force = 0, strictHigh = false) {
     /* v4.27.3：frm/to 章节范围（0=不限），侧栏「导出」弹窗选章用
-       v4.35.0：force=1 是「未放行也导出」的显式通道，由恢复弹窗触发 */
+       v4.35.0：force=1 是「未放行也导出」的显式通道，由恢复弹窗触发
+       v4.41.4：strict_high=1 = 作者勾选「强制高分」，须达达标线才导出 */
     return joinUrl('/api/export', {
       key, fmt,
       ...(frm || to ? { frm, to } : {}),
-      ...(force ? { force: 1 } : {})
+      ...(force ? { force: 1 } : {}),
+      ...(strictHigh ? { strict_high: 1 } : {})
     });
   },
 
@@ -679,7 +686,7 @@ export const api = {
         const r = await request('/api/save', {
           method: 'POST', body: { kind, ...payload }, timeout: 300000
         });
-        if (r && r.saved) return { saved: r.saved };
+        if (r && r.saved) return r;   // v4.41.4：保留 warnings，导出后提示低分/硬伤情况
         if (r && r.cancelled) return { cancelled: true };
         if (inWebview && r && r.desktop === false) {
           throw new ApiError('桌面客户端未启用原生保存：请重启应用或更新到 v4.32.2 及以上', { status: 0, code: 'need_update' });
@@ -709,31 +716,51 @@ export const api = {
      v4.35.0：被交付闸门/放行门禁拦下时不再直接抛错，而是弹「强制导出 /
      重写低评分章节」——四端（作品库右键、章节工作台、侧栏、剧本台）的导出
      调用点因此全部自动获得出口，不必各写一遍。 */
-  async exportWork(key, fmt, { name = '', frm = 0, to = 0, force = false, retried = false } = {}) {
-    const payload = { key, fmt, frm, to, ...(force ? { force: 1 } : {}) };
+  async exportWork(key, fmt, { name = '', frm = 0, to = 0, force = false, strictHigh = false, retried = false } = {}) {
+    const payload = { key, fmt, frm, to, ...(force ? { force: 1 } : {}), ...(strictHigh ? { strict_high: 1 } : {}) };
     try {
-      return await this.saveAny('export', payload, {
-        fallback: () => this.download(this.exportUrl(key, fmt, frm, to, force),
+      const res = await this.saveAny('export', payload, {
+        fallback: () => this.download(this.exportUrl(key, fmt, frm, to, force, strictHigh),
                                       name ? `${name}.${fmt}` : 'export')
       });
+      /* v4.41.4：默认导出原稿——评分不足只提醒，不阻断。 */
+      if (res && Array.isArray(res.warnings) && res.warnings.length) {
+        const { toast } = await import('./ui.js');
+        toast(res.warnings.join(' '), { tone: 'warn', duration: 7000 });
+      }
+      return res;
     } catch (err) {
       const info = err && err.payload;
       const code = info && info.code;
       const recoverable = code === 'not_released' || code === 'not_ready';
       if (force || !recoverable) throw err;
 
-      const choice = await offerExportRecovery(info, key);
-      if (choice === 'force') return this.exportWork(key, fmt, { name, frm, to, force: true });
+      const choice = await offerExportRecovery(info, key, { strictHigh });
+      if (choice === 'force') return this.exportWork(key, fmt, { name, frm, to, force: true, strictHigh: false });
+      if (choice === 'plain') return this.exportWork(key, fmt, { name, frm, to, force: true, strictHigh: false });
       if (choice === 'finish' || choice === 'rewrite') {
         const { toast } = await import('./ui.js');
         const findings = Array.isArray(info.findings) ? info.findings : [];
+        const _pick = (f) => {
+          if (choice === 'finish') return f.code === 'N03';
+          /* 硬伤分支：N03 只补结尾，交给 finish；这里只重写「其他问题章节」，
+             绝不把截断章再整章重写一遍（那正是旧版反复失败的原因）。 */
+          if (blocked) return f.code !== 'N03';
+          return true;
+        };
         const wanted = [...new Set(findings
-          .filter((f) => (choice === 'finish' ? f.code === 'N03' : true))
+          .filter(_pick)
           .map((f) => {
             const m = String(f.location || '').match(/第\s*(\d+)\s*章/);
             return m ? Number(m[1]) : null;
           })
           .filter((n) => Number.isFinite(n)))];
+        if (blocked && choice === 'rewrite' && !wanted.length) {
+          const { toast } = await import('./ui.js');
+          toast('这些章都是半句截断，请点「补全截断章节并重试」——只补结尾，不整章重写。',
+                { tone: 'warn', duration: 5600 });
+          return { cancelled: true };
+        }
         let r = null;
         try {
           r = choice === 'finish'
@@ -753,7 +780,8 @@ export const api = {
           const done = await waitBackgroundRewrite(key);
           if (done) {
             toast('修复任务已完成，正在重新检查并导出…', { tone: 'success', duration: 4200 });
-            return this.exportWork(key, fmt, { name, frm, to, retried: true });
+            /* v4.41.4：强制高分路径重试时仍按「必须达标」检查；硬伤路径照常导原稿 */
+            return this.exportWork(key, fmt, { name, frm, to, strictHigh, retried: true });
           }
           toast('修复仍在后台进行；完成后再次点导出即可，已修好的章节不会重复报错。',
                 { tone: 'info', duration: 6000 });

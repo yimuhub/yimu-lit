@@ -617,14 +617,28 @@ def check_delivery(chapters: list[dict], *, title: str = "", kind: str = "novel"
     return _report("mini", "universal", findings, {"sections": len(chapters or [])})
 
 
-def export_ready(report: dict, *, enforcement: str | None = None) -> tuple[bool, str]:
-    """导出闸门。enforcing 档位：有任一禁止项即拒绝；advisory：只报告不阻断。"""
+def export_ready(report: dict, *, enforcement: str | None = None,
+                 block_codes: tuple = ()) -> tuple[bool, str]:
+    """导出闸门。enforcing 档位：有禁止项即拒绝；advisory：只报告不阻断。
+
+    block_codes：只拦这些编号（v4.41.4 交付口径）。整书导出默认只拦「硬伤」
+    N03 半句截断；评分低于达标线不再阻断（只提醒），由作者显式选择「强制高分」。
+    空元组 = 沿用档位配置（旧行为，测试与剧本沿用）。
+    """
     mode = enforcement or report.get("enforcement") or "advisory"
-    n = int(report.get("blocking_count") or 0)
+    codes_allowed = set(block_codes or ())
+    findings = report.get("findings") or []
+    if codes_allowed:
+        hits = [f for f in findings if f.get("severity") == "block" and f.get("code") in codes_allowed]
+    else:
+        # 沿用档位配置（旧行为）：只把该档位声明为 block_on_export 的编号算作拦截项
+        prof_codes = set(spec.profile(report.get("profile")).get("block_on_export", ()))
+        hits = [f for f in findings if f.get("severity") == "block" and f.get("code") in prof_codes]
+    n = len(hits)
     if mode == "enforcing" and n:
-        codes = sorted({f["code"] for f in report.get("findings", [])
-                        if f["severity"] == "block"})
-        return False, f"交付未就绪：{n} 项禁止项（{', '.join(codes[:8])}），详见交付就绪报告"
+        codes = sorted({f["code"] for f in hits})
+        return False, (f"交付未就绪：{n} 项硬伤（{', '.join(codes[:8])}），"
+                       f"修完才能当定稿导出；也可点「强制导出原稿」")
     return True, (f"交付就绪（{mode}，{n} 项禁止项仅记录）" if n else "交付就绪：无禁止项")
 
 

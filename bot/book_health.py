@@ -88,7 +88,11 @@ def reject_reason(orig, cand) -> str:
         return "候选稿是模型说明文字，不是正文"
     n_new = len(re.sub(r"\s+", "", cand))
     n_old = len(re.sub(r"\s+", "", orig or ""))
-    if n_old and n_new < max(400, int(n_old * 0.6)):
+    if n_old and n_new < int(n_old * 0.6):
+        return f"篇幅塌陷（{n_new}/{n_old}）"
+    # v4.41.4：400 字绝对下限只对「本来就不短」的原章生效。
+    # 否则给 16 字的半句测试章补到 226 字，也会被误判成塌陷。
+    if n_old >= 400 and n_new < 400:
         return f"篇幅塌陷（{n_new}/{n_old}）"
     return ""
 

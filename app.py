@@ -1596,6 +1596,34 @@ def _chat_attached(s, proj, msg):
             return reply
         return (reply + "\n\n" if reply else "") + "\n\n".join(outs)
 
+    # ══════════ v4.41.4：「继续」不再自动把低分章全部重写 ══════════
+    # 作者实拍：全书已 100/100，点「继续」后系统自作主张按「<80 分」重写 81 章。
+    # 「继续」的语义是「接着没做完的那件事」，不是「重新审一遍并提高分数」。
+    # 已完成的书：如实说完成；有暂停的改写任务：接着那个任务；其余一律不动。
+    _bare = re.sub(r"[\s。！？!?，,、~～…]+", "", msg or "")
+    if _bare in ("继续", "接着来", "接着写", "继续写", "往下写", "接上", "继续吧", "接着来吧"):
+        _total0 = int(st.get("total") or 0)
+        _done0 = int(st.get("done") or 0)
+        if _PARA_RW_RUNNING.get(key, {}).get("running") or _REWRITING.get(key, {}).get("running"):
+            _p0 = writer._PARA_RW_PROGRESS.get(key) or {}
+            return (f"⏳ 已有改写任务在跑（{_p0.get('done', 0)}/{_p0.get('total', 0)} 章），"
+                    f"不用重复点继续；跑完会自动收尾。")
+        try:
+            from bot import journal as _jn
+            _task0 = _jn.current_task(proj.path)
+        except Exception:
+            _task0 = None
+        if isinstance(_task0, dict) and str(_task0.get("status") or "") in ("paused", "partial", "running"):
+            _r0 = writer.resume_task(key)
+            if _r0.get("ok"):
+                return f"▶ 接着上次没做完的任务：{_r0.get('text')}"
+        if _total0 and _done0 >= _total0:
+            return (f"✅ 《{name}》全书已完成（{_done0}/{_total0} 章），没有待写的章节，"
+                    f"所以不会自动重写任何一章。\n\n"
+                    f"要交付：直接点「导出」即可——只需修硬伤（半句截断）后就能导原稿；\n"
+                    f"要冲高分：在导出弹窗勾选「强制高分」，系统才会把低于达标线的章重写到达标。")
+        # 书没写完：不在这里拦，交给正常写作路由（保留 plan.config 的每批章数等既有行为）
+
     _decision = None
     try:
         _hist = chief_mod.recent_history(proj.path)
@@ -2998,11 +3026,12 @@ def _rw_short_batch(key, todo, below_words, job):
 
 
 def _rw_finish_batch(key, todo, target_words, job):
-    """N03 截断补写专用批次（v4.41.1）。
+    """N03 截断补写专用批次（v4.41.4）。
 
-    不能复用 run_short_expand：它只挑「低于目标字数」的章，而 N03 经常是
-    五六千字却停在半句，传进去会被整批跳过，导出于是永远复检、永远同一份内容。
-    这里对指定章直接调 expand_short_chapter——它自己会判断截断并续写收尾。
+    v4.41.1 用 expand_short_chapter 直接扩写，结果模型被要求「输出完整章节」，
+    六七千字的章只回两千多字、结尾仍未收全，三轮全废。现在改为
+    finish_truncated_chapter：从真实断点续写，只补结尾、不整章重写，
+    并且只在结尾完整时保留——这是硬伤修复，不再拿评分当保留条件。
     """
     try:
         from concurrent.futures import ThreadPoolExecutor
@@ -3010,7 +3039,7 @@ def _rw_finish_batch(key, todo, target_words, job):
 
         def one(n):
             try:
-                return writer.expand_short_chapter(proj, n, target_words=int(target_words))
+                return writer.finish_truncated_chapter(proj, n, max_rounds=2)
             except Exception as e:
                 return {"ch": n, "kept": False, "note": f"异常：{e}"}
 
@@ -3023,33 +3052,86 @@ def _rw_finish_batch(key, todo, target_words, job):
         raise
 
 
+def _model_probe_error(proj) -> str:
+    """开大批量改写前先探一次模型连接（v4.41.4）。
+
+    作者实拍：点「重新写」后每章都失败，日志全是 401 / timed out / 404，
+    系统仍然一轮一轮重试——重试不会成功，只会白烧时间。这里在开跑前拦住。
+    """
+    try:
+        from bot import providers as _pv
+        cfg = (proj.plan() or {}).get("config") or {}
+        _p, _m = _pv.resolve(cfg)
+        r = _pv.test_provider(_p.get("id"), probe_chat=False)
+        if r.get("ok"):
+            return ""
+        d = str(r.get("detail") or "")
+        if "鉴权" in d or "无法连接" in d:
+            return (f"模型连接不可用：{d}。请到「设置 → 模型与供应商」点「测试连接」修好后再重写；"
+                    f"这次可以直接导出原稿，硬伤章留到连接恢复后再补。")
+    except Exception:
+        return ""
+    return ""
+
+
 @app.post("/api/rewrite-parallel")
 def api_rewrite_parallel(payload: dict):
-    """v4.17.2：多岗位并行改写低分章——审稿问题一次性下发，每章独立改写，
-    分数必须高于原分（保留更好守护），每章 1 轮不烧 token。异步执行。
-    v4.23.0：登记任务档案，中途被打断也能「继续」接着改剩下的。"""
+    """v4.17.2：多岗位并行改写——审稿问题一次性下发，每章独立改写。
+    v4.23.0：登记任务档案，中途被打断也能「继续」接着改剩下的。
+    v4.41.4：①没指定章号时只挑「硬伤章（半句截断）」，不再默认把 <80 分的章全部重写；
+             ②开跑前探活模型，连接坏了立刻说清楚；③已有任务在跑时返回现状，不报失败。"""
     key = str(payload.get("key") or "")
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     key = os.path.basename(proj.path)
     if _PARA_RW_RUNNING.get(key, {}).get("running"):
-        return JSONResponse({"error": "该书已有改写任务在跑"}, status_code=409)
+        prog = writer._PARA_RW_PROGRESS.get(key) or {}
+        return {"ok": True, "started": False, "running": True,
+                "msg": (f"✅ 改写任务已经在跑（{prog.get('done', 0)}/{prog.get('total', 0)} 章），"
+                        f"不用重复点；跑完会自动收尾。")}
+    _probe = _model_probe_error(proj)
+    if _probe:
+        return JSONResponse({"error": _probe, "code": "provider_down"}, status_code=400)
     chapters = payload.get("chapters")
     workers = max(1, min(8, int(payload.get("workers") or 3)))
     _target = payload.get("target")
-    _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
     if not chapters:
-        chapters = [p["ch"] for p in writer.per_chapter_scores(proj)
-                    if isinstance(p.get("score"), (int, float)) and p["score"] < writer._pass_line()]
+        # v4.41.4：作者显式要求冲高分（带 target，来自「强制高分」）才按分数选章；
+        # 普通「重新写」只修硬伤（N03 半句截断），绝不默认把 <80 分的章全部重写。
+        if _target:
+            try:
+                _pl_t = int(_target)
+            except (TypeError, ValueError):
+                _pl_t = writer._pass_line()
+            chapters = [p["ch"] for p in writer.per_chapter_scores(proj)
+                        if isinstance(p.get("score"), (int, float)) and p["score"] < _pl_t]
+            if not chapters:
+                return {"ok": True, "started": False,
+                        "msg": f"✅ 所有已评分章节都达到 {_pl_t} 分，不需要再重写。"}
+        else:
+            try:
+                from bot import delivery_gate as _dg, export as _ex
+                _chs = _ex.novel_chapters(proj)
+                _rep = _dg.check_delivery(_chs, title=proj.name, kind="novel")
+                chapters = sorted({int(str(f.get("location") or "").replace("第", "").replace("章", ""))
+                                   for f in (_rep.get("findings") or [])
+                                   if f.get("code") == "N03" and str(f.get("location") or "").startswith("第")})
+            except Exception:
+                chapters = []
+            if not chapters:
+                return {"ok": True, "started": False,
+                        "msg": ("✅ 没有需要重写的硬伤章。低分章节不再强制重写："
+                                "直接导出即可；要冲高分请在导出时勾选「强制高分」。")}
+    _PARA_RW_RUNNING[key] = {"running": True, "started_at": int(time.time())}
     writer.start_task(
-        key, "rewrite", f"并行改写《{proj.name}》低分章", chapters or [],
+        key, "rewrite", f"并行改写《{proj.name}》相关章节", chapters or [],
         batch=lambda todo: _rw_batch(key, todo, _PARA_RW_RUNNING,
                                      target=_target, workers=workers, max_rounds=1),
         params={"workers": workers, "max_rounds": 1,
                 **({"target": _target} if _target else {})})
     return {"ok": True, "started": True, "workers": workers,
-            "msg": f"⚡ 多岗位并行改写已启动（同时 {workers} 个岗位，改完自动停）"}
+            "msg": f"⚡ 多岗位并行改写已启动：{len(chapters)} 章（同时 {workers} 个岗位）"}
 
 
 @app.get("/api/rewrite-parallel/progress")
@@ -3074,7 +3156,11 @@ def api_export_finish(payload: dict):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     key = os.path.basename(proj.path)
     if _PARA_RW_RUNNING.get(key, {}).get("running"):
-        return JSONResponse({"error": "该书已有改写/补写任务在跑"}, status_code=409)
+        return {"ok": True, "started": False, "running": True,
+                "msg": "已有补写/改写任务在跑，等它完成后会自动重试导出。"}
+    _probe = _model_probe_error(proj)
+    if _probe:
+        return JSONResponse({"error": _probe, "code": "provider_down"}, status_code=400)
     chapters = payload.get("chapters")
     if not isinstance(chapters, list):
         chapters = []
@@ -5375,9 +5461,16 @@ class _ExportError(Exception):
         return d
 
 
-def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0):
+def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0,
+                  strict_high: int = 0):
     """构建导出产物（v4.32.0 从 GET /api/export 抽出，桌面保存对话框复用）。
-    返回 (data, media, ext, title)；错误抛 _ExportError。"""
+
+    v4.41.4 交付口径：
+    · 整书导出只拦「硬伤」（N03 半句截断/没写完），修完即可导原稿；
+    · 评分低于达标线不再阻断，只把结果放进 notice 让界面提醒；
+    · strict_high=1（作者勾选「强制高分」）才要求重写至 ≥ 达标线；
+    · force=1 任何时候都能导出（不给理由，也不被硬伤拦住）。
+    返回 (data, media, ext, title, notice:list[str])；错误抛 _ExportError。"""
     proj = _get_project(key)
     if not proj:
         raise _ExportError("项目不存在或未加载，请刷新作品库", 404)
@@ -5479,49 +5572,57 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
             _f.write(_dg.report_markdown(_rep))
     except OSError:
         pass
-    _ok, _msg = _dg.export_ready(_rep, enforcement=_enforce)
+    _notice = []
+    _hard_codes = ("N03",) if (novel and not force) else ()
+    _ok, _msg = _dg.export_ready(_rep, enforcement=_enforce, block_codes=_hard_codes)
     if not _ok:
-        # v4.35.0：禁止项明细随错误一起回给前端——用户要看到「哪几章、什么问题」，
-        # 而不是一句「交付未就绪」。
-        _blocks = [f for f in (_rep.get("findings") or []) if f.get("severity") == "block"]
+        # v4.35.0：禁止项明细随错误一起回给前端——用户要看到「哪几章、什么问题」。
+        # v4.41.4：只列真正拦住导出的硬伤（N03）；其余同类问题只记录在报告里。
+        _blocks = [f for f in (_rep.get("findings") or [])
+                   if f.get("severity") == "block" and f.get("code") in _hard_codes]
+        _others = [f for f in (_rep.get("findings") or [])
+                   if f.get("severity") == "block" and f.get("code") not in _hard_codes]
         raise _ExportError(_msg, 409, "not_ready", {
             "blocking": len(_blocks),
             "findings": [{k: f.get(k) for k in ("code", "name", "location", "detail")}
                          for f in _blocks[:20]],
+            "warnings": [{k: f.get(k) for k in ("code", "name", "location", "detail")}
+                         for f in _others[:20]],
             "repaired": len(_clean.get("changed") or []),
             **_taste_info,
         })
-    # v4.33.8 未达标不放行：放行门禁已跑且未放行的盖章作品，整书导出默认拦截；
-    # force=1 可带「未放行初稿」标注取阅——绝不静默把 59 分当定稿交付。
+    # v4.33.8 未达标不放行 → v4.41.4 改成「默认可导原稿、只提醒」：
+    # 盖章作品评分低于达标线时不再拦住导出；只有作者勾选「强制高分」才要求重写到达标线。
+    # force=1 任何时候都放行（带「未放行初稿」标注，避免冒充定稿）。
     _rel_block, _rel_msg = export_mod.release_export_block(plan)
-    # v4.35.0：标注条件与 enforcement 解耦。此前写的是 `_enforce == "enforcing"`，
-    # 而 force=1 恰好把 _enforce 降级成 advisory —— 于是「强制导出」既绕过闸门、
-    # 又顺手跳过了书名标注，导出的稿子冒充定稿（标注从上线起就没生效过）。
     if _rel_block and _stamped and not (frm or to):
-        if not force:
-            # v4.35.0：把「差多少、差在哪」变成结构化数据，前端据此弹
-            # 「强制导出 / 重写低评分章节」——此前只有一句文案，作者被闸门卡死。
-            _fq0 = (plan.get("meta") or {}).get("final_quality")
-            _pl0 = ((plan.get("config") or {}).get("validation") or {}).get("pass_line") or 80
-            try:
-                _pl0 = int(_pl0)
-            except (TypeError, ValueError):
-                _pl0 = 80
-            try:
-                _below0 = len([x for x in writer.per_chapter_scores(proj)
-                               if isinstance(x.get("score"), (int, float)) and x["score"] < _pl0])
-            except Exception:
-                _below0 = 0
-            raise _ExportError(_rel_msg, 409, "not_released", {
-                "final_quality": _fq0,
-                "pass_line": _pl0,
-                "below": _below0,
-                "chapters": len(chapters),
-                "title": title,
-                **_taste_info,
-            })
-        _fq = (plan.get("meta") or {}).get("final_quality")
-        title = f"{title}（未放行初稿{_fq if _fq is not None else ''}分）"
+        _fq0 = (plan.get("meta") or {}).get("final_quality")
+        _pl0 = ((plan.get("config") or {}).get("validation") or {}).get("pass_line") or 80
+        try:
+            _pl0 = int(_pl0)
+        except (TypeError, ValueError):
+            _pl0 = 80
+        try:
+            _below0 = len([x for x in writer.per_chapter_scores(proj)
+                           if isinstance(x.get("score"), (int, float)) and x["score"] < _pl0])
+        except Exception:
+            _below0 = 0
+        if strict_high and not force:
+            raise _ExportError(
+                f"已选择「强制高分」：本书最终质量 {_fq0 if _fq0 is not None else '?'} 分 < 达标线 {_pl0}，"
+                f"需要先重写到 {_pl0} 分以上再导出；也可以取消勾选直接导出原稿。",
+                409, "not_released", {
+                    "final_quality": _fq0, "pass_line": _pl0, "below": _below0,
+                    "chapters": len(chapters), "title": title, "strict_high": 1,
+                    **_taste_info,
+                })
+        if force:
+            title = f"{title}（未放行初稿{_fq0 if _fq0 is not None else ''}分）"
+        else:
+            _notice.append(
+                f"本书最终质量 {_fq0 if _fq0 is not None else '?'} 分，低于达标线 {_pl0} 分"
+                + (f"（{_below0} 章未达标）" if _below0 else "")
+                + "；已按你的选择导出原稿。需要冲高分，可在导出时勾选「强制高分」再重写。")
     # v4.27.3：章节范围过滤（闭区间；0=不限）——docx/epub/print 都吃 chapters，
     # md 由过滤后的章手拼（markdown(proj) 只能整书）。
     ranged = bool(frm or to)
@@ -5556,7 +5657,7 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
                 # 单文档正文自带 H1（定稿文件首行就是标题）→ 原文直出，不再叠加书名题头
                 data = str(_c0.get("text", "")).encode("utf-8")
                 media, ext = "text/markdown; charset=utf-8", "md"
-                return data, media, ext, title
+                return data, media, ext, title, _notice
             md = [f"# {title}", ""]
             for c in chapters:
                 head = f"第{c['n']}章 {c.get('title', '')}" if novel else str(c.get("title", "") or f"第{c['n']}节")
@@ -5596,7 +5697,7 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
         data, media, ext = export_mod.fdx_bytes(sproj), "application/xml", "fdx"
     else:
         raise _ExportError(f"不支持的格式：{fmt}")
-    return data, media, ext, title
+    return data, media, ext, title, _notice
 
 
 def _export_settle(key: str, frm: int, to: int):
@@ -5613,19 +5714,24 @@ def _export_settle(key: str, frm: int, to: int):
 
 
 @app.get("/api/export")
-def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0):
+def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0,
+               strict_high: int = 0):
     """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。
     v4.27.3：frm/to 章节范围——侧栏「导出」弹窗可选整书或某几章（闭区间，0=不限）。
-    v4.32.0：构建逻辑下沉 _export_build（桌面原生保存对话框复用同一套）。"""
+    v4.32.0：构建逻辑下沉 _export_build（桌面原生保存对话框复用同一套）。
+    v4.41.4：strict_high=1 表示作者勾选「强制高分」；默认只修硬伤、评分仅提醒。"""
     from urllib.parse import quote
     try:
-        data, media, ext, title = _export_build(key, fmt, frm, to, force)
+        data, media, ext, title, notice = _export_build(key, fmt, frm, to, force, strict_high)
     except _ExportError as e:
         return JSONResponse(e.body(), status_code=e.status)
     _export_settle(key, frm, to)
     fname = re.sub(r'[\\/:*?"<>|]+', "", title)[:60] or "export"
     disp = f"attachment; filename=\"export.{ext}\"; filename*=UTF-8''{quote(fname + '.' + ext)}"
-    return Response(data, media_type=media, headers={"Content-Disposition": disp})
+    headers = {"Content-Disposition": disp}
+    if notice:
+        headers["X-Export-Notice"] = quote(" | ".join(notice)[:600])
+    return Response(data, media_type=media, headers=headers)
 
 
 _SAVE_KINDS = ("export", "diagnostics", "download", "script")
@@ -5636,31 +5742,33 @@ def _safe_export_name(title: str) -> str:
 
 
 def _save_payload(kind: str, payload: dict):
-    """按导出类型产出 (bytes, 默认文件名, 扩展名)。
+    """按导出类型产出 (bytes, 默认文件名, 扩展名, 提醒列表)。
 
     v4.32.2：整个系统「向外导出」只有一个生成入口——作品导出、诊断包/系统日志、
     整本 Markdown、剧本定稿全文。所有调用方最后都经过 _save_bytes_to_dialog，
-    保证桌面端必定弹出「存储」对话框，绝不会把文件内容回灌进 webview。"""
+    保证桌面端必定弹出「存储」对话框，绝不会把文件内容回灌进 webview。
+    v4.41.4：返回 notice（如「评分低于达标线，已按原稿导出」），前端导出后可提示。"""
     p = payload if isinstance(payload, dict) else {}
     key = str(p.get("key") or "")
     if kind == "export":
         fmt = str(p.get("fmt") or "docx").lower()
         frm = int(p.get("frm") or 0)
         to = int(p.get("to") or 0)
-        data, _media, ext, title = _export_build(key, fmt, frm, to, int(p.get("force") or 0))
+        data, _media, ext, title, notice = _export_build(
+            key, fmt, frm, to, int(p.get("force") or 0), int(p.get("strict_high") or 0))
         _export_settle(key, frm, to)   # v4.34.0：整本导出即出书 → 停止创作流程
-        return data, f"{_safe_export_name(title)}.{ext}", ext
+        return data, f"{_safe_export_name(title)}.{ext}", ext, notice
     if kind == "diagnostics":
         text, scope = _build_diagnostics_text(p)
-        return text.encode("utf-8"), f"yimu-lit-诊断包-{scope}.txt", "txt"
+        return text.encode("utf-8"), f"yimu-lit-诊断包-{scope}.txt", "txt", []
     if kind == "download":
         data, name = _build_download(key)
-        return data, f"{_safe_export_name(name)}.md", "md"
+        return data, f"{_safe_export_name(name)}.md", "md", []
     if kind == "script":
         txt = script_writer.export_text(key)
         if not txt:
             raise _ExportError("项目不存在或未加载，请刷新作品库", 404)
-        return txt.encode("utf-8"), f"{_safe_export_name(key)}.txt", "txt"
+        return txt.encode("utf-8"), f"{_safe_export_name(key)}.txt", "txt", []
     raise _ExportError(f"不支持的导出类型：{kind}")
 
 
@@ -5695,10 +5803,13 @@ def api_save(payload: dict):
     if not desktop_bridge.is_desktop():
         return {"desktop": False}
     try:
-        data, fname, ext = _save_payload(kind, payload)
+        data, fname, ext, notice = _save_payload(kind, payload)
     except _ExportError as e:
         return JSONResponse(e.body(), status_code=e.status)
-    return _save_bytes_to_dialog(data, fname, ext)
+    out = _save_bytes_to_dialog(data, fname, ext)
+    if notice:
+        out["warnings"] = notice
+    return out
 
 
 @app.post("/api/export/save")
@@ -5708,10 +5819,13 @@ def api_export_save(payload: dict):
     if not desktop_bridge.is_desktop():
         return {"desktop": False}
     try:
-        data, fname, ext = _save_payload("export", payload)
+        data, fname, ext, notice = _save_payload("export", payload)
     except _ExportError as e:
         return JSONResponse(e.body(), status_code=e.status)
-    return _save_bytes_to_dialog(data, fname, ext)
+    out = _save_bytes_to_dialog(data, fname, ext)
+    if notice:
+        out["warnings"] = notice
+    return out
 
 @app.get("/api/agents")
 def api_agents():
