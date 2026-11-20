@@ -140,7 +140,12 @@ function openExportDialog(item) {
       h('input', { type: 'checkbox', dataset: { role: 'strict-high' } }),
       h('span', { text: '强制高分（低于达标线的章节重写到达标后才允许导出）' })),
     h('div', { class: 'hint-text', style: { marginTop: '6px' },
-      text: '不勾选时：只修硬伤（半句截断/没写完）即可导出原稿，评分不足只提醒。' }));
+      text: '不勾选时：只修硬伤（半句截断/没写完）即可导出原稿，评分不足只提醒。' }),
+    h('label', { class: 'exp-fmt', style: { display: 'flex', alignItems: 'flex-start', gap: '8px', marginTop: '10px' } },
+      h('input', { type: 'checkbox', dataset: { role: 'quick-export' } }),
+      h('span', { text: '只出内部稿（跳过 v5 投稿质量闸门）' })),
+    h('div', { class: 'hint-text', style: { marginTop: '6px' },
+      text: 'v5 新项目默认按投稿标准导出：事实源/章卡/结构/终局证据有阻断项时拒绝导出。' }));
 
   const body = h('div', { class: 'exp-form' },
     h('div', { class: 'evo-sub', text: '范围' }),
@@ -180,8 +185,9 @@ function openExportDialog(item) {
         (async () => {
           try {
             const strictHigh = !!(body.querySelector('[data-role="strict-high"]') || {}).checked;
+            const mode = !!(body.querySelector('[data-role="quick-export"]') || {}).checked ? 'quick' : '';
             toast(strictHigh ? '正在检查评分并按「强制高分」导出…' : '正在导出原稿…', { duration: 2200 });
-            const r = await api.exportWork(item.key, fmt, { name: item.name, frm: isNovel ? frm : 0, to: isNovel ? to : 0, strictHigh });
+            const r = await api.exportWork(item.key, fmt, { name: item.name, frm: isNovel ? frm : 0, to: isNovel ? to : 0, strictHigh, mode });
             if (!r || !r.cancelled) {
               const where = r && r.saved ? `已保存到 ${r.saved}` : '已开始下载';
               toast(where, { tone: 'success', duration: 3200 });

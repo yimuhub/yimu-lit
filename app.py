@@ -5467,7 +5467,7 @@ class _ExportError(Exception):
 
 
 def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0,
-                  strict_high: int = 0):
+                  strict_high: int = 0, mode: str = ""):
     """构建导出产物（v4.32.0 从 GET /api/export 抽出，桌面保存对话框复用）。
 
     v4.41.4 交付口径：
@@ -5549,12 +5549,36 @@ def _export_build(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force:
         chapters = [{"n": 1, "title": doc_label, "text": ftext}] if ftext else []
     if not chapters:
         raise _ExportError("还没有可导出的正文")
+    # v5.0：投稿模式先过质量内核（事实源/主角/章卡/结构/终局证据）。
+    # 老项目没有 v5 开关，保持原有口径；quick=显式只看内部稿。
+    _v5_submit = False
+    try:
+        from bot import story_kernel as _v5
+        _v5_on = bool(novel and _v5.enabled(proj))
+        _mode = (mode or "").strip().lower()
+        if _v5_on and not force and not (frm or to) and _mode != "quick":
+            _v5_submit = True
+            _v5_rep = _v5.check_book(proj, chapters)
+            if not _v5_rep.get("ok"):
+                _blocks = _v5_rep.get("blocks") or []
+                raise _ExportError("v5 投稿闸门未通过：请先修质量内核阻断项", 409, "not_ready", {
+                    "blocking": len(_blocks),
+                    "findings": [{k: f.get(k) for k in ("code", "message", "chapter", "evidence")}
+                                 for f in _blocks[:20]],
+                })
+    except _ExportError:
+        raise
+    except Exception as _e:
+        try:
+            proj.log(f"⚠️ v5 投稿闸门异常（按原口径继续）：{_e}")
+        except Exception:
+            pass
     # v4.33.7 统一交付闸门：所有导出格式共用同一份《交付就绪报告》。
     # 盖了交付规格章的整书导出 = enforcing（有禁止项即拒绝）；未盖章的历史作品、
     # 分章导出与显式 force=1 只出报告、不锁死取回。报告写到项目目录供复核。
     from bot import delivery_gate as _dg, delivery_spec as _ds
     _kind = "script" if is_script else ("novel" if novel else "mini")
-    _declared = str(plan.get("deliveryProfile") or "").strip() or _ds.profile_for(_kind)
+    _declared = "novel_submission" if _v5_submit else (str(plan.get("deliveryProfile") or "").strip() or _ds.profile_for(_kind))
     _stamped = bool(plan.get("deliverySpecVersion"))
     _enforce = "enforcing" if (_stamped and not (frm or to) and not force) else "advisory"
     _rep = _dg.check_delivery(chapters, title=title, kind=_kind, profile=_declared)
@@ -5720,14 +5744,14 @@ def _export_settle(key: str, frm: int, to: int):
 
 @app.get("/api/export")
 def api_export(key: str, fmt: str = "docx", frm: int = 0, to: int = 0, force: int = 0,
-               strict_high: int = 0):
+               strict_high: int = 0, mode: str = ""):
     """专业导出：md / docx / epub / print；剧本另支持 fountain / fdx。
     v4.27.3：frm/to 章节范围——侧栏「导出」弹窗可选整书或某几章（闭区间，0=不限）。
     v4.32.0：构建逻辑下沉 _export_build（桌面原生保存对话框复用同一套）。
     v4.41.4：strict_high=1 表示作者勾选「强制高分」；默认只修硬伤、评分仅提醒。"""
     from urllib.parse import quote
     try:
-        data, media, ext, title, notice = _export_build(key, fmt, frm, to, force, strict_high)
+        data, media, ext, title, notice = _export_build(key, fmt, frm, to, force, strict_high, mode)
     except _ExportError as e:
         return JSONResponse(e.body(), status_code=e.status)
     _export_settle(key, frm, to)
@@ -5760,7 +5784,8 @@ def _save_payload(kind: str, payload: dict):
         frm = int(p.get("frm") or 0)
         to = int(p.get("to") or 0)
         data, _media, ext, title, notice = _export_build(
-            key, fmt, frm, to, int(p.get("force") or 0), int(p.get("strict_high") or 0))
+            key, fmt, frm, to, int(p.get("force") or 0), int(p.get("strict_high") or 0),
+            str(p.get("mode") or ""))
         _export_settle(key, frm, to)   # v4.34.0：整本导出即出书 → 停止创作流程
         return data, f"{_safe_export_name(title)}.{ext}", ext, notice
     if kind == "diagnostics":
@@ -8168,7 +8193,8 @@ def api_export_post(payload: dict):
     return api_export(str(payload.get("key") or ""),
                       str(payload.get("format") or payload.get("fmt") or "docx"),
                       int(payload.get("frm") or 0), int(payload.get("to") or 0),
-                      int(payload.get("force") or 0))
+                      int(payload.get("force") or 0), int(payload.get("strict_high") or 0),
+                      str(payload.get("mode") or ""))
 
 
 from bot.v2api import register_v2_routes  # noqa: E402  (需在 _get_project/chat 定义后注册)

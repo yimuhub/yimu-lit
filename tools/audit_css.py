@@ -53,6 +53,7 @@ NO_STYLE = {
     "set-list": "行靠 `.set-row + .set-row` 的 0.5px 分隔线成列，加 gap 会顶开",
     "collab-agent-actions": "父级 .collab-card 已 gap:6px，且整行只有一个按钮",
     "mb-prev": "modal body 是 .modal-body（已 padding + 滚动），非 flex，flex:1 无效",
+    "exp-strict": "导出弹窗勾选区容器，仅用内联 marginTop，视觉由 .exp-fmt 提供",
 }
 
 _JS_CLASS_ATTR = re.compile(r"""\bclass\s*[:=]\s*(["'`])(.*?)\1""", re.S)

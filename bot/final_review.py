@@ -203,6 +203,24 @@ def run_novel(proj, policy: dict | None = None, trigger: str = "auto") -> dict:
     # 终审后的字数事实（只统计，不再改，避免与刚完成的重写互相打架）
     final_words = _final_word_facts(proj, plan)
 
+    # v5.0：终局证据 + 事实源/章卡/结构统一体检；只对有 v5 标记的新项目生效，
+    # 老项目不触发任何 v5 读写。这里只报告，不阻断终审（导出闸门会阻断）。
+    _v5 = None
+    try:
+        from . import story_kernel as _sk
+        _cfg = plan.get("config") if isinstance(plan.get("config"), dict) else {}
+        if _sk.enabled(proj, _cfg):
+            _chs = []
+            for c in chapters:
+                _n = int(c.get("chapterNumber") or c.get("n") or 0)
+                if not _n:
+                    continue
+                _fp = os.path.join(proj.path, c.get("filePath") or f"第{_n:02d}章.md")
+                _chs.append({"n": _n, "text": _read(_fp)})
+            _v5 = _sk.check_book(proj, _chs)
+    except Exception as e:
+        proj.log(f"⚠️ v5 终局体检失败（不阻断终审）：{e}")
+
     result = {
         "ok": True, "at": _now(), "trigger": trigger, "policy": pol,
         "words": word, "final_words": final_words,
@@ -219,6 +237,7 @@ def run_novel(proj, policy: dict | None = None, trigger: str = "auto") -> dict:
         "skipped_deferred": skipped_deferred,
         "finished_at": _now(),
         "book_sha": _book_sha(proj, plan),
+        "v5": _v5,
     }
     _write_report_novel(proj, plan, result)
     try:
@@ -502,6 +521,17 @@ def _write_report_novel(proj, plan, result: dict) -> None:
         lines.append("- 仍低于验收线："
                      + "、".join(f"第{x['ch']}章 {x['words']}字"
                                  for x in result["final_words"]["below"][:12]))
+    if result.get("v5"):
+        _v = result["v5"]
+        lines += [
+            "",
+            "## v5.0 长篇质量内核体检",
+            f"- 事实源/章卡/结构/终局证据：{'通过' if _v.get('ok') else '有阻断项'}",
+            f"- 阻断项：{len(_v.get('blocks') or [])} 条",
+        ]
+        for _x in (_v.get("blocks") or [])[:8]:
+            lines.append(f"  - [{_x.get('code')}] {_x.get('message')}")
+
     lines += [
         "",
         "## 说明（不粉饰）",

@@ -387,6 +387,13 @@ def build(proj, ch, cfg=None, references=None) -> dict:
     refs_text = _references_block(references, cfg, plan)
     warnings = _warnings(proj, card)
     style_anchor = _style_anchor(pdir, style_text)
+    v5_block = ""
+    try:
+        from . import story_kernel as _v5
+        if _v5.enabled(proj):
+            v5_block = _v5.context_block(proj, card)
+    except Exception:
+        v5_block = ""
     lore_relevant = ""
     if cfg.get("lorebook", True):
         try:
@@ -406,6 +413,7 @@ def build(proj, ch, cfg=None, references=None) -> dict:
         {"name": "foreshadow", "text": _foreshadow_text(card), "layer": 1, "priority": 11, "cap": 1200},
         {"name": "warnings", "text": "\n".join(f"- {w}" for w in warnings), "layer": 1, "priority": 12, "cap": 900},
         {"name": "clue_ledger", "text": _read(pdir, "10-线索账本.md", 6000), "layer": 1, "priority": 13, "cap": 1200},
+        {"name": "v5_kernel", "text": v5_block, "layer": 1, "priority": 4, "cap": 1800},
         {"name": "characters", "text": _characters_block(pdir, card), "layer": 2, "priority": 20, "cap": 3000},
         {"name": "lore", "text": lore_relevant, "layer": 2, "priority": 20, "cap": 1200},
         {"name": "style", "text": style_text, "layer": 2, "priority": 21, "cap": 2600},
@@ -439,6 +447,7 @@ def build(proj, ch, cfg=None, references=None) -> dict:
         "cfg": cfg,
         "continuation": bool((ch or {}).get("continuation")),
         "story_bible": parts.get("story_bible", ""),
+        "v5_kernel": parts.get("v5_kernel", ""),
         "clue_ledger": parts.get("clue_ledger", ""),
         "chapter_summaries": parts.get("recent", ""),
         "timeline": parts.get("timeline", ""),

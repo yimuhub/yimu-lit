@@ -634,7 +634,7 @@ export const api = {
   chapterDiff: (key, n, id) => request('/api/chapter/diff', { query: { key, n, id } }),
   restoreChapter: (key, n, id) => request('/api/chapter/restore', { ...jsonBody({ key, n, id }), timeout: 60000 }),
 
-  exportUrl(key, fmt = 'docx', frm = 0, to = 0, force = 0, strictHigh = false) {
+  exportUrl(key, fmt = 'docx', frm = 0, to = 0, force = 0, strictHigh = false, mode = '') {
     /* v4.27.3：frm/to 章节范围（0=不限），侧栏「导出」弹窗选章用
        v4.35.0：force=1 是「未放行也导出」的显式通道，由恢复弹窗触发
        v4.41.4：strict_high=1 = 作者勾选「强制高分」，须达达标线才导出 */
@@ -642,7 +642,8 @@ export const api = {
       key, fmt,
       ...(frm || to ? { frm, to } : {}),
       ...(force ? { force: 1 } : {}),
-      ...(strictHigh ? { strict_high: 1 } : {})
+      ...(strictHigh ? { strict_high: 1 } : {}),
+      ...(mode ? { mode } : {})
     });
   },
 
@@ -716,11 +717,11 @@ export const api = {
      v4.35.0：被交付闸门/放行门禁拦下时不再直接抛错，而是弹「强制导出 /
      重写低评分章节」——四端（作品库右键、章节工作台、侧栏、剧本台）的导出
      调用点因此全部自动获得出口，不必各写一遍。 */
-  async exportWork(key, fmt, { name = '', frm = 0, to = 0, force = false, strictHigh = false, retried = false } = {}) {
-    const payload = { key, fmt, frm, to, ...(force ? { force: 1 } : {}), ...(strictHigh ? { strict_high: 1 } : {}) };
+  async exportWork(key, fmt, { name = '', frm = 0, to = 0, force = false, strictHigh = false, mode = '', retried = false } = {}) {
+    const payload = { key, fmt, frm, to, ...(force ? { force: 1 } : {}), ...(strictHigh ? { strict_high: 1 } : {}), ...(mode ? { mode } : {}) };
     try {
       const res = await this.saveAny('export', payload, {
-        fallback: () => this.download(this.exportUrl(key, fmt, frm, to, force, strictHigh),
+        fallback: () => this.download(this.exportUrl(key, fmt, frm, to, force, strictHigh, mode),
                                       name ? `${name}.${fmt}` : 'export')
       });
       /* v4.41.4：默认导出原稿——评分不足只提醒，不阻断。 */
@@ -737,8 +738,8 @@ export const api = {
       if (force || !recoverable) throw err;
 
       const choice = await offerExportRecovery(info, key, { strictHigh });
-      if (choice === 'force') return this.exportWork(key, fmt, { name, frm, to, force: true, strictHigh: false });
-      if (choice === 'plain') return this.exportWork(key, fmt, { name, frm, to, force: true, strictHigh: false });
+      if (choice === 'force') return this.exportWork(key, fmt, { name, frm, to, force: true, strictHigh: false, mode });
+      if (choice === 'plain') return this.exportWork(key, fmt, { name, frm, to, force: true, strictHigh: false, mode });
       if (choice === 'finish' || choice === 'rewrite') {
         const { toast } = await import('./ui.js');
         const findings = Array.isArray(info.findings) ? info.findings : [];

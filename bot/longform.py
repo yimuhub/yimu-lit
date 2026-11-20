@@ -48,7 +48,8 @@ ARC_TARGET = 11                # 每弧 8–15 章
 
 _CARD_FIELDS = ("title", "goal", "conflict", "turn", "payoff", "cliffhanger",
                 "foreshadow_setup", "foreshadow_payoff", "cast", "locations", "word_target",
-                "scenes", "engine", "elements")
+                "scenes", "engine", "elements", "scene_type", "story_time",
+                "protagonist_action", "relationship_delta", "threads_advance", "beats")
 
 _SCENE_FIELDS = ("want", "obstacle", "choice", "cost", "outcome", "value_shift")
 _ENGINE_FIELDS = ("opponent", "opponent_action", "emotion_beat", "humanity_choice",
@@ -227,6 +228,37 @@ def _norm_engine(raw) -> dict:
     return out if any(out.values()) else {}
 
 
+def _norm_threads(raw) -> list[dict]:
+    out = []
+    for item in _list(raw):
+        if isinstance(item, str):
+            item = {"thread": item}
+        if not isinstance(item, dict):
+            continue
+        rec = {
+            "thread": _text(item.get("thread") or item.get("line") or item.get("name"), 80),
+            "change": _text(item.get("change") or item.get("delta") or item.get("result"), 200),
+            "irreversible": bool(item.get("irreversible") or item.get("不可逆")),
+        }
+        if any(rec.values()):
+            out.append(rec)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _clean_goal(raw) -> str:
+    s = str(raw or "")
+    for mark in ("**场景分镜", "场景分镜", "**伏笔", "**章末钩子", "**第一爽点"):
+        if mark in s:
+            s = s.split(mark)[0]
+    s = re.sub(r"[*#>`]", "", s)
+    s = re.sub(r"核心事件展开[：: ]*", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    first = re.split(r"[。！？\n]", s)[0].strip()
+    return (first or s)[:180]
+
+
 def _norm_card(raw, n: int = 0) -> dict:
     f = raw if isinstance(raw, dict) else {}
     num = _int(f.get("n") or f.get("chapterNumber") or n, n)
@@ -235,7 +267,7 @@ def _norm_card(raw, n: int = 0) -> dict:
         "volume": max(0, _int(f.get("volume"), 0)),
         "arc": max(0, _int(f.get("arc"), 0)),
         "title": _clean_title(f.get("title"), f"第{num}章" if num else ""),
-        "goal": _text(f.get("goal"), 500),
+        "goal": _clean_goal(f.get("goal")),
         "conflict": _text(f.get("conflict"), 500),
         "turn": _text(f.get("turn"), 500),
         "payoff": _text(f.get("payoff"), 500),
@@ -248,6 +280,12 @@ def _norm_card(raw, n: int = 0) -> dict:
         "scenes": _norm_scenes(f.get("scenes")),
         "engine": _norm_engine(f.get("engine")),
         "elements": _str_list(f.get("elements"), 40, 8),
+        "scene_type": _text(f.get("scene_type"), 20),
+        "story_time": _text(f.get("story_time") or f.get("time"), 80),
+        "protagonist_action": _text(f.get("protagonist_action"), 300),
+        "relationship_delta": _text(f.get("relationship_delta"), 300),
+        "threads_advance": _norm_threads(f.get("threads_advance")),
+        "beats": _str_list(f.get("beats"), 300, 20),
         "status": _norm_status_card(f.get("status")),
         "updated_at": _text(f.get("updated_at"), 40),
     }
@@ -858,7 +896,11 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             f"本次原因：{reason}\n"
             '只输出 JSON：{"cards":[{"n":章号,"title":"","goal":"","conflict":"","turn":"",'
             '"payoff":"","cliffhanger":"","foreshadow_setup":[],"foreshadow_payoff":[],'
-            '"cast":[],"locations":[],"scenes":[{"want":"","obstacle":"","choice":"",'
+            '"cast":[],"locations":[],"scene_type":"谈判|核验|动作|揭示|关系|余波|调查|舆论|家庭|独处",'
+            '"story_time":"第X日 上午/下午/晚","protagonist_action":"主角本章主动做了什么",'
+            '"relationship_delta":"谁和谁的关系发生了什么变化",'
+            '"threads_advance":[{"thread":"主线/副线","change":"具体变化","irreversible":true}],'
+            '"scenes":[{"want":"","obstacle":"","choice":"",'
             '"cost":"","outcome":"","value_shift":""}],'
             '"engine":{"opponent":"具名对手","opponent_action":"对手本章主动做了什么",'
             '"emotion_beat":"主导情绪","humanity_choice":"人性命题下的选择",'
@@ -866,7 +908,9 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             '"title_hit":"本章兑现了书名的哪个词"}}]}。'
             "scenes 给 3–5 个场景，每个场景都必须有具体的 want/obstacle/choice/cost/outcome/value_shift；"
             "conflict 必须点名具体对手或具体阻力，不许写「时代压力/局势/环境」这类抽象词。"
-            "只规划给定章号，不确定的字段留空。"
+            "cast 至少 2 个具体人名，locations 至少 1 个地点；protagonist_action 必须写；"
+            "threads_advance 至少 1 条且必须有一条 irreversible=true。"
+            "所有字段都要具体，不许留空、不许写「待定」。只规划给定章号。"
         )
         out = _llm_json("你是长篇网文的分卷细纲师，只输出严格 JSON。", user, cfg,
                         "longform_window", 4000)
@@ -890,6 +934,14 @@ def plan_window(proj, start, end, reason: str = "rolling") -> dict:
             val = item.get(key)
             if key in ("foreshadow_setup", "foreshadow_payoff", "cast", "locations"):
                 val = _str_list(val, 80, 16)
+                if val:
+                    card[key] = val
+            elif key == "beats":
+                val = _str_list(val, 300, 20)
+                if val:
+                    card[key] = val
+            elif key == "threads_advance":
+                val = _norm_threads(val)
                 if val:
                     card[key] = val
             elif key == "elements":
@@ -1008,6 +1060,10 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
         + '只输出 JSON：{"title":"","goal":"本章主角要达成什么（具体、可验收）",'
         '"conflict":"谁/什么在阻止他，代价是什么（必须点名具体对手）","turn":"本章转折",'
         '"payoff":"兑现哪条旧伏笔","cliffhanger":"章末钩子",'
+        '"scene_type":"谈判|核验|动作|揭示|关系|余波|调查|舆论|家庭|独处",'
+        '"story_time":"第X日 上午/下午/晚","cast":["具体人名"],"locations":["具体地点"],'
+        '"protagonist_action":"主角本章主动做了什么","relationship_delta":"谁和谁的关系变化",'
+        '"threads_advance":[{"thread":"主线/副线","change":"具体变化","irreversible":true}],'
         '"scenes":[{"want":"","obstacle":"","choice":"","cost":"","outcome":"","value_shift":""}],'
         '"engine":{"opponent":"具名对手","opponent_action":"对手本章主动做了什么",'
         '"emotion_beat":"主导情绪","humanity_choice":"人性命题下的选择",'
@@ -1015,7 +1071,9 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
         '"title_hit":"本章兑现了书名的哪个词"},"elements":["选中的元件"]}\n'
         "要求：必须紧扣卷/弧目标与本书题材，**不得引入世界观之外的新元素**"
         "（例如古代权谋不得出现高维空间/代码/科幻设定）；goal 与 conflict 都必须写满，"
-        "scenes 给 3–5 个，每个都必须有 choice 和 cost；不许写「承接本弧」这类套话。"
+        "scenes 给 3–5 个，每个都必须有 choice 和 cost；cast 至少 2 个具体人名，"
+        "locations 至少 1 个具体地点；protagonist_action 必须写；threads_advance 至少 1 条，"
+        "且必须有一条 irreversible=true；不许写「承接本弧」这类套话，不许留空或写「待定」。"
     )
     out = _llm_json("你是长篇网文的章卡细纲师，只输出严格 JSON。", user, cfg,
                     "longform_chapter", 2600, agent="planner")
@@ -1034,6 +1092,17 @@ def plan_chapter_now(proj, n: int, cfg=None, reason: str = "on_demand") -> dict:
     elems = _str_list(out.get("elements"), 40, 8)
     if elems:
         card["elements"] = elems
+    for key in ("scene_type", "story_time", "protagonist_action", "relationship_delta"):
+        val = _text(out.get(key), 300)
+        if val:
+            card[key] = val
+    for key, cap in (("cast", 16), ("locations", 12), ("beats", 20)):
+        val = _str_list(out.get(key), 300 if key == "beats" else 80, cap)
+        if val:
+            card[key] = val
+    threads = _norm_threads(out.get("threads_advance"))
+    if threads:
+        card["threads_advance"] = threads
     if card_is_placeholder(card):
         return {}
     card["updated_at"] = _now()
@@ -1566,6 +1635,12 @@ def build_chapter_card(proj, ch_no: int, cfg=None) -> dict:
         "scenes": list(card.get("scenes") or []),
         "engine": dict(card.get("engine") or {}),
         "elements": list(card.get("elements") or []),
+        "scene_type": card.get("scene_type") or "",
+        "story_time": card.get("story_time") or "",
+        "protagonist_action": card.get("protagonist_action") or "",
+        "relationship_delta": card.get("relationship_delta") or "",
+        "threads_advance": list(card.get("threads_advance") or []),
+        "beats": list(card.get("beats") or []),
         "status": card.get("status"),
         "state_focus": {
             "characters": focus_chars,
@@ -1594,6 +1669,16 @@ def render_card(card: dict) -> str:
                        ("payoff", "本章兑现"), ("cliffhanger", "章末钩子")):
         if card.get(key):
             lines.append(f"- {label}：{card[key]}")
+    for key, label in (("scene_type", "场景类型"), ("story_time", "故事内时间"),
+                       ("protagonist_action", "主角本章主动行动"),
+                       ("relationship_delta", "关系变化")):
+        if card.get(key):
+            lines.append(f"- {label}：{card[key]}")
+    if card.get("threads_advance"):
+        lines.append("- 主线推进（至少一条不可逆）：")
+        for t in card["threads_advance"][:4]:
+            lines.append(f"  · {t.get('thread') or '线'}：{t.get('change') or ''}"
+                         + ("（不可逆）" if t.get("irreversible") else ""))
     if card.get("scenes"):
         lines.append("- 场景链（按顺序推进，每场必须有选择与代价）：")
         for s in card["scenes"][:5]:

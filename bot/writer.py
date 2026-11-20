@@ -417,6 +417,8 @@ def create_project(cfg, titles, pdir=None, name=None):
     """
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     cfg = dict(cfg or {})
+    # v5.0：新项目默认启用长篇质量内核；老项目没有这个开关，行为不变。
+    cfg.setdefault("v5_kernel", True)
     # v4.36.0：形态（连载 / 出版）决定结构参数。用户在开书向导里没选就按连载走——
     # 平台历史项目全是连载形态，不能让升级改变老用户的行为。
     try:
@@ -592,6 +594,13 @@ def create_project(cfg, titles, pdir=None, name=None):
                  ms=int((time.perf_counter() - _t0) * 1000))
         except Exception as e:
             proj.log(f"⚠️ 分层规划失败（可稍后重建，不影响开写）：{e}")
+    # v5.0：生成唯一事实源 + 故事契约（只写新项目；已有文件绝不覆盖）
+    try:
+        from . import story_kernel as _v5
+        _v5.ensure_project(proj, cfg, name=name, characters_text=characters, outline_text=outline)
+        proj.log("🧬 v5 质量内核：事实源 + 故事契约已就绪")
+    except Exception as e:
+        proj.log(f"⚠️ v5 质量内核建档失败（可稍后补建）：{e}")
     return proj
 
 # ---------- 阶段3/4 ----------
@@ -2615,6 +2624,29 @@ def _write_chapter(proj, ch, min_words, max_retries):
         if plan0:
             proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
+    # v5.0：写前契约闸门——事实源/章卡不完整，不写。
+    try:
+        from . import story_kernel as _v5
+        if _v5.enabled(proj):
+            _v5_pre = _v5.preflight(proj, ctx.get("longform_card") or {}, no, ctx.get("cfg"))
+            ctx["v5_preflight"] = _v5_pre
+            if _v5_pre.get("blocks"):
+                _msg = "；".join(f"[{f['code']}] {f['message']}" for f in _v5_pre["blocks"][:4])
+                proj.log(f"⛔ 第{no}章 v5 写前契约未通过：{_msg}")
+                _evt(_bk, "writer", phase="warn", title="v5 写前契约未通过，本章不写",
+                     output=_msg[:220], chapter=no)
+                with proj.lock:
+                    _pl0 = proj.plan() or {}
+                    for _c0 in _pl0.get("chapters") or []:
+                        if _c0.get("chapterNumber") == no:
+                            _c0["status"] = "failed"
+                            _c0["v5Blocks"] = _v5_pre["blocks"][:8]
+                    proj.save_plan(_pl0)
+                return
+            if _v5_pre.get("directives"):
+                ctx["v5_directives"] = _v5_pre["directives"]
+    except Exception as _e:
+        proj.log(f"⚠️ v5 写前闸门异常（不阻断）：{_e}")
     # v4.36.0：本章事实卡（零 token、确定性）。把「谁能出场 / 该兑现什么 / 能新增几个专名」
     # 在写之前钉死——这是「写前契约」，而不是写完再查。
     try:
@@ -2961,6 +2993,16 @@ def _write_chapter(proj, ch, min_words, max_retries):
                     break
             if _rows:
                 checkup.stage_checkup(proj, _rows, kind="novel")
+            try:
+                from . import story_kernel as _v5
+                if _v5.enabled(proj):
+                    _st = _v5.structure_check(proj, upto=no)
+                    if _st.get("issues"):
+                        _sev = [x for x in _st["issues"] if x.get("level") == "block"]
+                        _msg = "；".join(str(x.get("message")) for x in _st["issues"][:4])
+                        proj.log(("🚨 v5 结构体检：" if _sev else "⚠️ v5 结构提醒：") + _msg)
+            except Exception:
+                pass
         except Exception as e:
             proj.log(f"⚠️ 阶段体检失败（不影响创作）：{e}")
     # v3.1.0：默认章名 → 用本章摘要起真名（写完即定名，不额外读全文）
@@ -2983,6 +3025,25 @@ def _write_chapter(proj, ch, min_words, max_retries):
                     proj.save_plan(_pl2)
     except Exception:
         pass
+    # v5.0：章后闸门——主角缺席/场景循环/声音同质/长度失控，不过不标完成。
+    _v5_hard = False
+    try:
+        from . import story_kernel as _v5
+        if _v5.enabled(proj):
+            _final_txt = open(fp, encoding="utf-8").read() if os.path.exists(fp) else body
+            _v5_g = _v5.post_gate(proj, no, _final_txt, ctx.get("longform_card") or {}, ctx.get("cfg"))
+            if _v5_g.get("blocks"):
+                _v5_hard = True
+                _record_craft_blocks(proj, no, _v5_g["blocks"])
+                _msg = "；".join(f"[{f['code']}] {f['message']}" for f in _v5_g["blocks"][:4])
+                proj.log(f"⛔ 第{no}章 v5 章后闸门未通过：{_msg}")
+                _evt(_bk, "writer", phase="warn", title="v5 章后闸门未通过，本章标记失败",
+                     output=_msg[:220], chapter=no)
+            elif _v5_g.get("warns"):
+                proj.log("⚠️ v5 章后提醒：" + "；".join(
+                    f"[{f['code']}] {f['message']}" for f in _v5_g["warns"][:3]))
+    except Exception as _e:
+        proj.log(f"⚠️ v5 章后闸门异常（不阻断）：{_e}")
     # 第1章：文风校准回填（极速模式跳过——这是一次纯质量相关的 LLM 调用）
     if no == 1 and not _expr:
         try:
@@ -2997,7 +3058,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
         # v1.2.2：扩写 3 轮仍不足 min_words，但有实质内容（≥60% 目标）→ 视为完成（soft pass），
         # 不再把整章标 failed（真实 LLM 常给 2600-2900 字；标 failed 会误导用户以为没写出来）
         # v4.24.0：极速模式「不追求字数」——只要写得出正文就算完成，字数是否达标只记在 wordCountPass
-        soft_ok = (words > 0) if _expr else (ok or words >= int(min_words * 0.6))
+        soft_ok = ((words > 0) if _expr else (ok or words >= int(min_words * 0.6))) and not _v5_hard
         for c in plan["chapters"]:
             if c["chapterNumber"] == no:
                 c["status"] = "completed" if soft_ok else "failed"
@@ -3012,7 +3073,7 @@ def _write_chapter(proj, ch, min_words, max_retries):
                     except Exception:
                         c["tokens"] = None
         proj.save_plan(plan)
-    _soft_ok = (words > 0) if _expr else (ok or words >= int(min_words * 0.6))
+    _soft_ok = ((words > 0) if _expr else (ok or words >= int(min_words * 0.6))) and not _v5_hard
     proj.log(f"✅ 第{no}/{len(plan['chapters'])}章完成（{words}字）"
              if _soft_ok else f"❌ 第{no}章未达标（{words}字）")
     # v4.21.0：创作事件——本章完成（output=字数；未达标标 warn）

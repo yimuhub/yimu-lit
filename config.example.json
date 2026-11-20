@@ -1,5 +1,5 @@
 {
-  "version": "4.41.2",
+  "version": "5.0.0",
   "port": 46821,
   "skill_path": "skill",
   "llm": {
