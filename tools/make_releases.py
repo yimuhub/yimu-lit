@@ -2,7 +2,7 @@
 """按版本给 GitHub 建 Release：tag 已是事实来源，这里只负责「缺哪个补哪个」。
 
 ## 数据从哪来
-- **版本序列**：`git tag -l 'v4.*'`（version 排序），不再硬编码——新增版本不用改脚本。
+- **版本序列**：`git tag -l 'v[0-9]*'`（version 排序），不再硬编码——新增 v5/v6 不用改脚本。
 - **正文**：优先用 CHANGELOG.md 里该版本那一节（人工维护、信息最全）；
   CHANGELOG 没有的早期版本，退回该 tag 的提交说明，并标注「历史版本补录」。
 - **对比链接**：与排序里的上一个 tag 比，能从 v4.18.0 一路点到现在。
@@ -54,8 +54,8 @@ def git(*args) -> str:
 
 
 def tags() -> list:
-    out = git("tag", "-l", "v4.*", "--sort=v:refname")
-    return [t for t in out.split() if re.fullmatch(r"v4\.\d+\.\d+", t)]
+    out = git("tag", "-l", "v[0-9]*", "--sort=v:refname")
+    return [t for t in out.split() if re.fullmatch(r"v\d+\.\d+\.\d+", t)]
 
 
 def changelog() -> dict:
