@@ -2665,9 +2665,14 @@ def api_rewrite(payload: dict):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     if _REWRITING.get(key, {}).get("running"):
         return {"ok": True, "running": True, "msg": "重写进行中，请稍候…"}
+    _probe = _model_probe_error(proj)
+    if _probe:
+        return JSONResponse({"error": _probe, "code": "provider_down"}, status_code=400)
+    # v4.41.4：单章重写默认最多 2 轮（旧默认 6 轮，模型连接一坏就白烧 6 次）
+    _rounds = max(1, min(int(payload.get("max_rounds") or 2), 3))
     _start_rewrite(key, chapters=payload.get("chapters"), dimensions=payload.get("dimensions"),
-                   max_rounds=int(payload.get("max_rounds") or 6))
-    return {"ok": True, "running": True, "msg": "🔁 审查后定向重写中…（约 2-5 分钟，把要求书逐条带进目标章）"}
+                   max_rounds=_rounds)
+    return {"ok": True, "running": True, "msg": "🔁 审查后定向重写中…（最多 2 轮，模型异常会立即停手）"}
 
 # ---------- v2.3.0：标题体系 + 一致性体检 ----------
 

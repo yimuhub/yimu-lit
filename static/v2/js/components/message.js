@@ -297,7 +297,7 @@ function renderChapterCard(msg, handlers = {}) {
   const chips = h('div', { class: 'cc-meta' });
   /* v4.21.8：四维度同时显示（完成时间/字数/消耗 tokens/质量分）——
      消耗 = 该章全过程所有 Agent 的 token 总和（usage by_chapter）；
-     质量分 < 90 时显示「重写本章」按钮（≥90 隐藏），未评分不显示。 */
+     v4.41.4：只有低于达标线 80 分才显示「重写本章」，高分章不再逼着重写。 */
   const items = [];
   if (meta.ts) items.push(['完成于', String(meta.ts).replace('T', ' ').slice(5, 16)]);
   items.push(['字数', fmtNum(Number(meta.words) || 0)]);
@@ -317,7 +317,7 @@ function renderChapterCard(msg, handlers = {}) {
     chips.append(chip);
   }
   const _q = Number(meta.quality);
-  if (meta.quality != null && meta.quality !== '' && !Number.isNaN(_q) && _q < 90) {
+  if (meta.quality != null && meta.quality !== '' && !Number.isNaN(_q) && _q < 80) {
     chips.append(h('button', {
       class: 'cc-rewrite-btn', type: 'button',
       title: '审查后定向重写本章（约 2-5 分钟）',

@@ -732,6 +732,7 @@ export const api = {
     } catch (err) {
       const info = err && err.payload;
       const code = info && info.code;
+      const blocked = code === 'not_ready';
       const recoverable = code === 'not_released' || code === 'not_ready';
       if (force || !recoverable) throw err;
 
