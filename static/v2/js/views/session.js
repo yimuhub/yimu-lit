@@ -77,8 +77,14 @@ function finishSteps(process, { title, duration, tokens, stage = 'done' } = {}) 
 const _seenSteps = new Map();
 const _seenCreatorTs = new Map();
 
-export function renderSession(container, ctx = {}) {
+export function renderSession(container, ctx = {}, opts = {}) {
   const mountKey = store.get().currentKey;
+  /* v5.5.0 直接开聊：opts.directChat=true 时本视图挂的是「无作品绑定会话」
+     （welcome.js 在 #/welcome?chat=1 分岔进来，currentKey 为空）。
+     runTurn 放行无 key 请求（buildStreamPayload 本来就不带 key），后端
+     /api/chat/stream 按 idle 无绑定会话处理：总编辑引导定体裁/书名并开书。 */
+  const directChat = Boolean(opts.directChat);
+  const directPrefill = String(opts.prefill || '');
   const el = h('div', { class: 'session-view' });
   const planSlot = h('div', { class: 'session-plan' });
   const bannerSlot = h('div', { class: 'session-banner' });
@@ -133,7 +139,20 @@ export function renderSession(container, ctx = {}) {
   });
 
   const dock = h('div', { class: 'composer-dock' }, bindRow, composer.el);
-  el.append(planSlot, bannerSlot, chat.el, dock);
+  /* v5.5.0 直接开聊：会话区顶部放一条模式说明卡（最简 DOM，样式在 newwork.css） */
+  if (directChat) {
+    el.append(planSlot, bannerSlot,
+      h('div', { class: 'direct-chat-notice', role: 'note', 'aria-label': '直接开聊模式说明' },
+        h('span', { class: 'dcn-icon', html: icon('sparkles', 14) }),
+        h('div', { class: 'dcn-body' },
+          h('span', { class: 'dcn-title', text: '直接开聊模式' }),
+          h('span', { class: 'dcn-text',
+            text: '：说想写什么，总编辑会帮你定体裁/书名并开写；书名确认后会自动切到新书任务。' }))),
+      chat.el, dock);
+    if (directPrefill) composer.setText(directPrefill);
+  } else {
+    el.append(planSlot, bannerSlot, chat.el, dock);
+  }
 
   // v2.6.0：切换作品时自动加载聊天历史；v2.8.0：每次挂载都重新拉取（chat_log.jsonl
   // 是权威留档，中途断开的回复 v2.8.0 起也会落盘），只在非流式状态下替换，
@@ -348,6 +367,8 @@ export function renderSession(container, ctx = {}) {
   function paintBanner() {
     const state = store.get();
     if (state.currentKey !== mountKey) return;
+    /* v5.5.0 直接开聊：没有作品可加载，不渲染「正在加载作品…」占位 */
+    if (directChat) return;
     /* v4.38.0：状态条的唯一事实源是服务端 activity（任务档案）。
        切书回来第一帧就能看到「正在写第 30 章 · 写作中」，不用等步骤流。 */
     const work = state.work || null;
@@ -541,7 +562,10 @@ export function renderSession(container, ctx = {}) {
 
   function runTurn(payload, { appendUser = true, fromQueue = false, retry = false } = {}) {
     const state = store.get();
-    if (!state.currentKey) return;
+    /* v5.5.0 直接开聊：无 key 会话放行——buildStreamPayload 对空 currentKey
+       本来就不带 key/project_key，后端按无绑定新会话处理。非 directChat 的
+       无 key 挂载（理论不该出现）维持原守卫。 */
+    if (!state.currentKey && !directChat) return;
     // turn 是本视图掌握的“正在跑”事实来源：会话级 streaming 标志可能被其他局部更新覆盖
     if (state.chat.streaming || turn) {
       if (!retry) enqueue(payload);

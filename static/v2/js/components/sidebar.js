@@ -6,8 +6,32 @@ import { navigate, openProject } from '../core/router.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { api, errorText } from '../core/api.js';
 import { startJobFeedback, attachJobFeedback, endJobFeedback, workerLabelForMedium } from '../core/jobfeed.js';
+/* v5.5.0：新建作品双入口弹窗（按开书流程走 / 直接开聊） */
+import { openNewWorkDialog, newworkDialogOpen } from './newwork.js';
+import { isEditable } from '../core/hotkeys.js';
 
 let localQuery = '';
+
+/* v5.5.0：快捷键 N → 双入口弹窗。app.js 的全局快捷键（core/hotkeys.js）仍把裸按 N
+   直连 ctx.openWizard 且不在本任务可改范围，这里在 window 捕获阶段拦截裸按 N
+   （无修饰键、焦点不在输入框——口径与 hotkeys.js 一致），stopPropagation 后
+   旧的冒泡监听不再触发；弹窗已开时只吞事件不重复开。 */
+let _nwHotkeyReady = false;
+let _nwHotkeyCtx = null;
+function installNewWorkHotkey(ctx) {
+  _nwHotkeyCtx = ctx;
+  if (_nwHotkeyReady) return;
+  _nwHotkeyReady = true;
+  window.addEventListener('keydown', (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key !== 'n' && event.key !== 'N') return;
+    if (isEditable(document.activeElement)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (newworkDialogOpen()) return;
+    openNewWorkDialog(_nwHotkeyCtx, { source: 'hotkey' });
+  }, true);
+}
 
 function rowMeta(item) {
   const pct = item.total ? Math.round((item.done / item.total) * 100) : 0;
@@ -424,7 +448,7 @@ export function renderSidebar(container, ctx) {
     h('span', { class: 'label', text: '新建作品' }),
     h('kbd', { text: 'N' })
   );
-  newBtn.addEventListener('click', () => ctx.openWizard());
+  newBtn.addEventListener('click', () => openNewWorkDialog(ctx, { source: 'sidebar' }));
   sidebar.append(newBtn);
 
   const search = h('div', { class: 'side-search' });
@@ -646,6 +670,7 @@ export function renderSidebar(container, ctx) {
 
   const input = search.querySelector('input');
   bindSearch(input, listEl, ctx);
+  installNewWorkHotkey(ctx);
   if (wasSearch) {
     requestAnimationFrame(() => {
       input.focus();

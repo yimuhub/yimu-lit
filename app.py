@@ -1272,6 +1272,17 @@ def _chat_attached(s, proj, msg):
                 name = st.get("name") or plan.get("novelName") or key
                 running = bool(st.get("running"))
         params = params or {}
+        # v5.5.1：动作执行链停摆自检——批量写作线程已死但注册表残留（_RUNNING_BOOKS /
+        # Project.running / mark_pipeline / livejob）时，running 口径永远是 True，
+        # 「继续」被防重入拦死、界面永远「创作中」却没动静（实测《实习生掉马那天》）。
+        # 总编辑 write / resume_task / 批量写等一切动作执行前先收口残留，再刷新状态口径。
+        if str(key)[:2] not in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+            try:
+                if writer.registry_selfcheck(key, proj):
+                    st = proj.status()
+                    running = bool(st.get("running"))
+            except Exception:
+                pass
         # v4.37.0：总编辑动作名与旧 planner/NLU 的 intent 名并存，先做等价映射
         if intent == "discuss":
             return None
@@ -1774,6 +1785,13 @@ def _chat_attached(s, proj, msg):
             # 就回落到 plan.config.batch_size（开书时常见值是 1），于是界面写着「全章批量
             # 模式」，实际写完一章就按批停。文案与行为正好相反，用户以为指令没生效。
             _bs_all = "all" if intent == "start_writing_all" else None
+            # v5.5.1：in_progress + 0 章完成 + plan_blocked 残留的书，「继续」要给出明确
+            # 动作（自动修补章卡后直接开写），而不是空转或含糊其辞。
+            _was_blocked = False
+            try:
+                _was_blocked = bool(((proj.plan() or {}).get("meta") or {}).get("plan_blocked"))
+            except Exception:
+                _was_blocked = False
             if writer.resume_book(key, batch_size=_bs_all):
                 st2 = proj.status()
                 if intent != "start_writing_all":
@@ -1784,6 +1802,10 @@ def _chat_attached(s, proj, msg):
                         _extra = "（连续模式）"
                 else:
                     _extra = "（全章批量模式，中途不停）"
+                if _was_blocked:
+                    _extra += ("\n上一轮因章卡缺目标/冲突停摆：本次继续会自动修补章卡"
+                               "（确定性补全 + 规划师按拒收原因定向重生成，最多 2 轮），"
+                               "两轮仍不合格会降级放行，不会再整批卡死。")
                 return f"▶ 继续创作《{name}》（第 {st2['done']}/{st2['total']} 章）{_extra}…"
             return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
 
@@ -6559,7 +6581,7 @@ def api_one_shot(payload: dict):
             try: writer.ensure_blueprint(proj)
             except Exception as e: proj.log("⚠️ 总架构熔炼失败(继续)：" + str(e))
             proj.log("✨ ② 写剩余章节…")
-            try: writer._write_loop(proj)
+            try: writer._write_loop_safe(proj)
             except Exception as e: proj.log("⚠️ 写章节中断：" + str(e))
             proj.log("✨ ③ 逐章评分…")
             for c in (proj.plan().get("chapters") or []):

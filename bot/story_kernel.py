@@ -553,6 +553,68 @@ def preflight(proj, card: dict, no: int = 0, cfg: dict | None = None) -> dict:
     return {"ok": not blocks, "blocks": blocks, "warns": warns, "directives": directives}
 
 
+# ---------------------------------------------------------------- v5.5.1 拒绝原因结构化返回
+# 写前闸门拒收章卡后，自愈闭环需要知道「缺哪些硬字段」才能定向修补/回喂规划师。
+# 这里只做「判定结果 → 结构化字段」的翻译，绝不改动上面任何闸门判定逻辑（红线）。
+
+_CODE_TO_FIELD = {
+    "V5C01": "goal", "V5C02": "goal",
+    "V5C03": "conflict", "V5C07": "conflict",
+    "V5C04": "turn", "V5C05": "payoff", "V5C06": "cliffhanger",
+    "V5C08": "scenes", "V5C09": "scenes", "V5C10": "scenes",
+    "V5C11": "cast", "V5C12": "cast",
+    "V5C13": "locations", "V5C14": "protagonist_action",
+    "V5C15": "threads_advance", "V5C16": "threads_advance",
+    "V5C17": "scene_type", "V5C21": "scene_type",
+    "V5C18": "story_time", "V5C19": "word_target", "V5C20": "title",
+    "V5F01": "title", "V5F06": "cast", "V5F07": "cast",
+}
+
+
+def reject_fields(blocks) -> list[str]:
+    """闸门拒收块（block/warn 字典列表）→ 缺失/不合格的章卡硬字段去重列表。"""
+    out = []
+    for b in blocks or []:
+        if not isinstance(b, dict):
+            continue
+        fld = _CODE_TO_FIELD.get(str(b.get("code") or ""))
+        if fld and fld not in out:
+            out.append(fld)
+    return out
+
+
+def rejection_summary(blocks) -> dict:
+    """把闸门拒收结果结构化：codes / fields / messages / 给规划师的修补指令文本。
+
+    供 writer 的章卡修补闭环与 tools/repair_stalled_book.py 复用——
+    修补调用与确定性补全都按这份清单定向进行，而不是盲目重生成。"""
+    blks = [b for b in (blocks or []) if isinstance(b, dict)]
+    codes = [str(b.get("code") or "") for b in blks if b.get("code")]
+    fields = reject_fields(blks)
+    messages = [f"[{b.get('code')}] {b.get('message')}" for b in blks]
+    return {"codes": codes, "fields": fields, "messages": messages,
+            "prompt": repair_directive_text(blks)}
+
+
+def repair_directive_text(blocks) -> str:
+    """把拒收原因压成一段可回喂给规划师/修补流程的中文指令（确定性拼接）。"""
+    fields = reject_fields(blocks)
+    lines = []
+    if fields:
+        lines.append("上一版章卡被写前闸门拒收，缺失或不合格的硬字段："
+                     + "、".join(fields) + "——请逐项补齐。")
+    for b in (blocks or [])[:10]:
+        if isinstance(b, dict) and b.get("code"):
+            lines.append(f"- [{b.get('code')}] {b.get('message')}")
+    lines.append("要求：goal 必须是本章单一可验收目标（≤240 字，不许是大纲倾倒/「承接本弧」套话）；"
+                 "conflict 必须点名具体对手与代价；scenes 给 3–5 场且每场都有 want/obstacle/choice/cost/outcome；"
+                 "cast 至少 2 个具体人名且主角必须在场；locations 至少 1 个具体地点；"
+                 "protagonist_action 必须写主角本章主动做了什么；"
+                 "threads_advance 至少 1 条且必须有一条 irreversible=true；"
+                 "scene_type 只能取：谈判、核验、动作、揭示、关系、余波、调查、舆论、家庭、独处；story_time 必填。")
+    return "\n".join(lines)
+
+
 def _dialogue(text: str) -> dict[str, list[str]]:
     pat = re.compile(r"([\u4e00-\u9fff]{2,4})(?:说|问|道|答|笑|开口|低声|沉声|声音|看着她|看着他)"
                      r"[^“”]{0,20}“([^”]{1,220})”")

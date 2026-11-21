@@ -541,10 +541,24 @@ def build_context(proj, st, key, digest: str = "", history=None) -> dict:
     ctx["history"] = history if history is not None else recent_history(pdir)
     ctx["digest"] = digest or ""
     try:
-        from . import writer as _w
+        from bot import writer as _w
         ctx["pending_queue"] = _w.pending_queue(key) if pdir else []
     except Exception:
         ctx["pending_queue"] = []
+    # v5.5.1：write 动作链停摆自检——批量写作线程已死但注册表残留时先收口
+    # （_run 里执行动作前还会再做一次），并把真实口径带给总编辑：
+    # 「继续」此时是清残留后重启 + 自动修补章卡，不是空转的防重入拦截。
+    try:
+        from bot import writer as _w
+        if _w.registry_selfcheck(key, proj):
+            ctx["registry_residue_cleaned"] = True
+        _st2 = proj.status()
+        ctx["running"] = bool(_st2.get("running"))
+        _meta2 = (proj.plan() or {}).get("meta") or {}
+        if _meta2.get("plan_blocked"):
+            ctx["plan_blocked"] = True
+    except Exception:
+        pass
     return ctx
 
 

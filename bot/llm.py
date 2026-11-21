@@ -235,7 +235,9 @@ def _log_llm_error(provider_id: str, model: str, base_url: str, status, detail: 
         pass
 
 def _llm_timeout(cfg, stage, prov):
-    """每调用 httpx 超时：defaults.llm_timeout 覆盖供应商默认；planning 环节可再放宽 planning_timeout。"""
+    """每调用 httpx 超时：defaults.llm_timeout 覆盖供应商默认；planning 环节可再放宽 planning_timeout。
+    v5.5.1：超时秒数可配置（读 config defaults.llm_timeout / planning_timeout 与供应商 timeout 字段，
+    默认不动）；供应商代理本身可能另有更短的读超时窗口（实测 120s），这只能靠「重试降载」兜底。"""
     d = ((cfg or {}).get("defaults")) or {}
     try:
         base = int(d.get("llm_timeout") or prov.get("timeout", 900))
@@ -247,6 +249,84 @@ def _llm_timeout(cfg, stage, prov):
         except (ValueError, TypeError):
             pass
     return base
+
+
+# ---------- v5.5.1：524/超时韧性——重试降载 + 中文可行动报错 ----------
+# 实测（桌面端 2026-11-21）：供应商代理 http://127.0.0.1:3425/v1 有 120 秒读超时窗口，
+# 长规划调用超窗即回 HTTP 524；此前 chat() 只「原样重试」同一份大输入，3 连败后把
+# 英文 httpx 报错向上抛，longform._llm_json 吞成 {} → 章卡永远占位 → 写前闸门拒收 →
+# 整本书停摆。现在：重试仍失败且属 planning 类调用时，自动缩小输入（截短上下文）
+# 再试一次；最终失败给出中文可行动建议。
+
+_TIMEOUT_MARKS = ("524", "522", "timed out", "timeout", "总时长超过", "排队超过",
+                  "proxy read timeout", "read timeout", "wall-clock")
+_PLANNING_STAGE_MARKS = ("planning", "plan", "longform")
+_SHRINK_MIN_CHARS = 1200   # 输入小于该值时缩小意义不大，原样重试即可
+
+
+def _is_load_timeout(err) -> bool:
+    """识别「供应商/代理过载或读超时」类错误（524/网关超时/wall-clock 守卫/排队超时）。"""
+    s = str(err or "")
+    low = s.lower()
+    return any(m.lower() in low for m in _TIMEOUT_MARKS)
+
+
+def _planning_like(stage) -> bool:
+    """planning / 长规划类调用（longform_plan / longform_window / longform_chapter …）。"""
+    s = str(stage or "").lower()
+    return any(m in s for m in _PLANNING_STAGE_MARKS)
+
+
+def _msg_len(messages) -> int:
+    try:
+        return sum(len(str(m.get("content") or "")) for m in messages or [])
+    except Exception:
+        return 0
+
+
+def _shrink_messages(messages, keep_ratio: float = 0.45, floor: int = 500) -> list:
+    """确定性截短上下文（头尾保留，绝不碰最后一条消息的完整性）：
+
+    · system 头（指令在头部）+ 尾（输出格式约定常在尾部）都保留；
+    · 历史消息只保留最近 2 条，更早的折叠成一行省略说明；
+    · 每条超长消息按 keep_ratio 截短：头 70% + 「…[上下文已截短以降低负载]…」 + 尾 30%，
+      这样 JSON 输出规范（通常在尾部）与任务描述（通常在头部）都不会丢。
+    """
+    out = []
+    msgs = [m for m in (messages or []) if isinstance(m, dict)]
+    n = len(msgs)
+    for idx, m in enumerate(msgs):
+        role = str(m.get("role") or "user")
+        content = str(m.get("content") or "")
+        # 只保留最近 2 条非 system 消息 + 全部 system；更早的折叠
+        if role != "system" and idx < n - 2:
+            continue
+        cap = max(floor, int(len(content) * keep_ratio))
+        if len(content) > cap:
+            head = int(cap * 0.7)
+            tail = max(0, cap - head)
+            content = (content[:head] + "\n…[上下文已截短以降低负载，关键任务要求与输出格式见下]…\n"
+                       + (content[-tail:] if tail else ""))
+        out.append({"role": role, "content": content})
+    dropped = n - len(out)
+    if dropped > 0:
+        if out and out[0].get("role") == "system":
+            out[0]["content"] = f"（另有 {dropped} 条较早的历史消息已省略以降低单次请求负载）\n" + out[0]["content"]
+        else:
+            out.insert(0, {"role": "system",
+                           "content": f"（另有 {dropped} 条较早的历史消息已省略以降低单次请求负载）"})
+    return out
+
+
+def _human_timeout_error(err) -> LLMError:
+    """把 524/超时类英文报错翻译成中文 + 可行动建议（原错误尾部保留供诊断）。"""
+    return LLMError(
+        "供应商代理读超时（HTTP 524/网关超时，常见于代理约 120 秒的读超时窗口）：已自动重试并缩小输入，"
+        "仍然失败。建议："
+        "①在「设置 → 模型与供应商」换响应更快的模型；"
+        "②调低单次规划批量（总规划改分批）或缩短上下文；"
+        "③如代理固定 120 秒读超时，可在设置里把 llm_timeout 调小以便更快进入下一轮重试。"
+        f"原始错误：{str(err)[:160]}")
 
 # ---------- v0.7 R3：LLM 内容缓存（大厂标准：确定性 prompt 复用，省 token + 提速；cfg llm_cache 可关） ----------
 import hashlib
@@ -320,13 +400,16 @@ def _max_global():
     except Exception:
         return 4
 
-def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None, agent=None, use_cache=None, scene=None):
+def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None, agent=None, use_cache=None, scene=None, _shrunk=False):
     """一次性 chat 调用，返回文本。带简单重试。cfg 决定用哪个供应商/模型；
     stage（planning/writing/review）若配置了 stage_models 则按环节选模型（P4）。
     agent（v0.5 M4）：子 Agent 岗位（planner/writer/reviewer/rewriter/title）——优先 agent_models 绑定。
     v0.3 P4：按模型规则引擎套 上下文/max_tokens/RPM/429退避/extra_body。v0.5：跨线程 ConcurrencyGuard 限并发。
     v0.7 R3：use_cache（None=按 cfg.defaults.llm_cache）——确定性 prompt 命中缓存直接返回（省 token+提速）。
-    v5.2.0：scene（可选，中文场景标签如「幽灵字」「续写」「划词」）——只进调用账本行，不影响路由与返回。"""
+    v5.2.0：scene（可选，中文场景标签如「幽灵字」「续写」「划词」）——只进调用账本行，不影响路由与返回。
+    v5.5.1：524/超时韧性——同一输入重试仍超时/524 且属 planning 类调用时，自动缩小输入
+    （截短上下文）再试一次（_shrunk 内部标志防递归）；最终失败把报错翻成中文 + 可行动建议。
+    流式接口（chat_stream）语义不变：其兜底路径本来就委托 chat()，自动获得同等韧性。"""
     from . import model_rules
     if agent is None and stage:          # v0.5 M4：未显式指定 agent 时按 stage 推导岗位，agent_models 绑定即生效
         agent = {"planning": "planner", "writing": "writer", "review": "reviewer"}.get(stage, stage)
@@ -374,7 +457,26 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     timeout = _llm_timeout(cfg, stage, prov)
     _backoff = int(rules.get("backoff_base", 3))
     _guard = providers.ConcurrencyGuard(_max_global())   # v0.5 M4：跨线程全局并发 + provider 限流
+    _orig_len = _msg_len(_msgs)
+    _shrunk_done = False          # 本轮调用链里是否已做过「缩小输入」降载
     for i in range(retries):
+        # v5.5.1：524/超时降载——重试 1 次原样（i=1）；再失败且属 planning 类长输入调用，
+        # 从第 3 次尝试（i=2）起自动截短上下文再试（总规划超窗 524 的根治：缩小输入比无限原样重试有效）。
+        if (i >= 2 and last_err is not None and _is_load_timeout(last_err)
+                and not _shrunk_done and not _shrunk
+                and _planning_like(stage) and _orig_len >= _SHRINK_MIN_CHARS):
+            _shrunk_done = True
+            _msgs = _shrink_messages(_msgs)
+            body["messages"] = _msgs
+            _ck = _cache_key(body["model"], body["temperature"], json_mode, _msgs,
+                             prov.get("id") or "", prov.get("base_url") or "",
+                             body.get("max_tokens")) if _ce else None
+            print(f"[llm] 524/超时降载重试：输入 {_orig_len} → {_msg_len(_msgs)} 字符（stage={stage}）",
+                  file=sys.stderr, flush=True)
+            _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
+                        model=model, cached=False, ok=False,
+                        error=f"timeout→shrink-retry {_orig_len}->{_msg_len(_msgs)}",
+                        scene=scene or "")
         try:
             with _guard.acquire(prov):
                 # v4.15.7：wall-clock 总时长守卫——httpx read-timeout 是「两次读之间」的超时，
@@ -464,6 +566,24 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
                 model=model, cached=False, ok=False, error=str(last_err)[:300],
                 latency_ms=int((time.time() - _t0) * 1000), scene=scene or "")
+    # v5.5.1：retries<=2 的调用链（如 429 fallback 用 retries=2）在循环里没机会降载——
+    # 结束时若是超时类错误且属 planning 长输入，补一次「缩小输入」重试（只补一次，防递归）。
+    if (last_err is not None and not _shrunk and not _shrunk_done
+            and _is_load_timeout(last_err) and _planning_like(stage)
+            and _msg_len(messages) >= _SHRINK_MIN_CHARS):
+        try:
+            _small = _shrink_messages(messages)
+            print(f"[llm] 524/超时降载补试：输入 {_msg_len(messages)} → {_msg_len(_small)} 字符（stage={stage}）",
+                  file=sys.stderr, flush=True)
+            return chat(_small, json_mode=json_mode, temperature=temperature,
+                        max_tokens=max_tokens, retries=1, cfg=cfg, stage=stage, agent=agent,
+                        use_cache=use_cache, scene=scene, _shrunk=True)
+        except LLMError as e2:
+            last_err = e2 if _is_load_timeout(e2) else last_err
+        except Exception:
+            pass
+    if last_err is not None and _is_load_timeout(last_err):
+        raise _human_timeout_error(last_err)
     raise last_err or LLMError("LLM 调用失败（retries=0）")
 
 def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_thinking=None,

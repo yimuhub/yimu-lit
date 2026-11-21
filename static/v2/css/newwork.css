@@ -1,0 +1,115 @@
+/* v5.5.0 新建作品双入口弹窗 + 直接开聊提示卡。
+ * 命名空间：弹窗 .nw-*、会话提示卡 .dcn-*（direct-chat-notice）。
+ * 颜色一律走 tokens 语义变量（tokens.css），不写硬编码色值；改样式后请把
+ * components/newwork.js 里的 NW_CSS_V +1。 */
+
+/* ---------------- 新建作品双入口弹窗 ---------------- */
+
+.nw-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0 4px;
+}
+
+.nw-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.nw-card:hover,
+.nw-card:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-soft-2);
+}
+
+.nw-card-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.nw-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nw-card-title {
+  color: var(--ink-primary);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.nw-card-sub {
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+}
+
+.nw-foot {
+  margin-top: 12px;
+  color: var(--ink-tertiary);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* ---------------- 直接开聊模式：会话区顶部提示卡 ---------------- */
+
+.direct-chat-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 auto 12px;
+  max-width: var(--chat-max);
+  padding: 12px 14px;
+  border: 0.5px solid var(--info-line);
+  border-radius: var(--radius-md);
+  background: var(--info-soft);
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.7;
+}
+
+.direct-chat-notice .dcn-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.direct-chat-notice .dcn-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.direct-chat-notice .dcn-title {
+  color: var(--ink-primary);
+  font-weight: 500;
+}
+
+.direct-chat-notice .dcn-text {
+  color: var(--ink-secondary);
+}

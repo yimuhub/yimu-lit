@@ -23,6 +23,10 @@ def _skeleton_refresh(key):
 _RUNNING_BOOKS: set = set()
 _RUNNING_LOCK = threading.Lock()
 _START_LOCK = threading.Lock()   # v5.1：start_writing 的 check+set 必须原子，双击/双入口只允许一条线程
+# v5.5.1：作品 key → 正在跑的写作线程。批量线程异常死亡（进程内异常逃过 finally、
+# 事件循环被杀）时 _RUNNING_BOOKS / livejob / mark_pipeline 可能残留，把「继续」永远
+# 拦在防重入上——自检靠线程存活与否判断，先清再启。
+_RUNNING_THREADS: dict = {}
 
 
 def _book_running(key):
@@ -35,6 +39,56 @@ def _set_book_running(key, on=True):
             _RUNNING_BOOKS.add(key)
         else:
             _RUNNING_BOOKS.discard(key)
+
+
+def registry_selfcheck(key, proj=None) -> bool:
+    """v5.5.1 停摆自检：写作线程已死但运行注册表残留 → 全部收口，返回是否做了清理。
+
+    覆盖四处登记：_RUNNING_BOOKS/_RUNNING_THREADS、Project.running、mark_pipeline
+    （流水线计数 + livejob + 监制上下车）、任务档案 running→paused（journal.reconcile）。
+    判据：注册表说「在跑」，但登记的线程对象不存在或已死亡 → 判定残留。
+    在 start_writing / resume_book / app._run 的 write 动作链入口调用，
+    保证「批量线程死了但书还显示创作中」的书说「继续」能直接重启，而不是空转。"""
+    try:
+        bk = os.path.basename(str(key or ""))
+        if not bk:
+            return False
+        alive = False
+        t = _RUNNING_THREADS.get(bk)
+        if t is not None and isinstance(t, threading.Thread) and t.is_alive():
+            alive = True
+        if _book_running(bk) and alive:
+            return False                      # 真的在写：不动
+        if not _book_running(bk):
+            return False                      # 注册表本来就干净
+        # 注册表残留：逐项收口
+        _set_book_running(bk, False)
+        with _RUNNING_LOCK:
+            _RUNNING_THREADS.pop(bk, None)
+        try:
+            if proj is not None:
+                proj.running = False
+        except Exception:
+            pass
+        try:
+            mark_pipeline(bk, False)
+        except Exception:
+            pass
+        try:
+            from . import livejob as _lj
+            if _lj.is_active(bk):
+                _lj.finish(bk, ok=False, detail="检测到写作线程已死亡，残留登记已自动清理")
+        except Exception:
+            pass
+        try:
+            pdir = _project_dir(bk)
+            if pdir and os.path.isdir(pdir):
+                journal.reconcile(pdir, note="写作线程已死亡，残留任务已自动转为可续跑")
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 # ---------- v4.21.0：创作事件埋点（bot/steps.py 事件总线）----------
@@ -822,16 +876,31 @@ def _ensure_writable_plan(proj) -> dict | None:
 
 def start_writing(proj: Project, batch_size=None) -> bool:
     """启动写作线程。返回 True=已启动；False=被防重入拦截（已有线程在写）。
-    v4.20.1：此前被拦时静默返回 None，调用方无法区分「已启动」和「已在写」。"""
+    v4.20.1：此前被拦时静默返回 None，调用方无法区分「已启动」和「已在写」。
+    v5.5.1：进入前先做注册表自检——上次批量线程已死但登记残留时先清再启，
+    否则防重入会把这本书永远拦在「已在创作中」。"""
     _bk = os.path.basename(proj.path)
+    try:
+        registry_selfcheck(_bk, proj)
+    except Exception:
+        pass
     # v5.1：旧实现先查后设，两个入口同时点「创建/继续」会同时通过，起两条写线程。
     # 现在把 check+set 放进同一把进程锁；线程内仍保留原有实例/注册表双保险。
     with _START_LOCK:
         if proj.running or _book_running(_bk):
-            return False
+            # 线程对象确实活着才拦；登记残留（线程已死）上面自检已清过一轮
+            _t = _RUNNING_THREADS.get(_bk)
+            if not (_book_running(_bk) and isinstance(_t, threading.Thread) and _t.is_alive()):
+                _set_book_running(_bk, False)
+                proj.running = False
+            if proj.running or _book_running(_bk):
+                return False
         _set_book_running(_bk, True)
         proj.running = True
-    threading.Thread(target=_write_loop, args=(proj, batch_size), daemon=True).start()
+    th = threading.Thread(target=_write_loop_safe, args=(proj, batch_size), daemon=True)
+    with _RUNNING_LOCK:
+        _RUNNING_THREADS[_bk] = th
+    th.start()
     return True
 
 # ---------- v0.4：暂停 / 恢复 / 即时指令队列（读者像 Agent 聊天一样随时控）----------
@@ -1134,8 +1203,16 @@ def resume_book(key, batch_size=None) -> bool:
     返回 True=已启动新写作线程；False=无法启动（无计划/已完成/已有线程在写）。
     v4.20.1：此前被防重入拦截时也写「▶ 继续写作」日志并返回 True，
     前端据此误报成功——现在只有真正启动才记日志、才算成功。
-    v4.22.2：续跑点由任务档案 + 章内草稿决定，回复里明确说「从第几章／第几字接着写」。"""
+    v4.22.2：续跑点由任务档案 + 章内草稿决定，回复里明确说「从第几章／第几字接着写」。
+    v5.5.1：入口先做停摆自检——上次批量线程已死但注册表残留（_RUNNING_BOOKS /
+    Project.running / mark_pipeline / livejob / 任务档案 running）时先清再启，
+    「继续」不再被防重入拦死。"""
     p = Project(_project_dir(key), key)
+    try:
+        if registry_selfcheck(key, p):
+            p.log("🧹 停摆自检：上次写作线程已死亡但登记残留，已清理注册表/实时作业后重启")
+    except Exception:
+        pass
     plan = p.plan()
     if not plan:
         return False
@@ -1860,6 +1937,602 @@ def _ensure_layered_plan(proj):
             pass
 
 
+# ---------- v5.5.1：章卡闸门自愈闭环（修补 → 降级放行，绝不因章卡卡死停整批） ----------
+# 实测停摆形态（《实习生掉马那天》）：LLM 规划被代理 120s 读超时打掉 → plan_chapter_now
+# 返回 {} → 章卡永远是占位卡 → v5 写前闸门拒收 → _ensure_card_planned 返回 False →
+# _write_loop 置 plan_blocked 停批 → 用户点「继续」原样重来 → 再拒 → 死循环。
+# 闭环：拒收原因结构化 → 确定性补全（零 LLM）→ LLM 定向修补（原因回喂规划师）→
+# 两轮仍不过 → 降级放行为 legacy 章卡并记录质量账本（不静默）。闸门判定本身一行未改。
+
+_GATE_GENERIC_CAST_NAMES = ("主角", "主人公", "男主", "女主", "")
+_EXT_FIELD_MAP = (("身份/资源", "role"), ("身份", "role"), ("性格内核", "personality"),
+                  ("外在目标", "want"), ("想要 Want", "want"), ("想要", "want"),
+                  ("欠缺 Need", "need"), ("欠缺", "need"), ("致命缺陷", "flaw"),
+                  ("缺陷", "flaw"), ("说话方式", "voice"), ("关系/立场", "relations"),
+                  ("知情范围", "knowledge"), ("弧光", "arc"), ("标志细节", "mark"))
+
+def _profile_field(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()[:600]
+
+
+def _profile_extended_cast(pdir: str) -> list[dict]:
+    """扩展头人物档案解析（确定性）：兼容
+    `## 一、主角：沈知遥` / `## 三、反派：沈廷深` / `### 唐糖（团宠担当）` 这些
+    story_kernel._parse_cast 不认识的常见头。零 LLM，解析失败返回 []。"""
+    fp = os.path.join(pdir or "", "00-人物档案.md")
+    try:
+        text = open(fp, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return []
+    out: list[dict] = []
+    cur: dict | None = None
+    # 小节标题里的非人物结构段（五要素/对照表/速查…）不能当成人物
+    _not_char = ("要素", "对照表", "速查", "雪球", "声音", "立场表", "时间线", "关系网", "大纲")
+    for ln in text.splitlines():
+        m3 = re.match(r"^###\s*([^#\n]+)", ln)
+        m2 = re.match(r"^##\s+([^#\n]+)", ln)
+        if m3:
+            name = re.sub(r"[（(].*?[）)]", "", m3.group(1)).strip()
+            paren = re.search(r"[（(]([^）)]*)[）)]", m3.group(1))
+            if name and len(name) <= 12 and not any(k in name for k in _not_char):
+                cur = {"name": name, "role": _profile_field(paren.group(1)) if paren else "配角",
+                       "aliases": [], "first_chapter": 1, "exit_chapter": 0}
+                out.append(cur)
+            else:
+                cur = None
+            continue
+        if m2:
+            head = m2.group(1)
+            if re.search(r"(?:人物档案|人物)[：:]", head):
+                cur = None   # 标准头交给 story_kernel._parse_cast，避免重复登记
+                continue
+            name_m = re.search(r"[：:]\s*([^：:\n]+)$", head)
+            name = re.sub(r"[（(].*?[）)]", "", name_m.group(1)).strip() if name_m else ""
+            if not name or len(name) > 12 or any(k in name for k in _not_char):
+                cur = None
+                continue
+            if re.search(r"二号|副主角|第二主角", head):
+                role = "主要角色"
+            elif re.search(r"反派|对手|敌", head):
+                role = "反派"
+            elif re.search(r"配角|次要", head):
+                role = "配角"
+            else:
+                role = "主角"
+            cur = {"name": name, "role": role, "aliases": [], "first_chapter": 1,
+                   "exit_chapter": 0}
+            out.append(cur)
+            continue
+        if cur is not None:
+            fm = re.match(r"^\s*[-*]\s*\*{0,2}([^：:*]{1,24})\*{0,2}[：:]\s*(.*)$", ln)
+            if not fm:
+                continue
+            key = _profile_field(fm.group(1)).strip("* ").strip()
+            val = _profile_field(fm.group(2))
+            if not val:
+                continue
+            # 「想要/欠缺/代价」合并行：想要X；欠缺Y；代价Z
+            if key in ("想要/欠缺/代价", "想要/欠缺"):
+                for seg in re.split(r"[；;]", val):
+                    seg = seg.strip()
+                    mm = re.match(r"^想要(.*)$", seg)
+                    if mm:
+                        cur.setdefault("want", _profile_field(mm.group(1)))
+                    mm = re.match(r"^欠缺(.*)$", seg)
+                    if mm:
+                        cur.setdefault("need", _profile_field(mm.group(1)))
+                continue
+            for pat, field in _EXT_FIELD_MAP:
+                if key == pat or key.startswith(pat):
+                    cur.setdefault(field, val)
+                    break
+    # 角色位归一：标题含主角字样的配角小节
+    for c in out:
+        role_txt = str(c.get("role") or "")
+        if any(k in role_txt for k in ("主角", "反派", "配角", "担当", "软肋", "中间人")) and \
+                str(c.get("role")) not in ("主角", "反派", "配角", "主要角色"):
+            if "反派" in role_txt or "对手" in role_txt:
+                c["role"] = "反派"
+            elif "主角" in role_txt and "软肋" not in role_txt:
+                c["role"] = "主要角色"
+            else:
+                c["role"] = "配角" if len(role_txt) > 6 else c["role"]
+    return [c for c in out if c.get("name")]
+
+
+_LOCATION_SUFFIX_RE = re.compile(
+    r"会议室|办公室|办公区|大厦|大楼|总部|病房|病床|实验室|资料室|档案室|茶水间|楼梯间|"
+    r"天台|餐厅|食堂|咖啡店|咖啡馆|酒吧|酒店|机场|车站|地铁站|公寓|小区|客厅|书房|卧室|"
+    r"车库|码头|厂房|园区|门店|现场|谈判室|监控室|会议室")
+_LOCATION_LEAD_STOP = set("的了在与到去和与或把被将为由于进出入回上下里中个每是从对着往叫让用拿有就也都她他它你我其再还又便才刚正要封锁第次本场次")
+
+
+def extract_locations(*texts, limit: int = 6) -> list[str]:
+    """从书的大纲/档案文本里确定性地抽候选地点（去重、最多 limit 个）；抽不到给通用兜底。
+
+    抽法：找地点后缀词（会议室/病房/茶水间…），向前最多取 3 个连续汉字当前缀，
+    遇停用字（的/在/和/她/进…）截断——避免把「她必须在现场」「为由封锁病房」这类
+    动宾短语整段当成地点。"""
+    out: list[str] = []
+    for t in texts:
+        s = str(t or "")
+        for m in _LOCATION_SUFFIX_RE.finditer(s):
+            j = m.start() - 1
+            prefix = ""
+            while j >= 0 and len(prefix) < 3 \
+                    and "\u4e00" <= s[j] <= "\u9fff" and s[j] not in _LOCATION_LEAD_STOP:
+                prefix = s[j] + prefix
+                j -= 1
+            loc = (prefix + m.group(0)).strip()
+            if len(loc) < 2 or loc in out:
+                continue
+            out.append(loc)
+            if len(out) >= max(1, int(limit)):
+                return out
+    return out or ["故事主场景"]
+
+
+def repair_degenerate_facts(proj) -> dict:
+    """事实源退化/书名错位修补（确定性、零 LLM、只在新项目里发生）。
+
+    修三件事（都只发生在「确实退化」时，健康书原样返回）：
+    1. protagonist 是占位词（「主角」）或 core_cast 少于 2 人 → 用扩展头/标准头解析
+       00-人物档案.md 登记真实人物（story_kernel.ensure_project 只认标准头，判定不许动）；
+    2. facts.locations 为空 → 从人物档案/大纲里抽候选地点；
+    3. facts.title 与计划书名错位（选名 os.rename 后事实源没跟上，V5F01 会拦住整本书）
+       → 对齐到 plan.novelName，旧名进 aliases。
+    返回 {"fixed": [...]}。"""
+    from . import story_kernel as _v5
+    out = {"fixed": []}
+    try:
+        facts = _v5.load_facts(proj)
+        if not facts:
+            return out
+        plan = proj.plan() or {}
+        pdir = proj.path
+        changed = False
+        cast = [c for c in (facts.get("core_cast") or []) if isinstance(c, dict)]
+        names = {str(c.get("name") or "").strip() for c in cast}
+        protagonist = str(facts.get("protagonist") or "").strip()
+        need_cast = protagonist in _GATE_GENERIC_CAST_NAMES or len(cast) < 2
+        if need_cast:
+            chars_text = ""
+            try:
+                chars_text = open(os.path.join(pdir, "00-人物档案.md"),
+                                  encoding="utf-8", errors="replace").read()
+            except OSError:
+                pass
+            ext = _profile_extended_cast(pdir)
+            std = _v5._parse_cast(chars_text) if chars_text else []
+            fresh = ext or std
+            for c in fresh:
+                if c.get("name") and c["name"] not in names:
+                    cast.append(c)
+                    names.add(c["name"])
+                    changed = True
+            # 占位人物（name=「主角」这类）有真名可替换时丢弃，避免 seed 占位条目
+            # 长期霸占 core_cast[0]（实测：protagonist 永远选回占位词）
+            real = [c for c in cast if str(c.get("name") or "").strip()
+                    not in _GATE_GENERIC_CAST_NAMES]
+            if real and len(real) != len(cast):
+                cast = real
+                names = {str(c.get("name") or "").strip() for c in cast}
+                changed = True
+            if protagonist in _GATE_GENERIC_CAST_NAMES and cast:
+                lead = next((c for c in cast if str(c.get("role")) == "主角"
+                             and str(c.get("name")) not in _GATE_GENERIC_CAST_NAMES), None)
+                facts["protagonist"] = (lead or cast[0])["name"]
+                out["fixed"].append(f"protagonist={facts['protagonist']}")
+                changed = True
+            if not str(facts.get("deuteragonist") or "").strip() and len(cast) > 1:
+                second = next((c for c in cast if str(c.get("role")) == "主要角色"), None)
+                facts["deuteragonist"] = (second or cast[1])["name"]
+                out["fixed"].append(f"deuteragonist={facts['deuteragonist']}")
+                changed = True
+        if len(cast) >= 2:
+            facts["core_cast"] = cast[:12]
+        # 对手阶梯为空时从角色 role 兜底一级（V5C07/V5C07 冲突具体化要用具名对手）
+        if not (facts.get("antagonist_ladder") or []):
+            opp = next((c for c in cast if "反派" in str(c.get("role") or "")
+                        or any(k in str(c.get("role") or "") for k in ("总裁", "董事", "对手", "敌"))), None)
+            if opp:
+                facts["antagonist_ladder"] = [{"level": 1, "name": opp["name"], "goal": "",
+                                               "resource": str(opp.get("role") or "")[:80],
+                                               "weakness": "", "defeat_chapter": 0}]
+                out["fixed"].append(f"antagonist={opp['name']}")
+                changed = True
+        if not (facts.get("locations") or []):
+            prof = ""
+            outline = ""
+            try:
+                prof = open(os.path.join(pdir, "00-人物档案.md"), encoding="utf-8",
+                            errors="replace").read(40000)
+            except OSError:
+                pass
+            try:
+                outline = open(os.path.join(pdir, "01-大纲.md"), encoding="utf-8",
+                               errors="replace").read(40000)
+            except OSError:
+                pass
+            locs = extract_locations(prof, outline)
+            if locs:
+                facts["locations"] = locs[:6]
+                out["fixed"].append(f"locations={','.join(locs[:3])}…")
+                changed = True
+        # 书名错位对齐（选名后事实源没跟上）
+        plan_title = str(plan.get("novelName") or plan.get("title") or "").strip()
+        fact_title = str(facts.get("title") or "").strip()
+        if plan_title and fact_title and _norm_title_of(fact_title) != _norm_title_of(plan_title):
+            aliases = [a for a in (facts.get("aliases") or []) if a and a != plan_title]
+            if fact_title not in aliases:
+                aliases.append(fact_title)
+            facts["aliases"] = aliases[:8]
+            facts["title"] = plan_title
+            out["fixed"].append(f"title={plan_title}")
+            changed = True
+            try:
+                con = _v5.load_contract(proj) or {}
+                if str(con.get("title") or "").strip() and con.get("title") != plan_title:
+                    con["title"] = plan_title
+                    con["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+                    atomic_write_json(_v5.contract_path(proj), con)
+                    out["fixed"].append("contract_title")
+            except Exception:
+                pass
+        if changed:
+            facts["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            atomic_write_json(_v5.facts_path(proj), facts)
+    except Exception:
+        pass
+    return out
+
+
+def _norm_title_of(s: str) -> str:
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(s or ""))
+
+
+def _gate_card_blocks(proj, card, no) -> list:
+    """同一套 v5 判定（card_lint 原样调用），取 block 级结果供自愈闭环判定。"""
+    try:
+        from . import story_kernel as _v5
+        from . import longform as _lf
+        cards = _lf.load_cards(proj)
+        return [x for x in _v5.card_lint(proj, card, int(no), cards) if x.get("level") == "block"]
+    except Exception:
+        return []
+
+
+def _fill_card_hard_fields(proj, no, card, facts, blocks=None) -> dict:
+    """按闸门拒绝原因对章卡做确定性补全（零 LLM）。只填缺失/占位/超限字段，已有的真实内容不动。
+
+    这不是「高质量规划」，是把卡补成闸门可接受的 legacy 等价物（来源标注 repaired_by=
+    deterministic），真内容仍靠写作时的 LLM 与写后闸门兜底。"""
+    c = dict(card or {})
+    c.setdefault("n", int(no))
+    from . import story_kernel as _v5
+    facts = facts if isinstance(facts, dict) and facts else {}
+    cast_facts = [x for x in (facts.get("core_cast") or []) if isinstance(x, dict) and x.get("name")]
+    protagonist = str(facts.get("protagonist") or "").strip() or \
+        (cast_facts[0]["name"] if cast_facts else "")
+    deuteragonist = str(facts.get("deuteragonist") or "").strip()
+    opp = ""
+    for x in (facts.get("antagonist_ladder") or []):
+        if isinstance(x, dict) and x.get("name"):
+            opp = str(x["name"])
+            break
+    if not opp:
+        opp = next((x["name"] for x in cast_facts if "反派" in str(x.get("role") or "")), "")
+    if not opp and len(cast_facts) > 1:
+        opp = cast_facts[-1]["name"]
+
+    # ---- goal：空 / 占位套话 / 超长 → 用大纲行或确定性模板重建
+    goal = str(c.get("goal") or "").strip()
+    if not goal or len(goal) > 240 or any(m in goal for m in
+                                          ("承接本弧", "承接「", "本章为弧内第", "本章推进本卷目标")):
+        row = {}
+        try:
+            from . import longform as _lf
+            row = (_lf._outline_rows(proj) or {}).get(int(no)) or {}
+        except Exception:
+            row = {}
+        if row.get("goal"):
+            goal = str(row["goal"]).strip()
+        elif row.get("title"):
+            goal = f"{protagonist or '主角'}推进「{str(row['title'])[:24]}」：完成一件可验收的具体事，并为此付出明确代价"
+        else:
+            goal = (f"{protagonist or '主角'}在本章主动推进主线：完成一个可验收的小目标"
+                    f"（与{opp or '对手'}正面交锋），并在章内付出具体代价")
+        c["goal"] = goal[:240]
+    conflict = str(c.get("conflict") or "").strip()
+    if not conflict:
+        conflict = (f"{opp or '对手'}直接阻拦{protagonist or '主角'}达成本章目标——"
+                    f"{str(c.get('goal') or '')[:60]}；双方正面碰撞，"
+                    "主角必须当场做出取舍并付出代价")
+        c["conflict"] = conflict[:240]
+    if not str(c.get("turn") or "").strip():
+        c["turn"] = f"局面在章末反转：{opp or '对手'}亮出准备好的后手，主角的初版方案失效"
+    if not str(c.get("payoff") or "").strip():
+        c["payoff"] = "兑现上一章埋下的线索，让本章行动有前因可循"
+    if not str(c.get("cliffhanger") or "").strip():
+        c["cliffhanger"] = f"章末钩子：{opp or '对手'}抛出一个让{protagonist or '主角'}无法回避的新麻烦"
+    # ---- cast：至少 2 人且主角必须在场
+    cast = [str(x).strip() for x in (c.get("cast") or []) if str(x).strip()]
+    if protagonist and protagonist not in cast:
+        cast.insert(0, protagonist)
+    for nm in (deuteragonist, opp):
+        if nm and nm not in cast:
+            cast.append(nm)
+    if len(cast) < 2 and cast_facts:
+        for x in cast_facts:
+            if x["name"] not in cast:
+                cast.append(x["name"])
+            if len(cast) >= 2:
+                break
+    c["cast"] = cast[:8]
+    # ---- locations
+    locs = [str(x).strip() for x in (c.get("locations") or []) if str(x).strip()]
+    if not locs:
+        locs = [str(x) for x in (facts.get("locations") or [])][:4] or ["故事主场景"]
+    c["locations"] = locs[:6]
+    # ---- 主角行动 / 线程 / 场景链 / 时间 / 场景类型
+    if not str(c.get("protagonist_action") or "").strip():
+        c["protagonist_action"] = (f"{protagonist or '主角'}主动出击：围绕「{str(c.get('goal') or '')[:40]}」"
+                                   "采取具体行动，逼对手当场回应")
+    threads = [t for t in (c.get("threads_advance") or []) if isinstance(t, dict) and t.get("change")]
+    if not threads:
+        threads = [{"thread": "主线", "change": str(c.get("goal") or "")[:80], "irreversible": True}]
+    if not any(t.get("irreversible") for t in threads):
+        threads.append({"thread": "主线", "change": "本章推进无法撤回，局面就此改变", "irreversible": True})
+    c["threads_advance"] = threads
+    scenes = [s for s in (c.get("scenes") or []) if isinstance(s, dict)]
+    if len(scenes) < 3:
+        base = [
+            {"want": f"推进「{str(c.get('goal') or '')[:30]}」的第一步", "obstacle": f"{opp or '对手'}的当面阻拦",
+             "choice": "正面交锋而不是绕开", "cost": "暴露部分底牌", "outcome": "拿到局部优势",
+             "value_shift": "进攻"},
+            {"want": "确认关键信息", "obstacle": "信息被封锁或说谎",
+             "choice": "用交换条件换真相", "cost": "欠下一个人情", "outcome": "拿到半份真相",
+             "value_shift": "试探"},
+            {"want": "把优势落袋", "obstacle": "对手的后手突然亮出",
+             "choice": "放弃小胜保住主线的下一步", "cost": "本轮成果打折", "outcome": "埋下章末钩子",
+             "value_shift": "蓄力"},
+        ]
+        want_keys = ("want", "obstacle", "choice", "cost", "outcome", "value_shift")
+        merged = []
+        for i in range(3):
+            s = dict(base[i % len(base)])
+            if i < len(scenes) and isinstance(scenes[i], dict):
+                for k in want_keys:
+                    if str(scenes[i].get(k) or "").strip():
+                        s[k] = scenes[i][k]
+            merged.append(s)
+        c["scenes"] = merged
+    stype = str(c.get("scene_type") or "").strip()
+    if stype not in _v5.SCENE_TYPES:
+        # 10 类轮转，天然避开「连续 3 章同场景类型」
+        c["scene_type"] = _v5.SCENE_TYPES[(int(no) - 1) % len(_v5.SCENE_TYPES)]
+    if not str(c.get("story_time") or "").strip():
+        c["story_time"] = f"第{int(no)}日 {'上午' if no % 3 == 1 else ('下午' if no % 3 == 2 else '晚')}"
+    if not int(c.get("word_target") or 0):
+        c["word_target"] = int(facts.get("target_words_per_chapter") or 3000)
+    if str(c.get("title") or "").strip() in ("", f"第{int(no)}章"):
+        try:
+            from . import longform as _lf
+            row = (_lf._outline_rows(proj) or {}).get(int(no)) or {}
+            if row.get("title"):
+                c["title"] = str(row["title"])[:40]
+        except Exception:
+            pass
+    c["repaired_by"] = "deterministic"
+    c["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    return c
+
+
+def _gate_repair_card_via_llm(proj, no, cfg, card, blocks) -> dict | None:
+    """带闸门拒绝原因回喂规划师的定向章卡修补（1 次 LLM 调用；失败/超时返回 None）。
+
+    schema 与 longform.plan_chapter_now 的输出契约一致，规划师拿到的是
+    「哪几个字段被谁以什么理由拒收」，而不是盲目重生成。"""
+    from . import story_kernel as _v5
+    from . import longform as _lf
+    try:
+        card_json = json.dumps(card or {}, ensure_ascii=False)[:4000]
+        directive = _v5.repair_directive_text(blocks or [])
+        user = (f"全书正在写作中，请修补**第 {int(no)} 章**这张章卡（不要规划别的章）。\n"
+                f"当前章卡：{card_json}\n写前闸门拒收原因：\n{directive}\n"
+                '只输出修补后的完整章卡 JSON：{"title":"","goal":"","conflict":"","turn":"",'
+                '"payoff":"","cliffhanger":"","cast":[],"locations":[],"scene_type":"谈判",'
+                '"story_time":"第X日 上午/下午/晚","protagonist_action":"",'
+                '"relationship_delta":"",'
+                '"threads_advance":[{"thread":"主线/副线","change":"具体变化","irreversible":true}],'
+                '"scenes":[{"want":"","obstacle":"","choice":"","cost":"","outcome":"","value_shift":""}],'
+                '"engine":{"opponent":"","opponent_action":"","emotion_beat":"",'
+                '"humanity_choice":"","promise_hits":[],"mystery_move":"none","title_hit":"",'
+                '"elements":[]}}。所有拒收字段必须补齐且具体，不许留空、不许写「待定」。')
+        out = llm.chat_json([{"role": "system", "content": "你是长篇网文的章卡修补师，只输出严格 JSON。"},
+                             {"role": "user", "content": user}],
+                            cfg=cfg, stage="longform_chapter", agent="planner",
+                            temperature=0.4, use_cache=False)
+        if not isinstance(out, dict) or not out:
+            return None
+        c = dict(card or {})
+        for key in ("title", "goal", "conflict", "turn", "payoff", "cliffhanger",
+                    "story_time", "protagonist_action", "relationship_delta"):
+            val = _lf._text(out.get(key), 500)
+            if val:
+                c[key] = val
+        for key, cap in (("cast", 8), ("locations", 6)):
+            val = _lf._str_list(out.get(key), 80, cap)
+            if val:
+                c[key] = val
+        scenes = _lf._norm_scenes(out.get("scenes"))
+        if scenes:
+            c["scenes"] = scenes
+        threads = _lf._norm_threads(out.get("threads_advance"))
+        if threads:
+            c["threads_advance"] = threads
+        stype = _lf._one_scene_type(out.get("scene_type"))
+        if stype:
+            c["scene_type"] = stype
+        c["repaired_by"] = "llm_gate_repair"
+        return c
+    except Exception:
+        return None
+
+
+def _save_repaired_card(proj, no, card, via: str) -> None:
+    """把修补后的章卡写回 02d-章卡.jsonl（经 longform._norm_card 规整 + 锁内原子写）。"""
+    try:
+        from . import longform as _lf
+        cards = _lf.load_cards(proj)
+        card = dict(card or {})
+        card["n"] = int(no)
+        card["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        cards[int(no)] = card
+        _lf._write_cards(proj, cards)
+    except Exception as e:
+        try:
+            proj.log(f"⚠️ 章卡写回失败（第{no}章，via={via}）：{e}")
+        except Exception:
+            pass
+
+
+def _record_gate_fallback(proj, no, blocks, note: str = "") -> None:
+    """降级放行留痕：v5-质量账本 + 运行日志（绝不静默）。"""
+    try:
+        from . import story_kernel as _v5
+        rec = {"stage": "gate_fallback", "chapter": int(no),
+               "blocks": [b for b in (blocks or []) if isinstance(b, dict)][:10],
+               "note": note or "章卡修补两轮未过，降级放行为 legacy 章卡",
+               "ts": datetime.datetime.now().isoformat(timespec="seconds")}
+        with open(os.path.join(proj.path, _v5.LEDGER_FILE), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    try:
+        codes = "、".join(str(b.get("code")) for b in (blocks or [])[:6] if isinstance(b, dict))
+        proj.log(f"⚠️ 第{no}章降级放行（legacy 章卡）：闸门拒绝 {codes or '未知'}；"
+                 "已记入质量账本，写后闸门仍会追责")
+    except Exception:
+        pass
+
+
+# 降级放行的持久化登记（side-car）：02d-章卡.jsonl 经 longform._norm_card 规整时会
+# 丢掉非契约字段，legacy 标记必须落在独立文件里才能跨批次生效。
+_GATE_LEGACY_FILE = "v5-闸门降级.json"
+
+
+def _load_gate_legacy(pdir: str) -> dict:
+    d = {}
+    try:
+        with open(os.path.join(pdir, _GATE_LEGACY_FILE), encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    return d if isinstance(d, dict) else {}
+
+
+def _mark_gate_legacy(proj, no, reason: str) -> None:
+    """把某章登记为「legacy 放行」——后续批次写前闸门对该章不再拒停（确定性幂等）。"""
+    try:
+        d = _load_gate_legacy(proj.path)
+        d[str(int(no))] = {"reason": str(reason or "")[:300],
+                           "at": datetime.datetime.now().isoformat(timespec="seconds")}
+        atomic_write_json(os.path.join(proj.path, _GATE_LEGACY_FILE), d)
+    except Exception:
+        pass
+
+
+def _gate_legacy_exempt(proj, no) -> bool:
+    try:
+        return str(int(no or 0)) in _load_gate_legacy(proj.path)
+    except Exception:
+        return False
+
+
+def card_gate_selfheal(proj, no, cfg, blocks, card=None, rounds: int = 2) -> dict:
+    """写前闸门拒收章卡后的自愈闭环主入口。
+
+    轮次（最多 rounds=2）：
+      ① 确定性补全（零 LLM，立刻见效）：按拒收字段补 cast/locations/场景链/threads…；
+      ② LLM 定向修补（拒收原因回喂规划师，1 次调用）；
+    每轮后用同一套 card_lint 复检；两轮仍不过 → 降级放行 legacy 章卡并记录质量账本。
+    返回 {"ok": 放行与否, "card": 最终章卡, "degraded": 是否降级, "via": 修补途径,
+          "blocks": 复检后的拒绝块, "facts_fixed": 事实源修补项}。
+    闸门判定本身未改（红线）：复检走的就是 story_kernel.card_lint。"""
+    from . import story_kernel as _v5
+    no = int(no or 1)
+    facts_fixed: list = []
+    try:
+        _fr = repair_degenerate_facts(proj)
+        facts_fixed = _fr.get("fixed") or []
+    except Exception:
+        pass
+    facts = _v5.load_facts(proj)
+    result = {"ok": False, "card": card if isinstance(card, dict) else {},
+              "degraded": False, "via": "", "blocks": list(blocks or []),
+              "facts_fixed": facts_fixed, "rounds": 0}
+    if facts_fixed:
+        try:
+            proj.log("🩹 事实源退化已修补：" + "；".join(facts_fixed[:6]))
+        except Exception:
+            pass
+    if not result["card"]:
+        try:
+            from . import longform as _lf
+            result["card"] = (_lf.load_cards(proj) or {}).get(no) or {}
+        except Exception:
+            result["card"] = {}
+    last_blocks = list(blocks or [])
+    for r in range(1, max(1, int(rounds)) + 1):
+        result["rounds"] = r
+        if r == 1:
+            result["card"] = _fill_card_hard_fields(proj, no, result["card"], facts,
+                                                    blocks=last_blocks)
+            result["via"] = "deterministic_fill"
+        else:
+            got = _gate_repair_card_via_llm(proj, no, cfg, result["card"], last_blocks)
+            if got:
+                result["card"] = got
+                result["via"] = "llm_gate_repair"
+            else:
+                # LLM 仍不可用：再确定性兜一轮（只补上轮复检仍未过的字段）
+                result["card"] = _fill_card_hard_fields(proj, no, result["card"], facts,
+                                                        blocks=last_blocks)
+                result["via"] = "deterministic_fill"
+        _save_repaired_card(proj, no, result["card"], result["via"])
+        last_blocks = _gate_card_blocks(proj, result["card"], no)
+        if not last_blocks:
+            result.update(ok=True, blocks=[], degraded=False)
+            try:
+                proj.log(f"🧭 第{no}章闸门自愈成功（{result['via']}，第 {r} 轮）："
+                         f"{str(result['card'].get('goal') or '')[:60]}")
+                _evt(_bkey(proj), "planner", phase="done", title=f"第{no}章章卡闸门自愈",
+                     output=str(result["card"].get("goal") or "")[:120], chapter=no)
+            except Exception:
+                pass
+            return result
+        try:
+            proj.log(f"⚠️ 第{no}章闸门自愈第 {r} 轮后仍拒收："
+                     + "；".join(f"[{b.get('code')}]" for b in last_blocks[:6]))
+        except Exception:
+            pass
+    # 两轮仍不过：降级放行为 legacy 章卡（记录，不静默），绝不因章卡卡死停整批
+    result["card"]["v5_legacy_fallback"] = True
+    result["card"]["legacy_reason"] = "；".join(f"[{b.get('code')}] {b.get('message')}" for b in last_blocks[:6])[:300]
+    result["card"]["repaired_by"] = (result["card"].get("repaired_by") or "") + "+legacy_fallback"
+    _save_repaired_card(proj, no, result["card"], "legacy_fallback")
+    _mark_gate_legacy(proj, no, result["card"]["legacy_reason"])
+    _record_gate_fallback(proj, no, last_blocks, note="章卡闸门自愈两轮未过，降级放行")
+    result.update(ok=True, degraded=True, blocks=last_blocks)
+    try:
+        _evt(_bkey(proj), "planner", phase="warn", title=f"第{no}章章卡降级放行",
+             output=result["card"].get("legacy_reason") or "", chapter=no, level="warn")
+    except Exception:
+        pass
+    return result
+
+
 def _ensure_card_planned(proj, no, tries: int = 2) -> bool:
     """临写前最后一道规划闸门：章卡是占位卡就补一张真卡。
 
@@ -1871,6 +2544,13 @@ def _ensure_card_planned(proj, no, tries: int = 2) -> bool:
     cfg, lf = _longform_cfg(proj)
     if not lf.get("enabled", True):
         return True
+    # v5.5.1：已有 legacy 放行登记的章不再重复补规划/自愈（幂等，防每批空烧 LLM）
+    try:
+        from . import story_kernel as _v5x
+        if _v5x.enabled(proj) and _gate_legacy_exempt(proj, no):
+            return True
+    except Exception:
+        pass
     try:
         from . import longform as _lf
         cards = _lf.load_cards(proj)
@@ -1904,8 +2584,29 @@ def _ensure_card_planned(proj, no, tries: int = 2) -> bool:
                      output=str(got.get("goal") or "")[:120], chapter=int(no))
                 return True
             proj.log(f"⚠️ 第{no}章补规划第 {i + 1} 次未成功（章卡仍缺本章目标/冲突）")
-        proj.log(f"⛔ 第{no}章没有可用章卡（缺目标/冲突），照此写必然跑偏——"
-                 f"已跳过该章，请在「规划」里重建本章或检查模型可用性")
+        # v5.5.1：常规补规划两轮失败 → 进入章卡闸门自愈闭环（确定性补全 → LLM 定向
+        # 修补[拒绝原因回喂] → 降级放行 legacy），绝不因章卡卡死停止整批。
+        # 闸门判定本身一行未改（红线）：这里只是给拒收结果加了「修补/降级」出口。
+        try:
+            from . import story_kernel as _v5m
+            if _v5m.enabled(proj):
+                cards = _lf.load_cards(proj)
+                _card0 = cards.get(int(no)) or {}
+                _blocks = [x for x in _v5m.card_lint(proj, _card0, int(no), cards)
+                           if x.get("level") == "block"]
+                if not _blocks and _lf.card_is_placeholder(_card0):
+                    _blocks = [{"level": "block", "code": "V5C01", "message":
+                                "goal 是占位套话，不是一句话目标", "chapter": int(no)}]
+                if _blocks:
+                    _heal = card_gate_selfheal(proj, int(no), cfg, _blocks, card=_card0)
+                    if _heal.get("ok"):
+                        if _heal.get("degraded"):
+                            proj.log(f"⚠️ 第{no}章章卡两轮修补未过，已降级放行（legacy），本批继续")
+                        return True
+        except Exception as e:
+            proj.log(f"⚠️ 章卡闸门自愈异常：{e}")
+        proj.log(f"⛔ 第{no}章没有可用章卡（缺目标/冲突），已跳过该章——"
+                 f"请在「规划」里重建本章或检查模型可用性")
         _evt(_bkey(proj), "planner", phase="warn", title=f"第{no}章缺章卡，已跳过",
              output="章卡无本章目标/冲突，未动笔", chapter=int(no), level="warn")
         return False
@@ -2902,25 +3603,45 @@ def _write_chapter(proj, ch, min_words, max_retries):
         if plan0:
             proj.save_plan(plan0)
     ctx = _build_ctx(proj, ch)
-    # v5.0：写前契约闸门——事实源/章卡不完整，不写。
+    # v5.0：写前契约闸门——事实源/章卡不完整，先自愈再决定写不写。
+    # v5.5.1：拒收不再直接弃章——自动进入章卡闸门自愈闭环（确定性补全 → LLM 定向
+    # 修补[拒绝原因回喂] → 两轮仍不过降级放行 legacy），绝不因章卡卡死停止整批。
     try:
         from . import story_kernel as _v5
         if _v5.enabled(proj):
             _v5_pre = _v5.preflight(proj, ctx.get("longform_card") or {}, no, ctx.get("cfg"))
             ctx["v5_preflight"] = _v5_pre
             if _v5_pre.get("blocks"):
-                _msg = "；".join(f"[{f['code']}] {f['message']}" for f in _v5_pre["blocks"][:4])
-                proj.log(f"⛔ 第{no}章 v5 写前契约未通过：{_msg}")
-                _evt(_bk, "writer", phase="warn", title="v5 写前契约未通过，本章不写",
-                     output=_msg[:220], chapter=no)
-                with proj.lock:
-                    _pl0 = proj.plan() or {}
-                    for _c0 in _pl0.get("chapters") or []:
-                        if _c0.get("chapterNumber") == no:
-                            _c0["status"] = "failed"
-                            _c0["v5Blocks"] = _v5_pre["blocks"][:8]
-                    proj.save_plan(_pl0)
-                return
+                if _gate_legacy_exempt(proj, no):
+                    # 已有降级放行登记（v5-闸门降级.json）：不再重复自愈，按 legacy 继续写
+                    ctx["v5_preflight_downgraded"] = True
+                    proj.log(f"⚠️ 第{no}章按既有 legacy 放行记录继续写作；写后闸门照常追责")
+                else:
+                    _msg = "；".join(f"[{f['code']}] {f['message']}" for f in _v5_pre["blocks"][:4])
+                    proj.log(f"⛔ 第{no}章 v5 写前契约未通过：{_msg}")
+                    _evt(_bk, "writer", phase="warn", title="v5 写前契约未通过，进入章卡自愈",
+                         output=_msg[:220], chapter=no)
+                    _heal = card_gate_selfheal(proj, no, ctx.get("cfg"), _v5_pre.get("blocks"),
+                                               card=ctx.get("longform_card") or {})
+                    ctx["v5_gate_selfheal"] = {k: _heal.get(k) for k in
+                                               ("ok", "degraded", "via", "rounds", "blocks")}
+                    if _heal.get("ok"):
+                        ctx["longform_card"] = _heal.get("card") or ctx.get("longform_card") or {}
+                        if _heal.get("degraded"):
+                            ctx["v5_preflight_downgraded"] = True
+                            proj.log(f"⚠️ 第{no}章章卡降级放行（legacy），继续写作；写后闸门照常追责")
+                        else:
+                            proj.log(f"🧭 第{no}章章卡闸门自愈通过（{_heal.get('via')}），继续写作")
+                    else:
+                        # 自愈本身失败（极端异常）：保持旧行为——标 failed 跳过本章
+                        with proj.lock:
+                            _pl0 = proj.plan() or {}
+                            for _c0 in _pl0.get("chapters") or []:
+                                if _c0.get("chapterNumber") == no:
+                                    _c0["status"] = "failed"
+                                    _c0["v5Blocks"] = _v5_pre["blocks"][:8]
+                            proj.save_plan(_pl0)
+                        return
             if _v5_pre.get("directives"):
                 ctx["v5_directives"] = _v5_pre["directives"]
     except Exception as _e:
@@ -3745,6 +4466,47 @@ def validate_project(proj, mode="report", max_rounds=2, progress_cb=None):
         p2["status"] = "completed"
         proj.save_plan(p2)
     return res
+
+def _write_loop_safe(proj: Project, batch_size=None):
+    """v5.5.1 外层收口壳：写作线程走任何异常路径（包括主 try 之前的崩溃、finally 自身
+    再抛错）都必须保证 _RUNNING_BOOKS / Project.running / mark_pipeline / livejob /
+    线程登记全部收口。v4.39.1 的 reconcile 只救「进程重启」，救不了「进程活着但批量
+    线程已死」——那种残留会把「继续」永远拦在防重入上（实测《实习生掉马那天》停摆形态）。"""
+    _bk = os.path.basename(proj.path)
+    with _RUNNING_LOCK:
+        _RUNNING_THREADS[_bk] = threading.current_thread()
+    try:
+        _write_loop(proj, batch_size)
+    except Exception as e:
+        try:
+            proj.log(f"💥 写作线程外层兜底收口（线程即将退出）：{type(e).__name__}: {str(e)[:120]}")
+        except Exception:
+            pass
+        try:
+            journal.update(proj.path, status="paused", stage="interrupted",
+                           note=f"写作线程崩溃：{str(e)[:80]}（点「继续」重启）")
+            journal.remember(proj.path, "system", f"写作线程异常退出：{str(e)[:100]}（已收口，可继续）")
+        except Exception:
+            pass
+    finally:
+        with _RUNNING_LOCK:
+            _RUNNING_THREADS.pop(_bk, None)
+        try:
+            proj.running = False
+        except Exception:
+            pass
+        _set_book_running(_bk, False)
+        try:
+            mark_pipeline(_bk, False)
+        except Exception:
+            pass
+        try:
+            from . import livejob as _lj2
+            if _lj2.is_active(_bk):
+                _lj2.finish(_bk, ok=False, detail="写作线程已退出，登记收口")
+        except Exception:
+            pass
+
 
 def _write_loop(proj: Project, batch_size=None):
     _sem = _write_semaphore()          # v0.3 P3：并发（默认 2 本同时写，超出排队）

@@ -12,13 +12,16 @@ import {
   mediumGlyph,
   mediumChip
 } from '../core/dom.js';
-import { store } from '../core/state.js';
+import { store, patchUi } from '../core/state.js';
 import { navigate } from '../core/router.js';
 import { createComposer } from '../components/composer.js';
 import { MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
 import { toast } from '../core/ui.js';
 import { request, errorText, IS_MOCK } from '../core/api.js';
 import { loadCss } from '../core/loadcss.js';
+/* v5.5.0：新建作品双入口弹窗 + 直接开聊（无 key 会话）挂载 */
+import { openNewWorkDialog, isDirectChatQuery } from '../components/newwork.js';
+import { renderSession } from './session.js';
 
 /* ---------------------------------------------------------------- 自研文案库 */
 
@@ -115,6 +118,23 @@ function benchChapterOf(item) {
 
 export function renderWelcome(container, ctx) {
   container.textContent = '';
+  /* v5.5.0 直接开聊：#/welcome?chat=1 —— 无作品绑定的新会话。session 视图直挂在本路由，
+     currentKey 保持空串：session.js 的 buildStreamPayload 不带 key，后端 /api/chat/stream
+     按「无绑定新会话」处理（总编辑引导：想写什么 → 定体裁/书名 → 建书）。
+     预填语由 newwork.enterDirectChat 写进 ui.directChatPrefill，取走即清，不自动发送。 */
+  if (isDirectChatQuery((store.get().route || {}).query)) {
+    const ui = store.get().ui || {};
+    const prefill = String(ui.directChatPrefill || '');
+    if (ui.directChatPrefill) patchUi({ directChatPrefill: '' });
+    const sess = renderSession(container, ctx, { directChat: true, prefill });
+    return {
+      el: sess.el,
+      focusComposer: sess.focusComposer,
+      refresh: sess.refresh,
+      scrollToBottom: sess.scrollToBottom,
+      destroy() { sess.destroy(); }
+    };
+  }
   /* 首页新卡片样式（码字进度 / 灵感速记 / 工具 / 横卡）随统计样式一同注入，loadCss 幂等。 */
   loadCss('/v2/css/stats.css');
   const welcome = h('div', { class: 'welcome' });
@@ -150,12 +170,10 @@ export function renderWelcome(container, ctx) {
     ctx,
     placeholder: '描述你想写的故事，或直接说「继续第 47 章」…',
     onSend(payload) {
-      ctx.openWizard({
-        idea: payload.text,
-        medium: payload.medium,
-        genre: payload.genre,
-        attachments: payload.attachments
-      });
+      /* v5.5.0：hero 输入也走双入口弹窗——preset 原样透传：
+         「按开书流程走」→ openWizard(preset)（idea/体裁/附件不丢，现行为不变）；
+         「直接开聊」→ 无 key 会话，preset.text 成为 composer 预填语。 */
+      openNewWorkDialog(ctx, { preset: payload, source: 'hero' });
     }
   });
   inner.append(composer.el);
@@ -249,7 +267,7 @@ export function renderWelcome(container, ctx) {
             class: 'btn btn-sm',
             type: 'button',
             text: '新建作品',
-            on: { click: () => ctx.openWizard() }
+            on: { click: () => openNewWorkDialog(ctx, { source: 'welcome-empty' }) }
           })
         )
       );
@@ -293,7 +311,7 @@ export function renderWelcome(container, ctx) {
   );
   const toolGrid = h('div', { class: 'ht-grid' });
   const tools = [
-    { icon: 'quill', label: '一键开书', hint: '向导建新书', onClick: () => ctx.openWizard() },
+    { icon: 'quill', label: '一键开书', hint: '开书向导或直接开聊', onClick: () => openNewWorkDialog(ctx, { source: 'welcome-tools' }) },
     { icon: 'library', label: '作品库', hint: '全部作品', onClick: () => navigate('/library') },
     { icon: 'activity', label: '码字统计', hint: '手写与 AI 分账', onClick: () => navigate('/stats') },
     /* v5.4.0：拆书/榜单/灵感库三入口（路由已预接线，视图按需加载） */
