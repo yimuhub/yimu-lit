@@ -1,0 +1,229 @@
+/* 书架升级（v5.3.0）：分组 tab 条 / 封面图 / 分组管理弹窗 / 彻底删除数据范围清单。
+   本文件由 views/library.js 经 loadCss 注入（幂等），panels.css 的既有 lib-* 样式不动，
+   这里只补增量类。颜色一律走 tokens.css 语义变量，深浅色主题自动适配。 */
+
+/* ------------------------------------------------ 分组 tab 条（全部 / 未分组 / 自定义分组） */
+
+.lib-groups {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.lib-gtabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.lib-gtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  padding: 5px 11px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.lib-gtab:hover {
+  border-color: var(--line-4);
+  color: var(--ink-primary);
+}
+
+.lib-gtab.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.lib-gtab-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lib-gtab-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-chip);
+  color: var(--ink-caption);
+  font-size: 11px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.lib-gtab.is-active .lib-gtab-count {
+  background: var(--bg-base);
+  color: var(--accent-ink);
+}
+
+/* ------------------------------------------------ 封面图：盖在字形占位之上，加载失败回退占位 */
+
+.lib-cover {
+  overflow: hidden;
+}
+
+.lib-cover .lib-cover-glyph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.lib-cover .lib-cover-glyph-char {
+  flex: none;
+  line-height: 1;
+}
+
+/* 竖排书名占位（无封面时）：字形在上、书名竖排在下，随主题背景渐变（panels.css 提供底色） */
+.lib-cover .lib-cover-title {
+  writing-mode: vertical-rl;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  max-height: calc(100% - 18px);
+  font-size: 9px;
+  line-height: 1.1;
+  letter-spacing: 1px;
+  opacity: 0.8;
+}
+
+.lib-cover .lib-cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.lib-cover.has-img .lib-cover-img {
+  opacity: 1;
+}
+
+/* 图盖住占位后，字形与收藏星标分层：星标保持可见 */
+.lib-cover.has-img .lib-cover-glyph {
+  visibility: hidden;
+}
+
+.lib-cover .lib-star {
+  z-index: 2;
+}
+
+/* ------------------------------------------------ 卡片上的分组 chip / 回收站时间戳 */
+
+.lib-group-chip {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lib-row-stamp:empty {
+  display: none;
+}
+
+/* ------------------------------------------------ 管理分组弹窗 */
+
+.lib-gmgmt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 60px;
+}
+
+.lib-gmgmt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+}
+
+.lib-gmgmt-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-primary);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lib-gmgmt-count {
+  flex: none;
+  color: var(--ink-caption);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lib-gmgmt-del {
+  color: var(--danger-ink);
+}
+
+.lib-gmgmt-del:hover {
+  border-color: var(--danger-line);
+}
+
+/* ------------------------------------------------ 彻底删除：数据范围清单 */
+
+.lib-purge-scope {
+  padding: 9px 11px;
+  border: 0.5px solid var(--danger-line);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+}
+
+.lib-purge-scope-title {
+  color: var(--danger-ink);
+  font-size: var(--fs-small);
+  font-weight: 500;
+}
+
+.lib-purge-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.7;
+}
+
+/* ------------------------------------------------ 窄屏：分组条占满一行，tab 可换行 */
+
+@media (max-width: 875px) {
+  .lib-groups {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .lib-groups .lib-spacer {
+    display: none;
+  }
+
+  .lib-gtab {
+    max-width: 46%;
+  }
+}

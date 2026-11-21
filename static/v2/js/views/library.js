@@ -1,4 +1,9 @@
-/* 作品库：视图（全部/归档/回收站）、筛选、排序、批量操作、收藏/归档/恢复/彻底删除/导出。 */
+/* 作品库（书架）：视图（全部/归档/回收站）、筛选、排序 6 种、本地搜索（书名/分类/简介）、
+   分组 tab 条（全部/未分组/自定义分组带计数）、移动分组、封面上传（即时预览）、
+   批量操作、收藏/归档/恢复/彻底删除/导出。
+   v5.3.0：排序/搜索/分组/封面全部在前端完成（bot/weblib.py 提供分组与封面端点，
+   后端没挂载或 mock 模式时 optional() 优雅降级，不影响作品列表主链路）。
+   回收站沿用既有 trashed_at 生命周期与 /api/library/{key}/restore|purge 端点，不另起炉灶。 */
 
 import {
   h,
@@ -12,19 +17,30 @@ import {
   MEDIUM_LABELS,
   MEDIUM_UNITS,
   debounce,
-  downloadUrl, mediumGlyph } from '../core/dom.js';
+  downloadUrl,
+  mediumGlyph } from '../core/dom.js';
 import { store } from '../core/state.js';
-import { api, errorText, IS_MOCK } from '../core/api.js';
-import { toast, popoverMenu, openModal } from '../core/ui.js';
+import { api, errorText, IS_MOCK, request, optional } from '../core/api.js';
+import { toast, popoverMenu, openModal, confirmDialog } from '../core/ui.js';
 import { openProject } from '../core/router.js';
+import { loadCss } from '../core/loadcss.js';
 
-const SORTS = [
-  { value: 'updated', label: '最近更新' },
-  { value: 'created', label: '创建时间' },
-  { value: 'words', label: '字数' },
-  { value: 'quality', label: '评分' },
-  { value: 'progress', label: '进度' }
+/* 书架新样式（分组 tab / 封面图 / 管理弹窗）：library.css 按需注入，panels.css 不动。 */
+loadCss('/v2/css/library.css?v=530');
+
+/* 排序 6 种：方向内建在选项里（最近更新/最早更新是一对，字数最多/最少是一对），
+   排序在前端完成（sortItems 纯函数），切换时不再回服务端。 */
+export const SORTS = [
+  { value: 'updated', order: 'desc', label: '最近更新' },
+  { value: 'updated', order: 'asc', label: '最早更新' },
+  { value: 'created', order: 'desc', label: '最新创建' },
+  { value: 'words', order: 'desc', label: '字数最多' },
+  { value: 'words', order: 'asc', label: '字数最少' },
+  { value: 'name', order: 'asc', label: '书名' }
 ];
+
+const GROUP_NAME_MAX = 30;
+const COVER_MAX_MB = 5;
 
 const STATUS_OPTIONS = [
   { value: '', label: '全部状态' },
@@ -57,6 +73,77 @@ const EMPTY_TEXT = {
   }
 };
 
+/* 中文书名排序用本地化比较器（node/浏览器都有 Intl；缺了就退回逐字符比较）。 */
+const NAME_COLLATOR = (typeof Intl !== 'undefined' && Intl.Collator)
+  ? new Intl.Collator(['zh-Hans-CN', 'zh'], { numeric: true })
+  : null;
+
+/* ---------------------------------------------------------------- 纯函数（tests/v53_library_ui_test.mjs 直测） */
+
+/* 排序：置顶（pinned）永远在前（与 /api/library 的服务端口径一致），其余按 key/order。
+   稳定排序：key 相同保持原有相对顺序。 */
+export function sortItems(items, sort = 'updated', order = 'desc') {
+  const dir = order === 'asc' ? 1 : -1;
+  const cmp = (a, b) => {
+    let d = 0;
+    if (sort === 'name') {
+      const an = String(a.name || '');
+      const bn = String(b.name || '');
+      d = NAME_COLLATOR ? NAME_COLLATOR.compare(an, bn) : (an < bn ? -1 : an > bn ? 1 : 0);
+    } else {
+      const keyOf = (it) => {
+        if (sort === 'created') return String(it.created_at || '');
+        if (sort === 'words') return Number(it.total_words) || 0;
+        return String(it.updated_at || it.created_at || '');   // updated
+      };
+      const ka = keyOf(a);
+      const kb = keyOf(b);
+      d = ka < kb ? -1 : ka > kb ? 1 : 0;
+    }
+    return d * dir;
+  };
+  const pinned = items.filter((it) => it && it.pinned).sort(cmp);
+  const rest = items.filter((it) => it && !it.pinned).sort(cmp);
+  return pinned.concat(rest);
+}
+
+/* 本地搜索：书名 / 分类（题材）/ 简介（bot/weblib.py /api/library/intros 提供，
+   拿不到就跳过该字段，不阻塞搜索）+ 自定义标签。全部大小写不敏感的包含匹配。 */
+export function filterItems(items, q, intros = {}) {
+  const kw = String(q || '').trim().toLowerCase();
+  if (!kw) return items.slice();
+  return items.filter((it) => {
+    const hay = [
+      it.name,
+      it.genre,
+      Array.isArray(it.tags) ? it.tags.join(' ') : '',
+      intros[it.key]
+    ].filter(Boolean).join('\n').toLowerCase();
+    return hay.includes(kw);
+  });
+}
+
+/* 分组计数：基于已搜索的条目集（tab 上的数字随搜索收缩，所见即所搜）。 */
+export function groupCounts(items, assign = {}) {
+  const byGroup = {};
+  let none = 0;
+  for (const it of items) {
+    const g = assign[it && it.key];
+    if (g) byGroup[g] = (byGroup[g] || 0) + 1;
+    else none += 1;
+  }
+  return { all: items.length, none, byGroup };
+}
+
+/* 按分组筛选：'all'=全部，'none'=未分组，其余为分组 id。 */
+export function applyGroup(items, assign = {}, group = 'all') {
+  if (!group || group === 'all') return items.slice();
+  if (group === 'none') return items.filter((it) => !assign[it.key]);
+  return items.filter((it) => assign[it.key] === group);
+}
+
+/* ---------------------------------------------------------------- 视图主入口 */
+
 export function renderLibrary(container, ctx) {
   const view = h('div', { class: 'view-scroll' });
   const pad = h('div', { class: 'view-pad' });
@@ -71,12 +158,19 @@ export function renderLibrary(container, ctx) {
     status: '',
     sort: 'updated',
     order: 'desc',
+    group: 'all',                  // 'all' | 'none' | 分组 id
     mode: localStorage.getItem('shenbi.v2.libView') || 'grid',
     items: [],
     stats: {},
     facets: {},
     counts: {},
     selected: new Set(),
+    groups: [],                    // 自定义分组 [{id,name,order}]
+    assign: {},                    // 作品 key -> 分组 id（缺席 = 未分组）
+    intros: {},                    // 作品 key -> 简介（本地搜索字段，可选）
+    coverV: {},                    // 作品 key -> 封面版本（上传/移除后 bump，防缓存）
+    mockCovers: {},                // mock 模式的本地预览 dataURL
+    hasCover: new Set(),           // 已确认有封面的 key（img onload / 上传成功后登记）
     loading: true,
     error: ''
   };
@@ -90,7 +184,7 @@ export function renderLibrary(container, ctx) {
       'div',
       { class: 'lib-head-copy' },
       h('h1', { text: '作品库' }),
-      h('p', { class: 'hint-text', text: '全部作品、评分与导出。数据都在本地，随时可以打包带走。' })
+      h('p', { class: 'hint-text', text: '全部作品、分组、封面与导出。数据都在本地，随时可以打包带走。' })
     ),
     h(
       'div',
@@ -111,6 +205,10 @@ export function renderLibrary(container, ctx) {
   const viewsRow = h('div', { class: 'lib-views' });
   pad.append(viewsRow);
 
+  /* 分组 tab 条：只在「全部」视图出现（归档/回收站不参与分组）。 */
+  const groupRow = h('div', { class: 'lib-groups', hidden: true });
+  pad.append(groupRow);
+
   const statsRow = h('div', { class: 'lib-stats page-card' });
   pad.append(statsRow);
 
@@ -127,6 +225,11 @@ export function renderLibrary(container, ctx) {
 
   let loadSeq = 0;
 
+  /* 当前视图 + 搜索 + 分组筛选后的条目（不含排序）。 */
+  function visibleItems() {
+    return applyGroup(filterItems(model.items, model.q, model.intros), model.assign, model.group);
+  }
+
   async function load() {
     const seq = ++loadSeq;
     model.loading = true;
@@ -135,7 +238,6 @@ export function renderLibrary(container, ctx) {
     try {
       const res = await api.library({
         view: model.view,
-        q: model.q,
         genre: model.genre,
         medium: model.medium,
         status: model.status,
@@ -161,6 +263,24 @@ export function renderLibrary(container, ctx) {
     paintStats();
     paintViews();
     paintFilters();
+    paintGroupTabs();
+    paintList();
+  }
+
+  /* 分组与简介：附加能力，拿不到（后端未挂载 / mock 模式）就静默降级为无分组。 */
+  async function refreshExtras() {
+    try {
+      const [g, it] = await Promise.all([
+        optional(request('/api/library/groups')),
+        optional(request('/api/library/intros'))
+      ]);
+      model.groups = (g && g.groups) || [];
+      model.assign = (g && g.assign) || {};
+      model.intros = (it && it.intros) || {};
+    } catch {
+      /* 分组/简介不可用不影响作品列表主链路 */
+    }
+    paintGroupTabs();
     paintList();
   }
 
@@ -204,11 +324,13 @@ export function renderLibrary(container, ctx) {
     if (model.view === next) return;
     model.view = next;
     model.status = '';
+    model.group = 'all';          // 分组只作用于「全部」视图
     model.items = [];
     model.selected.clear();
     paintViews();
     paintStats();
     paintFilters();
+    paintGroupTabs();
     paintBatchBar();
     listWrap.textContent = '';
     load();
@@ -235,15 +357,341 @@ export function renderLibrary(container, ctx) {
     }
   }
 
+  /* ------------------------------------------------------------ 分组 tab 条 */
+
+  function paintGroupTabs() {
+    groupRow.hidden = model.view !== 'active';
+    if (groupRow.hidden) return;
+    groupRow.textContent = '';
+    const counts = groupCounts(filterItems(model.items, model.q, model.intros), model.assign);
+    const tabs = [
+      { value: 'all', label: '全部', count: counts.all },
+      { value: 'none', label: '未分组', count: counts.none },
+      ...model.groups.map((g) => ({ value: g.id, label: g.name, count: counts.byGroup[g.id] || 0 }))
+    ];
+    const strip = h('div', { class: 'lib-gtabs', role: 'tablist', 'aria-label': '作品分组' });
+    for (const t of tabs) {
+      strip.append(h('button', {
+        class: `lib-gtab${model.group === t.value ? ' is-active' : ''}`,
+        type: 'button',
+        role: 'tab',
+        'aria-pressed': model.group === t.value ? 'true' : 'false',
+        title: t.label,
+        on: { click: () => setGroup(t.value) }
+      },
+        h('span', { class: 'lib-gtab-label', text: t.label }),
+        h('span', { class: 'lib-gtab-count', text: String(t.count) })));
+    }
+    groupRow.append(
+      strip,
+      h('span', { class: 'lib-spacer' }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        html: `${icon('plus', 13)}<span>新建分组</span>`,
+        on: { click: () => groupDialog('create') }
+      }),
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        text: '管理分组',
+        disabled: !model.groups.length,
+        on: { click: manageGroupsDialog }
+      })
+    );
+  }
+
+  function setGroup(next) {
+    if (model.group === next) return;
+    model.group = next;
+    paintGroupTabs();
+    paintList();
+  }
+
+  /* 新建/重命名分组弹窗。onDone 供「管理分组」弹窗刷新行内列表。 */
+  function groupDialog(mode, group = null, onDone = null) {
+    const isRename = mode === 'rename';
+    const input = h('input', {
+      class: 'input',
+      value: group ? group.name : '',
+      maxlength: String(GROUP_NAME_MAX),
+      placeholder: '如：玄幻 / 已完本 / 冲榜中',
+      'aria-label': '分组名'
+    });
+    const error = h('div', { class: 'error-text', role: 'alert' });
+    const saveBtn = h('button', {
+      class: 'btn btn-primary',
+      type: 'button',
+      text: isRename ? '保存' : '创建',
+      dataset: { autofocus: '' },
+      on: { click: () => submit() }
+    });
+    const modal = openModal({
+      title: isRename ? '重命名分组' : '新建分组',
+      body: h('div', { class: 'confirm-body' },
+        h('div', { class: 'field' }, h('span', { class: 'field-label', text: '分组名' }), input),
+        error),
+      footer: h('div', { class: 'lib-dialog-foot' },
+        h('button', { class: 'btn', type: 'button', text: '取消', on: { click: () => modal.close() } }),
+        saveBtn),
+      size: 'sm',
+      initialFocus: input
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submit();
+      }
+    });
+
+    async function submit() {
+      const name = input.value.trim();
+      if (!name) {
+        error.textContent = '分组名不能为空';
+        return;
+      }
+      if (IS_MOCK) {
+        toast('演示模式：分组功能需要连接本地服务', { duration: 2400 });
+        modal.close();
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        await request('/api/library/groups', {
+          method: 'POST',
+          body: isRename ? { action: 'rename', id: group.id, name } : { action: 'create', name }
+        });
+        modal.close();
+        await refreshExtras();
+        toast(isRename ? '分组已重命名' : `分组「${name}」已创建`, { tone: 'success', duration: 1800 });
+        if (onDone) onDone();
+      } catch (err) {
+        saveBtn.disabled = false;
+        error.textContent = errorText(err, isRename ? '重命名失败' : '创建失败');
+      }
+    }
+  }
+
+  /* 管理分组：行内重命名 / 删除（删除只是解散分组，组内作品回「未分组」）。 */
+  function manageGroupsDialog() {
+    const listWrap = h('div', { class: 'lib-gmgmt-list' });
+    const paint = () => {
+      listWrap.textContent = '';
+      const counts = groupCounts(model.items, model.assign);
+      if (!model.groups.length) {
+        listWrap.append(h('div', { class: 'hint-text', text: '还没有分组，关闭后点「新建分组」创建第一个。' }));
+        return;
+      }
+      for (const g of model.groups) {
+        listWrap.append(
+          h('div', { class: 'lib-gmgmt-row', dataset: { id: g.id } },
+            h('span', { class: 'lib-gmgmt-name', text: g.name }),
+            h('span', { class: 'lib-gmgmt-count', text: `${counts.byGroup[g.id] || 0} 部` }),
+            h('button', {
+              class: 'btn btn-sm', type: 'button', text: '重命名',
+              on: { click: () => groupDialog('rename', g, paint) }
+            }),
+            h('button', {
+              class: 'btn btn-sm lib-gmgmt-del', type: 'button', text: '删除',
+              on: { click: () => deleteGroupFlow(g, paint) }
+            }))
+        );
+      }
+    };
+    paint();
+    openModal({
+      title: '管理分组',
+      subtitle: '删除分组不会删作品，组内作品回到「未分组」。',
+      body: listWrap,
+      size: 'sm'
+    });
+  }
+
+  async function deleteGroupFlow(group, onDone = null) {
+    const ok = await confirmDialog({
+      title: '删除分组',
+      message: `确定删除分组「${group.name}」吗？`,
+      detail: '组内作品不会被删除，会回到「未分组」。',
+      confirmText: '删除分组',
+      danger: true
+    });
+    if (!ok) return;
+    if (IS_MOCK) {
+      toast('演示模式：分组功能需要连接本地服务', { duration: 2400 });
+      return;
+    }
+    try {
+      await request('/api/library/groups', { method: 'POST', body: { action: 'delete', id: group.id } });
+      if (model.group === group.id) model.group = 'all';
+      await refreshExtras();
+      toast(`分组「${group.name}」已删除，组内作品回到未分组`, { tone: 'success', duration: 2200 });
+      if (onDone) onDone();
+    } catch (err) {
+      toast(errorText(err, '删除分组失败'), { tone: 'danger' });
+    }
+  }
+
+  /* 移动分组菜单：卡片 ⋯ → 移动分组 → 未分组 / 各分组（带当前勾选）/ 新建分组。 */
+  function moveGroupMenu(anchor, item) {
+    const current = model.assign[item.key] || null;
+    const items = [
+      { label: '未分组', icon: 'folder', checked: !current, onSelect: () => moveToGroup(item, null) },
+      ...model.groups.map((g) => ({
+        label: g.name,
+        icon: 'folder',
+        checked: current === g.id,
+        onSelect: () => moveToGroup(item, g.id)
+      })),
+      { separator: true },
+      { label: '新建分组', icon: 'plus', onSelect: () => groupDialog('create') }
+    ];
+    popoverMenu(anchor, items, { label: `《${item.name}》移动到` });
+  }
+
+  async function moveToGroup(item, gid) {
+    if (IS_MOCK) {
+      toast('演示模式：分组功能需要连接本地服务', { duration: 2400 });
+      return;
+    }
+    try {
+      await request('/api/library/assign-group', { method: 'POST', body: { key: item.key, groupId: gid } });
+      if (gid) model.assign[item.key] = gid;
+      else delete model.assign[item.key];
+      toast(gid ? '已移动到分组' : '已移出分组，回到未分组', { tone: 'success', duration: 1600 });
+      paintGroupTabs();
+      paintList();
+    } catch (err) {
+      toast(errorText(err, '移动分组失败'), { tone: 'danger' });
+    }
+  }
+
+  /* ------------------------------------------------------------ 封面 */
+
+  function coverSrc(item) {
+    if (model.mockCovers[item.key]) return model.mockCovers[item.key];
+    const v = model.coverV[item.key] || 0;
+    return `/api/library/cover?key=${encodeURIComponent(item.key)}&v=${v}`;
+  }
+
+  /* 封面节点：无封面 = 主题渐变底 + 文体字形 + 竖排书名（≤8 字取前 4 字，复用 mediumGlyph 口径）；
+     有封面 = 图（load 后盖住占位，error 回退占位）。mock 模式只有本地预览图，不发探测请求。 */
+  function coverNode(item, extraClass = '') {
+    const wrap = h('span', { class: `lib-cover ${extraClass}`.trim() });
+    const title = String(item.name || '').trim();
+    const vert = title.length > 1 && title.length <= 8 ? title.slice(0, 3) : '';
+    wrap.append(
+      h('span', { class: 'lib-cover-glyph' },
+        h('span', { class: 'lib-cover-glyph-char', text: (mediumGlyph(item) || initials(item.name)) }),
+        vert ? h('span', { class: 'lib-cover-title', text: vert }) : null)
+    );
+    if (!IS_MOCK || model.mockCovers[item.key]) {
+      const img = h('img', {
+        class: 'lib-cover-img',
+        alt: '',
+        loading: 'lazy',
+        src: coverSrc(item)
+      });
+      img.addEventListener('load', () => {
+        model.hasCover.add(item.key);
+        wrap.classList.add('has-img');
+      });
+      img.addEventListener('error', () => {
+        model.hasCover.delete(item.key);
+        img.remove();
+      });
+      wrap.append(img);
+    }
+    return wrap;
+  }
+
+  function validateCoverFile(file) {
+    if (!file) return '没有读取到图片';
+    const lower = String(file.name || '').toLowerCase();
+    const okType = /^image\/(png|jpeg|webp)$/.test(file.type || '')
+      || /\.(png|jpe?g|webp)$/.test(lower);
+    if (!okType) return '封面只支持 PNG / JPG / WebP 图片';
+    if (file.size > COVER_MAX_MB * 1024 * 1024) return `封面图片超过 ${COVER_MAX_MB}MB，请压缩后再上传`;
+    if (file.size === 0) return '这张图片是空的';
+    return '';
+  }
+
+  /* 上传封面：input file 选中 → FileReader 即时预览 → 再发请求落盘；
+     失败回退预览并 toast，成功后 bump 版本号刷新封面。 */
+  function pickCover(item) {
+    const input = h('input', {
+      type: 'file',
+      accept: 'image/png,image/jpeg,image/webp',
+      'aria-label': '选择封面图片'
+    });
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const bad = validateCoverFile(file);
+      if (bad) {
+        toast(bad, { tone: 'danger' });
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => applyCover(item, String(reader.result || ''), file);
+      reader.onerror = () => toast('读取图片失败，请重试', { tone: 'danger' });
+      reader.readAsDataURL(file);
+    });
+    input.click();
+  }
+
+  function applyCover(item, dataUrl, file) {
+    model.mockCovers[item.key] = dataUrl;   // 即时预览（请求失败会回退）
+    paintList();
+    if (IS_MOCK) {
+      toast('演示模式：封面仅本地预览，不落盘', { duration: 2400 });
+      return;
+    }
+    const form = new FormData();
+    form.append('key', item.key);
+    form.append('file', file);
+    request('/api/library/cover', { method: 'POST', form, timeout: 30000 })
+      .then(() => {
+        delete model.mockCovers[item.key];
+        model.coverV[item.key] = Date.now();
+        model.hasCover.add(item.key);
+        toast('封面已更新', { tone: 'success', duration: 2000 });
+        paintList();
+      })
+      .catch((err) => {
+        delete model.mockCovers[item.key];
+        paintList();
+        toast(errorText(err, '封面上传失败'), { tone: 'danger' });
+      });
+  }
+
+  async function removeCover(item) {
+    if (IS_MOCK) {
+      toast('演示模式：封面仅本地预览，不落盘', { duration: 2400 });
+      return;
+    }
+    try {
+      const res = await request(`/api/library/cover?key=${encodeURIComponent(item.key)}`, { method: 'DELETE' });
+      model.coverV[item.key] = Date.now();
+      model.hasCover.delete(item.key);
+      toast(res && res.removed ? '已移除封面' : '该作品还没有封面', { duration: 1800 });
+      paintList();
+    } catch (err) {
+      toast(errorText(err, '移除封面失败'), { tone: 'danger' });
+    }
+  }
+
+  /* ------------------------------------------------------------ 逻辑辅助 */
+
   function paintFilters() {
     filterRow.textContent = '';
     const searchInput = h('input', {
       class: 'input',
       type: 'search',
-      placeholder: '搜索书名或题材…',
+      placeholder: '搜索书名 / 分类 / 简介…',
       value: model.q,
       'aria-label': '搜索作品'
     });
+    /* 本地搜索：书名/分类/简介（+标签），不再回服务端，输入即时生效。 */
     searchInput.addEventListener('input', () => {
       model.q = searchInput.value.trim();
       runSearch();
@@ -285,24 +733,18 @@ export function renderLibrary(container, ctx) {
 
     const sortSel = h('select', { class: 'select', 'aria-label': '排序' });
     for (const opt of SORTS) {
-      sortSel.append(h('option', { value: opt.value, text: `按${opt.label}`, selected: opt.value === model.sort }));
+      sortSel.append(h('option', {
+        value: opt.value + ':' + opt.order,
+        text: opt.label,
+        selected: opt.value === model.sort && opt.order === model.order
+      }));
     }
+    /* 排序 6 种方向内建，前端 sortItems 纯函数完成，切换不回服务端。 */
     sortSel.addEventListener('change', () => {
-      model.sort = sortSel.value;
-      load();
-    });
-
-    const orderBtn = h('button', {
-      class: 'btn btn-sm',
-      type: 'button',
-      title: model.order === 'desc' ? '降序，点击切换升序' : '升序，点击切换降序',
-      html: icon(model.order === 'desc' ? 'arrow-down' : 'arrow-up', 14),
-      on: {
-        click: () => {
-          model.order = model.order === 'desc' ? 'asc' : 'desc';
-          load();
-        }
-      }
+      const [sv, so] = sortSel.value.split(':');
+      model.sort = sv;
+      model.order = so;
+      paintList();
     });
 
     const seg = h(
@@ -326,7 +768,7 @@ export function renderLibrary(container, ctx) {
       })
     );
 
-    filterRow.append(search, mediumSel, genreSel, statusSel, sortSel, orderBtn, h('span', { class: 'lib-spacer' }), seg);
+    filterRow.append(search, mediumSel, genreSel, statusSel, sortSel, h('span', { class: 'lib-spacer' }), seg);
   }
 
   function setMode(mode) {
@@ -341,7 +783,11 @@ export function renderLibrary(container, ctx) {
     paintList();
   }
 
-  const runSearch = debounce(() => load(), 280);
+  /* 本地搜索防抖：只重画，不发请求。 */
+  const runSearch = debounce(() => {
+    paintGroupTabs();
+    paintList();
+  }, 140);
 
   /* ------------------------------------------------------------ cards */
 
@@ -414,14 +860,33 @@ export function renderLibrary(container, ctx) {
         icon: 'star',
         onSelect: () => toggleFavorite(item)
       },
-      /* 回收站里不允许改名/导出，作品已不可编辑。 */
+      /* 回收站里不允许改名/移动分组/换封面/导出，作品已不可编辑。 */
       ...(!isTrash
         ? [
             {
               label: '重命名',
               icon: 'edit',
               onSelect: () => renameDialog(item)
-            }
+            },
+            {
+              label: '移动分组',
+              icon: 'folder',
+              onSelect: (anchor) => moveGroupMenu(anchor, item)
+            },
+            {
+              label: '上传封面',
+              icon: 'upload',
+              onSelect: () => pickCover(item)
+            },
+            ...(model.hasCover.has(item.key)
+              ? [
+                  {
+                    label: '移除封面',
+                    icon: 'x',
+                    onSelect: () => removeCover(item)
+                  }
+                ]
+              : [])
           ]
         : []),
       /* v4.31.0：导出开放给全部文体（此前只有小说能导出） */
@@ -512,6 +977,8 @@ export function renderLibrary(container, ctx) {
     }
   }
 
+  /* 恢复沿用既有 /api/library/{key}/restore（restore_book 同时清归档与回收站标记的
+     既有生命周期语义），不另造第二套恢复。 */
   async function restoreItem(item) {
     try {
       await api.restore(item.key);
@@ -640,7 +1107,16 @@ export function renderLibrary(container, ctx) {
     const modal = openModal({ title: '重命名作品', body, footer, size: 'sm' });
   }
 
-  /* 彻底删除：二次确认 + 手动输入完整作品名，名字不匹配时按钮禁用、不发请求。 */
+  /* 彻底删除：二次确认 + 手动输入完整作品名，名字不匹配时按钮禁用、不发请求。
+     v5.3.0：明确列出将删数据范围（正文/版本/账本/参考/封面），删除的是整个作品目录。 */
+  const PURGE_SCOPE = [
+    '正文与成稿（各章正文、定稿文件）',
+    '章节版本快照（全部历史版本）',
+    '大纲、人物档案、故事圣经等设定资料',
+    '线索账本、伏笔账本与 AI 调用账本',
+    '参考资料与作品封面'
+  ];
+
   function purgeDialog(item) {
     const expected = String(item.name || '').trim();
     const input = h('input', {
@@ -665,7 +1141,10 @@ export function renderLibrary(container, ctx) {
         'div',
         { class: 'confirm-body' },
         h('div', { html: `确定要彻底删除 <strong>《${escapeText(expected)}》</strong> 吗？` }),
-        h('div', { class: 'warn-note', text: '删除后作品目录与全部章节都会被移除，无法恢复。' }),
+        h('div', { class: 'lib-purge-scope' },
+          h('div', { class: 'lib-purge-scope-title', text: '将删除以下全部数据，删除后无法恢复：' }),
+          h('ul', { class: 'lib-purge-list' }, PURGE_SCOPE.map((s) => h('li', { text: s })))
+        ),
         h('div', { class: 'lib-confirm-label' }, h('span', { class: 'field-label', text: '输入完整作品名以确认：' })),
         h('div', { class: 'lib-confirm-name', text: expected }),
         input,
@@ -762,16 +1241,20 @@ export function renderLibrary(container, ctx) {
       );
       return;
     }
-    if (!model.items.length) {
+    const shown = sortItems(visibleItems(), model.sort, model.order);
+    if (!shown.length) {
+      const inGroup = model.view === 'active' && model.group !== 'all';
       const copy = EMPTY_TEXT[model.view] || EMPTY_TEXT.active;
+      const title = inGroup && !model.q ? '这个分组还没有作品' : copy.title(model.q);
+      const hint = inGroup && !model.q ? '点作品卡上的「⋯」→「移动分组」，把它移进来。' : copy.hint(model.q);
       listWrap.append(
         h(
           'div',
           { class: 'lib-empty empty-state' },
           h('div', { class: 'empty-icon', html: icon(model.view === 'trash' ? 'trash' : 'library', 18) }),
-          h('h3', { text: copy.title(model.q) }),
-          h('p', { text: copy.hint(model.q) }),
-          model.view === 'active'
+          h('h3', { text: title }),
+          h('p', { text: hint }),
+          model.view === 'active' && !inGroup
             ? h('button', {
                 class: 'btn btn-primary btn-sm',
                 type: 'button',
@@ -784,7 +1267,7 @@ export function renderLibrary(container, ctx) {
       return;
     }
 
-    for (const item of model.items) {
+    for (const item of shown) {
       listWrap.append(model.mode === 'grid' ? gridCard(item) : listRow(item));
     }
   }
@@ -804,14 +1287,26 @@ export function renderLibrary(container, ctx) {
     );
   }
 
-  /* v4.2.0：题材标签 chip + 用户自定义 tags */
+  /* v4.2.0：题材标签 chip + 用户自定义 tags + 所在分组 */
   function genreTags(item) {
     const row = h('span', { class: 'lib-tags' });
     if (item.genre) row.append(h('span', { class: 'chip chip-muted lib-genre', text: item.genre }));
     for (const t of (item.tags || []).slice(0, 3)) {
       row.append(h('span', { class: 'chip chip-muted lib-tag', text: String(t) }));
     }
+    const gid = model.assign[item.key];
+    if (gid) {
+      const g = model.groups.find((x) => x.id === gid);
+      if (g) row.append(h('span', { class: 'chip chip-muted lib-group-chip', title: `分组：${g.name}`, text: g.name }));
+    }
     return row;
+  }
+
+  /* 归档/回收站条目的时间戳：归档页显示归档时间，回收站显示移入时间；其余显示更新时间。 */
+  function lifecycleStamp(item) {
+    if (model.view === 'trash') return item.trashed_at ? `移入 ${fmtDate(item.trashed_at)}` : '';
+    if (model.view === 'archived') return item.archived_at ? `归档 ${fmtDate(item.archived_at)}` : '';
+    return '';
   }
 
   function progressOf(item) {
@@ -843,14 +1338,7 @@ export function renderLibrary(container, ctx) {
       h(
         'div',
         { class: 'lib-card-top' },
-        h(
-          'div',
-          { class: 'lib-cover' },
-          h('span', { text: (mediumGlyph(item) || initials(item.name)) }),
-          item.favorite
-            ? h('span', { class: 'lib-star', html: icon('star', 13), title: '已收藏' })
-            : null
-        ),
+        coverNode(item),
         h(
           'div',
           { class: 'lib-main' },
@@ -883,7 +1371,7 @@ export function renderLibrary(container, ctx) {
             { class: 'lib-updated' },
             h('span', { text: fmtWords(item.total_words) }),
             h('span', { class: 'sep' }),
-            h('span', { text: fmtDate(item.updated_at) })
+            h('span', { text: lifecycleStamp(item) || fmtDate(item.updated_at) })
           )
         )
       ),
@@ -917,7 +1405,7 @@ export function renderLibrary(container, ctx) {
     const row = h('div', { class: 'lib-row', dataset: { key: item.key } });
     row.append(
       selectBox(item),
-      h('span', { class: 'lib-cover', text: (mediumGlyph(item) || initials(item.name)) }),
+      coverNode(item),
       h(
         'div',
         { class: 'lib-main' },
@@ -935,6 +1423,7 @@ export function renderLibrary(container, ctx) {
           h('span', { class: `dot dot-${meta.tone}` }),
           h('span', { text: meta.label }),
           h('span', { text: `${item.done}/${item.total} ${unit} · ${fmtWords(item.total_words)}` }),
+          h('span', { class: 'lib-row-stamp', text: lifecycleStamp(item) }),
           qualityChip(item)
         )
       ),
@@ -971,7 +1460,9 @@ export function renderLibrary(container, ctx) {
   paintStats();
   paintViews();
   paintFilters();
+  paintGroupTabs();
   paintBatchBar();
+  refreshExtras();
   load();
 
   return {

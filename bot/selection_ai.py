@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import re
 
+from . import prompts_store
+
 # ---------------------------------------------------------------- 词表（自建，与 slop_checker 同风格）
 # 去 AI 味提示词里的「高频套话清单」——沿本库 slop_checker 词表风格自研，
 # 只取写作场景高频项，不整表照搬（划词窗口小，清单要短）。
@@ -72,39 +74,69 @@ def _persona_block(persona: str) -> str:
             "以其身份、年龄、教养与当前情绪说话；判断不出来就保持原语气。")
 
 
-# ---------------------------------------------------------------- 提示词（自研文案）
+# ---------------------------------------------------------------- 提示词（自研文案，v5.3 起开放编辑：prompts/selection-ai.md）
+
+# 六动作公共铁则（代码默认值与指纹源；prompts/selection-ai.md 与此处保持逐字一致）
+_BASE_PROMPT = ("你是网文写作台的划词助手。用户在正文里选中了一小段文字，你只处理这一段。"
+                "输出要求：直接输出处理后的文字成品，不要任何解释、前言、引号包裹或小节标题；"
+                "不要输出「以下是」「修改说明」等元信息；保持中文小说的叙事文体。")
+# 六动作各自的任务段（{{变量}} 由调用方替换；默认模板与原拼接结果逐字一致）
+_TASK_PROMPTS: dict[str, str] = {
+    "fix": ("本次任务【纠错】：只改正错别字、用词错误与标点问题（重复标点、"
+            "引号方向、顿号逗号混用）；【不动剧情】：不增删句子、不调整语序、不改情节与人物，"
+            "原文没有错的字词一律原样保留。"),
+    "polish": ("本次任务【润色】：提升这句话的表达——把平庸直白的表述改得更有画面感与"
+               "节奏感；【不替用户扩剧情】：不得新增情节、人物、设定与对话轮次，只打磨既有内容的"
+               "措辞；长度与原文相当（±20%）。"),
+    "expand": ("本次任务【扩写】：在原句骨架上补细节——感官描写、动作分解、"
+               "环境反应都可以加，但【不得引入新情节、新人物、新设定】，也不得提前消耗伏笔；"
+               "扩写后长度约为原文的 1.5-2.5 倍。"),
+    "deslop": ("本次任务【去 AI 味】：用具体的动作、物件、感官细节替换空话套话，"
+               "删除模板化的排比与总结句。高频套话清单（出现即优先改写）：{{套话清单}}"
+               "。保留情节走向、关键名词与字数量级，不新增情节。"),
+    "tone": ("本次任务【按人物口吻】：让这段文字（尤其对白）贴合指定人物的说话方式"
+             "——用词、句长、口头禅、语气都向人物靠拢；不改剧情与信息量。\n{{人物说明}}"),
+    "custom": ("本次任务【自定义指令】：用户给你的指令如下，严格执行；指令与"
+               "「不新增情节/不改小节结构」冲突时以不破坏正文为限，并在改写中体现指令意图。\n"
+               "用户指令：{{用户指令}}"),
+}
+
+# v5.3.0：登记代码默认值（提示词编辑页的指纹与「默认值已更新」判定来源）
+prompts_store.register(
+    "selection-ai", "划词润色",
+    desc="写作台选中文字后的六动作（纠错/润色/扩写/去AI味/按人物口吻/自定义指令）系统提示词。",
+    slots={
+        "base": {"default": _BASE_PROMPT, "label": "六动作公共铁则", "vars": [],
+                 "desc": "六动作共用的输出铁则：只给成品文本，不带任何元信息。"},
+        **{name: {"default": tpl, "label": f"{ACTIONS[name]['label']}·任务段",
+                  "temp": ACTIONS[name]["temperature"],
+                  "vars": prompts_store.slot_vars(tpl),
+                  "desc": f"「{ACTIONS[name]['label']}」动作的专属任务段。"}
+           for name, tpl in _TASK_PROMPTS.items()},
+    },
+)
+
 
 def system_prompt(action: str, persona: str = "", instruction: str = "") -> str:
-    """六动作各一个系统提示词。共约守三条铁则：只输出成品文本、不加任何说明、不破坏纯净域。"""
-    base = ("你是网文写作台的划词助手。用户在正文里选中了一小段文字，你只处理这一段。"
-            "输出要求：直接输出处理后的文字成品，不要任何解释、前言、引号包裹或小节标题；"
-            "不要输出「以下是」「修改说明」等元信息；保持中文小说的叙事文体。")
-    if action == "fix":
-        return (base + "\n\n本次任务【纠错】：只改正错别字、用词错误与标点问题（重复标点、"
-                "引号方向、顿号逗号混用）；【不动剧情】：不增删句子、不调整语序、不改情节与人物，"
-                "原文没有错的字词一律原样保留。")
-    if action == "polish":
-        return (base + "\n\n本次任务【润色】：提升这句话的表达——把平庸直白的表述改得更有画面感与"
-                "节奏感；【不替用户扩剧情】：不得新增情节、人物、设定与对话轮次，只打磨既有内容的"
-                "措辞；长度与原文相当（±20%）。")
-    if action == "expand":
-        return (base + "\n\n本次任务【扩写】：在原句骨架上补细节——感官描写、动作分解、"
-                "环境反应都可以加，但【不得引入新情节、新人物、新设定】，也不得提前消耗伏笔；"
-                "扩写后长度约为原文的 1.5-2.5 倍。")
+    """六动作各一个系统提示词。共约守三条铁则：只输出成品文本、不加任何说明、不破坏纯净域。
+
+    v5.3.0：提示词改为 prompts_store 开放槽（用户层 → 内置层 → 代码默认兜底），
+    槽默认值即上方原字符串（兜底与指纹源），组装顺序不变：公共铁则 + 空行 + 任务段。
+    """
+    if action not in ACTIONS:
+        raise SelectionAIError(f"未知动作：{action}")
+    base = prompts_store.text("selection-ai", "base", default=_BASE_PROMPT)
+    # 先取槽文本（用户层 → 内置层 → 代码默认模板），再替换 {{变量}}——
+    # 用户在编辑页改写时保留 {{占位}} chip 也能正常填充。
+    task = prompts_store.text("selection-ai", action, default=_TASK_PROMPTS[action])
     if action == "deslop":
-        return (base + "\n\n本次任务【去 AI 味】：用具体的动作、物件、感官细节替换空话套话，"
-                "删除模板化的排比与总结句。高频套话清单（出现即优先改写）：" + _SLOP_HINTS +
-                "。保留情节走向、关键名词与字数量级，不新增情节。")
-    if action == "tone":
-        return (base + "\n\n本次任务【按人物口吻】：让这段文字（尤其对白）贴合指定人物的说话方式"
-                "——用词、句长、口头禅、语气都向人物靠拢；不改剧情与信息量。\n" +
-                _persona_block(persona))
-    if action == "custom":
+        task = prompts_store.fill(task, 套话清单=_SLOP_HINTS)
+    elif action == "tone":
+        task = prompts_store.fill(task, 人物说明=_persona_block(persona))
+    elif action == "custom":
         ins = (instruction or "").strip()
-        return (base + "\n\n本次任务【自定义指令】：用户给你的指令如下，严格执行；指令与"
-                "「不新增情节/不改小节结构」冲突时以不破坏正文为限，并在改写中体现指令意图。\n"
-                f"用户指令：{ins if ins else '（用户未填写，按通顺润色处理）'}")
-    raise SelectionAIError(f"未知动作：{action}")
+        task = prompts_store.fill(task, 用户指令=ins if ins else "（用户未填写，按通顺润色处理）")
+    return base + "\n\n" + task
 
 
 def build_messages(action: str, selection: str, before: str = "", after: str = "",
@@ -193,6 +225,12 @@ def _book_ctx(key: str, chapter_no) -> None:
         llm.set_chapter(None)
 
 
+def _temperature_of(action: str) -> float:
+    """动作温度：提示词槽温度（用户层 → 内置层）→ ACTIONS 代码默认。"""
+    return prompts_store.temperature("selection-ai", action,
+                                     default=ACTIONS[action]["temperature"])
+
+
 def run(action: str, selection: str, *, before: str = "", after: str = "",
         title: str = "", summary: str = "", persona: str = "", instruction: str = "",
         key: str = "", chapter_no=None, cfg=None) -> str:
@@ -201,7 +239,7 @@ def run(action: str, selection: str, *, before: str = "", after: str = "",
     msgs = build_messages(action, selection, before=before, after=after, title=title,
                           summary=summary, persona=persona, instruction=instruction)
     _book_ctx(key, chapter_no)
-    out = llm.chat(msgs, temperature=ACTIONS[action]["temperature"], cfg=cfg, stage="review")
+    out = llm.chat(msgs, temperature=_temperature_of(action), cfg=cfg, stage="review")
     cleaned = clean_result(out)
     if not cleaned:
         raise llm.LLMError("划词结果为空，模型可能没有正常返回，请重试")
@@ -220,7 +258,7 @@ def run_stream(action: str, selection: str, *, on_delta=None, before: str = "",
                           summary=summary, persona=persona, instruction=instruction)
     _book_ctx(key, chapter_no)
     out = llm.chat_stream(msgs, on_delta=on_delta,
-                          temperature=ACTIONS[action]["temperature"], cfg=cfg, stage="review")
+                          temperature=_temperature_of(action), cfg=cfg, stage="review")
     cleaned = clean_result(out)
     if not cleaned:
         raise llm.LLMError("划词结果为空，模型可能没有正常返回，请重试")

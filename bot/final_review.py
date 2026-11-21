@@ -27,7 +27,7 @@ import os
 import re
 import time
 
-from . import book_health, craft_check, llm, medium, purity, steps, versions, wordguard, workflow
+from . import book_health, craft_check, llm, medium, prompts_store, purity, steps, versions, wordguard, workflow
 
 #: 作者定的评分策略（单节 / 全书都是百分制）
 POLICY = {
@@ -889,6 +889,24 @@ def _other_words(proj, pieces, plan, med, full, target, cfg) -> dict:
     }
 
 
+# v5.3.0：评审终审槽的代码默认值（兜底与指纹源；prompts/final-review.md 逐字一致）
+_RUBRIC_SYSTEM = "你是严格且具体的审稿人。"
+_REWRITE_SYSTEM = "你是严格按问题清单改稿的编辑。"
+
+# v5.3.0：登记代码默认值（提示词编辑页的指纹与「默认值已更新」判定来源）
+prompts_store.register(
+    "final-review", "评审终审",
+    desc="终审流水线（final_review）里的两个系统提示词：分维度评分的审稿人、按问题清单定向改稿的编辑。"
+         "评分维度/JSON 形状由运行时按文体注入，不在槽文本内。",
+    slots={
+        "rubric_system": {"default": _RUBRIC_SYSTEM, "label": "评分审稿人", "vars": [],
+                          "desc": "逐章/分件百分制评分时的 system 角色。"},
+        "rewrite_system": {"default": _REWRITE_SYSTEM, "label": "定向改稿编辑", "vars": [],
+                           "desc": "低于达标线的分件定向重写时的 system 角色。"},
+    },
+)
+
+
 def _rubric_score(text: str, med: str, cfg: dict, scope: str = "") -> dict:
     dims = medium.score_dims(med)
     if not dims:
@@ -905,7 +923,9 @@ def _rubric_score(text: str, med: str, cfg: dict, scope: str = "") -> dict:
         f"正文：\n{text}"
     )
     try:
-        out = llm.chat_json([{"role": "system", "content": "你是严格且具体的审稿人。"},
+        # v5.3.0：审稿人 system 走开放槽（prompts/final-review.md）
+        out = llm.chat_json([{"role": "system", "content": prompts_store.text(
+                                  "final-review", "rubric_system", default=_RUBRIC_SYSTEM)},
                              {"role": "user", "content": prompt}], cfg=cfg, stage="review")
     except Exception:
         out = {}
@@ -1011,7 +1031,9 @@ def _rewrite_piece(proj, mod, med: str, p: dict, cfg: dict, pass_line: int) -> b
                 "要求：保持原有信息、事实与结构，只解决上述问题；不要解释、不要加点评；"
                 "直接输出改写后的完整正文。\n\n" + old[:16000]
             )
-            new = llm.chat([{"role": "system", "content": "你是严格按问题清单改稿的编辑。"},
+            # v5.3.0：改稿编辑 system 走开放槽（prompts/final-review.md）
+            new = llm.chat([{"role": "system", "content": prompts_store.text(
+                                 "final-review", "rewrite_system", default=_REWRITE_SYSTEM)},
                             {"role": "user", "content": prompt}], cfg=cfg, stage="review")
             new = (new or "").strip()
     except Exception:

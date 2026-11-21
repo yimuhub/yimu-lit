@@ -3,7 +3,7 @@ from typing import Optional
 import hashlib, json, os, re, datetime, threading, queue, time, inspect
 from . import (workflow, skill, continuity, llm, versions, steps, purity, journal,
                express, delivery_gate, lexicon_ledger, checkup, final_review, book_health,
-               chapter_identity)
+               chapter_identity, prompts_store)
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 from .paths import DATA_ROOT as ROOT, DATA_ROOT as DATA_ROOT_N
@@ -2165,7 +2165,19 @@ def _write_loop_parallel(proj, n_workers=5, rounds=None):
 
 def _write_loop_parallel_locked(key, proj, n_workers=5, rounds=None):
     with _acq_book(key):
-        return _write_loop_parallel_body(proj, n_workers=n_workers, rounds=rounds)
+        # v5.3.0：并行分章与串行 _write_loop 同口径——批次启动冻结提示词生效版本，
+        # 运行中用户改提示词不串批次；thaw 在 finally，异常路径也解冻（引用计数可嵌套）。
+        try:
+            prompts_store.freeze()
+        except Exception:
+            pass
+        try:
+            return _write_loop_parallel_body(proj, n_workers=n_workers, rounds=rounds)
+        finally:
+            try:
+                prompts_store.thaw()
+            except Exception:
+                pass
 
 
 def _write_loop_parallel_body(proj, n_workers=5, rounds=None):
@@ -3619,6 +3631,12 @@ def _write_loop(proj: Project, batch_size=None):
     _set_book_running(_bk, True)
     proj.running = True
     mark_pipeline(_bk, True)   # v4.26.0：小说主链路也纳入 mark_pipeline 收口（总编辑上下车）
+    # v5.3.0：批量任务启动时冻结提示词生效版本——本批全程用启动那一刻的提示词，
+    # 运行中用户改提示词不串批次（引用计数快照，见 bot/prompts_store.freeze；thaw 在 finally）。
+    try:
+        prompts_store.freeze()
+    except Exception:
+        pass
     # v4.34.2：实时作业登记必须由写作循环自己收口。此前 /api/continue 先 livejob.begin()
     # 登记「正在继续写作」，而这里退出时只清 running / mark_pipeline，从不 finish——
     # 于是每点一次「继续」，就留一条永远「未结束」的登记，前端按
@@ -3817,6 +3835,10 @@ def _write_loop(proj: Project, batch_size=None):
                 pass
         _set_book_running(os.path.basename(proj.path), False)
         mark_pipeline(os.path.basename(proj.path), False)   # v4.26.0：对称下车
+        try:
+            prompts_store.thaw()    # v5.3.0：与本函数开头的 freeze 配对（多余调用无害）
+        except Exception:
+            pass
 
 # v0.3 P3：并发写（同一时刻最多 N 本在写，N=defaults.concurrency 默认 2，超出排队）
 _WRITE_SEM, _WRITE_SEM_N = None, 0

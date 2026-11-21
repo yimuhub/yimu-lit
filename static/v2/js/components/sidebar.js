@@ -496,6 +496,16 @@ export function renderSidebar(container, ctx) {
       }
     },
     {
+      label: '提示词',
+      icon: 'sliders',
+      trail: '',
+      active: store.get().route.name === 'prompts',
+      onClick: () => {
+        navigate('/prompts');
+        ctx.closeDrawer();
+      }
+    },
+    {
       label: '设置',
       icon: 'settings',
       trail: '',

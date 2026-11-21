@@ -2,11 +2,135 @@
 阶段0 偏好加载 / 阶段1 三层问答(快车道) / 阶段2 规划 / 阶段3 逐章创作 / 阶段4 校验
 """
 import json, os, re, datetime, time
-from . import llm, skill, steps, purity
+from . import llm, skill, steps, purity, prompts_store
 from .safeio import atomic_write_json
 
 from .paths import DATA_ROOT as ROOT
 PREFS_FILE = os.path.join(ROOT, "user-preferences.json")
+
+# ---------------------------------------------------------------- v5.3.0 提示词开放：本模块各槽的代码默认值（兜底与指纹源）
+# 以下字符串与 prompts/*.md 内置文件逐字一致；改动任一侧必须同步另一侧并跑
+# tests/test_v53_prompts.py 的一致性测试。
+
+# 简介生成（idea-intake）：把用户的一句话简介/主题提取成开书配置（idea 字段即创意概要）
+_EXTRACT_SYSTEM = (
+    "你是 「一幕·一幕·YIMU 神笔」创作系统的创作策划。从用户的一句话主题里提取小说配置，严格输出 JSON，键：\n"
+    "genre(题材)、idea(创意概要≤60字)、protagonist_type(男/女/双/群像)、protagonist(职业身份+核心性格≤30字)、"
+    "conflict(核心冲突)、drive(主角驱动力)、worldview(世界观，主题没提就填\"\"）、"
+    "perspective(叙事视角，没提填\"\"）、tone(基调，没提填\"\"）、theme(核心主题，没提填\"\"）、"
+    "readers(目标读者，没提填\"\"）、chapters(用户指定了章数就填数字，否则填0)、"
+    "special(特殊要求，没有填\"\"）、enough(主题信息是否足够直接规划: true/false)\n"
+    "用户历史偏好参考：favoriteGenres={{偏好题材}}，typicalChapterCount={{常写章数}}。只输出 JSON。"
+)
+
+# 取名器（titles）：基于故事元素生成候选书名
+_TITLES_SYSTEM = ("执行 「一幕·一幕·YIMU 神笔」创作系统的标题生成：参考 title-guide.md，"
+                  "基于故事元素生成 {{候选数}} 个候选{{名称类型}}，"
+                  "每个使用不同的创作技巧，附一句话说明。输出 JSON：{\"titles\":[{\"title\":..,\"technique\":..,\"why\":..}]}")
+
+# 章纲规划（outline）：出版型 / 连载型两套系统提示词（结构模板与形态纪律由 bot.taste 注入）
+_OUTLINE_BOOK = (
+    "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成，形态是**出版型**"
+    "（整本完结后交付：实体/电子书/影视改编）。大纲必须人物驱动、冲突递进、主线闭合。\n"
+    "{{结构模板}}\n{{形态纪律}}\n"
+    "v4.25.0 内核：大纲开头必须有「## 故事承诺」一节——读者为什么打开这本书/前十章如何初步兑现/"
+    "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
+    "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果）。\n"
+    "**出版型特别注意**：全书要有明确的中点反转与「一无所有」低谷；"
+    "不要在章末强行制造悬念（那是连载手法），每章按场景/时间/视角自然收束；"
+    "所有 A 级伏笔必须在结尾前回收。\n"
+    "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|章节落点|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
+    "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
+    "章节数 = 配置里的 chapters。只输出 markdown。"
+)
+_OUTLINE_SERIAL = (
+    "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
+    "参考 plot-structures.md 选一种经典结构。大纲必须人物驱动、冲突递进、每章有钩子。\n"
+    "v4.25.0 商业连载纪律：大纲开头必须有「## 故事承诺」一节——读者为什么点开/前十章如何初步兑现/"
+    "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
+    "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果），不许只把敌人换成更高境界。\n"
+    "{{结构与纪律}}"
+    "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|悬念钩子|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
+    "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
+    "章节数 = 配置里的 chapters。只输出 markdown。"
+)
+
+# 敏感词与去味说明（deslop）：去味师定点改写的系统提示词（敏感词词库本体在
+# data/sensitive-words.txt 与 slop_checker 规则层，不属于提示词开放范围）
+_DESLOP_SYSTEM = ("你是「一幕·一幕·YIMU 神笔」去味师（deslopper）。按下列定点诊断做最小改写：只修改被指出的位置，"
+                  "保留情节走向、钩子、关键名词与字数量级；用具体细节替换空话，不新增套话；"
+                  "【重复高频 2-gram】必须去重。输出整章修正后的 markdown。")
+
+# 章节生产正文契约（workflow-writing）：契约段与输出格式段。
+# ⚠️ 红线：以下两条标记行 `=== 一幕·YIMU 神笔工作台·开篇 ===` / `=== 一幕·YIMU 神笔工作台·结尾 ===`
+#    必须原样保留（purity.split_marked 靠它们框住正文；改坏标记模型产出的正文框会失效，
+#    此时出口闸门按白名单兜底仍拦得住框外内容，但框内质量无从保证）。
+_WRITING_CONTRACT = (
+    "【正文契约（最高优先级，违反即视为交稿无效）】\n"
+    "你的产出被一刀切成「框内」和「框外」两类，判定只看下面两行标记：\n"
+    f"=== {purity.MARK_OPEN} ===\n"
+    "（框内：章首引子 + 正文，读者能看到的全部内容）\n"
+    f"=== {purity.MARK_CLOSE} ===\n"
+    "· 这两行必须**原样照抄**（一行一条，单独成行，前后不要加任何符号）。\n"
+    "· 只有「章首引子」和「正文」可以写在框内，框内不许出现任何说明性文字。\n"
+    "· 框外只允许两类内容：标记之前的 `## 本章概要`、标记之后的 `## 章节备注`。\n"
+    "· 严禁在框外写正文句子、修改说明、改写逻辑、自评、评分、字数统计、清单、待改进项。\n"
+    "· 你不需要在回答里解释自己做了什么；除了框内正文与上述两个小节，多写一个字都是错的。"
+)
+_WRITING_FORMAT = ("输出格式（严格按此顺序）：\n"
+                   "## 本章概要\n（本章剧情概要）\n\n"
+                   f"=== {purity.MARK_OPEN} ===\n"
+                   "## 章首引子\n（引子）\n\n## 正文\n（正文）\n"
+                   f"=== {purity.MARK_CLOSE} ===\n\n"
+                   "## 章节备注\n（下章要接的线）")
+
+# v5.3.0：登记本模块五个组的代码默认值（提示词编辑页的指纹与「默认值已更新」判定来源）
+prompts_store.register(
+    "idea-intake", "简介生成",
+    desc="开书快车道：把用户的一句话简介/主题提取成开书配置 JSON（idea 字段即创意概要）。",
+    slots={"system": {"default": _EXTRACT_SYSTEM, "label": "配置提取系统提示词",
+                      "vars": ["偏好题材", "常写章数"],
+                      "desc": "从一句话简介提取 genre/idea/conflict 等配置；严格输出 JSON。"}},
+)
+prompts_store.register(
+    "titles", "取名器",
+    desc="基于故事元素与 title-guide 生成候选书名（四文体共用，名称类型按文体注入）。",
+    slots={"system": {"default": _TITLES_SYSTEM, "label": "取名系统提示词",
+                      "vars": ["候选数", "名称类型"],
+                      "desc": "生成 N 个候选标题并输出 JSON；候选数与名称类型由运行时注入。"}},
+)
+prompts_store.register(
+    "outline", "章纲规划",
+    desc="01-大纲（全书章纲）生成：出版型与连载型两套系统提示词。",
+    slots={
+        "system_book": {"default": _OUTLINE_BOOK, "label": "出版型系统提示词",
+                        "vars": ["结构模板", "形态纪律"],
+                        "desc": "整本完结交付形态：结构闭合、伏笔全回收。"},
+        "system_serial": {"default": _OUTLINE_SERIAL, "label": "连载型系统提示词",
+                          "vars": ["结构与纪律"],
+                          "desc": "商业连载形态：每章有钩子、爽点节拍不断档。"},
+    },
+)
+prompts_store.register(
+    "deslop", "敏感词与去味说明",
+    desc="去 AI 味定点改写（deslopper 岗位）：规则层定位 AI 腔后按诊断做最小改写。"
+         "敏感词词库本体在 data/sensitive-words.txt（词库不是提示词，不在此开放）。",
+    slots={"system": {"default": _DESLOP_SYSTEM, "label": "去味师系统提示词",
+                      "vars": [],
+                      "desc": "只改被指出的位置，保情节与字数量级；岗位技能段由运行时追加。"}},
+)
+prompts_store.register(
+    "workflow-writing", "章节生产正文契约",
+    desc="逐章写作系统提示词中的正文契约段与输出格式段（其余段落由技能库运行时组装，不在开放范围）。",
+    slots={
+        "contract": {"default": _WRITING_CONTRACT, "label": "正文契约（最高优先级）",
+                     "vars": [],
+                     "desc": "红线：两条 === 标记行必须原样保留，改坏标记=正文框失效。"},
+        "output_format": {"default": _WRITING_FORMAT, "label": "输出格式",
+                          "vars": [],
+                          "desc": "本章概要/引子/正文/章节备注的固定顺序；标记行必须原样保留。"},
+    },
+)
 
 # ---------- 偏好系统（技能 shared-infrastructure 定义） ----------
 
@@ -50,15 +174,11 @@ def _evt_key(key=""):
 
 def extract_config(user_text, cfg=None):
     prefs = load_prefs()
-    sys_p = (
-        "你是 「一幕·一幕·YIMU 神笔」创作系统的创作策划。从用户的一句话主题里提取小说配置，严格输出 JSON，键：\n"
-        "genre(题材)、idea(创意概要≤60字)、protagonist_type(男/女/双/群像)、protagonist(职业身份+核心性格≤30字)、"
-        "conflict(核心冲突)、drive(主角驱动力)、worldview(世界观，主题没提就填\"\"）、"
-        "perspective(叙事视角，没提填\"\"）、tone(基调，没提填\"\"）、theme(核心主题，没提填\"\"）、"
-        "readers(目标读者，没提填\"\"）、chapters(用户指定了章数就填数字，否则填0)、"
-        "special(特殊要求，没有填\"\"）、enough(主题信息是否足够直接规划: true/false)\n"
-        f"用户历史偏好参考：favoriteGenres={prefs['preferences'].get('favoriteGenres')}，"
-        f"typicalChapterCount={prefs['preferences'].get('typicalChapterCount')}。只输出 JSON。"
+    # v5.3.0：系统提示词走开放槽（prompts/idea-intake.md），偏好数值仍由运行时注入
+    sys_p = prompts_store.fill(
+        prompts_store.text("idea-intake", "system", default=_EXTRACT_SYSTEM),
+        偏好题材=str(prefs['preferences'].get('favoriteGenres')),
+        常写章数=str(prefs['preferences'].get('typicalChapterCount')),
     )
     return llm.chat_json([{"role": "system", "content": sys_p},
                           {"role": "user", "content": user_text}], cfg=cfg, stage="planning")
@@ -149,32 +269,15 @@ def gen_outline(cfg, book_key="", characters=""):
     except Exception:
         pass
     if _is_book:
-        sys_p = (
-            "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成，形态是**出版型**"
-            "（整本完结后交付：实体/电子书/影视改编）。大纲必须人物驱动、冲突递进、主线闭合。\n"
-            + _struct + "\n" + _disc + "\n"
-            "v4.25.0 内核：大纲开头必须有「## 故事承诺」一节——读者为什么打开这本书/前十章如何初步兑现/"
-            "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
-            "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果）。\n"
-            "**出版型特别注意**：全书要有明确的中点反转与「一无所有」低谷；"
-            "不要在章末强行制造悬念（那是连载手法），每章按场景/时间/视角自然收束；"
-            "所有 A 级伏笔必须在结尾前回收。\n"
-            "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|章节落点|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
-            "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
-            "章节数 = 配置里的 chapters。只输出 markdown。"
-        )
+        # v5.3.0：系统提示词走开放槽（prompts/outline.md 出版型），结构模板/形态纪律运行时注入
+        sys_p = prompts_store.fill(
+            prompts_store.text("outline", "system_book", default=_OUTLINE_BOOK),
+            结构模板=_struct, 形态纪律=_disc)
     else:
-        sys_p = (
-            "你是小说架构师，执行 「一幕·一幕·YIMU 神笔」创作系统的 01-大纲 生成。使用 outline-template.md 模板结构，"
-            "参考 plot-structures.md 选一种经典结构。大纲必须人物驱动、冲突递进、每章有钩子。\n"
-            "v4.25.0 商业连载纪律：大纲开头必须有「## 故事承诺」一节——读者为什么点开/前十章如何初步兑现/"
-            "中期靠什么持续供给新鲜感/结局如何兑现开篇承诺；每个重要对手要有独立目标与合理逻辑；"
-            "冲突升级必须换维度（时间/信息/资源/利益/道德/关系/规则/后果），不许只把敌人换成更高境界。\n"
-            + ((_struct + "\n" + _disc + "\n") if (_struct or _disc) else "")
-            + "输出 markdown，必须包含：## 故事承诺 / ## 基本信息 / ## 章节规划（表格：章节|标题|核心事件|承接上章|章首引子类型|悬念钩子|出场人物|场景列表。第一列必须逐行写「第N章」如「第1章」，不要写纯数字或序号）"
-            "/ ## 全书悬念线 / ## 设定词典（表格先留1行示例即可）/ ## 章节详情规划（每章一个 ### 第N章 小节，写核心事件展开、场景分镜、伏笔）"
-            "章节数 = 配置里的 chapters。只输出 markdown。"
-        )
+        # v5.3.0：连载型同上；结构与纪律块保持原条件拼接语义（两者皆空则整块为空）
+        sys_p = prompts_store.fill(
+            prompts_store.text("outline", "system_serial", default=_OUTLINE_SERIAL),
+            结构与纪律=(_struct + "\n" + _disc + "\n") if (_struct or _disc) else "")
     user_p = (f"小说配置：{json.dumps(cfg, ensure_ascii=False)}\n"
               f"【技能模板】\n{skill.guide('outline-template')[:2000]}\n"
               f"【情节结构方法摘录】\n{skill.guide('plot-structures')[:2800]}\n"
@@ -216,8 +319,10 @@ def gen_style(cfg):
 def gen_titles(cfg, n=3):
     medium = str(cfg.get("medium") or "novel")
     _kind = {"novel": "小说书名", "script": "剧名", "poetry": "诗题/词题", "prose": "散文标题"}.get(medium, "小说书名")
-    sys_p = (f"执行 「一幕·一幕·YIMU 神笔」创作系统的标题生成：参考 title-guide.md，基于故事元素生成 {n} 个候选{_kind}，"
-             "每个使用不同的创作技巧，附一句话说明。输出 JSON：{\"titles\":[{\"title\":..,\"technique\":..,\"why\":..}]}")
+    # v5.3.0：系统提示词走开放槽（prompts/titles.md），候选数/名称类型运行时注入
+    sys_p = prompts_store.fill(
+        prompts_store.text("titles", "system", default=_TITLES_SYSTEM),
+        候选数=n, 名称类型=_kind)
     user_p = (f"故事元素：{json.dumps({k: cfg.get(k) for k in ('genre','idea','conflict','protagonist','theme','tone')}, ensure_ascii=False)}\n"
               f"【标题技巧摘录】\n{skill.guide('title-guide')[:2500]}")
     out = llm.chat_json([{"role": "system", "content": sys_p}, {"role": "user", "content": user_p}], cfg=cfg, stage="planning")
@@ -298,24 +403,11 @@ def _writing_system(ctx):
         "小节标记只允许按输出格式使用 ##（本章概要/章首引子/正文/章节备注）。"
     ]
     # v4.22.3：正文契约——用显式标记把「正文」框起来，复制/导出只认框内
-    parts.append(
-        "【正文契约（最高优先级，违反即视为交稿无效）】\n"
-        "你的产出被一刀切成「框内」和「框外」两类，判定只看下面两行标记：\n"
-        f"=== {purity.MARK_OPEN} ===\n"
-        "（框内：章首引子 + 正文，读者能看到的全部内容）\n"
-        f"=== {purity.MARK_CLOSE} ===\n"
-        "· 这两行必须**原样照抄**（一行一条，单独成行，前后不要加任何符号）。\n"
-        "· 只有「章首引子」和「正文」可以写在框内，框内不许出现任何说明性文字。\n"
-        "· 框外只允许两类内容：标记之前的 `## 本章概要`、标记之后的 `## 章节备注`。\n"
-        "· 严禁在框外写正文句子、修改说明、改写逻辑、自评、评分、字数统计、清单、待改进项。\n"
-        "· 你不需要在回答里解释自己做了什么；除了框内正文与上述两个小节，多写一个字都是错的。"
-    )
-    parts.append("输出格式（严格按此顺序）：\n"
-                 "## 本章概要\n（本章剧情概要）\n\n"
-                 f"=== {purity.MARK_OPEN} ===\n"
-                 "## 章首引子\n（引子）\n\n## 正文\n（正文）\n"
-                 f"=== {purity.MARK_CLOSE} ===\n\n"
-                 "## 章节备注\n（下章要接的线）")
+    # v5.3.0：契约段与输出格式段走开放槽（prompts/workflow-writing.md）；
+    # 红线：两条 === 标记行必须原样保留在槽文本里（改坏标记=正文框失效，
+    # 出口闸门按白名单兜底仍拦得住框外内容）。
+    parts.append(prompts_store.text("workflow-writing", "contract", default=_WRITING_CONTRACT))
+    parts.append(prompts_store.text("workflow-writing", "output_format", default=_WRITING_FORMAT))
     return "\n\n".join(parts)
 
 def _continuity_block(ctx):
@@ -761,9 +853,8 @@ def deslop_chapter(ch_body, ctx, max_findings=15, key="", chapter_no=0):
     flines = []
     for f in findings[:max_findings]:
         flines.append(f"- [第{f.get('line','?')}行] ({f.get('severity','?')}/{f.get('category','?')}) {f.get('snippet','')[:60]} → {f.get('hint','')[:80]}")
-    sys_p = ("你是「一幕·一幕·YIMU 神笔」去味师（deslopper）。按下列定点诊断做最小改写：只修改被指出的位置，"
-             "保留情节走向、钩子、关键名词与字数量级；用具体细节替换空话，不新增套话；"
-             "【重复高频 2-gram】必须去重。输出整章修正后的 markdown。")
+    # v5.3.0：去味师系统提示词走开放槽（prompts/deslop.md），岗位技能段仍运行时追加
+    sys_p = prompts_store.text("deslop", "system", default=_DESLOP_SYSTEM)
     deslopper_skills = agent_skills_block("deslopper", cfg, "P4")
     if deslopper_skills:
         sys_p += "\n\n" + deslopper_skills

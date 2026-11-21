@@ -24,7 +24,7 @@ import re
 import threading
 import time
 
-from . import canon, llm, purity, selection_ai
+from . import canon, llm, prompts_store, purity, selection_ai
 from .paths import DATA_ROOT
 from .safeio import safe_join
 
@@ -188,21 +188,52 @@ def _split_character_sections(raw: str, names: list[str]) -> dict[str, str]:
     return out
 
 
-# ---------------------------------------------------------------- 提示词（自研文案）
+# ---------------------------------------------------------------- 提示词（自研文案，v5.3 起开放编辑：prompts/ghost.md）
+
+# 公共铁则与两模式任务段（代码默认值与指纹源；prompts/ghost.md 与此处保持逐字一致）
+_GHOST_BASE = ("你是网文写作台的幽灵字助手。作者停在正文中，光标后需要一小段建议文字。"
+               "输出要求：直接输出续写正文本身，不要任何解释、前言、引号包裹、小节标题；"
+               "禁止出现「以下是」「本章概要」「修改说明」等元信息；"
+               "禁止以引号或括号收尾包裹整段；保持中文小说的叙事文体与既有语气。")
+_GHOST_BEAT = ("本次模式【续一拍】：上一句已收住（句号/叹号/问号），"
+               "顺着当前场景自然推进一小拍（一个动作、一句对话或一处细节），"
+               "不超过 60 字，不开启新情节、不引入新人物、不总结不升华。")
+_GHOST_HALF = ("本次模式【补半句】：上一句停在逗号/顿号处话说一半，"
+               "只把当前这半句自然补完（≤25 字），立即停住；不另起一句、不推进情节、"
+               "不引入新人物与新设定。")
+
+# v5.3.0：登记代码默认值（提示词编辑页的指纹与「默认值已更新」判定来源）
+prompts_store.register(
+    "ghost", "幽灵字续写",
+    desc="写作台光标后的灰色建议字与快捷流式续写：句尾收住续一拍（beat）、句中补半句（half）。",
+    slots={
+        "base": {"default": _GHOST_BASE, "label": "公共铁则", "vars": [],
+                 "desc": "幽灵字共用输出铁则：只给续写正文本身，不带任何元信息。"},
+        "beat": {"default": _GHOST_BEAT, "label": "续一拍·任务段",
+                 "temp": MODES["beat"]["temperature"], "vars": [],
+                 "desc": "上一句已收住（句号/叹号/问号）时的续写任务段。"},
+        "half": {"default": _GHOST_HALF, "label": "补半句·任务段",
+                 "temp": MODES["half"]["temperature"], "vars": [],
+                 "desc": "上一句停在逗号/顿号处时的补写任务段。"},
+    },
+)
+
+
+def _ghost_temperature(mode: str) -> float:
+    """模式温度：提示词槽温度（用户层 → 内置层）→ MODES 代码默认。"""
+    return prompts_store.temperature("ghost", mode, default=MODES[mode]["temperature"])
+
 
 def system_prompt(mode: str) -> str:
-    """幽灵字系统提示词：只输出成品续写，无解释无小节；模式差异（一拍/半句）。"""
-    base = ("你是网文写作台的幽灵字助手。作者停在正文中，光标后需要一小段建议文字。"
-            "输出要求：直接输出续写正文本身，不要任何解释、前言、引号包裹、小节标题；"
-            "禁止出现「以下是」「本章概要」「修改说明」等元信息；"
-            "禁止以引号或括号收尾包裹整段；保持中文小说的叙事文体与既有语气。")
+    """幽灵字系统提示词：只输出成品续写，无解释无小节；模式差异（一拍/半句）。
+
+    v5.3.0：提示词改为 prompts_store 开放槽（用户层 → 内置层 → 代码默认兜底），
+    槽默认值即上方原字符串（兜底与指纹源），组装顺序不变：公共铁则 + 空行 + 模式段。
+    """
+    base = prompts_store.text("ghost", "base", default=_GHOST_BASE)
     if mode == "beat":
-        return (base + "\n\n本次模式【续一拍】：上一句已收住（句号/叹号/问号），"
-                "顺着当前场景自然推进一小拍（一个动作、一句对话或一处细节），"
-                "不超过 60 字，不开启新情节、不引入新人物、不总结不升华。")
-    return (base + "\n\n本次模式【补半句】：上一句停在逗号/顿号处话说一半，"
-            "只把当前这半句自然补完（≤25 字），立即停住；不另起一句、不推进情节、"
-            "不引入新人物与新设定。")
+        return base + "\n\n" + prompts_store.text("ghost", "beat", default=_GHOST_BEAT)
+    return base + "\n\n" + prompts_store.text("ghost", "half", default=_GHOST_HALF)
 
 
 def build_messages(text: str, *, key: str = "", title: str = "", summary: str = "",
@@ -280,7 +311,8 @@ def run(text: str, *, key: str = "", title: str = "", summary: str = "",
     # 默认关思考：deepseek 等供应商的 extra_body.thinking 开关由 llm.chat 按模型规则
     # 自动合并（model_rules/providers 的思考开关机制）；无开关的供应商靠
     # _tight_max_tokens 收紧 + 提示词「直接输出续写正文」双兜底。
-    out = llm.chat(msgs, temperature=meta["temperature"],
+    # v5.3.0：温度走 prompts_store 槽（用户层 → 内置层 → MODES 默认）。
+    out = llm.chat(msgs, temperature=_ghost_temperature(meta["mode"]),
                    max_tokens=_tight_max_tokens(meta["mode"]), cfg=cfg, scene=_SCENE)
     cleaned = clean_suggestion(out, meta["max_chars"])
     if not cleaned:

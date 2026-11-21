@@ -783,6 +783,10 @@ async function renderView(route) {
         loadCss(`/v2/css/stats.css?v=${CSS_V}`);
         render = (await import('./views/stats.js')).renderStats;
       }
+      else if (route.name === 'prompts') {
+        loadCss(`/v2/css/promptedit.css?v=${CSS_V}`);
+        render = (await import('./views/promptedit.js')).renderPromptEdit;
+      }
       else if (route.name === 'skills') {
         loadCss(`/v2/css/skills.css?v=${CSS_V}`);
         render = (await import('./views/skilllib.js')).renderSkillLib;

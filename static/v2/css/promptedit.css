@@ -1,0 +1,367 @@
+/* 提示词开放编辑页（views/promptedit.js，v5.3.0）——由 app.js 在 #/prompts 路由按需加载。
+   颜色一律读 tokens.css 语义变量，四主题（宣纸白/古韵信笺/森系护眼/暗夜水墨）下均可读。 */
+
+/* ================================================================= 页面骨架 */
+
+.pe-pad {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pe-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pe-loading,
+.pe-empty,
+.pe-error,
+.pe-note {
+  padding: 14px 16px;
+  color: var(--ink-secondary);
+  font-size: 13px;
+}
+
+.pe-error {
+  color: var(--danger);
+}
+
+/* ================================================================= 组手风琴 */
+
+.pe-group {
+  overflow: hidden;
+}
+
+.pe-group-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid transparent;
+}
+
+.pe-open .pe-group-bar {
+  border-bottom-color: var(--line-2);
+}
+
+.pe-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.pe-caret {
+  display: inline-flex;
+  color: var(--ink-tertiary);
+  transition: transform 0.16s ease;
+}
+
+.pe-open .pe-caret {
+  transform: rotate(180deg);
+}
+
+.pe-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pe-group-label {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-primary);
+}
+
+.pe-group-id {
+  font-family: var(--font-code);
+  font-size: 11px;
+  color: var(--ink-tertiary);
+}
+
+.pe-group-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pe-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 徽章 */
+.pe-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  background: var(--bg-chip);
+  color: var(--ink-secondary);
+}
+
+.pe-badge[data-tone="ok"] {
+  background: var(--success-soft);
+  color: var(--success-ink);
+}
+
+.pe-badge[data-tone="warn"] {
+  background: var(--warn-soft);
+  color: var(--warn-label);
+}
+
+.pe-badge[data-tone="info"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.pe-fp {
+  font-family: var(--font-code);
+  font-size: 10px;
+  color: var(--ink-caption);
+}
+
+/* ================================================================= 槽行 */
+
+.pe-group-body {
+  display: none;
+  flex-direction: column;
+  padding: 6px 14px 14px;
+}
+
+.pe-open .pe-group-body {
+  display: flex;
+}
+
+.pe-slot-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.pe-slot-row:last-child {
+  border-bottom: 0;
+}
+
+.pe-slot-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pe-slot-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pe-slot-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-primary);
+}
+
+.pe-slot-name {
+  font-family: var(--font-code);
+  font-size: 11px;
+  color: var(--ink-tertiary);
+  background: var(--bg-chip);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+}
+
+.pe-slot-desc {
+  font-size: 12px;
+  color: var(--ink-secondary);
+  line-height: 1.6;
+}
+
+.pe-slot-vars {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pe-slot-vars-hint {
+  font-size: 11px;
+  color: var(--ink-caption);
+}
+
+.pe-var-chip {
+  font-family: var(--font-code);
+  font-size: 11px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+}
+
+.pe-slot-side {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 温度滑杆（0-2，步长 0.05） */
+.pe-temp-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pe-temp-hint {
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+.pe-temp-slider {
+  width: 120px;
+  accent-color: var(--accent);
+}
+
+.pe-temp-val {
+  font-family: var(--font-code);
+  font-size: 12px;
+  color: var(--accent-ink);
+  min-width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pe-btn-danger {
+  color: var(--danger);
+}
+
+/* ================================================================= 弹窗（槽编辑 / 整档编辑 / 对比） */
+
+.pe-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pe-modal-hint {
+  font-size: 12px;
+  color: var(--ink-secondary);
+  line-height: 1.7;
+}
+
+.pe-textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-primary);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-3);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.pe-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* 对比视图：左右分栏 */
+.pe-cmp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.pe-cmp-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.pe-cmp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-primary);
+}
+
+.pe-cmp-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pe-cmp-cap {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  margin-bottom: 4px;
+}
+
+.pe-cmp-cap-new {
+  color: var(--accent-ink);
+}
+
+.pe-cmp-pre {
+  margin: 0;
+  font-family: var(--font-code);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+  color: var(--ink-primary);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+/* 窄屏：槽行纵向堆叠、对比改单列 */
+@media (max-width: 760px) {
+  .pe-slot-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pe-slot-side {
+    justify-content: space-between;
+  }
+
+  .pe-group-bar {
+    flex-wrap: wrap;
+  }
+
+  .pe-cmp-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -31,7 +31,7 @@ import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import llm, state as state_mod
+from . import llm, prompts_store, state as state_mod
 from .safeio import atomic_write_json, atomic_write_text, safe_join
 
 PLAN_FILE = "02c-总规划.json"
@@ -1212,9 +1212,29 @@ MULTI_ROLES = {
 }
 
 
+# v5.3.0：总规划岗位系统提示词的代码默认值（兜底与指纹源；prompts/longform-plan.md 逐字一致）
+_REPLAN_PLANNER = "你是长篇网文的规划师，负责把主线推进、钩子密度与爽点节拍排进章卡，只输出严格 JSON。"
+_REPLAN_EDITOR = "你是长篇网文的总编，负责重规划提案，只输出严格 JSON。"
+
+# v5.3.0：登记代码默认值（提示词编辑页的指纹与「默认值已更新」判定来源）
+prompts_store.register(
+    "longform-plan", "总规划",
+    desc="长篇分层总规划（02c/02d）的重规划提案：多岗位（规划师/总编）各出一版严格 JSON 提案。",
+    slots={
+        "planner": {"default": _REPLAN_PLANNER, "label": "规划师岗位", "vars": [],
+                    "desc": "规划师视角：主线推进、钩子密度与爽点节拍。"},
+        "editor": {"default": _REPLAN_EDITOR, "label": "总编岗位", "vars": [],
+                   "desc": "总编视角：一致性与风险核对；未识别岗位也回落此槽。"},
+    },
+)
+
+
 def _replan_system(agent: str) -> str:
+    # v5.3.0：岗位系统提示词走开放槽（用户层 → 内置层 → MULTI_ROLES 代码默认）
     role = MULTI_ROLES.get(agent or "")
-    return role["system"] if role else "你是长篇网文的总编，负责重规划提案，只输出严格 JSON。"
+    if role:
+        return prompts_store.text("longform-plan", agent, default=role["system"])
+    return prompts_store.text("longform-plan", "editor", default=_REPLAN_EDITOR)
 
 
 def multi_replan(proj, scope: str = "window", instruction: str = "",

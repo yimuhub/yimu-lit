@@ -9,7 +9,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
-from bot import webai, webstats  # v5.2.0：AI 辅助与码字统计的增量路由（APIRouter）
+from bot import webai, webstats, weblib, webprompts  # v5.2/5.3：增量路由（APIRouter）
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
@@ -116,6 +116,10 @@ async def _auth_guard(request: Request, call_next):
 # 独立 APIRouter 模块挂载，不进主路由表——见 bot/webai.py、bot/webstats.py。
 app.include_router(webai.router)
 app.include_router(webstats.router)
+# v5.3.0：书架（封面/分组）与提示词开放编辑。挂载点必须在既有 /api/library/{key}
+# 通配路由之前，否则 groups/cover 会被通配吞掉（weblib 硬约束）。
+app.include_router(weblib.router)
+app.include_router(webprompts.router)
 
 # ---------- 会话状态机 ----------
 # state: idle → options → planning(忙) → title → writing(后台) → done
