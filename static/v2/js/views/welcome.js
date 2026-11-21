@@ -318,6 +318,7 @@ export function renderWelcome(container, ctx) {
     { icon: 'book', label: '拆书台', hint: '竞品拆解入账本', onClick: () => navigate('/breakdown') },
     { icon: 'globe', label: '榜单风向', hint: '采风与 AI 解读', onClick: () => navigate('/rank') },
     { icon: 'feather', label: '灵感库', hint: '速记与素材', onClick: () => navigate('/inspiration') },
+    { icon: 'users', label: '资料画布', hint: '关系图与故事线', onClick: () => navigate('/canvas') },
     {
       icon: 'settings',
       label: '账号设置',

@@ -735,3 +735,307 @@
   background: var(--bg-chip);
   color: var(--ink-primary);
 }
+
+/* ══════════════════════════════════════════════════════════════
+   v5.5.x A3 章节导航树（.cat-* 命名空间，只追加，不动上方区块）：
+   · 窄栏挂 .bench-body 最左（宽 ~230px，可收起成图标条，展开态记忆）；
+   · 窄容器（右面板停靠/窄窗，container-name: bench ≤920px）自动收起，
+     点图标浮层展开盖在正文上（JS ResizeObserver 同步 data-narrow 状态）；
+   · 颜色全部走 tokens.css 语义变量（零硬编码色，四主题自适应）。
+   ══════════════════════════════════════════════════════════════ */
+
+.bench-body {
+  position: relative;
+  container-type: inline-size;
+  container-name: bench;
+}
+
+.cat-rail {
+  flex: none;
+  width: 232px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-sidebar);
+  box-shadow: inset -0.5px 0 0 var(--line-2);
+}
+
+/* 收起态：44px 图标条，只留展开按钮 */
+.cat-rail[data-open="false"] { width: 44px; }
+.cat-rail[data-open="false"] .cat-main { display: none; }
+
+.cat-open-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 6px auto 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+.cat-open-btn:hover {
+  border-color: var(--line-3);
+  background: var(--bg-chip);
+  color: var(--ink-primary);
+}
+.cat-rail[data-open="false"] .cat-open-btn { display: inline-flex; }
+
+.cat-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cat-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  box-shadow: inset 0 -0.5px 0 var(--line-2);
+}
+.cat-head-ic { display: inline-flex; color: var(--ink-caption); }
+.cat-head-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+.cat-count {
+  font-size: 11px;
+  color: var(--ink-caption);
+  font-variant-numeric: tabular-nums;
+}
+.cat-collapse {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-caption);
+  cursor: pointer;
+}
+.cat-collapse:hover {
+  background: var(--bg-chip);
+  color: var(--ink-primary);
+}
+
+.cat-search {
+  flex: none;
+  padding: 8px 10px;
+  box-shadow: inset 0 -0.5px 0 var(--line-2);
+}
+.cat-search-input {
+  box-sizing: border-box;
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 4px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--input-ink);
+  outline: none;
+}
+.cat-search-input::placeholder { color: var(--input-placeholder); }
+.cat-search-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.cat-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 6px 14px;
+}
+
+/* 卷分组 */
+.cat-vol { margin: 2px 0; }
+.cat-vol-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  padding: 5px 8px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cat-vol-head:hover {
+  background: var(--bg-chip);
+  color: var(--ink-primary);
+}
+.cat-chev {
+  flex: none;
+  display: inline-flex;
+  color: var(--ink-caption);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.cat-vol[data-fold="false"] .cat-chev { transform: rotate(90deg); }
+.cat-vol-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cat-vol-count {
+  flex: none;
+  font-size: 10px;
+  color: var(--ink-caption);
+  font-variant-numeric: tabular-nums;
+}
+.cat-vol-chs { display: flex; flex-direction: column; }
+.cat-vol[data-fold="true"] .cat-vol-chs { display: none; }
+
+/* 章行：章号 + 章题 + 字数 + 状态徽标；当前章高亮 */
+.cat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  padding: 4px 8px 4px 24px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cat-row:hover {
+  background: var(--bg-chip);
+  color: var(--ink-primary);
+}
+.cat-row.is-current {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.cat-no {
+  flex: none;
+  min-width: 26px;
+  font-size: 11px;
+  color: var(--ink-caption);
+  font-variant-numeric: tabular-nums;
+}
+.cat-row.is-current .cat-no { color: var(--accent-ink); }
+.cat-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+mark.cat-mark {
+  background: var(--mark-fill);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.cat-words {
+  flex: none;
+  font-size: 10px;
+  color: var(--ink-caption);
+  font-variant-numeric: tabular-nums;
+}
+.cat-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2);
+  color: var(--ink-caption);
+}
+.cat-badge-ic { display: inline-flex; }
+.cat-badge[data-state="completed"] {
+  border-color: transparent;
+  color: var(--success);
+}
+.cat-badge[data-state="current"] {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.cat-badge[data-state="failed"] {
+  border-color: transparent;
+  color: var(--danger-ink);
+}
+
+/* 加载骨架：6 行占位（别像「空书」） */
+.cat-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 8px 8px 24px;
+}
+.cat-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: cat-pulse 1.3s var(--ease) infinite;
+}
+.cat-skel-no {
+  flex: none;
+  width: 26px;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--bg-skeleton);
+}
+.cat-skel-line {
+  flex: 1;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--bg-skeleton);
+}
+.cat-skel-row:nth-child(odd) .cat-skel-line { max-width: 76%; }
+.cat-skel-row:nth-child(3) .cat-skel-line { max-width: 58%; }
+@keyframes cat-pulse {
+  50% { opacity: 0.45; }
+}
+
+.cat-empty {
+  padding: 16px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-caption);
+}
+
+/* 窄容器（右面板停靠 / 窄窗）：树自动收起为图标条；点图标浮层展开盖在正文上。
+   JS（ResizeObserver → data-narrow / data-open）与容器查询双保险：不支持容器
+   查询的旧内核由 JS 收起态兜底，支持时 CSS 保证任何状态下都正确收窄。 */
+@container bench (max-width: 920px) {
+  .cat-rail { width: 44px; }
+  .cat-rail .cat-main { display: none; }
+  .cat-rail .cat-open-btn { display: inline-flex; }
+  .cat-rail[data-open="true"] {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 260px;
+    z-index: 40;
+    box-shadow: var(--elev-panel);
+  }
+  .cat-rail[data-open="true"] .cat-main { display: flex; }
+}

@@ -8,7 +8,7 @@
    · 导出整本仍走 /api/export（逐章去噪），工作文件（含概要/备注）只在
      「工作文件」视图核对，不参与复制与导出。 */
 
-import { h, icon, fmtWords, fmtDate, relTime, copyText } from '../core/dom.js';
+import { h, icon, fmtWords, fmtDate, relTime, copyText, esc } from '../core/dom.js';
 import { store } from '../core/state.js';
 import { api, request, errorText, IS_MOCK } from '../core/api.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
@@ -262,6 +262,538 @@ function showBenchSettleCard(chars) {
   })();
 }
 
+/* ══════════════════════════════════════════════════════════════
+   v5.5.x A3 bench 章节导航树（简版，只追加区块，全部自研）：
+
+   · 数据源：store.plan（GET /api/plan 全书规划大对象，经既有 refreshPlan
+     链路下发——不新增端点、不额外轮询）。卷→弧→章卡（chapter_cards 带
+     done/writing/changed/planned 状态与 word_count）为长篇分层结构；
+     无卷结构（旧书/未分层规划）回落 plan.chapters 平铺章列表。
+   · 徽标词表归一：章卡 02d 用 done/writing/changed/planned，写作计划用
+     completed/in_progress/failed/pending——两套先归一再映射徽标；
+     本会话保存过的章就地升级（后端 _apply_chapter_text 落盘时已回写计划
+     状态，等 refreshPlan 收敛后口径自然一致），不做额外轮询。
+   · 折叠记忆：卷折叠状态存 localStorage `ew-bench-catalog-folds:<bookKey>`，
+     LRU 键清单（ew-bench-catalog-folds:_idx）只留最近 50 本，超限删最旧。
+   · 搜索：先 escapeHtml 再替换 <mark>（章题含 <script> 也只当文本渲染），
+     命中卷自动展开；清空搜索恢复折叠记忆。
+   ══════════════════════════════════════════════════════════════ */
+
+export const CAT_FOLD_PREFIX = 'ew-bench-catalog-folds:';
+export const CAT_FOLD_INDEX_KEY = 'ew-bench-catalog-folds:_idx';
+export const CAT_FOLD_MAX_BOOKS = 50;
+const CAT_RAIL_OPEN_KEY = 'ew-bench-catalog-open';
+/* 与 bench-editor.css 里 @container bench (max-width: 920px) 对齐的收起阈值 */
+export const CAT_NARROW_PX = 920;
+
+/* 两套章节状态词表归一（口径与右栏章卡一致，实现自研、不引其模块）。
+   未知值原样保留，由 catalogBadge 兜底成「待写」。 */
+const CAT_STATUS_MAP = {
+  done: 'completed',
+  completed: 'completed',
+  writing: 'in_progress',
+  in_progress: 'in_progress',
+  error: 'failed',
+  failed: 'failed',
+  pending: 'pending',
+  changed: 'planned',
+  planned: 'planned'
+};
+
+export function normCatalogStatus(raw) {
+  const k = String(raw || '').trim().toLowerCase();
+  return CAT_STATUS_MAP[k] || k || 'planned';
+}
+
+/* 归一态 → 徽标 { state, label }（.cat-badge 的 data-state）。 */
+export function catalogBadge(status) {
+  const s = normCatalogStatus(status);
+  if (s === 'completed') return { state: 'completed', label: '完成' };
+  if (s === 'in_progress') return { state: 'current', label: '写中' };
+  if (s === 'failed') return { state: 'failed', label: '失败' };
+  return { state: 'planned', label: '待写' };
+}
+
+function _catInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/* 章卡 / 写作计划条目 → 树行模型 { n, title, status, words }。 */
+export function chapterFromCard(c) {
+  if (!c || typeof c !== 'object') return { n: 0, title: '', status: 'planned', words: 0 };
+  const n = _catInt(c.n != null ? c.n : c.chapterNumber);
+  const raw = String(c.title || '').trim();
+  const words = _catInt(c.word_count != null ? c.word_count : (c.words != null ? c.words : c.wordCount));
+  return { n, title: raw || (n ? `第${n}章` : ''), status: normCatalogStatus(c.status), words };
+}
+
+function _catDedupeSort(chapters) {
+  const seen = new Set();
+  const out = [];
+  for (const c of chapters) {
+    if (!c || !c.n || seen.has(c.n)) continue;
+    seen.add(c.n);
+    out.push(c);
+  }
+  out.sort((a, b) => a.n - b.n);
+  return out;
+}
+
+/* 规划大对象 → 分组树模型（纯函数）：
+   · volumes[].arcs[] → 每卷一组（chapter_cards 优先，缺失回落 arc.chapters 章号）；
+   · plan.chapters 平铺 → 单组 kind:'flat'（渲染时不带卷头）；
+   · 空结构 → { mode:'empty', groups: [], total: 0 }。 */
+export function buildCatalogModel(payload) {
+  const plan = (payload && typeof payload === 'object' && payload.plan)
+    ? payload.plan
+    : (payload && typeof payload === 'object' ? payload : {});
+  const vols = Array.isArray(plan.volumes) ? plan.volumes : [];
+  if (vols.length) {
+    const groups = [];
+    vols.forEach((vol, vi) => {
+      const arcs = (vol && Array.isArray(vol.arcs)) ? vol.arcs : [];
+      const chapters = [];
+      for (const arc of arcs) {
+        if (!arc) continue;
+        const cards = Array.isArray(arc.chapter_cards) ? arc.chapter_cards : [];
+        if (cards.length) {
+          for (const c of cards) chapters.push(chapterFromCard(c));
+        } else {
+          for (const nn of (Array.isArray(arc.chapters) ? arc.chapters : [])) {
+            chapters.push(chapterFromCard({ n: nn, status: 'planned' }));
+          }
+        }
+      }
+      const no = vol.no != null ? (_catInt(vol.no) || vi + 1) : vi + 1;
+      const chs = _catDedupeSort(chapters);
+      if (chs.length) {
+        groups.push({
+          id: `v${no}`,
+          kind: 'volume',
+          no,
+          title: String(vol.title || '').trim() || `卷${no}`,
+          chapters: chs,
+          match: false
+        });
+      }
+    });
+    if (groups.length) {
+      return { mode: 'volumes', groups, total: groups.reduce((n, g) => n + g.chapters.length, 0) };
+    }
+  }
+  const flat = Array.isArray(plan.chapters) ? plan.chapters.map(chapterFromCard) : [];
+  if (flat.length) {
+    const chs = _catDedupeSort(flat);
+    if (chs.length) {
+      return { mode: 'flat', groups: [{ id: 'flat', kind: 'flat', no: 0, title: '', chapters: chs, match: false }], total: chs.length };
+    }
+  }
+  return { mode: 'empty', groups: [], total: 0 };
+}
+
+/* 目录搜索过滤（纯函数）：命中词匹配章题 / 章号（第N章）/ 卷题；
+   卷题命中保留整卷全部章（章行 hit 仍按各自标题算，供 <mark> 高亮）；
+   空查询原样透传（hit 全 false）。 */
+export function filterCatalogGroups(groups, query) {
+  const src = Array.isArray(groups) ? groups : [];
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) {
+    return {
+      groups: src.map((g) => ({
+        ...g,
+        match: false,
+        chapters: (g.chapters || []).map((c) => ({ ...c, hit: false }))
+      })),
+      hits: 0
+    };
+  }
+  let hits = 0;
+  const out = [];
+  for (const g of src) {
+    const volHit = String(g.title || '').toLowerCase().includes(q);
+    const chs = [];
+    for (const c of g.chapters || []) {
+      const hay = `${c.title || ''} 第${c.n}章 ${c.n}`.toLowerCase();
+      const hit = hay.includes(q);
+      if (hit || volHit) chs.push({ ...c, hit });
+      if (hit) hits += 1;
+    }
+    if (!chs.length) continue;
+    out.push({ ...g, match: volHit, chapters: chs });
+  }
+  return { groups: out, hits };
+}
+
+/* 命中词高亮（纯函数）：先 escapeHtml 再替换 <mark>——章题里的 <script>
+   只会变成 &lt;script&gt; 文本，绝不产生可执行节点。 */
+export function markMatch(title, query) {
+  const escaped = esc(title);
+  const q = String(query || '').trim();
+  if (!q) return escaped;
+  const lower = escaped.toLowerCase();
+  const needle = q.toLowerCase();
+  const parts = [];
+  let i = 0;
+  while (i < escaped.length) {
+    const at = lower.indexOf(needle, i);
+    if (at < 0) {
+      parts.push(escaped.slice(i));
+      break;
+    }
+    if (at > i) parts.push(escaped.slice(i, at));
+    parts.push(`<mark class="cat-mark">${escaped.slice(at, at + q.length)}</mark>`);
+    i = at + q.length;
+  }
+  return parts.join('');
+}
+
+function _catStorage(storage) {
+  if (storage) return storage;
+  return typeof localStorage !== 'undefined' ? localStorage : null;
+}
+
+export function catFoldKey(bookKey) {
+  return CAT_FOLD_PREFIX + String(bookKey || '');
+}
+
+/* 卷折叠记忆读取：损坏 JSON / 非数组一律回空集（隐私模式也不炸）。 */
+export function loadCatFolds(bookKey, storage) {
+  const st = _catStorage(storage);
+  if (!st) return [];
+  try {
+    const raw = JSON.parse(st.getItem(catFoldKey(bookKey)) || '[]');
+    return Array.isArray(raw) ? Array.from(new Set(raw.map(String))) : [];
+  } catch {
+    return [];
+  }
+}
+
+/* 卷折叠记忆写入 + LRU：键清单（_idx）按最近使用排序，超过 50 本删最旧的书目键。 */
+export function saveCatFolds(bookKey, folds, storage) {
+  const st = _catStorage(storage);
+  if (!st) return;
+  const bk = String(bookKey || '');
+  const ids = Array.from(new Set((Array.isArray(folds) ? folds : []).map(String)));
+  try {
+    st.setItem(catFoldKey(bk), JSON.stringify(ids));
+  } catch { /* 隐私模式：折叠记忆只活在本次会话 */ }
+  let idx = [];
+  try {
+    const raw = JSON.parse(st.getItem(CAT_FOLD_INDEX_KEY) || '[]');
+    if (Array.isArray(raw)) idx = raw.map(String);
+  } catch { idx = []; }
+  idx = idx.filter((k) => k !== bk);
+  idx.push(bk);
+  while (idx.length > CAT_FOLD_MAX_BOOKS) {
+    const oldest = idx.shift();
+    if (oldest != null && oldest !== bk) {
+      try { st.removeItem(CAT_FOLD_PREFIX + oldest); } catch { /* 忽略 */ }
+    }
+  }
+  try {
+    st.setItem(CAT_FOLD_INDEX_KEY, JSON.stringify(idx));
+  } catch { /* 隐私模式 */ }
+}
+
+/* 窄栏展开态记忆（全局一把，非书目维度）：默认展开。 */
+export function loadCatRailOpen(storage) {
+  const st = _catStorage(storage);
+  if (!st) return true;
+  return st.getItem(CAT_RAIL_OPEN_KEY) !== '0';
+}
+
+export function saveCatRailOpen(on, storage) {
+  const st = _catStorage(storage);
+  if (!st) return;
+  try { st.setItem(CAT_RAIL_OPEN_KEY, on ? '1' : '0'); } catch { /* 隐私模式 */ }
+}
+
+/* 目录窄栏工厂（挂 .bench-body 最左）：
+   · data-open 宽栏/图标条切换（记忆）、data-narrow 窄容器自动收起（可还原）；
+   · dataState：loading（6 行骨架）/ ready / empty / failed（规划不可用）；
+   · 搜索过滤 + <mark> 高亮 + 命中卷自动展开；卷折叠走 localStorage 记忆；
+   · 当前章高亮 + 数据到位后滚动可见；onSaved 就地升级本会话保存章的徽标。 */
+export function createCatalogRail({ key, onGoto, storage } = {}) {
+  let destroyed = false;
+  let folds = new Set(loadCatFolds(key, storage));
+  let planModel = null;         // buildCatalogModel 结果缓存
+  let dataState = 'loading';    // loading | ready | empty | failed
+  let currentN = 0;
+  let query = '';
+  let lastPayload = null;       // store 订阅去重：plan 引用 + 章号 + 失败态都没变就不重画
+  let lastFailed = false;
+  let lastScrollKey = '';
+  let narrowStash = null;       // 进入窄容器前的展开态，退回宽容器时还原
+  let resizeObs = null;
+  const savedLocal = new Map(); // 本会话保存过的章 n → words（徽标就地升级，不回写 store）
+
+  const root = h('div', {
+    class: 'cat-rail',
+    role: 'navigation',
+    'aria-label': '章节目录',
+    dataset: { open: String(loadCatRailOpen(storage)), narrow: 'false' }
+  });
+  const openBtn = h('button', {
+    class: 'cat-open-btn',
+    type: 'button',
+    title: '章节目录',
+    'aria-label': '展开章节目录',
+    html: icon('list', 15),
+    on: { click: () => setOpen(true, true) }
+  });
+  const main = h('div', { class: 'cat-main' });
+  const countEl = h('span', { class: 'cat-count', text: '' });
+  const searchInput = h('input', {
+    class: 'cat-search-input',
+    type: 'search',
+    placeholder: '搜索章 / 卷',
+    'aria-label': '搜索目录',
+    on: {
+      input: () => {
+        query = searchInput.value || '';
+        paintBody();
+      }
+    }
+  });
+  const bodyEl = h('div', { class: 'cat-body' });
+
+  function setOpen(on, persist) {
+    root.dataset.open = String(!!on);
+    if (persist) saveCatRailOpen(!!on, storage);
+  }
+
+  function scrollCurrentIntoView() {
+    const cur = bodyEl.querySelector('.cat-row.is-current');
+    if (cur && typeof cur.scrollIntoView === 'function') {
+      try { cur.scrollIntoView({ block: 'nearest' }); } catch { /* jsdom/无布局时静默 */ }
+    }
+  }
+
+  function titleNode(title, hit, cls) {
+    if (hit && query.trim()) return h('span', { class: cls, html: markMatch(title, query) });
+    return h('span', { class: cls, text: String(title || '') });
+  }
+
+  function skeletonEl() {
+    const box = h('div', { class: 'cat-skel', 'aria-hidden': 'true' });
+    for (let i = 0; i < 6; i += 1) {
+      box.append(h('div', { class: 'cat-skel-row' },
+        h('span', { class: 'cat-skel-no' }),
+        h('span', { class: 'cat-skel-line' })));
+    }
+    return box;
+  }
+
+  function badgeFor(c) {
+    const local = savedLocal.get(String(c.n));
+    if (local && normCatalogStatus(c.status) !== 'completed') {
+      return { state: 'completed', label: '完成' };
+    }
+    return catalogBadge(c.status);
+  }
+
+  function chapterRow(c) {
+    const badge = badgeFor(c);
+    const isCurrent = Number(c.n) === Number(currentN);
+    const row = h('button', {
+      class: `cat-row${isCurrent ? ' is-current' : ''}`,
+      type: 'button',
+      title: c.title || `第 ${c.n} 章`,
+      'aria-current': isCurrent ? 'true' : null,
+      dataset: { n: String(c.n), state: badge.state },
+      on: { click: () => { if (onGoto) onGoto(c.n); } }
+    },
+    h('span', { class: 'cat-no', text: String(c.n) }),
+    titleNode(c.title, c.hit, 'cat-title'),
+    c.words > 0 ? h('span', { class: 'cat-words', text: fmtWords(c.words) }) : null,
+    h('span', { class: 'cat-badge', dataset: { state: badge.state } },
+      badge.state === 'completed' ? h('span', { class: 'cat-badge-ic', html: icon('check', 10) }) : null,
+      h('span', { text: badge.label })));
+    return row;
+  }
+
+  function volumeEl(g) {
+    const folded = !query.trim() && folds.has(g.id);
+    const vol = h('div', { class: 'cat-vol', dataset: { fold: folded ? 'true' : 'false', match: g.match ? 'true' : 'false' } });
+    const head = h('button', {
+      class: 'cat-vol-head',
+      type: 'button',
+      'aria-expanded': folded ? 'false' : 'true',
+      on: {
+        click: () => {
+          const nowFolded = vol.dataset.fold !== 'true';
+          vol.dataset.fold = nowFolded ? 'true' : 'false';
+          head.setAttribute('aria-expanded', nowFolded ? 'false' : 'true');
+          if (nowFolded) folds.add(g.id); else folds.delete(g.id);
+          saveCatFolds(key, Array.from(folds), storage);
+        }
+      }
+    },
+    h('span', { class: 'cat-chev', html: icon('chevron-right', 12) }),
+    titleNode(g.title, g.match, 'cat-vol-title'),
+    h('span', { class: 'cat-vol-count', text: `${g.chapters.length} 章` }));
+    const chs = h('div', { class: 'cat-vol-chs' });
+    for (const c of g.chapters) chs.append(chapterRow(c));
+    vol.append(head, chs);
+    return vol;
+  }
+
+  function paintBody() {
+    bodyEl.textContent = '';
+    if (dataState === 'loading') {
+      bodyEl.append(skeletonEl());
+      return;
+    }
+    if (dataState === 'failed') {
+      bodyEl.append(h('div', { class: 'cat-empty', text: '章节目录暂时不可用（规划加载失败）。可从右侧「规划」页签重试。' }));
+      return;
+    }
+    if (!planModel || !planModel.groups.length) {
+      bodyEl.append(h('div', { class: 'cat-empty', text: '这本书还没有章节规划。先在「规划」页签生成目录，这里就会长出全书导航。' }));
+      return;
+    }
+    const q = query.trim();
+    const { groups } = filterCatalogGroups(planModel.groups, q);
+    if (q && !groups.length) {
+      bodyEl.append(h('div', { class: 'cat-empty', text: `没有匹配「${q}」的章或卷。` }));
+      return;
+    }
+    for (const g of groups) {
+      if (g.kind === 'flat') {
+        for (const c of g.chapters) bodyEl.append(chapterRow(c));
+      } else {
+        bodyEl.append(volumeEl(g));
+      }
+    }
+  }
+
+  function paintCount() {
+    countEl.textContent = planModel && planModel.total ? `${planModel.total} 章` : '';
+  }
+
+  function setData(payload, n, opts = {}) {
+    if (destroyed) return;
+    const failed = !!(opts && opts.failed);
+    const no = Number(n) || 0;
+    if (payload === lastPayload && no === currentN && failed === lastFailed) return;
+    const scrolledBefore = lastScrollKey;
+    lastPayload = payload;
+    lastFailed = failed;
+    currentN = no;
+    if (!payload || !(typeof payload === 'object' && (payload.plan || payload.volumes || payload.chapters))) {
+      dataState = failed ? 'failed' : 'loading';
+      planModel = null;
+    } else {
+      planModel = buildCatalogModel(payload);
+      dataState = planModel.groups.length ? 'ready' : 'empty';
+    }
+    /* 当前章所在卷自动展开（折叠记忆里收起的卷，切到章内时也要让当前章可见） */
+    if (dataState === 'ready' && planModel && currentN) {
+      for (const g of planModel.groups) {
+        if (g.chapters.some((c) => c.n === currentN) && folds.delete(g.id)) {
+          saveCatFolds(key, Array.from(folds), storage);
+          break;
+        }
+      }
+    }
+    paintCount();
+    paintBody();
+    const scrollKey = `${dataState}:${currentN}`;
+    if (scrollKey !== scrolledBefore && dataState === 'ready') {
+      lastScrollKey = scrollKey;
+      scrollCurrentIntoView();
+    }
+  }
+
+  /* 本会话保存过的章：徽标就地升级为「完成」（后端保存链路已回写计划状态）。 */
+  function onSaved(n, words) {
+    const no = Number(n) || 0;
+    if (!no) return;
+    savedLocal.set(String(no), Number(words) || 0);
+    if (dataState === 'ready') paintBody();
+  }
+
+  function setNarrow(on) {
+    const val = on ? 'true' : 'false';
+    if (root.dataset.narrow === val) return;
+    root.dataset.narrow = val;
+    if (on) {
+      if (root.dataset.open === 'true') {
+        narrowStash = true;
+        setOpen(false, false);   // 自动收起是瞬态，不写入展开偏好
+      } else {
+        narrowStash = false;
+      }
+    } else {
+      if (narrowStash === true) setOpen(true, false);
+      narrowStash = null;
+    }
+  }
+
+  /* 窄容器探测（右面板停靠 / 窄窗）：bench-body 宽度越过阈值即收起为图标条。
+     ResizeObserver 不可用（jsdom/旧内核）时静默跳过，CSS @container 兜底。 */
+  function attachResize(hostEl) {
+    if (destroyed || typeof ResizeObserver !== 'function' || !hostEl) return;
+    try {
+      resizeObs = new ResizeObserver((entries) => {
+        const rect = entries && entries[0] && entries[0].contentRect;
+        const w = rect ? rect.width : 0;
+        setNarrow(w > 0 && w < CAT_NARROW_PX);
+      });
+      resizeObs.observe(hostEl);
+    } catch { resizeObs = null; }
+  }
+
+  root.append(
+    openBtn,
+    h('div', { class: 'cat-main' },
+      h('div', { class: 'cat-head' },
+        h('span', { class: 'cat-head-ic', html: icon('list', 13) }),
+        h('span', { class: 'cat-head-title', text: '目录' }),
+        countEl,
+        h('button', {
+          class: 'cat-collapse',
+          type: 'button',
+          title: '收起章节目录',
+          'aria-label': '收起章节目录',
+          html: icon('chevron-left', 14),
+          on: { click: () => setOpen(false, true) }
+        })),
+      h('div', { class: 'cat-search' }, searchInput),
+      bodyEl)
+  );
+
+  /* 初始画面：数据未到先铺 6 行骨架（别像「空书」），plan 到位后由 setData 换树 */
+  paintCount();
+  paintBody();
+
+  return {
+    el: root,
+    setData,
+    onSaved,
+    setNarrow,
+    attachResize,
+    scrollCurrentIntoView,
+    debug: () => ({
+      dataState,
+      rows: bodyEl.querySelectorAll('.cat-row').length,
+      vols: bodyEl.querySelectorAll('.cat-vol').length,
+      query,
+      folds: Array.from(folds),
+      savedLocal: Array.from(savedLocal.keys())
+    }),
+    destroy() {
+      destroyed = true;
+      if (resizeObs) {
+        try { resizeObs.disconnect(); } catch { /* 忽略 */ }
+        resizeObs = null;
+      }
+      root.remove();
+    }
+  };
+}
+
 export function renderBench(container, ctx) {
   const state0 = store.get();
   const key = state0.route.key || state0.currentKey;
@@ -497,6 +1029,34 @@ export function renderBench(container, ctx) {
   /* v5.5.x A4 结算账本：只读会话事件流（begin/update/commit），退出时弹结算卡。 */
   const settleLedger = createSettleLedger(key);
   settleLedger.attach(document);
+
+  /* ══════════════════════════════════════════════════════════════
+     v5.5.x A3 章节导航树挂载（只追加区块）：
+     · 数据源 = store.plan（GET /api/plan 既有 refreshPlan 链路下发，无新增端点）；
+       深链直进写作台而规划未到时补一次 refreshPlan（guardedRefresh inflight 去重）；
+     · store 订阅驱动重画（规划刷新/作品状态变化 → 徽标收敛），不额外轮询；
+     · 点击行先 flushSave 再 navigate 切章（复用挂载链路里的 loadChapter）。
+     ══════════════════════════════════════════════════════════════ */
+  const catRail = createCatalogRail({
+    key,
+    onGoto: (no) => {
+      const target = Number(no) || 1;
+      flushSave();
+      if (target === model.n) return;
+      navigate(`/work/${encodeURIComponent(key)}/bench/${target}`);
+    }
+  });
+  body.insertBefore(catRail.el, editorCol);   // 编辑区左侧窄栏（可收起）
+  catRail.setData(store.get().plan, model.n, {
+    failed: !!(store.get().features && store.get().features.plan === false)
+  });
+  const catUnsub = store.subscribe((s) => {
+    catRail.setData(s.plan, model.n, { failed: !!(s.features && s.features.plan === false) });
+  });
+  catRail.attachResize(body);
+  if (!store.get().plan && !(store.get().features && store.get().features.plan === false)) {
+    ctx.refreshPlan && ctx.refreshPlan();   // 深链直进写作台：补一次规划刷新（既有链路）
+  }
 
   applyTypo();
 
@@ -843,6 +1403,7 @@ export function renderBench(container, ctx) {
       paintFoot();
       refreshVersionsSoon();
       ctx.refreshWork && ctx.refreshWork();
+      catRail.onSaved(model.n, model.words);   /* v5.5.x A3：本会话保存章的徽标就地升级 */
     } catch (err) {
       model.saveState = 'error';
       toast(errorText(err, '保存失败，请重试'), { tone: 'danger' });
@@ -1408,6 +1969,8 @@ export function renderBench(container, ctx) {
       selectionBar.destroy();
       if (chatFloat) chatFloat.destroy();
       findReplace.destroy();
+      catUnsub();          /* v5.5.x A3：摘掉 store 订阅与目录窄栏 */
+      catRail.destroy();
       editor.destroy();
       view.remove();
       /* v5.5.x A4：退出写作台结算卡（本会话净增字数 >0 才弹；统计只读不写，失败静默）。

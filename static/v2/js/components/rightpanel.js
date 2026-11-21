@@ -2186,6 +2186,19 @@ function refsPane(ctx) {
   }
   pane.append(add);
 
+  /* v5.5.2 资料画布入口：本书人物关系图 / 故事线思维导图（#/canvas）。 */
+  const canvasSec = h('div', { class: 'rp-section' });
+  canvasSec.append(
+    sectionHead('资料画布'),
+    h('button', {
+      class: 'btn btn-sm',
+      type: 'button',
+      text: '打开画布（关系图 / 思维导图）',
+      on: { click: () => navigate('/canvas') }
+    })
+  );
+  pane.append(canvasSec);
+
   const searchSec = h('div', { class: 'rp-section' });
   searchSec.append(sectionHead('检索参考', panel.refHits ? `${panel.refHits.length} 条命中` : ''));
   const searchRow = h('div', { class: 'ref-search' },

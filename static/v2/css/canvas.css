@@ -1,0 +1,347 @@
+/* 资料画布页样式（views/canvas.js + core/graphcanvas.js，v5.5.2）。
+   全部颜色读 tokens 语义变量，随四主题切换重绘，不写死主题色。 */
+
+.canvas-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 18px 16px 48px;
+}
+
+.canvas-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.canvas-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink-primary);
+}
+
+.canvas-desc {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-secondary);
+  max-width: 560px;
+}
+
+.canvas-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.canvas-book-select {
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.canvas-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.canvas-tab {
+  border: 1px solid var(--line-3);
+  background: var(--bg-chip);
+  color: var(--ink-secondary);
+  border-radius: var(--radius-pill, 999px);
+  padding: 5px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.canvas-tab:hover {
+  background: var(--hover-solid);
+  color: var(--ink-primary);
+}
+
+.canvas-tab.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line, var(--line-3));
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.canvas-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+  border-radius: var(--radius-sm, 8px);
+  font-size: 13px;
+}
+
+.canvas-stage {
+  position: relative;
+  min-height: 460px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg, 16px);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.canvas-loading {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--ink-secondary);
+  font-size: 13px;
+}
+
+.canvas-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 420px;
+  padding: 32px;
+  text-align: center;
+}
+
+.canvas-empty-icon {
+  font-size: 26px;
+  color: var(--ink-caption);
+}
+
+.canvas-empty h3 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--ink-primary);
+}
+
+.canvas-empty p {
+  margin: 0;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-secondary);
+}
+
+/* ------------------------------------------------------------ 画布本体 */
+
+.gc-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gc-svg {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+
+.gc-svg:active {
+  cursor: grabbing;
+}
+
+.gc-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--panel-border, var(--line-2));
+  border-radius: var(--radius-pill, 999px);
+  background: var(--panel-bg, var(--bg-elevated));
+  box-shadow: var(--elev-stroke, none);
+}
+
+.gc-btn {
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--btn-ink);
+  border-radius: var(--radius-sm, 8px);
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.gc-btn:hover {
+  background: var(--btn-bg-hover);
+}
+
+.gc-btn-wide {
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+}
+
+.gc-zoom-label {
+  min-width: 40px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.gc-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--line-2);
+}
+
+/* ------------------------------------------------------------ 节点卡片 */
+
+.gc-node {
+  cursor: grab;
+}
+
+.gc-node:active {
+  cursor: grabbing;
+}
+
+.gc-node-box {
+  fill: var(--surface-1, var(--bg-elevated));
+  stroke: var(--line-3);
+  stroke-width: 1;
+}
+
+.gc-node:hover .gc-node-box {
+  stroke: var(--accent);
+}
+
+.gc-node-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  fill: var(--ink-primary);
+  pointer-events: none;
+}
+
+.gc-node-badge {
+  font-size: 10.5px;
+  fill: var(--ink-tertiary);
+  pointer-events: none;
+}
+
+/* 各类节点用语义色面层区分（不写死颜色，随主题走） */
+.gc-kind-root .gc-node-box {
+  fill: var(--accent-soft);
+  stroke: var(--accent-line, var(--line-3));
+  stroke-width: 1.5;
+}
+
+.gc-kind-group .gc-node-box {
+  fill: var(--bg-chip);
+  stroke: var(--line-3);
+}
+
+.gc-kind-main .gc-node-box {
+  fill: var(--accent-soft);
+  stroke: var(--accent-line, var(--line-3));
+}
+
+.gc-kind-foreshadow .gc-node-box {
+  fill: var(--warn-soft);
+  stroke: var(--warn-line, var(--line-3));
+}
+
+.gc-kind-branch .gc-node-box {
+  fill: var(--info-soft);
+  stroke: var(--info-line, var(--line-3));
+}
+
+.gc-kind-person .gc-node-box {
+  fill: var(--surface-1, var(--bg-elevated));
+}
+
+/* ------------------------------------------------------------ 连线与关系标签 */
+
+.gc-edge {
+  cursor: pointer;
+}
+
+.gc-edge-line {
+  stroke: var(--line-4);
+  stroke-width: 1.5;
+}
+
+.gc-edge:hover .gc-edge-line {
+  stroke: var(--accent);
+}
+
+.gc-edge-seq .gc-edge-line {
+  stroke-dasharray: 5 4;
+  stroke: var(--warn-label);
+}
+
+.gc-edge-parent .gc-edge-line {
+  stroke: var(--line-3);
+  stroke-width: 1.2;
+}
+
+.gc-edge-hit {
+  stroke: transparent;
+  stroke-width: 16;
+  fill: none;
+}
+
+.gc-edge-label-box {
+  fill: var(--bg-elevated);
+  stroke: var(--line-2);
+}
+
+.gc-edge:hover .gc-edge-label-box {
+  stroke: var(--accent);
+}
+
+.gc-edge-label-text {
+  font-size: 11px;
+  fill: var(--ink-secondary);
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------ 关系标签编辑条 */
+
+.canvas-edge-editor {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  max-width: calc(100% - 24px);
+  border: 1px solid var(--panel-border, var(--line-2));
+  border-radius: var(--radius-md, 12px);
+  background: var(--panel-bg, var(--bg-elevated));
+  box-shadow: var(--elev-panel, none);
+}
+
+.canvas-edge-pair {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-primary);
+  white-space: nowrap;
+}
+
+.canvas-edge-input {
+  width: 200px;
+}
