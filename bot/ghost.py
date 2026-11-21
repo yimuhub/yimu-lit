@@ -333,8 +333,10 @@ def run_stream(text: str, *, on_delta=None, key: str = "", title: str = "",
         llm.set_chapter(int(chapter_no) if chapter_no else None)
     except (TypeError, ValueError):
         llm.set_chapter(None)
+    # v5.5.x：温度与 run() 同口径——接 prompts_store 槽（用户层 → 内置层 → MODES 默认），
+    # 「幽灵字·续一拍/补半句」槽温度从此同样管到快捷续写。
     out = llm.chat_stream(msgs, on_delta=on_delta,
-                          temperature=0.8,
+                          temperature=_ghost_temperature(meta["mode"]),
                           max_tokens=900,      # 续写段比幽灵字长，但仍收紧防思考链拖长
                           cfg=cfg, scene="续写")
     cleaned = purity.strip_fragment(selection_ai.clean_result(out)).strip()

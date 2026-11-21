@@ -175,7 +175,10 @@ const ctx = {
      前端拿着旧 key 渲染空书、会话与路由停在旧 key，总编辑看到《未命名》。
      这里把侧栏/作品库条目、当前会话与路由整体跟到新 key。 */
   followRenamedWork(fromKey, toKey, status) {
-    if (!fromKey || !toKey || fromKey === toKey) return;
+    if (!toKey || fromKey === toKey) return;
+    /* fromKey 为空只允许「无绑定会话 → 直聊建书」的跳转（当前本就没绑书）；
+       已绑着别的书时没有来源 key 的跳转一律拒绝，防误切。 */
+    if (!fromKey && store.get().currentKey) return;
     const s = store.get();
     const old = (s.library.items || []).find((i) => i.key === fromKey);
     const name = (status && (status.name || status.novelName)) || (old && old.name) || '';

@@ -474,3 +474,264 @@
   font-size: 11px;
   margin-left: 10px;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   v5.5.x 新增段（只追加，不动上方任何区块）：
+   · A1 全书查找替换浮层（core/findreplace.js，.fr-* 命名空间）
+   · A4 退出写作台结算卡（views/bench.js，.settle-* 命名空间）
+   颜色全部走 tokens.css 主题变量（零硬编码色，深浅色自动）。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ---------------------------------------------------------- A1 查找替换浮层 */
+
+.fr-panel {
+  position: fixed;
+  z-index: 120;
+  width: 340px;
+  max-width: calc(100vw - 16px);
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: 0 12px 36px rgba(9, 12, 20, 0.18);
+  font-size: 13px;
+  color: var(--ink-primary);
+}
+
+.fr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px -4px 8px;
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid var(--line-2);
+  cursor: grab;
+  user-select: none;
+}
+
+.fr-head:active { cursor: grabbing; }
+
+.fr-title {
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.fr-stale {
+  font-size: 11px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--warn-soft);
+  color: var(--warn-label);
+}
+
+.fr-x {
+  border: none;
+  background: transparent;
+  color: var(--ink-caption);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.fr-x:hover {
+  background: var(--bg-chip);
+  color: var(--ink-primary);
+}
+
+.fr-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+
+.fr-row.fr-acts,
+.fr-row.fr-tools { margin-bottom: 6px; }
+
+.fr-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  color: var(--ink-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.fr-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.fr-case {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  color: var(--ink-caption);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fr-nav {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-tertiary);
+  font-size: 12px;
+  min-width: 34px;
+  text-align: right;
+}
+
+.fr-nav.is-locked { color: var(--warn-label); }
+
+.fr-hint {
+  color: var(--ink-caption);
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.fr-summary {
+  margin: 2px 0 6px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+}
+
+.fr-summary-stale { color: var(--warn-label); }
+
+.fr-results {
+  max-height: 240px;
+  overflow: auto;
+  border-top: 1px solid var(--line-2);
+  padding-top: 6px;
+  margin-top: 2px;
+}
+
+.fr-group { margin-bottom: 8px; }
+
+.fr-group.is-cur .fr-group-title { color: var(--accent-ink); }
+
+.fr-group-title {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 2px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+
+.fr-group-title:hover { color: var(--accent-ink); }
+
+.fr-snippet {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-tertiary);
+  padding: 1px 0 1px 10px;
+  word-break: break-all;
+}
+
+.fr-hit {
+  background: var(--warn-soft);
+  color: var(--warn-label);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+/* ---------------------------------------------------------- A4 退出结算卡 */
+
+.settle-card {
+  position: fixed;
+  z-index: 130;
+  left: 50%;
+  top: 18%;
+  transform: translateX(-50%);
+  min-width: 240px;
+  max-width: calc(100vw - 32px);
+  padding: 18px 22px 14px;
+  border: 1px solid var(--line-3);
+  border-radius: var(--radius-lg, var(--radius-md));
+  background: var(--bg-elevated);
+  box-shadow: 0 16px 48px rgba(9, 12, 20, 0.2);
+  text-align: center;
+  animation: settle-pop 0.24s ease-out;
+}
+
+@keyframes settle-pop {
+  from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.settle-title {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--ink-caption);
+}
+
+.settle-words {
+  margin: 6px 0 2px;
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--ink-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.settle-goal {
+  margin: 4px 0 2px;
+  font-size: 12.5px;
+  color: var(--ink-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settle-bar {
+  display: inline-block;
+  width: 96px;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-chip);
+  overflow: hidden;
+}
+
+.settle-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.settle-phrase {
+  margin: 8px 0 10px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.settle-close {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  padding: 3px 14px;
+  cursor: pointer;
+}
+
+.settle-close:hover {
+  border-color: var(--line-3);
+  background: var(--bg-chip);
+  color: var(--ink-primary);
+}

@@ -118,6 +118,16 @@ ACTIONS = {
     },
     "export": {"desc": "导出成书（给操作指引）", "params": {}},
     "new_project": {"desc": "作者想另开一本新书（给操作指引，不在当前书里硬开）", "params": {}},
+    # v5.5.2：直接开聊建书——无绑定会话里一段话真的建一本书（复用 /api/create 链路）
+    "create_book": {
+        "desc": "直接开聊（上下文标明未绑定任何作品）时，作者表达「我想写一本XX」→ 真的建书开写："
+                "idea 填从作者原话提炼的一句话创意；题材/基调/平台/章数等他提到了就填进 preferences，"
+                "没提到的用合理默认并在 reply 里说明。信息够就**直接建书**，不要反问打断；"
+                "已绑定作品时禁止使用本动作（那要用 new_project 给指引）",
+        "params": {"idea": "一句话创意/主题（从作者原话提炼，≤60字，必填）",
+                   "preferences": "可选偏好对象：{genre 题材, tone 基调, platform 发布平台, "
+                                  "chapters 预计章数, medium 文体}，作者没说就省略"},
+    },
     "cancel_task": {
         "desc": "停止当前正在跑的改写/评分任务",
         "params": {"kind": "rewrite|score|all，默认 all"},
@@ -150,6 +160,9 @@ _ACTION_ALIASES = {
     "revoke": "revoke_briefs", "cancel_brief": "revoke_briefs", "drop_brief": "revoke_briefs",
     "replan": "plan_change", "apply_replan": "apply_plan_proposal",
     "export_book": "export",
+    # v5.5.2：直聊建书的等价叫法
+    "create_novel": "create_book", "create_new_book": "create_book",
+    "start_new_book": "create_book", "open_book": "create_book",
 }
 
 _SYSTEM_PROMPT = """你是「一幕神笔」的**总编辑**，也是作者在这部作品里唯一对话的人。
@@ -218,6 +231,12 @@ scope 语义：
     读不到就如实说没找到，绝不编造对话内容。只说当前作品时 project 留空。
 15. **暂停/继续要接对任务。** 作者说「暂停」→ pause；说「继续」→ write(mode=resume_task)。
     reply 里必须说清这次继续的是**哪件事、哪些章**，不要用旧任务的进度冒充新要求。
+16. **直接开聊建书（上下文标明「未绑定任何作品」时）**：作者说「我想写一本XX」「帮我写个XX」
+    → 用 create_book：idea 填从他原话提炼的一句话创意；题材/基调/平台/章数他能看出来就填进
+    preferences，没说的用合理默认并在 reply 里说明（例如「先按 45 章规划，随时可改」）。
+    信息够就**直接建书开写**，不要反问打断——作者要的是「说一声你就开写」；
+    只有连「想写什么」都没有（纯闲聊/问用法）才 discuss。已绑定作品时**禁止** create_book，
+    要开新书只能 new_project 给指引。
 
 ## 输出格式（严格 JSON，不要 markdown 代码块，不要多余文字）
 {{
@@ -500,6 +519,24 @@ def _short_chapter_nos(plan: dict, pdir: str, below: int = 3000) -> list:
     return sorted(out)
 
 
+def build_unbound_context(digest: str = "") -> dict:
+    """v5.5.2：直接开聊（无绑定会话）的总编辑上下文——纯读，不调 LLM。
+
+    没有当前作品，只有这台客户端上的作品清单；unbound 标记让 _context_text
+    输出直聊口径（不渲染《未命名》空书假象），并把「想写就 create_book」的
+    判断依据（作品清单，避免重名误建）带给总编辑。"""
+    return {
+        "state": "unbound", "done": 0, "total": 0, "words": 0,
+        "name": "", "pass_line": 80,
+        "medium": "", "pdir": "", "config": {},
+        "chapter_rows": [], "short_chapters_3000": [], "form": "",
+        "characters": [], "outline_tail": "", "open_briefs": [],
+        "other_projects": list_projects(20),
+        "recent_events": [], "history": [], "digest": digest or "",
+        "pending_queue": [], "unbound": True,
+    }
+
+
 def build_context(proj, st, key, digest: str = "", history=None) -> dict:
     """采集总编辑做判断所需的真实状态（纯读，不调 LLM）。"""
     ctx = {}
@@ -557,6 +594,9 @@ def build_context(proj, st, key, digest: str = "", history=None) -> dict:
         _meta2 = (proj.plan() or {}).get("meta") or {}
         if _meta2.get("plan_blocked"):
             ctx["plan_blocked"] = True
+        # v5.5.2：直聊建书的新书会先经历一段后台规划（章卡为空、写作未启动）——
+        # 把在途标志带给总编辑，「继续」要如实答「规划中」，不能谎报开写。
+        ctx["planning_running"] = bool(_meta2.get("planning_running"))
     except Exception:
         pass
     return ctx
@@ -565,13 +605,22 @@ def build_context(proj, st, key, digest: str = "", history=None) -> dict:
 def _context_text(ctx: dict) -> str:
     lines = []
     try:
-        lines.append(_planner._ctx_text(ctx).strip())
+        # v5.5.2：直接开聊（unbound）没有当前作品——跳过 _ctx_text 的《未命名》空书口径
+        if not ctx.get("unbound"):
+            lines.append(_planner._ctx_text(ctx).strip())
     except Exception:
         pass
     med_label = {"novel": "小说", "script": "剧本", "poetry": "诗词", "prose": "散文",
                  "thesis": "论文", "children": "童书", "news": "新闻", "copy": "文案",
                  "other": "其他"}.get(ctx.get("medium"), ctx.get("medium") or "")
     extra = [f"- 文体：{med_label}" + (f"；形态：{ctx['form']}" if ctx.get("form") else "")]
+    if ctx.get("unbound"):
+        extra.insert(0, "- 当前是「直接开聊」模式：作者还没有创建/绑定任何作品。"
+                        "他说想写什么书，就用 create_book 直接建书开写（缺的设定用合理默认并说明）；"
+                        "纯聊天/问用法才 discuss。建书前先看下面作品清单，避免和已有作品重名撞车。")
+    if ctx.get("planning_running"):
+        extra.append("- 注意：这本书的后台规划正在进行中（人物档案/大纲/书名候选生成中），写作尚未开始。"
+                     "「继续」要如实告知规划未完成，不要谎报进度或开始写正文。")
     cfg = ctx.get("config") or {}
     if cfg:
         extra.append("- 本书设定：" + "；".join(f"{k}={v}" for k, v in cfg.items()))
@@ -645,6 +694,7 @@ def _norm_action(raw: dict) -> dict | None:
     for k in ("chapters", "chapter", "count", "mode", "below", "below_words", "target", "title",
               "scope", "instruction", "allow_past", "kind", "brief", "index",
               "project", "limit",
+              "idea", "preferences", "genre", "tone", "platform", "medium", "total_chapters",
               "goal", "must_keep", "must_change", "acceptance", "avoid"):
         if k in raw and k not in params:
             params[k] = raw[k]
@@ -666,6 +716,15 @@ def _norm_action(raw: dict) -> dict | None:
             if 0 < n < 10000:
                 nums.append(n)
         params["chapters"] = nums
+    # v5.5.2：create_book 的 chapters 语义是「预计章数」（单数），不是章节列表——
+    # 共享归一把它包成了 [N]，这里拆回整数，避免下游再解一次。
+    if name == "create_book" and isinstance(params.get("chapters"), list) \
+            and len(params["chapters"]) == 1:
+        params["chapters"] = params["chapters"][0]
+    if name == "create_book" and isinstance(params.get("preferences"), dict) \
+            and isinstance(params["preferences"].get("chapters"), list) \
+            and len(params["preferences"]["chapters"]) == 1:
+        params["preferences"]["chapters"] = params["preferences"]["chapters"][0]
     brief = raw.get("brief") if isinstance(raw.get("brief"), dict) else params.get("brief")
     if not isinstance(brief, dict):
         # 模型偶尔把工作单字段直接平铺在 params 里

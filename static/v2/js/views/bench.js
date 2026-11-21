@@ -21,6 +21,7 @@ import { mountGhost } from '../core/ghost.js';
 import { mountQuickWrite } from '../core/quickwrite.js';
 import { mountChatFloat } from '../components/chatfloat.js';
 import { createTTS, ttsSupported, hasChineseVoice, loadPos } from '../core/tts.js';
+import { mountFindReplace } from '../core/findreplace.js';
 
 /* v5.1.0：bench 编辑器样式按需注入（静态资源 no-store，无需版本参数）。 */
 loadCss('/v2/css/bench-editor.css');
@@ -128,6 +129,137 @@ export function emitAiInsert(chars, key) {
       detail: { chars: Number(chars) || 0, key }
     }));
   } catch { /* 统计侧缺失时静默 */ }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   v5.5.x A4 退出写作台结算卡（只追加区块，全部自研）：
+
+   · 会话字数口径（与 core/writestats-client.js 同一事件流、同一算法）：
+     bench 挂载周期内逐章净增 = max(0, 离开时全文汉字数 − 进入时汉字数)，
+     删字不回扣（取见过的峰值）；只读 yimu-editor-session 事件，
+     绝不写 writestats（不绕过统计侧分账，也不另发请求）。
+   · 退出（destroy）时净增 >0 才弹结算卡：「本次码字 N 字」+ 今日目标进度
+     （GET /api/writestats 只读，失败静默跳过）+ 文案库随机鼓励语；
+     2.5 秒自动消失或点击关闭。
+   ══════════════════════════════════════════════════════════════ */
+
+/* 自研鼓励语文案库（14 条，全中文；风格：迟早成神 / 妙笔生花 / 今天也是码字之星）。 */
+export const SETTLE_PHRASES = [
+  '今天也是码字之星。',
+  '妙笔生花，说的就是你。',
+  '迟早成神，先把今天写完。',
+  '字落纸上，故事又长了一寸。',
+  '笔耕不辍，必有回响。',
+  '这一段，读者会记住的。',
+  '灵感正在排队等你回来。',
+  '存稿又厚了一点，底气也厚了。',
+  '今天的手速，配得上你的野心。',
+  '每一个字都在给结局铺路。',
+  '写完就休息，神仙也点头。',
+  '主角还在等你，别太久。',
+  '又一天，离完本更近了。',
+  '手感正好，明天接着燃。'
+];
+
+let _lastPhraseIdx = -1;
+
+export function pickSettlePhrase() {
+  if (!SETTLE_PHRASES.length) return '';
+  let i = Math.floor(Math.random() * SETTLE_PHRASES.length);
+  if (SETTLE_PHRASES.length > 1) {
+    while (i === _lastPhraseIdx) {
+      i = Math.floor(Math.random() * SETTLE_PHRASES.length);
+    }
+  }
+  _lastPhraseIdx = i;
+  return SETTLE_PHRASES[i];
+}
+
+/* 会话净增字数账本：只消费 yimu-editor-session 事件（begin/update/commit），
+   口径 = 汉字数（与 writestats-client 一致），逐章 net = 峰值 − 进入基线。 */
+export function createSettleLedger(key) {
+  let base = 0;
+  let peak = 0;
+  let armed = false;
+  let total = 0;
+  const count = (t) => (String(t || '').match(/[\u4e00-\u9fff]/g) || []).length;
+  const onDetail = (d) => {
+    if (!d || String(d.key || '') !== String(key || '')) return;
+    const c = count(d.text);
+    if (d.phase === 'begin') {
+      armed = true;
+      base = c;
+      peak = c;
+    } else if (d.phase === 'update') {
+      if (armed && c > peak) peak = c;
+    } else if (d.phase === 'commit') {
+      if (!armed) return;
+      armed = false;
+      if (c > peak) peak = c;
+      total += Math.max(0, peak - base);
+      base = 0;
+      peak = 0;
+    }
+  };
+  let listener = null;
+  return {
+    onDetail,
+    chars: () => total,
+    attach(doc) {
+      listener = (e) => { try { this.onDetail(e && e.detail); } catch { /* 结算是附加能力 */ } };
+      doc.addEventListener('yimu-editor-session', listener);
+    },
+    detach(doc) {
+      if (listener) doc.removeEventListener('yimu-editor-session', listener);
+      listener = null;
+    }
+  };
+}
+
+/* 结算卡（挂 document.body，随 2.5s 定时或点击关闭自毁；任何失败静默）。
+   今日目标进度只读 GET /api/writestats（days=1），读不到就不显示进度行。 */
+function showBenchSettleCard(chars) {
+  const n = Math.max(0, Math.floor(Number(chars) || 0));
+  if (n <= 0) return;
+  const card = h('div', { class: 'settle-card', role: 'dialog', 'aria-label': '本次码字结算' });
+  const goalEl = h('div', { class: 'settle-goal', text: '' });
+  const closeBtn = h('button', {
+    class: 'settle-close', type: 'button', text: '关闭',
+    'aria-label': '关闭结算卡',
+    on: { click: () => done() }
+  });
+  let timer = 0;
+  function done() {
+    clearTimeout(timer);
+    if (card.parentNode) card.remove();
+  }
+  card.append(
+    h('div', { class: 'settle-title', text: '本次码字' }),
+    h('div', { class: 'settle-words', text: `${n.toLocaleString('zh-CN')} 字` }),
+    goalEl,
+    h('div', { class: 'settle-phrase', text: pickSettlePhrase() }),
+    closeBtn
+  );
+  document.body.append(card);
+  timer = setTimeout(done, 2500);   // 2.5 秒自动消失
+  (async () => {
+    try {
+      const r = await request('/api/writestats', { query: { days: 1 }, timeout: 6000 });
+      const today = (r && r.today) || {};
+      const goals = (r && r.goals) || {};
+      const done0 = Number(today.manual || 0) + Number(today.ai || 0) + Number(today.session || 0);
+      const goal = Number(goals.manual || 0) + Number(goals.ai || 0);
+      if (!card.parentNode) return;   // 卡片已被关掉：不再补画进度
+      if (goal > 0) {
+        const pct = Math.min(100, Math.round((done0 / goal) * 100));
+        goalEl.textContent = `今日 ${done0.toLocaleString('zh-CN')} / ${goal.toLocaleString('zh-CN')} 字 · ${pct}%`;
+        goalEl.append(h('span', { class: 'settle-bar' },
+          h('span', { class: 'settle-bar-fill', style: { width: `${pct}%` } })));
+      } else if (done0 > 0) {
+        goalEl.textContent = `今日已码 ${done0.toLocaleString('zh-CN')} 字`;
+      }
+    } catch { /* 统计失败静默跳过：结算卡保留鼓励语 */ }
+  })();
 }
 
 export function renderBench(container, ctx) {
@@ -344,6 +476,28 @@ export function renderBench(container, ctx) {
     onEnd: () => { ghostCtl.resync(); }
   });
 
+  /* ══════════════════════════════════════════════════════════════
+     v5.5.x A1 全书查找替换浮层（只追加区块）：
+     · 查找词回车跳下一个（position/total 导航）、输入防抖即时重扫当前章；
+     · 三级替换：替换（当前一处，编辑器内）/ 本章替换（编辑器落盘链路）/
+       全书替换（后端 saveChapter 链路，替换前自动留快照可恢复）；
+     · 编辑器 docChanged → 结果标 stale + 防抖自动重扫当前章；
+     · 「工作文件」视图（raw）时当前章锁定：本地替换停用，全书替换经 skip 跳过
+       （纯净域红线：替换绝不写进概要/备注等元信息小节）。
+     ══════════════════════════════════════════════════════════════ */
+  const findReplace = mountFindReplace({
+    editor,
+    getContext: () => ({ key, n: model.n }),
+    isLocked: () => model.mode === 'raw',
+    flushSave,
+    onChapterReplaced: () => { loadChapter(); },   // 全书替换波及当前章 → 编辑器内容同步刷新
+    onGotoChapter: (no) => { navigate(`/work/${encodeURIComponent(key)}/bench/${Number(no) || 1}`); }
+  });
+
+  /* v5.5.x A4 结算账本：只读会话事件流（begin/update/commit），退出时弹结算卡。 */
+  const settleLedger = createSettleLedger(key);
+  settleLedger.attach(document);
+
   applyTypo();
 
   /* ------------------------------------------------------------ paint */
@@ -474,6 +628,14 @@ export function renderBench(container, ctx) {
             }
           }
         }
+      }),
+      /* v5.5.x A1：全书查找替换入口（浮层可拖拽，只作用于正文域） */
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        title: '全书查找替换（只作用于正文，概要/备注不计入）',
+        html: `${icon('search', 13)}<span>查找</span>`,
+        on: { click: () => findReplace.toggle() }
       }),
       /* v5.4.x：听书胶囊（播放/暂停 · 语速 · 停止 · 句进度 · 当前句字幕，区块见下） */
       ttsCapsule,
@@ -1245,8 +1407,13 @@ export function renderBench(container, ctx) {
       ttsStop();   /* v5.4.x：卸载时停止听书并恢复打字音（mute 复位） */
       selectionBar.destroy();
       if (chatFloat) chatFloat.destroy();
+      findReplace.destroy();
       editor.destroy();
       view.remove();
+      /* v5.5.x A4：退出写作台结算卡（本会话净增字数 >0 才弹；统计只读不写，失败静默）。
+         commitIfActive 已在 destroy 开头结算最后一章，此刻账本即本会话净增。 */
+      try { showBenchSettleCard(settleLedger.chars()); } catch { /* 结算是附加能力 */ }
+      settleLedger.detach(document);
     }
   };
 }

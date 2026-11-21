@@ -693,10 +693,15 @@ def _medium_stages(med: str) -> list[tuple[str, str]]:
     return [(c, n) for c, n, _ in _medium_mod.stages(med)]
 
 
-def register_v2_routes(app, get_project, chat_func=None):
+def register_v2_routes(app, get_project, chat_func=None, session_project=None):
     from bot import chatsum
     from bot.writer import _clean_chapter_text
-    """在 app 上注册 v2 接口。由 app.py 在 `_get_project` 定义后调用。"""
+    """在 app 上注册 v2 接口。由 app.py 在 `_get_project` 定义后调用。
+
+    session_project：可选回调 sid -> 项目 key（app.py 的 SESSIONS 绑定表）。v5.5.2
+    「直接开聊」建书后请求仍无 key，但服务端会话已绑定新书——done 帧据此带
+    project_key 供前端整体跳转（views/session.js done 事件消费）。
+    """
 
     # ------------------------------------------------------------ 能力探测
     @app.get("/api/capabilities")
@@ -1690,6 +1695,15 @@ def register_v2_routes(app, get_project, chat_func=None):
                                 "session_id": sid, "elapsed": round(time.time() - t0, 2),
                                 "chapters": pushed}
 
+            # v5.5.2：直聊建书后请求无 key，但服务端会话已绑定新书——done 帧带
+            # project_key 供前端整体跳转；绑定失败/无绑定静默跳过，不影响原帧。
+            if session_project:
+                try:
+                    _pk = session_project(sid)
+                    if _pk and isinstance(done_payload, dict):
+                        done_payload.setdefault("project_key", str(_pk))
+                except Exception:
+                    pass
             yield _sse("done", done_payload)
 
         return StreamingResponse(gen(), media_type="text/event-stream",

@@ -9,7 +9,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
-from bot import webai, webstats, weblib, webprompts, webbreakdown, webrank  # v5.2-5.4：增量路由（APIRouter）
+from bot import webai, webstats, weblib, webprompts, webbreakdown, webrank, webbench  # v5.2-5.5：增量路由（APIRouter）
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
@@ -116,6 +116,8 @@ async def _auth_guard(request: Request, call_next):
 # 独立 APIRouter 模块挂载，不进主路由表——见 bot/webai.py、bot/webstats.py。
 app.include_router(webai.router)
 app.include_router(webstats.router)
+# v5.5.2：全书查找替换（bench）。
+app.include_router(webbench.router)
 # v5.3.0：书架（封面/分组）与提示词开放编辑。挂载点必须在既有 /api/library/{key}
 # 通配路由之前，否则 groups/cover 会被通配吞掉（weblib 硬约束）。
 app.include_router(weblib.router)
@@ -282,13 +284,27 @@ def chat(session_id, message, key=None, digest=None):
     if s["state"] == "attached" and s.get("project"):
         proj = _get_project(s["project"])
         if proj:
-            return _chat_attached(s, proj, msg)
+            _r = _chat_attached(s, proj, msg)
+            # v5.5.2：直接开聊会话（请求无 key）的对话 v2api 不落盘（当时还没有 key）——
+            # 这里补记进当前书，保住总编辑接「继续」「改设定」的对话上下文。
+            # 带 key 的会话由 v2api 正常落盘，不重复记。
+            if key is None and _r:
+                _persist_unbound_turn(proj, msg, _r)
+            return _r
         s["state"] = "idle"   # 目录已被删除 → 解绑，回落旧行为
         s["project"] = None
     # ---- 新作品触发（仅 idle；options 状态下重复丢主题 → 重显菜单，不重复提取）----
     # v2.3.0 保护：idle 但已有 project 的会话不得进新主题提取（attached 已在上面截获）。
     if s["state"] == "idle" and not s.get("project") and _GREETING_RE.fullmatch(msg):
         return _GREETING_REPLY
+    # ---- v5.5.2：直接开聊建书（无绑定会话） ----
+    # 作者在「直接开聊」入口说「我想写一本XX」——总编辑先真正理解：想写什么 → 抽 idea/偏好
+    # → create_book 真的建书、会话绑定新书、后台规划自动定名开写。
+    # 总编辑不可用/没接住（返回 None）→ 原样回落旧的主题提取流程，不改变既有行为。
+    if s["state"] == "idle" and not s.get("project"):
+        _direct = _chat_unbound(s, msg)
+        if _direct is not None:
+            return _direct
     if (s["state"] == "idle" and not s.get("project")) or re.search(r"^(写|帮我写|新|再|来)(一|个)?(部|本)?|新作品|新的小说|重新", msg):
         if s["state"] == "options" and not re.search(r"^(写|帮我写|新|再|来)|新作品|新的小说|重新", msg):
             pass
@@ -419,6 +435,182 @@ def _do_planning(s):
     except Exception as e:
         s["state"] = "options"
         return f"⚠️ 规划生成失败：{e}\n回复「重试」再试一次，或调整配置。"
+
+
+# ---------- v5.5.2：直接开聊建书（无绑定会话 → create_book → 绑定新书 → 规划开写） ----------
+
+def _persist_unbound_turn(proj, user_msg, reply):
+    """直接开聊会话（请求无 key）的对话轮次落进当前绑定书的 chat_log。
+
+    v2api 只在请求带 key 时落盘；直聊建书后服务端会话已绑定新书，但前端仍以无 key
+    直聊继续——不补记的话，总编辑读 chat_log 会漏掉建书后的这几轮（上下文断层）。
+    带 key 的会话由 v2api 正常落盘，调用方（chat）已用 key is None 区分，不重复记。"""
+    if proj is None:
+        return
+    try:
+        from bot.v2api import _save_chat_msg as _scm
+        if user_msg:
+            _scm(proj, "user", str(user_msg))
+        if reply:
+            _scm(proj, "assistant", str(reply))
+    except Exception:
+        pass
+
+
+def _chat_unbound(s, msg):
+    """直接开聊（无绑定会话）：总编辑先理解，作者想写什么书就真的建书。
+
+    返回回复文本（已处理）或 None（总编辑不可用/没接住 → 调用方回落旧的主题提取流程）。
+    动作纪律：无绑定会话里只有 create_book 有标的——
+    · 决策含 create_book → 执行建书并把会话绑到新书；
+    · 没有任何动作（纯 discuss / 引导）→ 返回总编辑的回答；
+    · 只有其他动作（write/rewrite… 在空会话没有标的，且不是纯讨论）→ 返回 None 走旧链路，
+      不让幻觉动作吞掉消息。"""
+    if s.get("project"):
+        return None          # 已绑定：attached 分支处理，绝不在这里换绑新书（防误触发）
+    try:
+        _ctx = chief_mod.build_unbound_context(digest=s.get("digest") or "")
+        decision = chief_mod.deliberate(msg, _ctx)
+    except Exception:
+        return None
+    if not decision:
+        return None
+    acts = [a for a in (decision.get("actions") or []) if isinstance(a, dict)]
+    _cb = next((a for a in acts if a.get("action") == "create_book"), None)
+    reply = str(decision.get("reply") or "").strip()
+    if _cb is None:
+        if not acts and reply:
+            return reply     # 纯讨论/引导（含 new_project 指引类决策）
+        return None
+    # 防重复投递：建书期间挡住同会话的连击短消息（与 options 阶段同一纪律）
+    s["busy"] = True
+    try:
+        _res, _new_key = _create_book_from_chat(s, _cb.get("params") or {}, user_msg=msg)
+    except Exception as e:
+        _res, _new_key = f"⚠️ 建书启动失败（{e}）。请稍后再说一次，或用左侧『新建作品』向导。", None
+    finally:
+        s["busy"] = False
+    if not _new_key:
+        return _res
+    return ((reply + "\n\n") if reply else "") + _res
+
+
+def _create_book_from_chat(s, params, user_msg=""):
+    """「直接开聊」建书执行器：一段话 → 真的建一本书 → 会话绑定 → 后台规划自动定名开写。
+
+    建书与规划链**完全复用 /api/create**（骨架占位 + 后台 fill_defaults/gen_titles/
+    create_project），并按「极速模式」约定收口：规划完成自动采用首个书名候选定名
+    （writer.pick_title：改名 + record_rename 别名 + handoff 交接行），按 config.batch_size
+    自动开写；书名候选列表照常落盘（meta.title_candidates / gen_titles 产物），
+    「改名XX」随时可改。不在这里复制任何建书逻辑。
+
+    params: {idea, title?, genre?/tone?/platform?/chapters?（或打包在 preferences 对象里）,
+             batch_size?, medium?}
+    返回 (回复文本, 新书 key 或 None)。key=None 表示没建成（含参数缺失/接口拒绝）。"""
+    params = params if isinstance(params, dict) else {}
+    prefs = params.get("preferences") if isinstance(params.get("preferences"), dict) else {}
+
+    def _p(*keys):
+        for k in keys:                      # 平铺参数优先，preferences 兜底
+            v = params.get(k)
+            if v not in (None, ""):
+                return v
+        for k in keys:
+            v = prefs.get(k)
+            if v not in (None, ""):
+                return v
+        return None
+
+    idea = str(_p("idea") or "").strip()
+    if not idea:
+        return ("想写哪一类？给我一句话——主题、主角或一个画面就行"
+                "（例如「写一本都市文，主角是会读心的心理咨询师」），我直接建书开写。"), None
+    medium = str(_p("medium") or "novel").strip().lower() or "novel"
+    if medium not in getattr(medium_mod, "MEDIUMS",
+                             ("novel", "script", "poetry", "prose", "thesis",
+                              "children", "news", "copy", "other")):
+        medium = "novel"
+    payload = {"idea": idea,
+               # 直接开聊 = 极速约定：不拦 awaiting_title，规划完成自动采用首个候选定名并开写
+               "express": "express",
+               "medium": medium}
+    _t = str(_p("title") or "").strip()
+    if _t:
+        payload["title"] = _t
+    # 只透传字符串安全的参数：style 是向导专属的结构化对象（题材/金手指/…），
+    # 总编辑给不了这个形状，透传字符串会让 /api/create 的 learn.record_book 崩。
+    for _k in ("genre", "tone", "platform", "batch_size", "form", "perspective"):
+        _v = _p(_k)
+        if _v not in (None, ""):
+            payload[_k] = str(_v)
+    _chs = _p("chapters", "total_chapters")
+    if _chs not in (None, ""):
+        _m = re.search(r"\d+", str(_chs))
+        if _m:
+            payload["total_chapters"] = max(1, min(5000, int(_m.group())))
+    # 会话里记录的供应商/模型选择（REST /api/chat 存过）随建书贯穿流水线
+    prov = s.get("prov") or {}
+    if prov.get("_provider_id"):
+        payload["provider_id"] = prov["_provider_id"]
+    if prov.get("_model"):
+        payload["model"] = prov["_model"]
+    try:
+        res = api_create(payload)
+    except Exception as e:
+        return f"⚠️ 建书启动失败（{e}）。请稍后再说一次，或用左侧『新建作品』向导。", None
+    if not isinstance(res, dict):
+        # JSONResponse（书名非法等）→ 建书被拒，如实回报，不静默
+        _err = "参数不合法"
+        try:
+            _err = (json.loads(res.body) or {}).get("error") or _err
+        except Exception:
+            pass
+        return f"⚠️ 建书失败：{_err}", None
+    new_key = str(res.get("key") or res.get("project") or "")
+    if not new_key:
+        return "⚠️ 建书失败：服务端没有返回新书的 key。", None
+    # 会话重绑：占位 key 立即生效；规划完成 pick_title 改名后，旧 key 走 rename 别名
+    # 自动落新家（_get_project 解析 + _chat_attached 的 canonical key 规范化）。
+    s["project"] = new_key
+    s["state"] = "attached"
+    s.pop("titles", None)
+    s.pop("cfg", None)
+    _trace("direct-create", sid=s.get("id") or "", key=new_key, medium=medium,
+           idea=str(idea)[:40])
+    # 回复口径：骨架计划里的真实规划章数（此刻章卡未生成，规划完成后即 N 章 pending）
+    total = 0
+    genre_label = str(payload.get("genre") or "")
+    try:
+        _proj0 = _get_project(new_key)
+        _plan0 = (_proj0.plan() or {}) if _proj0 else {}
+        total = int(_plan0.get("totalChapters") or 0)
+        if not genre_label:
+            genre_label = str((_plan0.get("config") or {}).get("genre") or "")
+    except Exception:
+        pass
+    _name = payload.get("title") or _short_title(idea)
+    _med_label = {"novel": "小说", "script": "剧本", "poetry": "诗词", "prose": "散文",
+                  "thesis": "论文", "children": "童书", "news": "新闻",
+                  "copy": "文案", "other": "图文"}.get(medium, medium)
+    _g = f"（{_med_label}{'·' + genre_label if genre_label else ''}）"
+    _c = f"，规划 {total} 章" if total else ""
+    reply = (f"📖 已建书《{_name}》{_g}{_c}：规划师正在生成人物档案/大纲/文风基准"
+             f"（约 1-2 分钟），完成后自动采用首个书名候选定名并开写，进度在本对话全程汇报。\n"
+             f"· 说「继续」推进写作；书名不满意随时说「改名XX」（书名候选已保留备选）。\n"
+             f"· 这本书已绑定本对话，之后的每句话我都按它处理；也可以在左侧「作品」里随时打开。")
+    # 这轮「无绑定对话」落进新书的 chat_log：作者的原话 + 本次回复。直聊请求到达时还没有
+    # key，v2api 不会落盘；总编辑接「继续/改设定」、前端打开作品回放历史全靠这段留档。
+    try:
+        from bot.v2api import _save_chat_msg as _scm
+        _p2 = _get_project(new_key)
+        if _p2 is not None:
+            if user_msg:
+                _scm(_p2, "user", str(user_msg))
+            _scm(_p2, "assistant", reply, {"type": "note", "direct_create": True, "key": new_key})
+    except Exception:
+        pass
+    return reply, new_key
+
 
 def _rename_project(proj, new_name):
     """按最终书名调整目录后缀（保留时间戳前缀）"""
@@ -1194,6 +1386,11 @@ def _chat_attached(s, proj, msg):
     # 极速自动定名）。磁盘目录名才是 canonical key；旧 key 仅作别名存续。
     # 不规范化的话，任务档案/创作事件/livejob/写作注册表全都查旧 key，
     # 总编辑把新书看成《未命名》空书（实测开书断层）。
+    # v5.5.2：规范化放在 plan()/status() 读取之后——缓存住的 Project 实例要靠
+    # 读盘触发 Project._follow_rename 懒跟随到新家；先读再规范化，改名后的
+    # 第一轮消息就能拿到 canonical key（直聊建书的新书第一次自动定名即此场景）。
+    plan = proj.plan() or {}
+    st = proj.status()
     try:
         _ckey = os.path.basename(proj.path or "") if proj is not None else ""
     except Exception:
@@ -1201,8 +1398,6 @@ def _chat_attached(s, proj, msg):
     if _ckey and _ckey != key:
         key = _ckey
         s["project"] = _ckey
-    plan = proj.plan() or {}
-    st = proj.status()
     if st.get("state") in ("missing", "", None):
         # 剧本/诗词/散文没有 02-写作计划.json：用全文体元数据补齐，
         # 否则「进度」会按小说口径回「第 0/0 章」这种死胡同回复。
@@ -1292,6 +1487,12 @@ def _chat_attached(s, proj, msg):
             return chief_mod.read_last_chat(
                 str(params.get("project") or ""), limit=params.get("limit") or 6,
                 current_key=key, current_pdir=proj.path)
+        # v5.5.2：防呆——create_book 只属于无绑定的「直接开聊」会话。已绑定书时一律拒绝
+        # 并给指引，防止在书里说「我想写本XX」误触发，把当前会话悄悄换绑到一本新书。
+        if intent == "create_book":
+            return (f"当前对话绑定的是《{name}》，建书要在没有绑定作品的「直接开聊」里说"
+                    f"（首页的『直接开聊』入口，或说一句「我想写一本XX」）。\n"
+                    f"要继续《{name}》直接说「继续」或提要求；要另开新书也可以点左侧『新建作品』走向导。")
         if intent == "health_check":
             if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
                 return "体检目前针对小说章节；其他文体可以直接说「检查全文」走对应审校。"
@@ -2613,7 +2814,18 @@ def api_create(payload: dict):
             if _express_mode and not title:
                 # 极速路径：把占位目录改名为正式书名（旧 key 记别名，前端旧请求自动跳转），
                 # 并立即开写。pick_title 会写入 novelName / selected_title。
-                best = str(titles[0].get("title") or _provisional)
+                # v5.5.2：规划期间作者可能已抢先定名（直聊/极速模式下聊天里说「改名X」
+                # → _apply_title 换 key）。create_project 的全新计划会把 novelName 与
+                # meta 一并冲掉，唯一可靠的信号是当前目录名（create_project 的 _sync_home
+                # 会跟随改名落盘）——目录已离开骨架占位名 = 作者已定名，沿用作者的选择，
+                # 不再被首个候选覆盖（「书名随时可改」在规划在途时也成立）。
+                _home = os.path.basename(proj.path or "")
+                _user_name = _clean_book_title(_home.split("-", 2)[-1]) if _home else ""
+                if _home != base and _user_name \
+                        and _user_name != _clean_book_title(_provisional):
+                    best = _user_name
+                else:
+                    best = str(titles[0].get("title") or _provisional)
                 newkey = writer.pick_title(base, best) or base
                 proj = writer.Project(writer._project_dir(newkey), newkey)
                 plan = proj.plan() or {}
@@ -8854,5 +9066,6 @@ def api_export_post(payload: dict):
 
 from bot.v2api import register_v2_routes  # noqa: E402  (需在 _get_project/chat 定义后注册)
 
-register_v2_routes(app, _get_project, chat)
+register_v2_routes(app, _get_project, chat,
+                   session_project=lambda sid: (SESSIONS.get(sid) or {}).get("project"))
 

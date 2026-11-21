@@ -758,6 +758,13 @@ export function renderSession(container, ctx = {}, opts = {}) {
         if (data && data.ok === false && !streamError) {
           streamError = data.error || '本轮没有生成内容';
         }
+        /* v5.5.2：直接开聊建书后，服务端会话已绑定新书（请求本身无 key）——
+           done 帧带 project_key 时整体跳转到新书任务（复用改名跟随链路）。 */
+        if (data && data.project_key && data.project_key !== store.get().currentKey
+            && typeof ctx.followRenamedWork === 'function') {
+          try { ctx.followRenamedWork('', data.project_key, null); }
+          catch { /* 跳转失败不阻断本轮收尾 */ }
+        }
         /* v4.12.12：整轮完成后刷新工作状态（进度/字数/阶段） */
         if (ctx && ctx.refreshWork) ctx.refreshWork();
       }
