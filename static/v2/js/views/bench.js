@@ -20,6 +20,7 @@ import { mountSelectionBar } from '../core/selectionbar.js';
 import { mountGhost } from '../core/ghost.js';
 import { mountQuickWrite } from '../core/quickwrite.js';
 import { mountChatFloat } from '../components/chatfloat.js';
+import { createTTS, ttsSupported, hasChineseVoice, loadPos } from '../core/tts.js';
 
 /* v5.1.0：bench 编辑器样式按需注入（静态资源 no-store，无需版本参数）。 */
 loadCss('/v2/css/bench-editor.css');
@@ -474,6 +475,8 @@ export function renderBench(container, ctx) {
           }
         }
       }),
+      /* v5.4.x：听书胶囊（播放/暂停 · 语速 · 停止 · 句进度 · 当前句字幕，区块见下） */
+      ttsCapsule,
       saveBtn
     );
   }
@@ -596,6 +599,7 @@ export function renderBench(container, ctx) {
     /* v5.2.0：切章前结算上一章会话（commit）+ 中止续写/幽灵字在途请求 */
     session.commitIfActive(editor.getText());
     quickWrite.stop();
+    ttsStop();   /* v5.4.x：切章/重载先停听书（位置已按句记忆，重进本章可「继续听」） */
     ghostCtl.suspend();
     editor.setText('', { silent: true });
     scrollHost.style.opacity = '0.5';
@@ -912,6 +916,166 @@ export function renderBench(container, ctx) {
     document.body.append(phoneEl);
   }
 
+  /* ══════════════════════════════════════════════════════════════
+     v5.4.x 听书胶囊（Web Speech API 纯前端，附加能力——任何失败静默，不影响写作主链路）：
+     · 朗读文本先过 cleanChapterText 纯净域（只读章题+引子+正文，不读概要/备注）；
+     · 逐句朗读 + 当前句定位：编辑器内 revealOffset（core/editor.js）优先，
+       找不到/失败时落到手机预览段落高亮；胶囊内始终显示当前句字幕；
+     · 语速循环 0.8/1.0/1.25/1.5（core/tts.js RATES）；暂停/继续/停止；
+     · 位置记忆（书+章+句，localStorage），重进本章询问「继续听？」；
+     · 播放期间 typingsound.mute(true) 自动静音打字音，结束/停止恢复。
+     样式全部内联（不新增 css 文件）；SpeechSynthesis 不可用时点击给降级 toast。 */
+  const ttsCtl = createTTS({
+    book: key,
+    chapter: model.n,
+    onSentence: (_i, sent) => {
+      paintTtsState();
+      highlightTtsSentence(sent);
+    },
+    onState: () => paintTtsState()
+  });
+  let ttsSearchFrom = 0;     /* 编辑器内当前句检索游标（防重复句误定位） */
+  let ttsSpeakingEl = null;  /* 预览面板当前高亮段落 */
+
+  function ttsCurrentText() {
+    /* 纯净域：朗读口径 = 复制全文口径（章题+引子+正文，剥全部元信息小节）。 */
+    return cleanChapterText(editor.getText()) || editor.getText();
+  }
+
+  function setTtsSpeaking(el) {
+    if (ttsSpeakingEl === el) return;
+    if (ttsSpeakingEl) ttsSpeakingEl.style.removeProperty('background');
+    ttsSpeakingEl = el;
+    if (el) el.style.background = 'var(--bg-selection)';
+  }
+
+  function highlightTtsSentence(sent) {
+    setTtsSpeaking(null);
+    if (!sent) return;
+    /* 1) 编辑器内定位：句文本在编辑器内容里检索（容忍 re-clean 后的轻微偏移） */
+    try {
+      const t = editor.getText();
+      const probe = String(sent.text || '').trim().slice(0, 24);
+      if (probe) {
+        const off = t.indexOf(probe, ttsSearchFrom);
+        if (off >= 0) {
+          ttsSearchFrom = off + probe.length;
+          editor.revealOffset(off);
+          return;
+        }
+        if (ttsSearchFrom > 0) {
+          const off2 = t.indexOf(probe);   /* 游标后找不到：回卷全文再找一次 */
+          if (off2 >= 0) {
+            ttsSearchFrom = off2 + probe.length;
+            editor.revealOffset(off2);
+            return;
+          }
+        }
+      }
+    } catch { /* 编辑器定位失败 → 落预览面板 */ }
+    /* 2) 预览面板段落高亮（抽屉打开时生效；关着时字幕仍在胶囊里可见） */
+    try {
+      if (phoneFrame) {
+        const probe = String(sent.text || '').trim().slice(0, 12);
+        for (const p of phoneFrame.querySelectorAll('.bp-para')) {
+          if (probe && p.textContent.indexOf(probe) >= 0) {
+            setTtsSpeaking(p);
+            p.scrollIntoView({ block: 'center' });
+            break;
+          }
+        }
+      }
+    } catch { /* 预览高亮失败静默 */ }
+  }
+
+  function paintTtsState() {
+    const playing = ttsCtl.state === 'playing';
+    const paused = ttsCtl.state === 'paused';
+    const active = playing || paused;
+    ttsMainBtn.textContent = '';
+    ttsMainBtn.append(h('span', {
+      html: playing ? icon('pause', 13) : paused ? icon('play', 13) : icon('play', 13)
+    }), h('span', { text: playing ? '暂停' : paused ? '继续' : '听本章' }));
+    ttsRateBtn.hidden = !active;
+    ttsRateBtn.textContent = `${ttsCtl.getRate()}×`;
+    ttsStopBtn.hidden = !active;
+    ttsStatusEl.textContent = active && ttsCtl.total ? `${Math.min(ttsCtl.index + 1, ttsCtl.total)} / ${ttsCtl.total} 句` : '';
+    const cur = ttsCtl.sentenceAt(ttsCtl.index);
+    ttsSubtitleEl.textContent = active && cur ? String(cur.text || '').trim().slice(0, 42) : '';
+  }
+
+  async function startTTS() {
+    if (!ttsSupported()) {
+      /* 优雅降级：浏览器不支持 Web Speech API，只提示不改其他能力 */
+      toast('当前浏览器不支持语音合成（Web Speech API），请改用较新的 Chrome / Edge / Safari 再试', { tone: 'danger', duration: 4000 });
+      return;
+    }
+    if (ttsCtl.state === 'playing') { ttsCtl.pause(); paintTtsState(); return; }
+    if (ttsCtl.state === 'paused') { ttsCtl.resume(); paintTtsState(); return; }
+    const text = ttsCurrentText();
+    if (!text.trim()) { toast('这一章还没有正文，先写点内容再听', { tone: 'danger' }); return; }
+    if (!hasChineseVoice()) toast('未检测到中文语音包，将使用系统默认语音朗读', { duration: 2600 });
+    let from = 0;
+    const pos = loadPos(key, model.n);
+    if (pos && pos.index > 0) {
+      /* 听书位置记忆：下次进同一章询问「继续听？」（取消则从头听） */
+      const go = await confirmDialog({
+        title: '继续上次的听书？',
+        message: `这本书上次听到第 ${pos.index + 1} 句。`,
+        confirmText: '继续听',
+        cancelText: '从头听'
+      });
+      from = go ? pos.index : 0;
+    }
+    ttsSearchFrom = 0;
+    const total = ttsCtl.start(text, from);
+    if (!total) toast('没有可朗读的内容', { tone: 'danger' });
+    paintTtsState();
+  }
+
+  function ttsStop() {
+    /* 听书收尾（停止按钮 / 切章 / 卸载共用）：停朗读并恢复打字音，失败静默 */
+    try {
+      ttsCtl.stop();
+      paintTtsState();
+    } catch { /* 听书失败静默 */ }
+  }
+
+  const ttsMainBtn = h('button', {
+    class: 'btn btn-sm',
+    type: 'button',
+    title: '听本章（逐句朗读，播放时自动静音打字音）',
+    html: `${icon('play', 13)}<span>听本章</span>`,
+    on: { click: () => { startTTS().catch(() => {}); } }
+  });
+  const ttsRateBtn = h('button', {
+    class: 'btn btn-sm',
+    type: 'button',
+    hidden: true,
+    title: '切换语速（0.8 / 1.0 / 1.25 / 1.5）',
+    text: '1.0×',
+    on: { click: () => { ttsCtl.cycleRate(); paintTtsState(); } }
+  });
+  const ttsStopBtn = h('button', {
+    class: 'btn btn-sm',
+    type: 'button',
+    hidden: true,
+    title: '停止听书',
+    html: icon('stop', 13),
+    on: { click: () => ttsStop() }
+  });
+  const ttsStatusEl = h('span', { class: 'hint-text' });
+  const ttsSubtitleEl = h('span', {
+    class: 'hint-text',
+    style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '280px' }
+  });
+  const ttsCapsule = h('div', {
+    class: 'bench-tts',
+    role: 'group',
+    'aria-label': '听书控制',
+    style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: '0' }
+  }, ttsMainBtn, ttsRateBtn, ttsStopBtn, ttsStatusEl, ttsSubtitleEl);
+
   /* ------------------------------------------------------------- 版本对比（内容 ⇄ 对比） */
 
   /* 自研逐行 + 行内字符级 diff：最长公共子序列（LCS）。行数/行宽都钳制防长章卡顿。 */
@@ -1078,6 +1242,7 @@ export function renderBench(container, ctx) {
       closePhone();
       ghostCtl.destroy();
       quickWrite.destroy();
+      ttsStop();   /* v5.4.x：卸载时停止听书并恢复打字音（mute 复位） */
       selectionBar.destroy();
       if (chatFloat) chatFloat.destroy();
       editor.destroy();

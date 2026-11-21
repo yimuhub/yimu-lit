@@ -1,0 +1,266 @@
+/* 榜单风向页样式（views/rank.js，v5.4.x）。
+   全部颜色读 tokens 语义变量，随主题切换重绘，不写死主题色。 */
+
+.rank-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 18px 16px 48px;
+}
+
+.rank-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rank-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink-primary);
+}
+
+.rank-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-secondary);
+  max-width: 640px;
+}
+
+/* ---------------------------------------------------------------- 卡片 */
+
+.rank-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg, 12px);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rank-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-primary);
+}
+
+/* ---------------------------------------------------------------- 采集卡 */
+
+.rank-collect-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rank-source-input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 340px;
+}
+
+.rank-collect-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.rank-tab {
+  border: 1px solid var(--line-3);
+  background: var(--bg-chip);
+  color: var(--ink-secondary);
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.rank-tab.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.rank-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.rank-text-input {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--font-ui);
+  line-height: 1.7;
+}
+
+.rank-collect-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rank-collect-foot .hint-text {
+  flex: 1;
+  min-width: 220px;
+}
+
+/* ---------------------------------------------------------------- 工具栏 */
+
+.rank-toolbar {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rank-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rank-field-label {
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  white-space: nowrap;
+}
+
+.rank-select {
+  min-width: 130px;
+}
+
+.rank-meta {
+  flex: 1;
+  min-width: 200px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 榜单表格 */
+
+.rank-table-wrap {
+  overflow-x: auto;
+}
+
+.rank-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.rank-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink-tertiary);
+  border-bottom: 1px solid var(--line-3);
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.rank-table td {
+  border-bottom: 1px solid var(--line-1);
+  padding: 7px 10px;
+  color: var(--ink-primary);
+  vertical-align: top;
+}
+
+.rank-table tbody tr:hover {
+  background: var(--bg-sunken);
+}
+
+.rk-rank {
+  width: 52px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-secondary);
+}
+
+.rk-change {
+  width: 56px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* 升降幅着色：涨=红（--danger）、降=绿（--success）、新入榜=accent、持平=灰 */
+.rk-up { color: var(--danger); }
+.rk-down { color: var(--success); }
+.rk-new { color: var(--accent); }
+.rk-same { color: var(--ink-caption); }
+
+.rk-title {
+  min-width: 160px;
+}
+
+.rk-author {
+  min-width: 90px;
+  color: var(--ink-secondary);
+}
+
+.rk-metric {
+  min-width: 90px;
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- AI 解读卡 */
+
+.rank-review-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rank-review-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rank-review-para {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--ink-primary);
+  white-space: pre-wrap;
+}
+
+.rank-review-note {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-caption);
+  border-top: 1px dashed var(--line-2);
+  padding-top: 8px;
+}
+
+/* ---------------------------------------------------------------- 空态 */
+
+.rank-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 0 20px;
+  color: var(--ink-tertiary);
+}
+
+.rank-empty-icon {
+  color: var(--ink-dimmed);
+}
+
+.rank-empty-text {
+  font-size: 13px;
+  text-align: center;
+  max-width: 420px;
+  line-height: 1.7;
+}

@@ -292,6 +292,10 @@ export function renderWelcome(container, ctx) {
     { icon: 'quill', label: '一键开书', hint: '向导建新书', onClick: () => ctx.openWizard() },
     { icon: 'library', label: '作品库', hint: '全部作品', onClick: () => navigate('/library') },
     { icon: 'activity', label: '码字统计', hint: '手写与 AI 分账', onClick: () => navigate('/stats') },
+    /* v5.4.0：拆书/榜单/灵感库三入口（路由已预接线，视图按需加载） */
+    { icon: 'book', label: '拆书台', hint: '竞品拆解入账本', onClick: () => navigate('/breakdown') },
+    { icon: 'globe', label: '榜单风向', hint: '采风与 AI 解读', onClick: () => navigate('/rank') },
+    { icon: 'feather', label: '灵感库', hint: '速记与素材', onClick: () => navigate('/inspiration') },
     {
       icon: 'settings',
       label: '账号设置',

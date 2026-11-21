@@ -787,6 +787,18 @@ async function renderView(route) {
         loadCss(`/v2/css/promptedit.css?v=${CSS_V}`);
         render = (await import('./views/promptedit.js')).renderPromptEdit;
       }
+      else if (route.name === 'breakdown') {
+        loadCss(`/v2/css/breakdown.css?v=${CSS_V}`);
+        render = (await import('./views/breakdown.js')).renderBreakdown;
+      }
+      else if (route.name === 'rank') {
+        loadCss(`/v2/css/rank.css?v=${CSS_V}`);
+        render = (await import('./views/rank.js')).renderRank;
+      }
+      else if (route.name === 'inspiration') {
+        loadCss(`/v2/css/inspiration.css?v=${CSS_V}`);
+        render = (await import('./views/inspiration.js')).renderInspiration;
+      }
       else if (route.name === 'skills') {
         loadCss(`/v2/css/skills.css?v=${CSS_V}`);
         render = (await import('./views/skilllib.js')).renderSkillLib;

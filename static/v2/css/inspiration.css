@@ -1,0 +1,292 @@
+/* 灵感库全页样式（views/inspiration.js，v5.4.x）。
+   全部颜色读 tokens 语义变量，随主题切换重绘；瀑布流用 CSS columns 实现，无外部依赖。 */
+
+/* 本页复用的卡片基底（shell 未提供，页面自足定义） */
+.card-base {
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg, 12px);
+  padding: 12px 14px;
+}
+
+.insp-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 18px 16px 48px;
+}
+
+.insp-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.insp-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink-primary);
+}
+
+.insp-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-secondary);
+}
+
+/* ---------------------------------------------------------------- 新建速记 */
+
+.insp-new {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.insp-new-input {
+  width: 100%;
+  resize: vertical;
+  line-height: 1.7;
+}
+
+.insp-new-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.insp-count {
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.insp-count.over {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- 主体布局 */
+
+.insp-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.insp-side {
+  width: 190px;
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg, 12px);
+  padding: 12px;
+  position: sticky;
+  top: 70px;
+}
+
+.insp-side-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-primary);
+  margin-bottom: 10px;
+}
+
+.insp-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.insp-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---------------------------------------------------------------- 标签 */
+
+.insp-tag {
+  border: 1px solid var(--line-3);
+  background: var(--bg-chip);
+  color: var(--ink-secondary);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.insp-tag:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.insp-tag.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.insp-tag-mini {
+  padding: 1px 8px;
+  font-size: 11px;
+}
+
+.insp-filter-note {
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  text-align: center;
+  padding: 4px 0;
+}
+
+/* ---------------------------------------------------------------- 瀑布流（CSS columns） */
+
+.insp-masonry {
+  columns: 3;
+  column-gap: 12px;
+}
+
+@media (max-width: 980px) {
+  .insp-masonry { columns: 2; }
+}
+
+@media (max-width: 640px) {
+  .insp-masonry { columns: 1; }
+  .insp-body { flex-direction: column-reverse; }
+  .insp-side {
+    width: 100%;
+    position: static;
+  }
+}
+
+.insp-card {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+.insp-card.is-pinned {
+  border-color: var(--warn-line, rgba(217, 144, 34, 0.4));
+  background: var(--warn-soft);
+}
+
+.insp-card-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+}
+
+.insp-pin-flag {
+  color: var(--warn-label);
+  display: inline-flex;
+}
+
+.insp-act {
+  flex-shrink: 0;
+}
+
+.insp-act-danger:hover {
+  color: var(--danger);
+}
+
+/* 正文：默认钳制 6 行，点击展开 */
+.insp-text {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--ink-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: pointer;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.insp-text.is-expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+
+.insp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.insp-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-caption);
+}
+
+.insp-meta .sep::before {
+  content: '·';
+  margin-right: 8px;
+}
+
+/* ---------------------------------------------------------------- 行内编辑 */
+
+.insp-edit-input {
+  width: 100%;
+  resize: vertical;
+  line-height: 1.7;
+}
+
+.insp-edit-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.insp-edit-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------- 加载与空态 */
+
+.insp-more {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.insp-sentinel {
+  height: 1px;
+}
+
+.insp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 0 28px;
+  color: var(--ink-tertiary);
+}
+
+.insp-empty-icon {
+  color: var(--ink-dimmed);
+}
+
+.insp-empty-text {
+  font-size: 13px;
+  text-align: center;
+  max-width: 420px;
+  line-height: 1.7;
+}

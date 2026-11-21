@@ -9,7 +9,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
-from bot import webai, webstats, weblib, webprompts  # v5.2/5.3：增量路由（APIRouter）
+from bot import webai, webstats, weblib, webprompts, webbreakdown, webrank  # v5.2-5.4：增量路由（APIRouter）
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
@@ -120,6 +120,9 @@ app.include_router(webstats.router)
 # 通配路由之前，否则 groups/cover 会被通配吞掉（weblib 硬约束）。
 app.include_router(weblib.router)
 app.include_router(webprompts.router)
+# v5.4.0：拆书台与榜单风向、灵感补充端点。
+app.include_router(webbreakdown.router)
+app.include_router(webrank.router)
 
 # ---------- 会话状态机 ----------
 # state: idle → options → planning(忙) → title → writing(后台) → done
