@@ -9,6 +9,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
+from bot import webai, webstats  # v5.2.0：AI 辅助与码字统计的增量路由（APIRouter）
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
@@ -109,6 +110,12 @@ async def _auth_guard(request: Request, call_next):
             return JSONResponse({"error": "未授权：请通过 http://127.0.0.1 打开首页获取访问令牌"},
                                 status_code=401)
     return await call_next(request)
+
+
+# v5.2.0：AI 辅助（幽灵字/快捷续写/调用账本/敏感词）与码字统计、灵感速记的增量路由。
+# 独立 APIRouter 模块挂载，不进主路由表——见 bot/webai.py、bot/webstats.py。
+app.include_router(webai.router)
+app.include_router(webstats.router)
 
 # ---------- 会话状态机 ----------
 # state: idle → options → planning(忙) → title → writing(后台) → done

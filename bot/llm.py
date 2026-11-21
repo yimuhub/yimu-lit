@@ -161,13 +161,17 @@ def _trace_enabled() -> bool:
     return bool(_global_defaults().get("llm_trace", True))
 
 _TRACE_FIELDS = ("book", "stage", "agent", "provider", "model", "cached", "ok",
-                 "prompt_tokens", "completion_tokens", "total_tokens", "latency_ms", "error")
+                 "prompt_tokens", "completion_tokens", "total_tokens", "latency_ms", "error",
+                 "scene")   # v5.2.0：中文场景标签（写作/评审/幽灵字/续写/划词…），可选字段
 
 def _trace_call(**rec) -> None:
-    """结构化调用日志（JSONL）：字段白名单，绝不写入 prompt/密钥。"""
+    """结构化调用日志（JSONL）：字段白名单，绝不写入 prompt/密钥。
+    v5.2.0：可选 scene（中文场景标签）——调用方未传时该字段不出现在账本行里。"""
     if not _trace_enabled():
         return
     rec = {k: rec[k] for k in _TRACE_FIELDS if k in rec}
+    if not rec.get("scene"):
+        rec.pop("scene", None)
     rec["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     try:
         line = json.dumps(rec, ensure_ascii=False, sort_keys=True)
@@ -316,12 +320,13 @@ def _max_global():
     except Exception:
         return 4
 
-def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None, agent=None, use_cache=None):
+def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3, cfg=None, stage=None, agent=None, use_cache=None, scene=None):
     """一次性 chat 调用，返回文本。带简单重试。cfg 决定用哪个供应商/模型；
     stage（planning/writing/review）若配置了 stage_models 则按环节选模型（P4）。
     agent（v0.5 M4）：子 Agent 岗位（planner/writer/reviewer/rewriter/title）——优先 agent_models 绑定。
     v0.3 P4：按模型规则引擎套 上下文/max_tokens/RPM/429退避/extra_body。v0.5：跨线程 ConcurrencyGuard 限并发。
-    v0.7 R3：use_cache（None=按 cfg.defaults.llm_cache）——确定性 prompt 命中缓存直接返回（省 token+提速）。"""
+    v0.7 R3：use_cache（None=按 cfg.defaults.llm_cache）——确定性 prompt 命中缓存直接返回（省 token+提速）。
+    v5.2.0：scene（可选，中文场景标签如「幽灵字」「续写」「划词」）——只进调用账本行，不影响路由与返回。"""
     from . import model_rules
     if agent is None and stage:          # v0.5 M4：未显式指定 agent 时按 stage 推导岗位，agent_models 绑定即生效
         agent = {"planning": "planner", "writing": "writer", "review": "reviewer"}.get(stage, stage)
@@ -359,7 +364,7 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
     if _hit is not None:
         _trace_cache(True, model)
         _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
-                    model=model, cached=True, ok=True, total_tokens=0)
+                    model=model, cached=True, ok=True, total_tokens=0, scene=scene or "")
         return _hit
     _check_budget(_bk)      # 缓存命中不计费，预算检查放在缓存之后
     _t0 = time.time()
@@ -423,7 +428,7 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                             pass
                         return chat(messages, json_mode=json_mode, temperature=temperature,
                                     max_tokens=max_tokens, retries=2, cfg=_c2, stage=stage,
-                                    agent=agent, use_cache=use_cache)
+                                    agent=agent, use_cache=use_cache, scene=scene)
                 time.sleep(_wait)
                 continue
             if r.status_code in (401, 403):
@@ -449,7 +454,7 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                         prompt_tokens=int(_u.get("prompt_tokens") or 0),
                         completion_tokens=int(_u.get("completion_tokens") or 0),
                         total_tokens=int(_u.get("total_tokens") or 0),
-                        latency_ms=int((time.time() - _t0) * 1000))
+                        latency_ms=int((time.time() - _t0) * 1000), scene=scene or "")
             return _content
         except LLMError as e:
             last_err = e
@@ -458,11 +463,11 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
             time.sleep(3)
     _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
                 model=model, cached=False, ok=False, error=str(last_err)[:300],
-                latency_ms=int((time.time() - _t0) * 1000))
+                latency_ms=int((time.time() - _t0) * 1000), scene=scene or "")
     raise last_err or LLMError("LLM 调用失败（retries=0）")
 
 def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_thinking=None,
-                json_mode=False, temperature=None, max_tokens=None, retries=3, use_cache=None):
+                json_mode=False, temperature=None, max_tokens=None, retries=3, use_cache=None, scene=None):
     """chat() 的流式版：同一套路由/限流/预算/日志；增量文本经 on_delta(text_chunk) 回调；返回完整文本。
 
     - agent/stage 路由与 chat() 一致（agent 缺省按 stage 推导 planner/writer/reviewer）。
@@ -470,7 +475,8 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_th
     - v4.21.4：delta.reasoning_content（深度思考模型的思维链）经 on_thinking(piece) 单独回调，
       不混入正文；供应商不给 reasoning 时该回调不触发（前端回退到模板化思考摘要）。
     - 响应不是 SSE（普通 JSON）→ 取整段文本回调一次并返回（视为不支持流式）。
-    - 流式任何异常（供应商不支持/网络中断/解析失败/超时）→ 丢弃已收文本，回退调 chat() 非流式一次性返回。"""
+    - 流式任何异常（供应商不支持/网络中断/解析失败/超时）→ 丢弃已收文本，回退调 chat() 非流式一次性返回。
+    - v5.2.0：scene（可选，中文场景标签）——只进调用账本行，不影响流式行为。"""
     from . import model_rules
     if agent is None and stage:          # 与 chat() 一致：未显式指定 agent 时按 stage 推导岗位
         agent = {"planning": "planner", "writing": "writer", "review": "reviewer"}.get(stage, stage)
@@ -527,7 +533,7 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_th
     if _hit is not None:
         _trace_cache(True, model)
         _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
-                    model=model, cached=True, ok=True, total_tokens=0)
+                    model=model, cached=True, ok=True, total_tokens=0, scene=scene or "")
         _safe_cb(_hit)
         return _hit
     _check_budget(_bk)      # 缓存命中不计费，预算检查放在缓存之后（与 chat() 一致）
@@ -604,21 +610,22 @@ def chat_stream(messages, cfg=None, agent=None, stage=None, on_delta=None, on_th
                     prompt_tokens=int((usage or {}).get("prompt_tokens") or 0),
                     completion_tokens=int((usage or {}).get("completion_tokens") or 0),
                     total_tokens=int((usage or {}).get("total_tokens") or 0),
-                    latency_ms=int((time.time() - _t0) * 1000))
+                    latency_ms=int((time.time() - _t0) * 1000), scene=scene or "")
         return text
     except Exception as _se:
         # 兜底：流式任何异常 → 丢弃已收文本，回退完整 chat()（其自带超时/重试/用户可读报错）
         _trace_call(book=_bk or "", stage=_stage, agent=agent or "", provider=prov.get("id") or "",
                     model=model, cached=False, ok=False, error="stream→fallback: " + str(_se)[:280],
-                    latency_ms=int((time.time() - _t0) * 1000))
+                    latency_ms=int((time.time() - _t0) * 1000), scene=scene or "")
         return chat(messages, json_mode=json_mode, temperature=temperature, max_tokens=max_tokens,
-                    retries=retries, cfg=cfg, stage=stage, agent=agent, use_cache=use_cache)
+                    retries=retries, cfg=cfg, stage=stage, agent=agent, use_cache=use_cache, scene=scene)
 
 
-def chat_json(messages, temperature=None, cfg=None, stage=None, agent=None, use_cache=None):
+def chat_json(messages, temperature=None, cfg=None, stage=None, agent=None, use_cache=None, scene=None):
     """调用并解析 JSON（容忍模型夹带 markdown 代码块）。cfg 决定供应商/模型；stage 按环节选模型；agent（v0.5）子 Agent 岗位。
-    v0.7 R3：use_cache 透传 chat()（确定性 prompt 命中缓存直接返回）。"""
-    raw = chat(messages, json_mode=True, temperature=temperature, cfg=cfg, stage=stage, agent=agent, use_cache=use_cache)
+    v0.7 R3：use_cache 透传 chat()（确定性 prompt 命中缓存直接返回）。
+    v5.2.0：scene（可选，中文场景标签）透传 chat()。"""
+    raw = chat(messages, json_mode=True, temperature=temperature, cfg=cfg, stage=stage, agent=agent, use_cache=use_cache, scene=scene)
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.strip("`")

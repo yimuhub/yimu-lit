@@ -23,6 +23,7 @@ import { renderRightPanel } from './components/rightpanel.js';
    首屏只保留 welcome/session（对话主界面）及其组件链。 */
 import { renderWelcome } from './views/welcome.js';
 import { renderSession } from './views/session.js';
+import './core/writestats-client.js'; /* v5.2.0：码字统计监听（自安装副作用模块） */
 
 /* 路由级 CSS 与 JS 共用同一份版本号，必须与 index.html 里所有 `?v=` 相同。
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
@@ -778,6 +779,10 @@ async function renderView(route) {
         render = (await import('./views/settings.js')).renderSettings;
       }
       else if (route.name === 'evolution') render = (await import('./views/evolution.js')).renderEvolution;
+      else if (route.name === 'stats') {
+        loadCss(`/v2/css/stats.css?v=${CSS_V}`);
+        render = (await import('./views/stats.js')).renderStats;
+      }
       else if (route.name === 'skills') {
         loadCss(`/v2/css/skills.css?v=${CSS_V}`);
         render = (await import('./views/skilllib.js')).renderSkillLib;

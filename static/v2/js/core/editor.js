@@ -19,8 +19,18 @@ import { h } from './dom.js';
 
 /* ---------------------------------------------------------- 段内文本提取（不依赖 innerText，jsdom 可跑） */
 
+/* v5.2.0 幽灵字虚拟节点：.ghost-text（建议灰字）与 .ghost-key（Tab 键帽）是
+   「渲染层存在、模型层不存在」的节点——提取/偏移换算一律跳过，正文模型保持纯净，
+   采纳（Tab）时才真正写入模型。 */
+function isGhostEl(node) {
+  return !!(node && node.nodeType === 1 &&
+    (node.classList && (node.classList.contains('ghost-text') || node.classList.contains('ghost-key'))));
+}
+
 function nodeText(node) {
-  /* TEXT → 原值；BR → '\n'；元素 → 递归拼接（粘贴残留的 span/b 等一律摊平）。 */
+  /* TEXT → 原值；BR → '\n'；元素 → 递归拼接（粘贴残留的 span/b 等一律摊平；
+     幽灵字虚拟节点不计入正文模型）。 */
+  if (isGhostEl(node)) return '';
   if (node.nodeType === 3) return node.nodeValue || '';
   if (node.nodeType !== 1) return '';
   if (node.tagName === 'BR') return '\n';
@@ -57,8 +67,16 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
   if (placeholder) root.dataset.placeholder = placeholder;
   host.append(root);
 
-  /* 回调集中存放：划词气泡等外部组件可经 setXxxListener 挂钩（工厂参数之外的挂载点）。 */
-  const handlers = { change: onChange, selection: onSelectionChange, compositionEnd: onCompositionEnd };
+  /* 回调集中存放：划词气泡等外部组件可经 setXxxListener 挂钩（工厂参数之外的挂载点）。
+     v5.2.0：input（输入转发，幽灵字防抖用）、ghostAdopt/ghostDismiss（Tab 采纳/建议消失）。 */
+  const handlers = {
+    change: onChange,
+    selection: onSelectionChange,
+    compositionEnd: onCompositionEnd,
+    input: null,
+    ghostAdopt: null,
+    ghostDismiss: null
+  };
 
   let paras = [];              // 段元素列表（与文本分段一一对应）
   let composing = false;       // 拼音组词期间：bench 不落盘，本模块不重排当前段
@@ -85,6 +103,7 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
 
   function render(text) {
     const parts = String(text || '').replace(/\r\n?/g, '\n').split(/\n{2,}/);
+    ghostState = null;   // 全量重渲：幽灵字虚拟节点随旧 DOM 消失，状态同步复位
     root.textContent = '';
     paras = parts.map((t) => makePara(t));
     if (!paras.length) paras = [makePara('')];
@@ -119,6 +138,7 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
           done = true;
           return;
         }
+        if (isGhostEl(child)) continue;   // 幽灵字虚拟节点不占模型偏移
         if (child.nodeType === 3) count += (child.nodeValue || '').length;
         else if (child.nodeType === 1 && child.tagName === 'BR') count += 1;
         else walk(child);
@@ -193,11 +213,13 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
   }
 
   function _placeRange(range, p, local) {
-    /* 在段 p 内把 range 起点放到第 local 个字符处；local 落在软换行上取边界。 */
+    /* 在段 p 内把 range 起点放到第 local 个字符处；local 落在软换行上取边界。
+       幽灵字虚拟节点不占模型偏移：跳过不消费 want，兜底落点也避开它。 */
     let want = local;
     let placed = false;
     const walk = (el) => {
       for (const child of el.childNodes) {
+        if (isGhostEl(child)) continue;
         if (child.nodeType === 3) {
           const len = (child.nodeValue || '').length;
           if (want <= len) { range.setStart(child, want); placed = true; return; }
@@ -211,8 +233,13 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
     };
     walk(p);
     if (!placed) {
-      const last = p.lastChild;
-      if (last && last.nodeType === 3) range.setStart(last, (last.nodeValue || '').length);
+      /* 兜底：从尾部找最后一个非幽灵子节点落点（幽灵字显示时光标停在灰字之前）。 */
+      let anchor = null;
+      for (let k = p.childNodes.length - 1; k >= 0; k -= 1) {
+        if (!isGhostEl(p.childNodes[k])) { anchor = p.childNodes[k]; break; }
+      }
+      if (anchor && anchor.nodeType === 3) range.setStart(anchor, (anchor.nodeValue || '').length);
+      else if (anchor) range.setStart(p, childIndex(anchor) + 1);
       else range.setStart(p, p.childNodes.length);
     }
     range.collapse(true);
@@ -332,14 +359,105 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
     return true;
   }
 
+  /* ------------------------------------------------------------- 幽灵字（v5.2.0） */
+
+  /* 幽灵字状态：{ text, i, local, off, span }。灰字 span 挂在光标所在段内，
+     是「渲染层存在、模型层不存在」的虚拟节点（nodeText/_locate/_placeRange 均跳过），
+     Tab 采纳时才经 insertAtCaret 真正写入模型（保留浏览器原生撤销栈）。 */
+  let ghostState = null;
+  let ghostAdopting = false;   // Tab 采纳期间抑制 input 事件触发的自动清除
+  let pluginLock = false;      // 插件运行锁（流式续写期间冻结划词派发；幽灵字触发由其自行悬挂）
+
+  function _clearGhostDom() {
+    if (ghostState && ghostState.span) {
+      try { ghostState.span.remove(); } catch { /* 已随段落重建消失 */ }
+    }
+    if (ghostState && ghostState.hint) {
+      try { ghostState.hint.remove(); } catch { /* 同上 */ }
+    }
+    ghostState = null;
+  }
+
+  function clearGhost() {
+    if (!ghostState) return false;
+    _clearGhostDom();
+    if (handlers.ghostDismiss && !destroyed) handlers.ghostDismiss();
+    return true;
+  }
+
+  /* 光标后渲染灰字建议 + 「Tab 采纳」键帽。要求光标在编辑器内且收拢；
+     落点按当前光标模型偏移计算。任何输入/移动按键都会先清除旧建议。 */
+  function setGhost(text) {
+    clearGhost();
+    const t = String(text || '');
+    if (!t) return false;
+    const sel = currentSel();
+    if (!sel || !sel.collapsed) return false;
+    const { i, local } = toLocal(sel.start);
+    const p = paras[i];
+    if (!p) return false;
+    const span = h('span', { class: 'ghost-text', contenteditable: 'false', text: t });
+    const hint = h('span', { class: 'ghost-key', contenteditable: 'false' },
+      h('kbd', { class: 'ghost-kbd', text: 'Tab' }), ' 采纳');
+    /* 段内定位插入：want 与 _placeRange 同算法（文本节点按需劈开，BR 越过）。 */
+    let want = local;
+    let inserted = false;
+    for (const child of Array.from(p.childNodes)) {
+      if (isGhostEl(child)) continue;
+      if (child.nodeType === 3) {
+        const len = (child.nodeValue || '').length;
+        if (want < len) {
+          const tail = child.splitText(want);
+          p.insertBefore(span, tail);
+          inserted = true;
+          break;
+        }
+        if (want === len) { p.insertBefore(span, child.nextSibling); inserted = true; break; }
+        want -= len;
+      } else if (child.nodeType === 1 && child.tagName === 'BR') {
+        if (want <= 1) { p.insertBefore(span, child.nextSibling); inserted = true; break; }
+        want -= 1;
+      }
+    }
+    if (!inserted) p.append(span);
+    span.after(hint);
+    ghostState = { text: t, i, local, off: sel.start, span, hint };
+    return true;
+  }
+
+  function getGhost() { return ghostState ? ghostState.text : ''; }
+  function ghostActive() { return !!ghostState; }
+
+  /* Tab 采纳：摘灰字 → 光标回原位 → 走 insertAtCaret 真正入模（原生撤销可回退）。
+     成功后回调 ghostAdopt（bench 侧据此派发 AI 插入事件与落盘）。 */
+  function adoptGhost() {
+    if (!ghostState) return null;
+    const st = ghostState;
+    ghostAdopting = true;
+    try {
+      _clearGhostDom();
+      setCaretOffset(st.off);
+      const ok = insertAtCaret(st.text);
+      if (!ok) return null;
+      const result = { text: st.text, chars: st.text.length, start: st.off, end: st.off + st.text.length };
+      if (handlers.ghostAdopt && !destroyed) handlers.ghostAdopt(result);
+      return result;
+    } finally {
+      ghostAdopting = false;
+    }
+  }
+
   /* ------------------------------------------------------------- 事件 */
 
   function _emitChange() {
-    if (handlers.change && !destroyed) handlers.change(getText(), { composing });
+    if (handlers.change && !destroyed) {
+      handlers.change(getText(), { composing, adopting: ghostAdopting });
+    }
   }
 
   root.addEventListener('compositionstart', () => {
     composing = true;
+    if (ghostState) _clearGhostDom();   // 组词开始：建议让位
   });
   root.addEventListener('compositionend', () => {
     composing = false;
@@ -352,13 +470,37 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
     const p = (event.target && event.target.nodeType === 1 && event.target.classList.contains('edp'))
       ? event.target
       : paras[findParaOf(event.target)];
+    /* v5.2.0：任何输入清除幽灵字（Tab 采纳路径自带 ghostAdopting 抑制标志，不在此列）。 */
+    if (!ghostAdopting && ghostState) _clearGhostDom();
     if (p && !composing) applyFocusDim();
     _emitChange();
+    if (handlers.input && !destroyed) handlers.input(getText(), { composing });
     if (opts.typewriter) maybeScroll();
   });
 
   root.addEventListener('keydown', (event) => {
     if (composing) return;   // 组词期间的按键交给输入法
+    /* v5.2.0 幽灵字按键：Tab 采纳 / Esc 取消 / 方向键光标照走并清除 / 其余先摘建议。 */
+    if (ghostState) {
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        adoptGhost();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearGhost();
+        return;
+      }
+      if (/^Arrow/.test(event.key) || ['Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+        clearGhost();   // 不拦默认：光标正常移动，灰字与键帽摘除
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Backspace' || event.key === 'Delete') {
+        clearGhost();   // 结构键先摘建议，再走原有分段/合并逻辑
+      }
+      /* 其余可打印键不清除：随后的 input 事件统一清除（采纳路径有抑制标志） */
+    }
     const sel = window.getSelection();
     const anchor = sel && sel.anchorNode;
     const i = findParaOf(anchor);
@@ -442,6 +584,13 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
 
   function onDocSelectionChange() {
     if (destroyed) return;
+    /* v5.2.0 幽灵字：光标移走（鼠标点击等非按键路径）即摘建议，防止采纳落点过期。 */
+    if (ghostState) {
+      const off = getCaretOffset();
+      if (off < 0 || off !== ghostState.off) { clearGhost(); return; }
+    }
+    /* v5.2.0 插件锁：流式续写等插件运行期冻结划词派发（气泡不弹、生成不被打断）。 */
+    if (pluginLock) return;
     const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
     if (!sel || !sel.anchorNode || findParaOf(sel.anchorNode) < 0) return;
     applyFocusDim();
@@ -498,6 +647,28 @@ export function createEditor({ host, placeholder = '', onChange = null, onSelect
     insertAtCaret,
     paraCount: () => paras.length,
     setSelectionListener(fn) { handlers.selection = typeof fn === 'function' ? fn : null; },
+    /* ---- v5.2.0 幽灵字 / 插件协作 API ---- */
+    setGhost,
+    clearGhost,
+    getGhost,
+    ghostActive,
+    setGhostAdoptListener(fn) { handlers.ghostAdopt = typeof fn === 'function' ? fn : null; },
+    setGhostDismissListener(fn) { handlers.ghostDismiss = typeof fn === 'function' ? fn : null; },
+    setInputListener(fn) { handlers.input = typeof fn === 'function' ? fn : null; },
+    /* 插件锁：流式续写运行期冻结划词派发（selectionchange 不再转发）；
+       幽灵字模块经 isPluginLocked 自行悬挂触发。任何失败不得影响正常输入。 */
+    setPluginLock(on) { pluginLock = !!on; },
+    isPluginLocked: () => pluginLock,
+    /* 定位到全局偏移（敏感词徽标点击用）：光标落点 + 段聚焦 + 打字机滚动跟随。 */
+    revealOffset(offset) {
+      try {
+        setCaretOffset(offset);
+        const { i } = toLocal(offset);
+        const p = paras[i];
+        if (p && typeof p.focus === 'function') p.focus();
+        if (opts.typewriter) maybeScroll();
+      } catch { /* jsdom 无 focus 实现时只落选区 */ }
+    },
     focus() {
       try {
         const p = paras[0];

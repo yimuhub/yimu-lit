@@ -1,6 +1,6 @@
-/* Hash 路由：#/welcome、#/work/<key>、#/work/<key>/bench/<n>、#/library、#/skills、#/settings、#/evolution */
+/* Hash 路由：#/welcome、#/work/<key>、#/work/<key>/bench/<n>、#/library、#/skills、#/stats、#/settings、#/evolution */
 
-const ROUTES = ['welcome', 'work', 'library', 'skills', 'evolution', 'settings'];
+const ROUTES = ['welcome', 'work', 'library', 'skills', 'stats', 'evolution', 'settings'];
 
 export function parseHash(hash = location.hash) {
   const raw = String(hash || '').replace(/^#\/?/, '');
@@ -12,6 +12,7 @@ export function parseHash(hash = location.hash) {
   if (parts[0] === 'library') return { name: 'library', key: '', chapter: null, query };
   if (parts[0] === 'skills') return { name: 'skills', key: '', chapter: null, query };
   if (parts[0] === 'evolution') return { name: 'evolution', key: '', chapter: null, query };
+  if (parts[0] === 'stats') return { name: 'stats', key: '', chapter: null, query };
   if (parts[0] === 'settings') return { name: 'settings', key: '', chapter: null, query };
   if (parts[0] === 'work' && parts[1]) {
     const key = decodeURIComponent(parts[1]);

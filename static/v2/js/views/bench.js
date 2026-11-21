@@ -10,13 +10,15 @@
 
 import { h, icon, fmtWords, fmtDate, relTime, copyText } from '../core/dom.js';
 import { store } from '../core/state.js';
-import { api, request, errorText } from '../core/api.js';
+import { api, request, errorText, IS_MOCK } from '../core/api.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import { navigate } from '../core/router.js';
 import { cleanChapterText } from '../core/purity.js';
 import { loadCss } from '../core/loadcss.js';
 import { createEditor } from '../core/editor.js';
 import { mountSelectionBar } from '../core/selectionbar.js';
+import { mountGhost } from '../core/ghost.js';
+import { mountQuickWrite } from '../core/quickwrite.js';
 import { mountChatFloat } from '../components/chatfloat.js';
 
 /* v5.1.0：bench 编辑器样式按需注入（静态资源 no-store，无需版本参数）。 */
@@ -67,6 +69,66 @@ function extractSummary(raw) {
   return m ? m[1].trim().slice(0, 400) : '';
 }
 
+/* v5.2.0 mock 演示词表：敏感词接口在演示模式下不可用，徽标仍可验收交互。 */
+const MOCK_SENSITIVE_WORDS = ['枪械买卖', '赌博网站', '诈骗话术'];
+
+/* ══════════════════════════════════════════════════════════════
+   v5.2.0 跨 Agent 事件契约（唯一派发点，约定不许改）：
+
+   1) yimu-editor-session —— 编辑器会话上报（统计侧监听做手写/AI 分账）
+      · begin   ：章节装载完成，detail {phase:'begin', key, text:<全文>}
+      · update  ：防抖落盘的文本变化，detail {phase:'update', key, text}
+                  （节流 ≤1 次/秒 + 内容去重，由本工厂封装）
+      · commit  ：切章/卸载结算，detail {phase:'commit', key, text}
+   2) yimu-ai-insert —— AI 生成文本插入编辑器后派发（detail {chars, key}）：
+      幽灵字 Tab 采纳 / 快捷续写流入结束 / 划词替换成功 三条路径在
+      renderBench 内分别接线到 emitAiInsert。
+   ══════════════════════════════════════════════════════════════ */
+export function createSessionReporter(key, { throttleMs = 1000 } = {}) {
+  let active = false;
+  let lastEmit = 0;
+  let lastText = '';
+  const emit = (phase, text) => {
+    try {
+      document.dispatchEvent(new CustomEvent('yimu-editor-session', {
+        detail: { phase, key, text: String(text || '') }
+      }));
+    } catch { /* 统计侧缺失时静默，不影响编辑器 */ }
+  };
+  return {
+    begin(text) {
+      active = true;
+      lastText = String(text || '');
+      lastEmit = 0;   // begin 不占用 update 的节流窗口：装载后第一笔变化立即上报
+      emit('begin', lastText);
+    },
+    update(text) {
+      if (!active) return;
+      const t = String(text || '');
+      if (!t || t === lastText) return;
+      const now = Date.now();
+      if (now - lastEmit < throttleMs) return;   // 节流 ≤1 次/秒
+      lastEmit = now;
+      lastText = t;
+      emit('update', t);
+    },
+    commitIfActive(text) {
+      if (!active) return;
+      active = false;
+      emit('commit', String(text || ''));
+    },
+    isActive: () => active
+  };
+}
+
+export function emitAiInsert(chars, key) {
+  try {
+    document.dispatchEvent(new CustomEvent('yimu-ai-insert', {
+      detail: { chars: Number(chars) || 0, key }
+    }));
+  } catch { /* 统计侧缺失时静默 */ }
+}
+
 export function renderBench(container, ctx) {
   const state0 = store.get();
   const key = state0.route.key || state0.currentKey;
@@ -98,6 +160,9 @@ export function renderBench(container, ctx) {
   let lastVersionsRefresh = 0;
 
   let typo = loadTypo();
+
+  /* v5.2.0：会话上报器（契约 1 的封装见文件顶部 createSessionReporter） */
+  const session = createSessionReporter(key);
 
   /* -------------------------------------------------------------- head */
 
@@ -147,25 +212,84 @@ export function renderBench(container, ctx) {
   const updatedEl = h('span', { class: 'sep' });
   const saveStateEl = h('span', { class: 'bench-save-state', dataset: { state: 'saved' } });
   const dirtyHint = h('span', { class: 'hint-text', text: '' });
+  /* v5.2.0：敏感词计数徽标（本地词库纯前端匹配，点击定位第一处）+ AI 轻提示。 */
+  const sensitiveEl = h('button', {
+    class: 'bench-sensitive',
+    type: 'button',
+    text: '',
+    title: '敏感词检测（本地词库，不联网；点击定位第一处）',
+    hidden: true,
+    on: { click: () => locateSensitive() }
+  });
+  const aiHintEl = h('span', { class: 'bench-ai-hint', text: '' });
+  let aiHintTimer = 0;
   foot.append(
-    h('div', { class: 'bench-foot-info' }, charsEl, wordsEl, updatedEl),
+    h('div', { class: 'bench-foot-info' }, charsEl, wordsEl, updatedEl, sensitiveEl),
     h('span', { style: { flex: '1' } }),
     saveStateEl,
-    dirtyHint
+    dirtyHint,
+    aiHintEl
   );
+
+  function flashAiHint(msg) {
+    /* AI 辅助能力（幽灵字/续写）失败静默 + 状态栏轻提示，绝不打断输入。 */
+    aiHintEl.textContent = msg || '';
+    clearTimeout(aiHintTimer);
+    if (msg) aiHintTimer = setTimeout(() => { aiHintEl.textContent = ''; }, 6000);
+  }
+
+  /* v5.2.0 敏感词检测：本地词库（data/sensitive-words.txt，每行一词 # 注释），
+     纯前端字符串匹配，不调 LLM。接口不可用时静默关闭（mock 下用演示词表）。 */
+  let sensitiveWords = [];
+  let sensitiveHits = [];
+  function paintSensitive(text) {
+    sensitiveHits = [];
+    if (!sensitiveWords.length) { sensitiveEl.hidden = true; return; }
+    const t = String(text || '');
+    for (const w of sensitiveWords) {
+      let idx = t.indexOf(w);
+      while (idx >= 0 && sensitiveHits.length < 999) {
+        sensitiveHits.push({ w, idx });
+        idx = t.indexOf(w, idx + w.length);
+      }
+    }
+    sensitiveHits.sort((a, b) => a.idx - b.idx);
+    if (!sensitiveHits.length) { sensitiveEl.hidden = true; sensitiveEl.textContent = ''; return; }
+    sensitiveEl.hidden = false;
+    sensitiveEl.textContent = `敏感词 ${sensitiveHits.length}`;
+  }
+  function locateSensitive() {
+    if (!sensitiveHits.length) return;
+    try {
+      editor.revealOffset(sensitiveHits[0].idx);
+      flashAiHint(`第一处敏感词：「${sensitiveHits[0].w}」（共 ${sensitiveHits.length} 处）`);
+    } catch { /* 定位失败静默 */ }
+  }
+  (async () => {
+    try {
+      const r = await request('/api/sensitive-words', { timeout: 8000 });
+      sensitiveWords = (r && Array.isArray(r.items) ? r.items : []).filter(Boolean);
+    } catch {
+      sensitiveWords = IS_MOCK ? [...MOCK_SENSITIVE_WORDS] : [];   // 真实后端未挂载 → 徽标静默关闭
+    }
+    paintSensitive(editor.getText());
+  })();
 
   const editor = createEditor({
     host: scrollHost,
     placeholder: '这一章还没有正文。可以直接粘贴或开始写作，改动会自动保存并形成版本快照。',
-    onChange: (text) => {
+    onChange: (text, ev) => {
       markDirty(text);
       scheduleSave();
       schedulePhoneFill();
+      /* v5.2.0：输入差值计数 + 幽灵字防抖重排（Tab 采纳/续写流入由事件自身标注） */
+      ghostCtl.notifyText(text, ev || {});
     },
     onCompositionEnd: () => {
       /* 拼音组词结束：把组词期间欠下的落盘补上 */
       scheduleSave();
       schedulePhoneFill();
+      ghostCtl.notifyText(editor.getText(), {});
     }
   });
 
@@ -178,10 +302,45 @@ export function renderBench(container, ctx) {
       title: model.title ? `第 ${model.n} 章 ${model.title}` : `第 ${model.n} 章`,
       summary: extractSummary(model.rawText)
     }),
-    onReplaced: () => {
-      /* 替换成功：立即落盘（后端写盘门禁会留「编辑前」快照 + 节流快照） */
+    onReplaced: (r) => {
+      /* 替换成功：立即落盘（后端写盘门禁会留「编辑前」快照 + 节流快照）。
+         v5.2.0：划词结果属于 AI 插入，按契约上报字符数（统计侧手写/AI 分账）。 */
+      if (r && typeof r.start === 'number' && typeof r.end === 'number') {
+        emitAiInsert(Math.max(0, r.end - r.start), key);
+      }
       flushSave();
     }
+  });
+
+  /* v5.2.0 AI 辅助写作挂载：
+     · 幽灵字：光标末尾停顿 → 灰字建议 + Tab 采纳（Esc/方向键/输入即清）；
+     · 快捷续写：Cmd/Ctrl+/ 流式逐字插入（期间冻结划词、悬挂幽灵字）。
+     两者失败静默 + 状态栏轻提示，绝不影响正常输入。 */
+  const aiCtx = () => ({
+    key,
+    n: model.n,
+    title: model.title ? `第 ${model.n} 章 ${model.title}` : `第 ${model.n} 章`,
+    summary: extractSummary(model.rawText)
+  });
+  const ghostCtl = mountGhost({
+    editor,
+    getContext: aiCtx,
+    onHint: (msg) => flashAiHint(msg),
+    onInsert: ({ chars } = {}) => {
+      emitAiInsert(chars, key);
+      flushSave();
+    }
+  });
+  const quickWrite = mountQuickWrite({
+    editor,
+    getContext: aiCtx,
+    onHint: (msg) => flashAiHint(msg),
+    onInsert: ({ chars } = {}) => {
+      emitAiInsert(chars, key);
+      flushSave();
+    },
+    onStart: () => { selectionBar.close(); },
+    onEnd: () => { ghostCtl.resync(); }
   });
 
   applyTypo();
@@ -434,6 +593,10 @@ export function renderBench(container, ctx) {
   async function loadChapter() {
     model.loading = true;
     model.error = '';
+    /* v5.2.0：切章前结算上一章会话（commit）+ 中止续写/幽灵字在途请求 */
+    session.commitIfActive(editor.getText());
+    quickWrite.stop();
+    ghostCtl.suspend();
     editor.setText('', { silent: true });
     scrollHost.style.opacity = '0.5';
     paintAll();
@@ -450,6 +613,10 @@ export function renderBench(container, ctx) {
       model.versions = (vers && vers.items) || [];
       editor.setText(model.mode === 'raw' ? model.rawText : model.text, { silent: true });
       markDirty(editor.getText());
+      /* v5.2.0：新章会话开始（统计侧以此对齐手写基线）+ 输入基线/敏感词重算 */
+      session.begin(editor.getText());
+      ghostCtl.resync();
+      paintSensitive(editor.getText());
     } catch (err) {
       model.error = errorText(err, '章节加载失败');
     }
@@ -474,7 +641,13 @@ export function renderBench(container, ctx) {
     clearTimeout(saveTimer);
     model.saveState = model.dirty || pendingSave ? 'pending' : model.saveState;
     paintSaveState();
-    saveTimer = setTimeout(() => flushSave(false), 160);
+    saveTimer = setTimeout(() => {
+      /* v5.2.0：防抖落盘的文本变化 → 会话 update 上报（节流 ≤1/s）+ 敏感词计数刷新 */
+      const text = editor.getText();
+      session.update(text);
+      paintSensitive(text);
+      flushSave(false);
+    }, 160);
   }
 
   async function flushSave() {
@@ -893,13 +1066,18 @@ export function renderBench(container, ctx) {
     focusComposer: () => editor.focus(),
     refresh: loadChapter,
     destroy() {
+      /* v5.2.0：卸载结算会话（commit），再摘 AI 辅助与监听 */
+      session.commitIfActive(editor.getText());
       clearTimeout(saveTimer);
       clearTimeout(fillPhoneTimer);
+      clearTimeout(aiHintTimer);
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('beforeunload', onBeforeUnload);
       scrollHost.removeEventListener('scroll', onBenchScroll);
       closeTypoPanel();
       closePhone();
+      ghostCtl.destroy();
+      quickWrite.destroy();
       selectionBar.destroy();
       if (chatFloat) chatFloat.destroy();
       editor.destroy();

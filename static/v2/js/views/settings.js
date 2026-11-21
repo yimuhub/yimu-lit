@@ -5,7 +5,7 @@
 
 import { h, icon } from '../core/dom.js';
 import { store, patch, patchUi } from '../core/state.js';
-import { api, errorText } from '../core/api.js';
+import { api, request, errorText } from '../core/api.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
 import {
   setTheme,
@@ -52,6 +52,7 @@ const GROUPS = [
   { key: 'pennames', label: '作者笔名', icon: 'pen', desc: '全局默认 · 多笔名 · 按文体默认' },
   { key: 'workdiag', label: '作品诊断', icon: 'eye', desc: '创作状态 · 卡顿排查 · 导出' },
   { key: 'syslog', label: '系统日志', icon: 'terminal', desc: '版本 · 系统操作 · 服务日志 · 导出' },
+  { key: 'ailog', label: 'AI 调用账本', icon: 'activity', desc: '调用统计 · 场景筛选 · 明细' },
   { key: 'advanced', label: '高级', icon: 'sliders', desc: '经典版等' }
 ];
 
@@ -155,6 +156,8 @@ export function renderSettings(container, ctx) {
       btn.setAttribute('aria-current', k === key ? 'true' : 'false');
     }
     if (key === 'syslog' || key === 'workdiag') loadDiagnostics();   // 每次进入日志/诊断分组都刷新
+    
+    if (key === 'ailog') loadAiLog(aiFilter.page);   // v5.2.0：每次进入账本分组都刷新
     patchUi({ settingsTab: key });
   }
 
@@ -2199,6 +2202,190 @@ export function renderSettings(container, ctx) {
       paintPennames();
     }
   }
+
+  /* ----------------------------------------------------------- AI 调用账本（v5.2.0）
+     4 统计卡（总次数/成功/失败/token 总量）+ 筛选（场景/状态/日期/关键词）
+     + 明细列表（字段摘要可展开全部字段）。数据来自 GET /api/ai-ledger
+     （bot/webai.py 读 llm_calls.jsonl 流式聚合；账本字段白名单不含正文，
+     明细展示时间/场景/模型/状态/token/耗时/错误摘要）。 */
+  const aiLogBody = h('div', { class: 'al-wrap' });
+  panes.ailog.append(aiLogBody);
+
+  const aiFilter = { scene: '', status: '', dateFrom: '', dateTo: '', q: '', page: 1, pageSize: 20 };
+  const aiLog = { loading: false, error: '', data: null, expanded: -1 };
+
+  function aiLogErrorHint(err) {
+    const status = err && err.status;
+    if (status === 404 || status === 501) {
+      return '账本接口未挂载（需要主程序 include bot/webai 路由后可用），界面先就位。';
+    }
+    return errorText(err, '账本加载失败，请稍后重试');
+  }
+
+  async function loadAiLog(page = 1) {
+    aiFilter.page = Math.max(1, page);
+    aiLog.loading = true;
+    aiLog.error = '';
+    paintAiLog();
+    try {
+      const r = await request('/api/ai-ledger', {
+        query: {
+          scene: aiFilter.scene || undefined,
+          status: aiFilter.status || undefined,
+          date_from: aiFilter.dateFrom || undefined,
+          date_to: aiFilter.dateTo || undefined,
+          q: aiFilter.q || undefined,
+          page: aiFilter.page,
+          page_size: aiFilter.pageSize
+        },
+        timeout: 15000
+      });
+      aiLog.data = r && r.ok ? r : null;
+      if (!aiLog.data) aiLog.error = '账本返回格式异常';
+    } catch (err) {
+      aiLog.data = null;
+      aiLog.error = aiLogErrorHint(err);
+    }
+    aiLog.loading = false;
+    paintAiLog();
+  }
+
+  function alStatCard(label, value, cls) {
+    return h('div', { class: `al-card${cls ? ` ${cls}` : ''}` },
+      h('div', { class: 'al-card-val', text: value }),
+      h('div', { class: 'al-card-label', text: label }));
+  }
+
+  function fmtTokens(n) {
+    const v = Number(n) || 0;
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+    if (v >= 10_000) return `${(v / 1000).toFixed(1)}k`;
+    return String(v);
+  }
+
+  function alRowFields(rec) {
+    const ok = rec.ok !== false;
+    return [
+      ['时间', rec.ts || '—'],
+      ['场景', rec.scene || rec.stage || '（未标注）'],
+      ['状态', ok ? '成功' : '失败'],
+      ['模型', `${rec.provider || '—'} / ${rec.model || '—'}`],
+      ['岗位', rec.agent || '—'],
+      ['书', rec.book || '—'],
+      ['token', `共 ${rec.total_tokens ?? 0}（入 ${rec.prompt_tokens ?? 0} / 出 ${rec.completion_tokens ?? 0}）`],
+      ['耗时', rec.latency_ms != null ? `${rec.latency_ms} ms` : '—'],
+      ['缓存', rec.cached ? '命中' : '未命中'],
+      ['错误', rec.error || '—']
+    ];
+  }
+
+  function paintAiLog() {
+    
+    aiLogBody.textContent = '';
+    const d = aiLog.data;
+    const stats = (d && d.stats) || { total: 0, ok: 0, failed: 0, tokens: 0 };
+    /* 4 统计卡 */
+    aiLogBody.append(h('div', { class: 'al-cards' },
+      alStatCard('调用总次数', String(stats.total ?? 0), ''),
+      alStatCard('成功', String(stats.ok ?? 0), 'ok'),
+      alStatCard('失败', String(stats.failed ?? 0), stats.failed ? 'bad' : ''),
+      alStatCard('token 总量', fmtTokens(stats.tokens ?? 0), '')
+    ));
+    /* 筛选行：场景 / 状态 / 日期区间 / 关键词 */
+    const scenes = (d && d.scenes) || [];
+    const sceneSel = h('select', { class: 'input al-filter', 'aria-label': '按场景筛选' },
+      h('option', { value: '', text: '全部场景' }),
+      scenes.map((s) => h('option', { value: s, text: s, ...(aiFilter.scene === s ? { selected: true } : {}) }))
+    );
+    sceneSel.addEventListener('change', () => { aiFilter.scene = sceneSel.value; loadAiLog(1); });
+    const statusSel = h('select', { class: 'input al-filter', 'aria-label': '按状态筛选' },
+      h('option', { value: '', text: '全部状态' }),
+      h('option', { value: 'ok', text: '仅成功', ...(aiFilter.status === 'ok' ? { selected: true } : {}) }),
+      h('option', { value: 'failed', text: '仅失败', ...(aiFilter.status === 'failed' ? { selected: true } : {}) })
+    );
+    statusSel.addEventListener('change', () => { aiFilter.status = statusSel.value; loadAiLog(1); });
+    const fromInput = h('input', { class: 'input al-filter', type: 'date', 'aria-label': '起始日期', value: aiFilter.dateFrom });
+    const toInput = h('input', { class: 'input al-filter', type: 'date', 'aria-label': '截止日期', value: aiFilter.dateTo });
+    fromInput.addEventListener('change', () => { aiFilter.dateFrom = fromInput.value; loadAiLog(1); });
+    toInput.addEventListener('change', () => { aiFilter.dateTo = toInput.value; loadAiLog(1); });
+    const qInput = h('input', { class: 'input al-filter al-q', type: 'text', placeholder: '关键词（模型/书 key/错误…）',
+      'aria-label': '关键词筛选', value: aiFilter.q });
+    const qBtn = h('button', { class: 'btn btn-sm', type: 'button', text: '搜索' });
+    const doQ = () => { aiFilter.q = qInput.value.trim(); loadAiLog(1); };
+    qBtn.addEventListener('click', doQ);
+    qInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); doQ(); } });
+    aiLogBody.append(h('div', { class: 'al-filters' },
+      sceneSel, statusSel, fromInput, toInput, qInput, qBtn,
+      h('button', { class: 'btn btn-sm', type: 'button', text: '刷新', on: { click: () => loadAiLog(aiFilter.page) } })
+    ));
+    
+    /* 错误/空态 */
+    if (aiLog.loading) {
+      aiLogBody.append(h('div', { class: 'hint-text al-state', text: '正在读取账本…' }));
+      return;
+    }
+    if (aiLog.error) {
+      aiLogBody.append(h('div', { class: 'set-error al-state', role: 'alert' },
+        h('span', { html: icon('alert', 14) }),
+        h('span', { class: 'error-text', text: aiLog.error })));
+      return;
+    }
+    const items = (d && d.items) || [];
+    if (!items.length) {
+      aiLogBody.append(h('div', { class: 'hint-text al-state', text: '没有匹配的调用记录。改动筛选条件，或先在写作台触发一次 AI 调用。' }));
+      return;
+    }
+    /* 明细列表：行摘要（时间/场景/模型/状态/token/耗时）+ 点击展开全部字段 */
+    const list = h('div', { class: 'al-list' });
+    items.forEach((rec, i) => {
+      const idx = aiFilter.page > 1 ? (aiFilter.page - 1) * aiFilter.pageSize + i : i;
+      const open = aiLog.expanded === idx;
+      const ok = rec.ok !== false;
+      const row = h('div', { class: `al-item${open ? ' is-open' : ''}` });
+      const head = h('button', {
+        class: 'al-item-head', type: 'button',
+        'aria-expanded': open ? 'true' : 'false',
+        title: open ? '收起明细' : '展开明细'
+      },
+        h('span', { class: 'al-ts', text: rec.ts || '—' }),
+        h('span', { class: 'al-scene', text: rec.scene || rec.stage || '（未标注）' }),
+        h('span', { class: 'al-model', text: rec.model || '—' }),
+        h('span', { class: `al-badge${ok ? ' ok' : ' bad'}`, text: ok ? '成功' : '失败' }),
+        h('span', { class: 'al-tok', text: `${rec.total_tokens ?? 0} tok` }),
+        h('span', { class: 'al-lat', text: rec.latency_ms != null ? `${rec.latency_ms}ms` : '' })
+      );
+      head.addEventListener('click', () => { aiLog.expanded = open ? -1 : idx; paintAiLog(); });
+      row.append(head);
+      if (open) {
+        const grid = h('div', { class: 'al-detail' });
+        for (const [label, value] of alRowFields(rec)) {
+          grid.append(h('div', { class: 'al-kv' },
+            h('span', { class: 'al-k', text: label }),
+            h('span', { class: 'al-v', text: String(value) })));
+        }
+        row.append(grid);
+      }
+      list.append(row);
+    });
+    aiLogBody.append(list);
+    /* 分页 */
+    const pages = (d && d.pages) || 1;
+    aiLogBody.append(h('div', { class: 'al-pager' },
+      h('span', { class: 'hint-text', text: `共 ${d ? d.total : 0} 条 · 第 ${aiFilter.page}/${pages} 页` }),
+      h('button', {
+        class: 'btn btn-sm', type: 'button', text: '上一页',
+        disabled: aiFilter.page <= 1,
+        on: { click: () => loadAiLog(aiFilter.page - 1) }
+      }),
+      h('button', {
+        class: 'btn btn-sm', type: 'button', text: '下一页',
+        disabled: aiFilter.page >= pages,
+        on: { click: () => loadAiLog(aiFilter.page + 1) }
+      })
+    ));
+  }
+
+  /* 每次进入账本分组都刷新一次（进入时经 showGroup 触发，见上方 showGroup 尾部） */
 
   const advBody = h('div', {});
   panes.advanced.append(advBody);

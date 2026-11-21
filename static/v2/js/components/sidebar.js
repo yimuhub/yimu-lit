@@ -486,6 +486,16 @@ export function renderSidebar(container, ctx) {
       }
     },
     {
+      label: '码字统计',
+      icon: 'activity',
+      trail: '',
+      active: store.get().route.name === 'stats',
+      onClick: () => {
+        navigate('/stats');
+        ctx.closeDrawer();
+      }
+    },
+    {
       label: '设置',
       icon: 'settings',
       trail: '',

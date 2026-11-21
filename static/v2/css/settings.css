@@ -1485,3 +1485,169 @@
   flex: 0 0 auto;
   white-space: nowrap;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   v5.2.0 AI 调用账本页签（新增命名空间段，既有区块一律未动）
+   命名空间：.al-*（al-wrap 容器内生效，不与既有类冲突）
+   ══════════════════════════════════════════════════════════════ */
+
+.al-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 4 统计卡 */
+.al-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.al-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.al-card-val {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-primary);
+  line-height: 1.2;
+}
+
+.al-card-label {
+  font-size: 11.5px;
+  color: var(--ink-caption);
+}
+
+.al-card.ok .al-card-val { color: var(--success-ink, var(--success)); }
+.al-card.bad .al-card-val { color: var(--danger-ink, var(--danger)); }
+
+/* 筛选行 */
+.al-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.al-filter {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+.al-filter.al-q { flex: 1 1 180px; min-width: 140px; }
+
+/* 明细列表 */
+.al-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.al-item + .al-item { border-top: 1px solid var(--line-2); }
+
+.al-item-head {
+  display: grid;
+  grid-template-columns: 150px 92px minmax(120px, 1.4fr) 56px 76px 76px;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--ink-secondary);
+  font-size: 12px;
+}
+
+.al-item-head:hover { background: var(--bg-chip); }
+.al-item.is-open { background: var(--bg-chip); }
+
+.al-ts { font-variant-numeric: tabular-nums; color: var(--ink-secondary); }
+
+.al-scene {
+  justify-self: start;
+  background: var(--bg-chip);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  padding: 1px 9px;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+
+.al-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-primary);
+}
+
+.al-badge {
+  justify-self: start;
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  font-size: 11px;
+}
+
+.al-badge.ok { background: var(--success-soft, rgba(34, 168, 100, 0.12)); color: var(--success-ink, var(--success)); }
+.al-badge.bad { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger-ink, var(--danger)); }
+
+.al-tok, .al-lat {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-caption);
+}
+
+/* 展开明细：字段键值对 */
+.al-detail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 18px;
+  padding: 4px 14px 12px;
+  border-top: 1px dashed var(--line-2);
+}
+
+.al-kv {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.al-k { flex: 0 0 auto; color: var(--ink-caption); }
+.al-v {
+  color: var(--ink-primary);
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 状态与分页 */
+.al-state { padding: 4px 2px; }
+
+.al-pager {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+@media (max-width: 875px) {
+  .al-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .al-item-head { grid-template-columns: 128px 84px 1fr 52px 64px 64px; }
+  .al-detail { grid-template-columns: 1fr; }
+}
