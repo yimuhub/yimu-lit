@@ -22,6 +22,7 @@ import { mountQuickWrite } from '../core/quickwrite.js';
 import { mountChatFloat } from '../components/chatfloat.js';
 import { createTTS, ttsSupported, hasChineseVoice, loadPos } from '../core/tts.js';
 import { mountFindReplace } from '../core/findreplace.js';
+import { mountNameHighlight } from '../core/namehl.js';
 
 /* v5.1.0：bench 编辑器样式按需注入（静态资源 no-store，无需版本参数）。 */
 loadCss('/v2/css/bench-editor.css');
@@ -949,6 +950,8 @@ export function renderBench(container, ctx) {
       schedulePhoneFill();
       /* v5.2.0：输入差值计数 + 幽灵字防抖重排（Tab 采纳/续写流入由事件自身标注） */
       ghostCtl.notifyText(text, ev || {});
+      /* v5.6.0：人物名高亮 120ms 防抖重建（复用防抖保存链路同一钩子；组词期间模块内跳过） */
+      namehl.notifyText(text, ev || {});
     },
     onCompositionEnd: () => {
       /* 拼音组词结束：把组词期间欠下的落盘补上 */
@@ -1024,6 +1027,22 @@ export function renderBench(container, ctx) {
     flushSave,
     onChapterReplaced: () => { loadChapter(); },   // 全书替换波及当前章 → 编辑器内容同步刷新
     onGotoChapter: (no) => { navigate(`/work/${encodeURIComponent(key)}/bench/${Number(no) || 1}`); }
+  });
+
+  /* ══════════════════════════════════════════════════════════════
+     v5.6.0 编辑器内人物名高亮（只追加区块，全部自研）：
+     · CSS Custom Highlight API（CSS.highlights + ::highlight(character-name)）
+       ——纯渲染层 Range 标记：零 DOM 文本改动、零正文模型污染，复制/导出/落盘
+       路径零接触；浏览器不支持（Chrome/Edge <105、Safari <17.0）静默降级不启用；
+     · 名单来源：/api/canvas/graph 人物节点（复用画布聚合，无新增端点，模块级缓存）
+       + 用户自定义词（localStorage `ew-name-hl:<bookKey>`）；
+     · 文本变化 120ms 防抖重建 Range（组词期间跳过；按段落定位，跨段不标）；
+     · 管理面板：bench 头部「高亮」按钮（总开关 / 人物清单 / 自定义词 / 单词开关）。
+     ══════════════════════════════════════════════════════════════ */
+  const namehl = mountNameHighlight({
+    editor,
+    getKey: () => key,
+    onHint: (msg) => flashAiHint(msg)
   });
 
   /* v5.5.x A4 结算账本：只读会话事件流（begin/update/commit），退出时弹结算卡。 */
@@ -1120,6 +1139,7 @@ export function renderBench(container, ctx) {
             model.dirty = false;
             paintModeSwitch();
             paintAll();
+            namehl.refresh();   /* v5.6.0：正文/工作文件口径切换后重算高亮区间 */
           }
         }
       }));
@@ -1196,6 +1216,14 @@ export function renderBench(container, ctx) {
         title: '全书查找替换（只作用于正文，概要/备注不计入）',
         html: `${icon('search', 13)}<span>查找</span>`,
         on: { click: () => findReplace.toggle() }
+      }),
+      /* v5.6.0：人物名高亮管理入口（CSS Custom Highlight API 纯渲染层，不动正文内容） */
+      h('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        title: '人物名高亮（编辑器内标记人物与自定义词，复制/导出内容不受影响）',
+        html: `${icon('users', 13)}<span>高亮</span>`,
+        on: { click: (event) => namehl.openPanel(event.currentTarget) }
       }),
       /* v5.4.x：听书胶囊（播放/暂停 · 语速 · 停止 · 句进度 · 当前句字幕，区块见下） */
       ttsCapsule,
@@ -1969,6 +1997,7 @@ export function renderBench(container, ctx) {
       selectionBar.destroy();
       if (chatFloat) chatFloat.destroy();
       findReplace.destroy();
+      namehl.destroy();   /* v5.6.0：摘人物名高亮注册（CSS.highlights）与管理面板 */
       catUnsub();          /* v5.5.x A3：摘掉 store 订阅与目录窄栏 */
       catRail.destroy();
       editor.destroy();

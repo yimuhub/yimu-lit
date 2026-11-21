@@ -680,3 +680,131 @@ def set_global_model(provider_id, model):
         _require_id(data2, provider_id)["default_model"] = model
         _write(data2)
     return {"provider_id": provider_id, "model": model}
+
+
+# ---------- v5.7.0：图像供应商（AI 封面生成，OpenAI 兼容 images/generations） ----------
+#
+# 结构选择：providers.json 顶层新增独立小节 image_provider，而不是往 providers[]
+# 里塞 kind:"image" 条目。理由：providers[] 的每一条都被文本 chat 链路消费——
+# resolve()/usable()/remove_provider()（唯一 active 守卫）/active_model_options()/
+# global_model() 都会遍历该数组，混入图像条目就得在上述 5 处加 kind 过滤，回归面大；
+# 独立小节是纯增量（旧文件没有该键 → 读到空 dict，文本链路零感知），CRUD/迁移逻辑不动。
+# 读写入口：save_image_provider() / image_provider()（webcover.py 的
+# /api/library/cover/ai/config、/ai/test 端点调用；图像 HTTP 调用在 webcover.py）。
+
+DEFAULT_IMAGE_SIZE = "1024x1536"      # 封面竖版默认尺寸
+SIZE_RE = re.compile(r"^\d{2,4}x\d{2,4}$")
+
+
+def _norm_image_provider(raw) -> dict:
+    """图像供应商小节修形状：坏字段丢弃、缺省补默认，绝不抛错。"""
+    out = {"base_url": "", "api_key": "", "model": "", "size": DEFAULT_IMAGE_SIZE}
+    if not isinstance(raw, dict):
+        return out
+    base = str(raw.get("base_url") or "").strip().rstrip("/")
+    if _valid_base_url(base):
+        out["base_url"] = base
+    model = str(raw.get("model") or "").strip()
+    if VALID_MODEL.fullmatch(model):
+        out["model"] = model
+    size = str(raw.get("size") or "").strip()
+    if SIZE_RE.fullmatch(size):
+        out["size"] = size
+    out["api_key"] = str(raw.get("api_key") or "").strip()
+    return out
+
+
+def image_provider_runtime() -> dict:
+    """服务端内部视图（含明文 key，只进请求 header，绝不外发/进日志/下发前端）。
+    key 来源：inline → 环境变量 IMAGE_API_KEY / NOVEL_BOT_IMAGE_API_KEY。"""
+    data = load_data()
+    cfg = _norm_image_provider(data.get("image_provider"))
+    key = cfg["api_key"]
+    if not key:
+        for env in ("IMAGE_API_KEY", "NOVEL_BOT_IMAGE_API_KEY"):
+            key = (os.environ.get(env) or "").strip()
+            if key:
+                break
+    return {"base_url": cfg["base_url"], "model": cfg["model"], "size": cfg["size"],
+            "api_key": key,
+            "configured": bool(cfg["base_url"] and cfg["model"])}
+
+
+def image_provider() -> dict:
+    """前端可安全展示的图像供应商视图（key 打码，不泄露明文）。"""
+    rt = image_provider_runtime()
+    key = rt.get("api_key") or ""
+    if key:
+        disp = "已设置（%s…%s）" % (key[:3], key[-2:]) if len(key) > 8 else "已设置"
+    else:
+        disp = "未设置（可留空：本地免鉴权接口）"
+    return {"configured": rt["configured"], "base_url": rt["base_url"],
+            "model": rt["model"], "size": rt["size"],
+            "has_key": bool(key), "key_display": disp}
+
+
+def save_image_provider(payload) -> dict:
+    """保存图像供应商配置。字段级语义：
+      · base_url/model 显式传空串 = 清除该项（两者任一为空即视为未配置）；
+      · api_key 留空 = 保留已保存值（与文本供应商 v4.19.1 口径一致，绝不清空密钥）；
+      · size 缺省不动；显式传值必须是 宽x高 数字形状。
+    返回打码视图；非法输入抛 ProviderError。"""
+    payload = payload or {}
+    with _LOCK:
+        data = load_data()
+        cur = _norm_image_provider(data.get("image_provider"))
+        if "base_url" in payload:
+            base = str(payload.get("base_url") or "").strip().rstrip("/")
+            if base and not _valid_base_url(base):
+                raise ProviderError("base_url 非法（必须是 http/https 开头的接口地址）")
+            cur["base_url"] = base
+        if "model" in payload:
+            model = str(payload.get("model") or "").strip()
+            if model and not VALID_MODEL.fullmatch(model):
+                raise ProviderError("模型名非法（字母/数字/点/中划线）")
+            cur["model"] = model
+        if "size" in payload:
+            size = str(payload.get("size") or "").strip()
+            if size and not SIZE_RE.fullmatch(size):
+                raise ProviderError("尺寸非法（形如 1024x1536）")
+            if size:
+                cur["size"] = size
+        key = str(payload.get("api_key") or "").strip()
+        if key:
+            cur["api_key"] = key
+        data["image_provider"] = cur
+        _write(data)
+    return image_provider()
+
+
+def test_image_provider(size: str = "512x512", timeout: int = 30) -> dict:
+    """图像接口探活：真实请求一张小尺寸测试图（b64_json）。detail 全中文。"""
+    rt = image_provider_runtime()
+    if not rt["configured"]:
+        return {"ok": False, "detail": "尚未配置：请填写接口地址与图像模型名"}
+    url = rt["base_url"].rstrip("/") + "/images/generations"
+    headers = {"Content-Type": "application/json"}
+    if rt["api_key"]:
+        headers["Authorization"] = "Bearer %s" % rt["api_key"]
+    body = {"model": rt["model"], "prompt": "一张纯灰色方块测试图", "n": 1,
+            "size": size or "512x512", "response_format": "b64_json"}
+    try:
+        with httpx.Client(timeout=timeout) as c:
+            r = c.post(url, headers=headers, json=body)
+    except Exception as e:
+        return {"ok": False, "detail": "无法连接图像接口：%s" % str(e)[:160]}
+    if r.status_code == 200:
+        try:
+            item = (r.json().get("data") or [{}])[0]
+            if item.get("b64_json") or item.get("url"):
+                return {"ok": True, "detail": "已连通，返回 1 张测试图（模型 %s）" % rt["model"]}
+            return {"ok": False, "detail": "已连通（HTTP 200）但响应里没有图片数据，请确认该模型是图像模型"}
+        except Exception:
+            return {"ok": True, "detail": "已连通（HTTP 200）"}
+    if r.status_code in (401, 403):
+        return {"ok": False, "detail": "鉴权失败（%d），请检查 API key 是否正确" % r.status_code}
+    if r.status_code == 429:
+        return {"ok": False, "detail": "请求太频繁（429），请稍后再试"}
+    if r.status_code == 404:
+        return {"ok": False, "detail": "端点不存在（404）：请确认 base_url 以 /v1 结尾、且该模型支持 images/generations"}
+    return {"ok": False, "detail": "接口返回 %d：%s" % (r.status_code, (r.text or "")[:140])}

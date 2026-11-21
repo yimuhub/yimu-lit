@@ -23,6 +23,7 @@ import { store } from '../core/state.js';
 import { api, errorText, IS_MOCK, request, optional } from '../core/api.js';
 import { toast, popoverMenu, openModal, confirmDialog } from '../core/ui.js';
 import { openProject } from '../core/router.js';
+import { openAiCoverDialog } from '../core/aicover.js';
 import { loadCss } from '../core/loadcss.js';
 
 /* 书架新样式（分组 tab / 封面图 / 管理弹窗）：library.css 按需注入，panels.css 不动。 */
@@ -877,6 +878,24 @@ export function renderLibrary(container, ctx) {
               label: '上传封面',
               icon: 'upload',
               onSelect: () => pickCover(item)
+            },
+            {
+              /* v5.7.0：AI 生成封面——弹窗状态机在 core/aicover.js；
+                 后端生成即落盘，采用后 bump 版本号刷新封面；mock 模式回传本地占位 dataURL。 */
+              label: 'AI 生成封面',
+              icon: 'sparkles',
+              onSelect: () => openAiCoverDialog({
+                item,
+                onApplied: (dataUrl) => {
+                  if (dataUrl) {
+                    model.mockCovers[item.key] = dataUrl;
+                  } else {
+                    model.coverV[item.key] = Date.now();
+                    model.hasCover.add(item.key);
+                  }
+                  paintList();
+                }
+              })
             },
             ...(model.hasCover.has(item.key)
               ? [

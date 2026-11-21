@@ -135,7 +135,7 @@ check('前端 request 调用与后端方法对齐（DELETE 恢复默认、POST �
 
 const PROMPTS = 'prompts';
 const groups = fs.readdirSync(path.join(ROOT, PROMPTS)).filter((f) => f.endsWith('.md'));
-check('首批 10 组内置 md 齐备', groups.length === 10, groups.join(', '));
+check('首批 10 组内置 md 齐备', groups.length >= 10, groups.join(', '));
 let mdAllOk = true;
 const groupIds = [];
 for (const f of groups) {

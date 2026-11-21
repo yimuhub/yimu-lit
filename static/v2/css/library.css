@@ -227,3 +227,109 @@
     max-width: 46%;
   }
 }
+
+/* ------------------------------------------------ AI 生成封面弹窗（v5.7.0，core/aicover.js）
+   颜色一律走 tokens.css 语义变量，深浅色主题自动适配；不引入任何硬编码色值。 */
+
+.lib-aicv-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lib-aicv-guide {
+  padding: 9px 11px;
+  border: 0.5px solid var(--warn-line);
+  border-radius: var(--radius-md);
+  background: var(--warn-soft);
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+}
+
+.lib-aicv-prompt {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+}
+
+.lib-aicv-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lib-aicv-chip {
+  padding: 4px 11px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.lib-aicv-chip:hover {
+  border-color: var(--line-4);
+  color: var(--ink-primary);
+}
+
+.lib-aicv-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.lib-aicv-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  border: 0.5px dashed var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  overflow: hidden;
+}
+
+.lib-aicv-preview:empty {
+  min-height: 40px;
+  border-style: solid;
+  border-color: transparent;
+  background: transparent;
+}
+
+.lib-aicv-loading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink-secondary);
+  font-size: var(--fs-small);
+}
+
+.lib-aicv-spin {
+  display: inline-flex;
+  animation: lib-aicv-rotate 0.9s linear infinite;
+  color: var(--accent);
+}
+
+@keyframes lib-aicv-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.lib-aicv-img {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+}
+
+.lib-aicv-foot {
+  gap: 8px;
+}
+

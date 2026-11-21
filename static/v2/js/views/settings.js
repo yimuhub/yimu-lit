@@ -931,6 +931,129 @@ export function renderSettings(container, ctx) {
     }
   }
 
+  /* ---------------------------------------------------- 图像模型（封面生成）（v5.7.0）
+     供应商区尾部的独立小节：providers.json 顶层 image_provider 小节（bot/providers.py
+     save_image_provider），读写/测试走 bot/webcover.py 的 /api/library/cover/ai/config|test
+     端点（AI 封面子系统自带配置面，不动 /api/providers/* 文本路由）。密钥不回显：
+     输入框留空 = 保留已保存值。后端未挂载 webcover（旧版本服务）时整节隐藏。 */
+
+  const imageProvBody = h('div', {});
+  panes.providers.append(imageProvBody);
+
+  function paintImageProvider(cfg) {
+    imageProvBody.textContent = '';
+    cfg = cfg || {};
+    const baseUrl = h('input', {
+      class: 'input', type: 'url', placeholder: 'https://api.example.com/v1',
+      value: cfg.base_url || '', 'aria-label': '图像接口地址'
+    });
+    const apiKey = h('input', {
+      class: 'input', type: 'password', autocomplete: 'new-password',
+      placeholder: cfg.has_key ? '已保存（留空则不修改）' : 'sk-…（本地免鉴权接口可留空）',
+      'aria-label': '图像接口密钥'
+    });
+    const model = h('input', {
+      class: 'input', placeholder: '如 dall-e-3 / fooocus-xl / gemini-image',
+      value: cfg.model || '', 'aria-label': '图像模型名'
+    });
+    const size = h('input', {
+      class: 'input', placeholder: '1024x1536',
+      value: cfg.size || '1024x1536', 'aria-label': '出图尺寸'
+    });
+    const stateRow = h('div', {
+      class: 'key-state',
+      dataset: { ok: cfg.configured ? 'true' : 'false' }
+    },
+      h('span', { html: icon(cfg.configured ? 'check' : 'alert', 13) }),
+      h('span', {
+        text: cfg.configured
+          ? `已配置：${cfg.model} · ${cfg.size || '1024x1536'} · 密钥${cfg.has_key ? ' ' + (cfg.key_display || '已保存') : '未设置（本地接口可留空）'}`
+          : '未配置：作品库「⋯ → AI 生成封面」需要 OpenAI 兼容的 images/generations 接口。'
+      }));
+    const saveBtn = h('button', {
+      class: 'btn btn-primary btn-sm', type: 'button', text: '保存',
+      on: { click: () => saveImageProvider(saveBtn) }
+    });
+    const testBtn = h('button', {
+      class: 'btn btn-sm', type: 'button', text: '测试',
+      on: { click: () => testImageProvider(testBtn) }
+    });
+    imageProvBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title' },
+            h('span', { text: '图像模型（封面生成）' }),
+            h('span', { class: 'badge', dataset: { tone: 'muted' }, text: 'AI 封面' })),
+          h('div', {
+            class: 'set-row-desc',
+            text: '在作品库卡片「⋯ → AI 生成封面」用图像模型画竖版封面。兼容 OpenAI images/generations 协议；密钥只存本机 providers.json，不外发。'
+          })),
+        h('div', { class: 'set-control' }, saveBtn, testBtn)),
+      stateRow,
+      fieldRow('接口地址（base_url）', baseUrl, '', '以 /v1 结尾的 OpenAI 兼容地址'),
+      fieldRow('图像模型', model, '', '支持 images/generations 的模型名'),
+      fieldRow('API Key', apiKey, '', '只存本机；修改时才填写'),
+      fieldRow('出图尺寸', size, '', '封面竖版默认 1024x1536')
+    );
+  }
+
+  async function reloadImageProvider() {
+    imageProvBody.textContent = '';
+    imageProvBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-50' })));
+    try {
+      const cfg = await request('/api/library/cover/ai/config');
+      paintImageProvider(cfg);
+    } catch (err) {
+      imageProvBody.textContent = '';
+      if (err && err.isMissing) return;   // 旧版本后端没有该端点：整节隐藏，不报错
+      imageProvBody.append(errorRow(errorText(err, '图像模型配置加载失败'), reloadImageProvider));
+    }
+  }
+
+  async function saveImageProvider(btn) {
+    const baseUrl = imageProvBody.querySelector('input[aria-label="图像接口地址"]');
+    const apiKey = imageProvBody.querySelector('input[aria-label="图像接口密钥"]');
+    const model = imageProvBody.querySelector('input[aria-label="图像模型名"]');
+    const size = imageProvBody.querySelector('input[aria-label="出图尺寸"]');
+    const body = {
+      base_url: String(baseUrl?.value || '').trim(),
+      model: String(model?.value || '').trim(),
+      size: String(size?.value || '').trim(),
+      api_key: String(apiKey?.value || '').trim()   // 留空 = 保留已存值（后端口径）
+    };
+    if (!body.base_url || !body.model) {
+      toast('请填写接口地址与图像模型名', { tone: 'danger' });
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+      await request('/api/library/cover/ai/config', { method: 'POST', body });
+      toast('图像模型配置已保存', { tone: 'success', duration: 1800 });
+      await reloadImageProvider();
+    } catch (err) {
+      toast(errorText(err, '保存失败'), { tone: 'danger' });
+    }
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+
+  async function testImageProvider(btn) {
+    btn.disabled = true;
+    btn.textContent = '测试中…';
+    try {
+      const res = await request('/api/library/cover/ai/test', { method: 'POST', body: {}, timeout: 45000 });
+      if (res && res.ok) toast(`测试成功：${res.detail || '已连通'}`, { tone: 'success', duration: 3200 });
+      else toast(`测试失败：${(res && res.detail) || '请检查接口地址与密钥'}`, { tone: 'danger', duration: 5000 });
+    } catch (err) {
+      toast(errorText(err, '测试失败，请检查地址与密钥'), { tone: 'danger' });
+    }
+    btn.disabled = false;
+    btn.textContent = '测试';
+  }
+
+  reloadImageProvider();
+
   /* v4.19.0：供应商编辑重构——填完地址与密钥一键拉取全部模型，复选框勾选，
      取代旧的「下拉逐个追加」。勾选顺序即优先级，第一个为默认模型；
      /models 拉不到时保留手动输入兜底。 */

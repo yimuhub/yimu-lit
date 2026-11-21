@@ -1039,3 +1039,187 @@ mark.cat-mark {
   }
   .cat-rail[data-open="true"] .cat-main { display: flex; }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   v5.6.0 编辑器内人物名高亮（CSS Custom Highlight API，纯渲染层）
+   · ::highlight(character-name) 只支持 color / background-color 等有限属性，
+     border-radius 由支持的内核渐进增强（不支持时整条声明被忽略，无害）；
+   · 颜色全部语义变量（宣纸白 / 古韵信笺 / 森系护眼 / 暗夜水墨自适应，零硬编码色）；
+   · 注册由 core/namehl.js 完成（CSS.highlights.set），正文模型与 DOM 文本零改动。
+   ══════════════════════════════════════════════════════════════ */
+.bench-ed ::highlight(character-name) {
+  background-color: var(--accent-soft-2);
+  color: var(--ink-primary);
+  border-radius: 2px;
+}
+
+/* 人物名高亮管理面板（bench 头部「高亮」按钮下拉；定位 left/top 由 JS 内联） */
+.namehl-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 264px;
+  max-height: 430px;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-3);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-panel);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.nh-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nh-master {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-3);
+  background: var(--bg-chip);
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+.nh-master-state {
+  font-size: 11px;
+  color: var(--ink-caption);
+}
+.nh-master[data-on="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+}
+.nh-master[data-on="true"] .nh-master-state { color: var(--accent-ink); }
+.nh-unsupport {
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--warn-soft);
+  color: var(--warn-label);
+  font-size: 11px;
+}
+.nh-search-input,
+.nh-add-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--input-ink);
+  font-size: 12px;
+}
+.nh-search-input:focus,
+.nh-add-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+.nh-section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-caption);
+  font-size: 11px;
+}
+.nh-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.nh-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 168px;
+  overflow-y: auto;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-xs);
+  padding: 2px;
+}
+.nh-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+}
+.nh-item:hover {
+  background: var(--hover);
+}
+.nh-item-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+.nh-item-main:hover { color: var(--accent-ink); }
+.nh-toggle {
+  flex: none;
+  width: 28px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-3);
+  background: var(--bg-chip);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+}
+.nh-toggle::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ink-caption);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.nh-toggle[data-on="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.nh-toggle[data-on="true"]::after {
+  transform: translateX(12px);
+  background: var(--accent-contrast);
+}
+.nh-del {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--ink-caption);
+  cursor: pointer;
+}
+.nh-del:hover {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+.nh-empty {
+  padding: 8px 6px;
+  color: var(--ink-caption);
+  font-size: 11px;
+}
+.nh-add {
+  flex: none;
+}
+
