@@ -299,6 +299,11 @@ class Project:
                 # 前端三态按钮因此恢复后永远显示「继续」。
                 "running": bool(self.running or _book_running(bkey)),
                 "paused": bool(meta.get("paused")),
+                # v5.8.0：协作模式（人机共同创作·逐章确认）——pausedReason=await_collab:<n>
+                # 表示「第 n 章已写完，等待作者把关」；前端章节卡据此渲染协作条，
+                # /api/status → state.work 是它的唯一数据源。collab_review 是本书开关。
+                "pausedReason": str(meta.get("pausedReason") or ""),
+                "collab_review": bool(meta.get("collab_review")),
                 "queued": len([q for q in meta.get("queued_msgs", []) if not q.get("consumed")]),
                 "name": plan.get("novelName", self.name),
                 # v4.24.12：带上 key —— 前端把本返回体并进 work 后靠 key 定位作品。
@@ -1103,6 +1108,141 @@ def pause_book(key):
     _PARA_RW_PROGRESS.get(key, {}).update(paused=True)
     return True
 
+
+# ---------- v5.8.0：人机共同创作模式（逐章确认） ----------
+# 哲学对齐易创：AI 只产候选，作者确认才成为正式内容。协作体现在「每章写完暂停
+# 等作者拍板再继续」——复用既有暂停机制（meta.paused / status=paused），落盘模型
+# 不变（章节照常成稿），防重入与断点恢复天然兼容：重启后书仍停在待确认章，
+# 「继续」= 采用该章并写下一章。
+
+#: 协作检查点的 pausedReason 格式（n=待确认章号）。解析/恢复/前端协作条都认它。
+COLLAB_REASON_FMT = "await_collab:{n}"
+
+#: 协作模式下的对话提示行（追加在章节卡尾；带章号避免历史回放去重误伤）。
+COLLAB_CHAT_HINT = ("🤝 第 {n} 章已完成，等待你把关：说「继续」采用并写下一章 / "
+                    "「重写本章」重新生成 / 去工作台改稿后说「采用继续」。")
+
+#: 协作模式待确认章进入重写时的暂存（key → 章号）：重写必须能跑（run_guided_rewrite
+#: 的 is_paused 检查点会拦），所以先解除暂停位，重写收尾由 end_collab_rewrite 恢复
+#  「仍停在本章待确认」——不自动继续写下一章。进程重启丢失该暂存是可接受的边界
+#: （书回到未暂停态，「继续」按普通续写处理）。
+_COLLAB_REWRITE_PENDING: dict = {}
+
+
+def await_collab_no(reason) -> int:
+    """pausedReason=await_collab:<n> → n；非该原因返回 0。"""
+    m = re.match(r"await_collab:(\d+)", str(reason or "").strip())
+    return int(m.group(1)) if m else 0
+
+
+def collab_review_on(proj) -> bool:
+    """本书是否开启逐章确认。与极速开关同款动态语义：每次检查点实时读盘，
+    用户中途开关下一章即生效（写在半章不换档）。"""
+    try:
+        meta = (proj.plan() or {}).get("meta") or {}
+        return bool(meta.get("collab_review"))
+    except Exception:
+        return False
+
+
+def collab_awaiting_key(key) -> int:
+    """这本书当前是否停在「待作者确认」检查点；返回待确认章号（0=不在该状态）。
+    必须同时满足 paused=True 且 pausedReason=await_collab:<n>——paused 但原因不是
+    协作的（人工暂停/预算停）绝不能被「继续」误当成采用。"""
+    try:
+        p = Project(_project_dir(key), key)
+        meta = (p.plan() or {}).get("meta") or {}
+        if meta.get("paused"):
+            return await_collab_no(meta.get("pausedReason") or "")
+    except Exception:
+        pass
+    return 0
+
+
+def _collab_pause_now(proj, no: int) -> bool:
+    """协作检查点落位：置暂停位 + pausedReason，章节卡尾追加协作提示行。
+    只做落位与提示；任务档案/日志/实时作业收口交给 _write_loop 的暂停尾部统一处理。
+    返回 False（异常或本章未完成）时调用方继续走既有流程。"""
+    try:
+        plan = proj.plan() or {}
+        ch = next((c for c in (plan.get("chapters") or [])
+                   if (c.get("chapterNumber") or 0) == no), None)
+        if not ch or ch.get("status") != "completed":
+            return False    # 本章没写成（failed）→ 不进入确认，交给既有失败处理
+        with proj.lock:
+            plan2 = proj.plan() or plan
+            _m2 = plan2.setdefault("meta", {})
+            _m2["paused"] = True
+            _m2["pausedReason"] = COLLAB_REASON_FMT.format(n=no)
+            plan2["status"] = "paused"
+            proj.save_plan(plan2)
+        _bk = os.path.basename(proj.path)
+        # 进度面板同步（与 pause_book 同款）：线程退出期间不能再显示「正在跑」
+        _RW_PROGRESS.get(_bk, {}).update(paused=True)
+        _PARA_RW_PROGRESS.get(_bk, {}).update(paused=True)
+        # 章节卡尾追加协作提示行（chat_log 永久留档，刷新后原样回放）
+        try:
+            from bot.v2api import _save_chat_msg
+            _save_chat_msg(proj, "assistant", COLLAB_CHAT_HINT.format(n=no),
+                           {"type": "collab_review", "no": no})
+        except Exception:
+            pass
+        try:
+            _evt(_bk, "system", phase="warn", title=f"第{no}章待作者确认（协作模式）",
+                 chapter=no, output="说「继续」采用并写下一章；「重写本章」重新生成")
+        except Exception:
+            pass
+        proj.log(f"🤝 协作模式：第 {no} 章已完成，暂停等你把关"
+                 f"（说「继续」采用并写下一章 /「重写本章」重新生成 / 工作台改稿后说「采用继续」）")
+        return True
+    except Exception:
+        return False
+
+
+def begin_collab_rewrite(key) -> int:
+    """协作模式待确认章进入重写（「重写本章」/ 会话里说「重写第 n 章」）：
+    记下待确认章号并解除暂停位——重写链路（run_guided_rewrite 的 is_paused 检查点、
+    start_writing 防重入等）只在未暂停时能动。返回待确认章号（0=不在协作待确认态）。
+    配对调用 end_collab_rewrite 恢复「仍停在本章待确认」。"""
+    n = collab_awaiting_key(key)
+    if not n:
+        return 0
+    _COLLAB_REWRITE_PENDING[key] = n
+    clear_pause(key)    # 解除暂停位让重写能跑；pausedReason 一并清掉，由 end 恢复
+    try:
+        p = Project(_project_dir(key), key)
+        p.log(f"🤝 协作模式：第 {n} 章进入重写——重写完成后仍停在本章待确认（不自动继续）")
+    except Exception:
+        pass
+    return n
+
+
+def end_collab_rewrite(key, res=None) -> None:
+    """协作重写收尾：恢复「停在本章待确认」（paused + pausedReason=await_collab:<n>）。
+    重写被取消/被新指令取代时不恢复旧待确认位（新指令自己接管状态）。"""
+    n = _COLLAB_REWRITE_PENDING.pop(key, 0)
+    if not n:
+        return
+    if isinstance(res, dict) and (res.get("cancelled") or res.get("superseded")):
+        return
+    try:
+        p = Project(_project_dir(key), key)
+        plan = p.plan() or {}
+        if not plan:
+            return
+        _m = plan.setdefault("meta", {})
+        _m["paused"] = True
+        _m["pausedReason"] = COLLAB_REASON_FMT.format(n=n)
+        plan["status"] = "paused"
+        p.save_plan(plan)
+        journal.update(p.path, status="paused", stage="await_collab",
+                       note=f"第 {n} 章重写完成，仍在等待作者确认（协作模式）")
+        p.log(f"🤝 协作模式：第 {n} 章重写完成，仍停在本章待你确认"
+              f"（说「继续」采用并写下一章）")
+    except Exception:
+        pass
+
+
 def stop_creation(key, reason: str = "已出书，创作停止"):
     """v4.34.0 状态规则统一收口：出书/成书后必须彻底停止创作。
 
@@ -1133,6 +1273,7 @@ def stop_creation(key, reason: str = "已出书，创作停止"):
                 _done = 0
             _total = len(plan.get("chapters") or [])
             plan.setdefault("meta", {})["paused"] = True
+            plan["meta"].pop("pausedReason", None)   # v5.8.0：创作停止后不再处于任何待确认态
             plan["status"] = "completed" if (_total and _done >= _total) else "paused"
             p.save_plan(plan)
             if plan["status"] == "completed":
@@ -1230,10 +1371,16 @@ def resume_book(key, batch_size=None) -> bool:
     if _total and _done >= _total:
         plan["status"] = "completed"
         plan.setdefault("meta", {})["paused"] = False
+        plan["meta"].pop("pausedReason", None)
         p.save_plan(plan)
         p.log(f"✅ 全书正文已齐（{_done}/{_total}），账面归位为已完成，不重复启动创作")
         return False
+    # v5.8.0：协作模式待确认章的「继续」= 采用该章。先记下章号（下面要清 pausedReason），
+    # 断点恢复语义：重启后书仍停在待确认章，「继续/采用继续」落在同一章的确认位上。
+    _ac = collab_awaiting_key(key)
     plan.setdefault("meta", {})["paused"] = False
+    # v5.8.0：继续是明确指令——待确认/暂停原因一并清掉（协作检查点会在下一章重新落位）
+    plan["meta"].pop("pausedReason", None)
     # v4.34.1：清掉各种「系统停」标记——继续是明确指令，上一轮的停机原因不再生效
     for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
         plan["meta"].pop(_flag, None)
@@ -1244,6 +1391,8 @@ def resume_book(key, batch_size=None) -> bool:
         cfg = plan.get("config") or {}
         batch_size = cfg.get("batch_size", "1")
     _where = _resume_text(key)
+    if _ac:
+        _where = f"第 {_ac} 章已按你确认采用，继续第 {_ac + 1} 章"
     if not start_writing(p, batch_size=batch_size):
         p.log("ℹ️ 收到「继续」请求，但该作品已在创作中，无需重复启动")
         return False
@@ -4654,6 +4803,17 @@ def _write_loop(proj: Project, batch_size=None):
                     except Exception:
                         pass
                 _skeleton_refresh(os.path.basename(proj.path))   # v0.9.0：每写完一章即刷新写作骨架
+                # v5.8.0：人机共同创作检查点——每章写完（写盘+评分/门禁既有链路全部走完）
+                # 问一次「本书开了逐章确认吗」：开了就停在这里等作者拍板再写下一章。
+                # 与极速开关同款动态语义（collab_review_on 每章实时读盘）；极速模式不启用
+                # （保持一键直出，协作位留给用户事后手动开）；一键完稿（one_shot）同样是
+                # 明确的「自动驾驶」指令，不中途停；作者已请求暂停的（人工暂停优先）
+                # 也不改挂协作位。批量 N 章/一口气写完同样每章都停。
+                if not _live_express() and collab_review_on(proj) \
+                        and not is_paused(proj) \
+                        and _bkey(proj) not in _ONESHOT_DRIVING \
+                        and _collab_pause_now(proj, ch["chapterNumber"]):
+                    break
                 if is_paused(proj):
                     break
         if _plan_blocked:
@@ -4673,10 +4833,24 @@ def _write_loop(proj: Project, batch_size=None):
             return
         if is_paused(proj):
             plan = proj.plan(); plan["status"] = "paused"; proj.save_plan(plan)
-            proj.log("⏸ 已暂停（停在当前进度，点「▶继续」恢复；也可「⏹ 停止」）")
-            journal.update(_pdir, status="paused", note="人工暂停，进度已存档")
-            journal.remember(_pdir, "system", "写作已暂停，点继续可从中断处接着写")
-            _stop_note = f"已暂停，停在当前进度（已完成 {wrote} 章）"
+            # v5.8.0：协作检查点的停与「人工暂停」分开口径——账面同样是 paused，
+            # 但任务档案、日志与实时作业结论要说清「在等作者逐章确认」，否则总编辑
+            # 会回「你点的暂停」、前端也说不出为什么停。
+            _ac = await_collab_no(((plan.get("meta") or {}).get("pausedReason")) or "")
+            if _ac:
+                proj.log(f"🤝 协作模式：第 {_ac} 章已完成，等待你把关"
+                         f"（说「继续」采用并写下一章 /「重写本章」重新生成 / 工作台改稿后说「采用继续」）")
+                journal.update(_pdir, status="paused", stage="await_collab",
+                               note=f"第 {_ac} 章完成，等待作者确认（协作模式）")
+                journal.remember(_pdir, "system",
+                                 f"第 {_ac} 章已完成，等待你把关：说「继续」采用并写下一章；"
+                                 f"「重写本章」重新生成；去工作台改稿后说「采用继续」")
+                _stop_note = f"协作模式：第 {_ac} 章完成，等待作者确认后继续"
+            else:
+                proj.log("⏸ 已暂停（停在当前进度，点「▶继续」恢复；也可「⏹ 停止」）")
+                journal.update(_pdir, status="paused", note="人工暂停，进度已存档")
+                journal.remember(_pdir, "system", "写作已暂停，点继续可从中断处接着写")
+                _stop_note = f"已暂停，停在当前进度（已完成 {wrote} 章）"
             _skeleton_refresh(os.path.basename(proj.path))
             return
         # v4.20 C3：完结收尾前最后一轮规划师校准（纠偏指引会注入校验轮里失败章的重写；失败不阻断完结）
@@ -5389,13 +5563,16 @@ def supersede_rewrites(key):
     return gen
 
 def clear_pause(key) -> bool:
-    """清掉用户暂停位（「继续」/新指令自动执行时必须先清，否则逐章检查点一进去就停）。"""
+    """清掉用户暂停位（「继续」/新指令自动执行时必须先清，否则逐章检查点一进去就停）。
+    v5.8.0：pausedReason（协作模式的 await_collab:<n> 等）一并清掉——新指令是明确的，
+    旧的待确认位不再生效（协作重写链路由 begin/end_collab_rewrite 自己记忆与恢复）。"""
     try:
         p = Project(_project_dir(key), key)
         plan = p.plan() or {}
         if not plan:
             return False
         plan.setdefault("meta", {})["paused"] = False
+        plan["meta"].pop("pausedReason", None)
         for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
             plan["meta"].pop(_flag, None)
         if plan.get("status") == "paused":

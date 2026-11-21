@@ -838,6 +838,10 @@ async function renderView(route) {
         loadCss(`/v2/css/canvas.css?v=${CSS_V}`);
         render = (await import('./views/canvas.js')).renderCanvas;
       }
+      else if (route.name === 'flow') {
+        loadCss(`/v2/css/flow.css?v=${CSS_V}`);
+        render = (await import('./views/flow.js')).renderFlow;
+      }
       else if (route.name === 'skills') {
         loadCss(`/v2/css/skills.css?v=${CSS_V}`);
         render = (await import('./views/skilllib.js')).renderSkillLib;

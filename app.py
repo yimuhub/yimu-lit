@@ -9,7 +9,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from bot import llm, workflow, writer, providers, version, distill, learn, agents, skeleton
 from bot import medium as medium_mod, skillkit, script_writer, poetry_writer, poetry_checker
 from bot import prose_writer, slop_checker, security, jobs, versions, platforms
-from bot import webai, webstats, weblib, webprompts, webbreakdown, webrank, webbench, webcanvas, webcover  # v5.2-5.7：增量路由（APIRouter）
+from bot import webai, webstats, weblib, webprompts, webbreakdown, webrank, webbench, webcanvas, webcover, webflow  # v5.2-5.8：增量路由（APIRouter）
 from bot import thesis_writer
 from bot import children_writer, news_writer, copy_writer, other_writer
 from bot import chatsum
@@ -122,6 +122,8 @@ app.include_router(webbench.router)
 app.include_router(webcanvas.router)
 # v5.7.0：AI 生成封面（图像模型配置与生成）。
 app.include_router(webcover.router)
+# v5.8.0：无限画布（创作工作流白板）。
+app.include_router(webflow.router)
 # v5.3.0：书架（封面/分组）与提示词开放编辑。挂载点必须在既有 /api/library/{key}
 # 通配路由之前，否则 groups/cover 会被通配吞掉（weblib 硬约束）。
 app.include_router(weblib.router)
@@ -1590,6 +1592,9 @@ def _chat_attached(s, proj, msg):
                 return _run("start_writing", {})
             if _mode == "resume_task":
                 return _run("resume_task", {"batch_size": _count})
+            # v5.8.0：协作模式（逐章确认）——「继续/采用」= 采用当前待确认章并写下一章
+            if _mode == "collab_next":
+                return _run("collab_next", {})
             _cs = str(_count if _count is not None else "").strip().lower()
             if _cs in ("", "none", "continue", "next"):
                 return _run("resume_writing", {})
@@ -1597,6 +1602,52 @@ def _chat_attached(s, proj, msg):
                 return _run("start_writing_all", {})
             _m = re.search(r"\d+", _cs)
             return _run("batch_writing", {"batch_size": _m.group() if _m else _cs})
+
+        # v5.8.0：collab_mode —— 人机共同创作（逐章确认）开关
+        if intent == "collab_mode":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 逐章确认（协作模式）目前只支持小说；其他文体可逐章在对话里提修改意见。"
+            _enabled = bool(params.get("enabled", True))
+            plan = proj.plan() or {}
+            if not plan.get("chapters"):
+                return (f"⚠️ 《{name}》还没有写作计划，先等规划完成再设置创作模式"
+                        f"（说「进度」可查看）。")
+            plan.setdefault("meta", {})["collab_review"] = _enabled
+            proj.save_plan(plan)
+            proj.log("🤝 协作模式已开启：每章写完暂停等作者确认（说「继续」采用并写下一章）"
+                     if _enabled else "⚡ 协作模式已关闭：回到自动连续写作，不再逐章停下")
+            if _enabled:
+                return (f"🤝 已开启《{name}》的逐章确认：以后每章写完都会停下来等你把关——"
+                        f"说「继续」采用当前章并写下一章，「重写本章」重新生成，"
+                        f"也可以去工作台改稿后说「采用继续」。设置页的「高级 → 创作模式」也能切换。")
+            # 关闭时若正停在待确认章：视为作者放行，直接续写（「自动写」就是不想再停）
+            _ac = writer.collab_awaiting_key(key)
+            if _ac and not running and writer.resume_book(key):
+                return (f"⚡ 已关闭《{name}》的逐章确认：回到自动连续写作。"
+                        f"正停着的第 {_ac} 章视为已确认，直接继续往下写。")
+            return f"⚡ 已关闭《{name}》的逐章确认：回到自动连续写作，不再逐章停下。"
+
+        # v5.8.0：collab_next —— 协作模式「采用当前待确认章并继续写下一章」
+        if intent == "collab_next":
+            if str(key)[:2] in ("s_", "p_", "e_", "t_", "c_", "n_", "k_", "o_"):
+                return "⚠️ 逐章确认（协作模式）目前只支持小说。"
+            if running:
+                st2 = proj.status()
+                return (f"📖 《{name}》正在创作中（第 {st2['done']}/{st2['total']} 章），"
+                        f"无需确认；写完当前章后若仍开启逐章确认会自动停下等你把关。")
+            _ac = writer.collab_awaiting_key(key)
+            if not _ac:
+                return (f"ℹ️ 《{name}》当前没有停在待确认的章节"
+                        f"（协作模式未开启，或没有待把关的章）。"
+                        f"说「开启逐章确认」可打开协作模式。")
+            if not writer.resume_book(key):
+                st2 = proj.status()
+                if st2.get("state") == "completed":
+                    return (f"✅ 第 {_ac} 章已按你确认采用——全书正文已齐"
+                            f"（{st2['done']}/{st2['total']} 章），创作完成。")
+                return f"⚠️ 无法继续《{name}》：写作计划缺失或已完本。"
+            return (f"🤝 第 {_ac} 章已按你确认采用，继续第 {_ac + 1} 章…"
+                    f"（协作模式仍开启：每章写完还会停下等你把关）")
 
         if intent == "rewrite_chapters":
             if _med_of_key(key) != "novel":
@@ -1610,7 +1661,11 @@ def _chat_attached(s, proj, msg):
                 _chs = [_one] if _one else []
             if not _chs:
                 return "要改哪一章？告诉我章号，或者说说哪段不对劲，我来定位。"
-            writer.clear_pause(key)
+            # v5.8.0：协作模式待确认章的重写（会话里说「重写本章/重写第 n 章」）——
+            # 不用 clear_pause 抹掉待确认位，改由 begin/end_collab_rewrite 记住并恢复
+            # （重写完成后仍停在本章待确认，不自动继续写下一章）。
+            if not writer.begin_collab_rewrite(key):
+                writer.clear_pause(key)
             _item = _persist_brief(proj, _brief_for_rewrite(brief_data, _chs), msg,
                                    kind="rewrite") if brief_data else {}
             _dims = brief_mod.render_lines(_item) if _item else [msg]
@@ -2953,15 +3008,24 @@ def _start_rewrite(key, chapters=None, dimensions=None, max_rounds=6, supersede=
         _REWRITE_JOBS[key] = jid
         _REWRITING[key] = {"running": True, "job": jid, "result": None}
 
+    # v5.8.0：协作模式（逐章确认）——重写若发生在「第 n 章待作者确认」位上，
+    # 先解除暂停位让重写能跑（run_guided_rewrite 的 is_paused 检查点会拦），
+    # 重写收尾 end_collab_rewrite 恢复「仍停在本章待确认」：重写完不自动继续，
+    # 新稿仍要作者拍板。不在待确认位时 begin 返回 0、end 直接短路，零副作用。
+    writer.begin_collab_rewrite(key)
+
     def _job():
+        _res = None
         try:
-            res = writer.run_guided_rewrite(key, chapters=chapters,
-                                            dimensions=dimensions, max_rounds=max_rounds)
+            _res = writer.run_guided_rewrite(key, chapters=chapters,
+                                             dimensions=dimensions, max_rounds=max_rounds)
             if _REWRITE_JOBS.get(key) == jid:
-                _REWRITING[key] = {"running": False, "job": jid, "result": res}
+                _REWRITING[key] = {"running": False, "job": jid, "result": _res}
         except Exception as e:
             if _REWRITE_JOBS.get(key) == jid:
                 _REWRITING[key] = {"running": False, "job": jid, "result": {"error": str(e)}}
+        finally:
+            writer.end_collab_rewrite(key, _res)
     threading.Thread(target=_job, daemon=True).start()
     return True
 
@@ -5202,6 +5266,59 @@ def api_resume(payload: dict):
             "kind": r.get("kind") or "",
             "running": st.get("running"), "paused": st.get("paused"), "state": st.get("state")},
             started=ok)
+
+# ---------- v5.8.0：人机共同创作模式（逐章确认）——设置页「高级 → 创作模式」数据源 ----------
+
+@app.get("/api/collab-review")
+def api_collab_review_get(key: str):
+    """读本书逐章确认开关与待确认位（纯读、零 LLM）。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    plan = proj.plan() or {}
+    meta = plan.get("meta") or {}
+    return {"ok": True, "key": key,
+            "enabled": bool(meta.get("collab_review")),
+            "paused": bool(meta.get("paused")),
+            "awaiting": writer.collab_awaiting_key(key),
+            "state": plan.get("status") or "",
+            "done": len([c for c in (plan.get("chapters") or [])
+                         if c.get("status") == "completed"]),
+            "total": len(plan.get("chapters") or [])}
+
+
+@app.post("/api/collab-review")
+def api_collab_review_set(payload: dict):
+    """切换本书逐章确认（collab_review）。只落 plan.meta，不动运行线程——
+    与极速开关同款动态语义：写作循环每章检查点实时读盘，下一章即生效。"""
+    key = str(payload.get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    enabled = bool(payload.get("enabled"))
+    plan = proj.plan() or {}
+    if not plan:
+        return JSONResponse({"error": "该书还没有写作计划（等规划完成后再设置创作模式）"},
+                            status_code=400)
+    plan.setdefault("meta", {})["collab_review"] = enabled
+    proj.save_plan(plan)
+    proj.log("🤝 协作模式已开启：每章写完暂停等作者确认（说「继续」采用并写下一章）"
+             if enabled else "⚡ 协作模式已关闭：回到自动连续写作，不再逐章停下")
+    _awaiting = writer.collab_awaiting_key(key)
+    _resumed = False
+    if not enabled and _awaiting:
+        st = proj.status()
+        # 与总编辑 collab_mode(enabled=false) 同款语义：关闭 = 不想再停，
+        # 正停着的待确认章视为放行，直接续写余下章节。
+        if not st.get("running") and writer.resume_book(key):
+            _awaiting = 0
+            _resumed = True
+    return {"ok": True, "key": key, "enabled": enabled, "awaiting": _awaiting,
+            "resumed": _resumed,
+            "msg": ("已关闭逐章确认：正停着的待确认章视为已确认，继续写作" if _resumed else
+                    "已开启逐章确认：每章写完会停下等你把关" if enabled else
+                    "已关闭逐章确认：回到自动连续写作")}
+
 
 @app.post("/api/queue")
 def api_queue(payload: dict):

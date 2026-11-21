@@ -50,11 +50,21 @@ ACTIONS = {
         "params": {},
     },
     "write": {
-        "desc": "推进写作：按当前节奏继续、写指定数量、或一口气写完",
+        "desc": "推进写作：按当前节奏继续、写指定数量、或一口气写完；"
+                "协作模式（逐章确认）下「继续/可以/采用」表示采用当前待确认章并写下一章（mode=collab_next）",
         "params": {"count": "整数或 all；不填=按当前节奏继续",
-                   "mode": "continue|resume_task|start，默认 continue"},
+                   "mode": "continue|resume_task|start|collab_next，默认 continue；"
+                           "collab_next=采用当前待确认章并继续写下一章"},
     },
     "pause": {"desc": "暂停创作", "params": {}},
+    # v5.8.0：人机共同创作模式（逐章确认）开关——作者确认才成为正式内容
+    "collab_mode": {
+        "desc": "切换本书的「逐章确认」（人机共同创作模式）：开启后每章写完都停下来等作者把关，"
+                "作者说「继续」采用并写下一章、「重写本章」重新生成；关闭后回到自动连续写作。"
+                "作者说「以后每章写完都停下来等我确认」「开启逐章确认」时 enabled=true；"
+                "说「不用逐章确认了，自动写」「关闭逐章确认」时 enabled=false",
+        "params": {"enabled": "true=开启逐章确认；false=关闭（自动连续写）"},
+    },
     "rewrite_chapters": {
         "desc": "重写指定章节；改稿要求必须放进 brief，不要只把原话塞进 dimensions",
         "params": {"chapters": "[章号整数]"},
@@ -142,6 +152,10 @@ _ACTION_ALIASES = {
     "write_next": "write", "resume_writing": "write", "start_writing": "write",
     "start_writing_all": "write", "batch_writing": "write", "resume_task": "write",
     "pause_writing": "pause", "stop": "pause",
+    # v5.8.0：逐章确认（协作模式）的等价叫法
+    "collab": "collab_mode", "collab_review": "collab_mode",
+    "chapter_review_mode": "collab_mode", "逐章确认": "collab_mode",
+    "协作模式": "collab_mode", "共同创作": "collab_mode",
     "rewrite": "rewrite_chapters", "rewrite_chapter": "rewrite_chapters",
     "rewrite_low_score": "rewrite_below", "rewrite_all_below": "rewrite_below",
     "rewrite_by_words": "rewrite_short", "rewrite_words": "rewrite_short",
@@ -237,6 +251,13 @@ scope 语义：
     信息够就**直接建书开写**，不要反问打断——作者要的是「说一声你就开写」；
     只有连「想写什么」都没有（纯闲聊/问用法）才 discuss。已绑定作品时**禁止** create_book，
     要开新书只能 new_project 给指引。
+17. **人机共同创作（逐章确认）**：AI 只产候选，作者确认才成为正式内容。
+    作者说「以后每章写完都停下来等我确认」「开启逐章确认」→ collab_mode(enabled=true)；
+    说「不用逐章确认了，自动写」「关闭逐章确认」→ collab_mode(enabled=false)。
+    上下文标明「第 N 章待作者确认（协作模式）」时：作者说「继续」「可以」「通过」「采用」
+    → write(mode=collab_next)（= 采用第 N 章并写第 N+1 章）；说「重写本章/这章不行」
+    → rewrite_chapters(chapters=[N]) 并把不满提炼进 brief。reply 必须点明是哪一章、
+    采用了还是重写了，不要含糊。
 
 ## 输出格式（严格 JSON，不要 markdown 代码块，不要多余文字）
 {{
@@ -597,6 +618,13 @@ def build_context(proj, st, key, digest: str = "", history=None) -> dict:
         # v5.5.2：直聊建书的新书会先经历一段后台规划（章卡为空、写作未启动）——
         # 把在途标志带给总编辑，「继续」要如实答「规划中」，不能谎报开写。
         ctx["planning_running"] = bool(_meta2.get("planning_running"))
+        # v5.8.0：协作模式（逐章确认）状态——第 N 章待作者确认时，「继续」的语义
+        # 是采用该章（write mode=collab_next），总编辑必须知道自己停在这个位上。
+        ctx["collab_review"] = bool(_meta2.get("collab_review"))
+        if _meta2.get("paused"):
+            _ac = _w.await_collab_no(str(_meta2.get("pausedReason") or ""))
+            if _ac:
+                ctx["await_collab"] = _ac
     except Exception:
         pass
     return ctx
@@ -661,6 +689,15 @@ def _context_text(ctx: dict) -> str:
         extra.append("- 团队最近动作：\n  " + "\n  ".join(f"  · {x}" for x in ctx["recent_events"]))
     if ctx.get("running_rewrite"):
         extra.append("- 注意：该书当前有改写任务在跑。")
+    # v5.8.0：协作模式（逐章确认）——第 N 章待作者确认时的动作语义
+    if ctx.get("await_collab"):
+        extra.append(f"- **第 {ctx['await_collab']} 章已完成，正等待作者逐章确认（协作模式"
+                     f"{'已开启' if ctx.get('collab_review') else '曾开启'}）**："
+                     f"作者说「继续/可以/采用」→ write(mode=collab_next)（采用本章写下一章）；"
+                     f"说「重写本章/这章不行」→ rewrite_chapters(chapters=[{ctx['await_collab']}])。")
+    elif ctx.get("collab_review"):
+        extra.append("- 本书已开启「逐章确认」（协作模式）：每章写完会暂停等作者把关——"
+                     "到时提示作者说「继续」采用或「重写本章」。")
     if ctx.get("digest"):
         extra.append("- 更早的对话摘要：\n" + str(ctx["digest"])[:1200])
     hist = ctx.get("history") or []

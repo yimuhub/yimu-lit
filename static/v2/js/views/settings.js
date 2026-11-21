@@ -2551,6 +2551,89 @@ export function renderSettings(container, ctx) {
     );
   }
 
+  /* ------------------------------------------- v5.8.0 创作模式（逐章确认）
+     人机共同创作：AI 只产候选，作者确认才成为正式内容。开启后本书每章写完
+     自动停下等作者把关（说「继续」采用并写下一章 /「重写本章」重新生成 /
+     工作台改稿后说「采用继续」）。只作用于当前书（plan.meta.collab_review），
+     极速一键直出不受影响；对话里说「开启/关闭逐章确认」走总编辑同款开关。 */
+  const modeBody = h('div', {});
+  panes.advanced.append(modeBody);
+  const modeState = { key: '', enabled: false, awaiting: 0, loaded: false, saving: false };
+
+  async function loadCollabMode() {
+    const key = store.get().currentKey;
+    modeState.key = key || '';
+    modeState.loaded = false;
+    modeState.awaiting = 0;
+    modeState.enabled = false;
+    if (!key) { paintCollabMode(); return; }
+    try {
+      const d = await request(`/api/collab-review?key=${encodeURIComponent(key)}`);
+      if (store.get().currentKey !== key) return;   // 期间已切书：丢弃旧书响应
+      modeState.enabled = Boolean(d && d.enabled);
+      modeState.awaiting = Number((d && d.awaiting) || 0);
+      modeState.loaded = true;
+    } catch (err) {
+      modeState.loaded = false;
+    }
+    paintCollabMode();
+  }
+
+  function paintCollabMode() {
+    modeBody.textContent = '';
+    if (!modeState.key) {
+      modeBody.append(
+        h('div', { class: 'set-row' },
+          h('div', { class: 'set-row-copy' },
+            h('div', { class: 'set-row-title', text: '创作模式 · 逐章确认' }),
+            h('div', { class: 'set-row-desc',
+              text: '请先在左侧选择一部作品，再设置它的创作模式。' }))
+        )
+      );
+      return;
+    }
+    modeBody.append(switchRow(
+      '创作模式 · 逐章确认（人机共同创作）',
+      '开启后：本书每章写完都停下来等你把关——说「继续」采用并写下一章、'
+      + '「重写本章」重新生成，或去工作台改稿后说「采用继续」；关闭则自动连续写作。'
+      + '极速一键直出不受影响。',
+      modeState.enabled,
+      async (v) => {
+        if (modeState.saving) return;
+        modeState.saving = true;
+        modeState.enabled = v;    // 乐观反馈
+        paintCollabMode();
+        try {
+          await request('/api/collab-review', {
+            method: 'POST',
+            body: { key: modeState.key, enabled: v }
+          });
+          toast(v ? '已开启逐章确认：每章写完会停下等你把关'
+                  : '已关闭逐章确认：回到自动连续写作', { tone: 'success', duration: 3200 });
+        } catch (err) {
+          toast(errorText(err, '创作模式切换失败'), { tone: 'danger' });
+        } finally {
+          modeState.saving = false;
+        }
+        loadCollabMode();   // 以服务端为准收敛（并取最新待确认位）
+      }
+    ));
+    const statusText = modeState.awaiting > 0
+      ? `当前停在第 ${modeState.awaiting} 章待你确认：说「继续」采用并写下一章，`
+        + '或去工作台改稿后说「采用继续」。'
+      : (modeState.enabled
+        ? '已开启：每章写完自动停下等你把关（正在写的批次从下一章起生效）。'
+        : '已关闭：写完一章直接写下一章，不停顿。');
+    modeBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title', text: '当前状态' }),
+          h('div', { class: 'set-row-desc',
+            text: modeState.loaded ? statusText : '当前作品状态加载失败，可重进设置页重试。' }))
+      )
+    );
+  }
+
   /* ----------------------------------------------------------- start */
 
   paintTheme();
@@ -2558,6 +2641,8 @@ export function renderSettings(container, ctx) {
   paintSound();
   paintFx();
   paintAdvanced();
+  paintCollabMode();   /* v5.8.0：创作模式小节（先进骨架，loadCollabMode 再按当前书填状态） */
+  loadCollabMode();
   loadSettings();
   loadProviders();
   loadAgents();
@@ -2576,6 +2661,15 @@ export function renderSettings(container, ctx) {
     }
   });
 
+  /* v5.8.0：创作模式小节跟随当前书——切书/切回设置页都要按新书重拉开关与待确认位。 */
+  let lastCollabKey = store.get().currentKey;
+  const unsubCollabKey = store.subscribe((state) => {
+    if (state.currentKey !== lastCollabKey) {
+      lastCollabKey = state.currentKey;
+      loadCollabMode();
+    }
+  });
+
   return {
     el: view,
     refresh() {
@@ -2586,9 +2680,11 @@ export function renderSettings(container, ctx) {
       loadSettings();
       loadProviders();
       loadAgents();
+      loadCollabMode();   // v5.8.0：创作模式按当前书刷新
     },
     destroy() {
       unsubTheme();
+      unsubCollabKey();
       view.remove();
     }
   };

@@ -218,6 +218,18 @@ function openQualityModal(key, meta) {
     .catch(() => finish(null));
 }
 
+/* v5.8.0：人机共同创作（逐章确认）协作条的纯判定——node 可直跑。
+   本书停在 pausedReason=await_collab:<n> 且这张卡正是第 n 章的完成卡时，
+   返回协作条描述；否则返回 null（不渲染）。
+   work 来自 store.get().work（/api/status 透传的 paused/pausedReason）。 */
+export function collabStripState(work, chapterMeta) {
+  const m = /^await_collab:(\d+)$/.exec(String((work && work.pausedReason) || ''));
+  const no = m ? Number(m[1]) : 0;
+  if (!no || !(work && work.paused)) return null;
+  if (Number(chapterMeta && chapterMeta.no) !== no) return null;
+  return { no, actions: ['next', 'rewrite', 'bench'] };
+}
+
 function renderChapterCard(msg, handlers = {}) {
   const meta = msg.chapterMeta || {};
   const expanded = !msg.collapsed;
@@ -399,6 +411,85 @@ function renderChapterCard(msg, handlers = {}) {
     }));
   }
   card.append(acts);
+
+  /* v5.8.0：人机共同创作（逐章确认）协作条——本书停在 await_collab:<n> 且正是
+     本章的卡时显示三键（继续写下一章=发「继续」/ 重写本章 / 去工作台）。
+     复用创作按钮既有机制：api.resume + chatNote 入库（与 planbar「继续」同款），
+     状态收敛靠轮询刷新 store.work（采用后 paused/pausedReason 清空 → 条自动消失）。 */
+  const stripState = collabStripState(
+    (() => { try { return store.get().work || null; } catch { return null; } })(),
+    meta
+  );
+  if (stripState) {
+    const stripKey = handlers.workKey || store.get().currentKey;
+    if (stripKey) {
+      const strip = h('div', {
+        class: 'cc-actions cc-collab',
+        role: 'group',
+        'aria-label': `第${stripState.no}章逐章确认`,
+        style: {
+          background: 'var(--accent-soft, transparent)',
+          margin: '6px -14px -12px',
+          padding: '8px 14px 10px',
+          borderRadius: '0 0 var(--radius-lg) var(--radius-lg)'
+        }
+      },
+        h('span', {
+          class: 'hint-text',
+          text: `第${stripState.no}章已完成，等待你把关`,
+          style: { marginRight: 'auto', fontWeight: '600', color: 'var(--accent)' }
+        }));
+      const btnNext = h('button', {
+        class: 'msg-action', type: 'button',
+        title: '采用本章并继续写下一章（= 发「继续」）',
+        html: `${icon('play', 12)}<span>继续写下一章</span>`,
+        on: { click: async (event) => {
+          const btn = event.currentTarget;
+          if (btn.disabled) return;
+          btn.disabled = true;
+          try {
+            const res = await api.resume(stripKey);
+            try { api.chatNote(stripKey, '继续', '来自协作条'); } catch { /* 入库失败不影响交互 */ }
+            if (res && res.ok === false) {
+              btn.disabled = false;
+              toast((res && res.msg) || '暂时无法继续', { tone: 'warn', duration: 5000 });
+              return;
+            }
+            toast(`第${stripState.no}章已采用，开始写下一章…`, { tone: 'success', duration: 3600 });
+          } catch (err) {
+            btn.disabled = false;
+            toast(errorText(err, '继续失败'), { tone: 'danger' });
+          }
+        } }
+      });
+      const btnRewrite = h('button', {
+        class: 'msg-action', type: 'button',
+        title: '审查后定向重写本章；重写完仍停在本章等你确认',
+        html: `${icon('refresh', 12)}<span>重写本章</span>`,
+        on: { click: async (event) => {
+          const btn = event.currentTarget;
+          if (btn.disabled) return;
+          btn.disabled = true;
+          try {
+            await api.rewriteChapter(stripKey, meta.no);
+            toast('重写已启动：完成后仍会停在本章等你确认', { tone: 'success', duration: 4200 });
+          } catch (err) {
+            toast(errorText(err, '重写启动失败'), { tone: 'danger' });
+          } finally {
+            btn.disabled = false;
+          }
+        } }
+      });
+      const btnBench = h('button', {
+        class: 'msg-action', type: 'button',
+        title: '去章节工作台改稿；改完回来说「采用继续」',
+        html: `${icon('edit', 12)}<span>去工作台</span>`,
+        on: { click: () => navigate(`/work/${encodeURIComponent(stripKey)}/bench/${meta.no || 1}`) }
+      });
+      strip.append(btnNext, btnRewrite, btnBench);
+      card.append(strip);
+    }
+  }
   return card;
 }
 
