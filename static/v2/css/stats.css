@@ -1,10 +1,16 @@
 /* 码字统计页（views/stats.js）+ 首页新卡片（views/welcome.js：码字进度 / 灵感速记 / 常用工具 / 最近作品横卡）。
    统计页样式由 app.js 在 #/stats 路由按需加载；首页卡片由 welcome.js 调 loadCss 复用本文件。
+   v5.4.x：首页/统计页响应式断点改容器查询（@container home / @container stats）——右面板停靠时
+   中央区变窄而视口不变，视口媒体查询不会触发；小视口回退保留 @media（见文件末尾）。
    颜色一律读 tokens.css 语义变量，四主题（宣纸白/古韵信笺/森系护眼/暗夜水墨）下均可读。 */
 
 /* ================================================================= 统计页 */
 
 .stats-view {
+  /* v5.4.x：容器查询锚点（只在 #/stats 路由渲染，命名 stats 与首页 home 互不干扰）——
+     右面板跨路由停靠时中央区变窄，断点随容器收缩（见文件末尾 @container stats）。 */
+  container-type: inline-size;
+  container-name: stats;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -469,6 +475,43 @@
 
 /* ================================================================= 首页改造（welcome.js） */
 
+/* v5.4.x 容器查询锚点：首页根容器是 .welcome（welcome.js 根元素，挂在 .center-main#view 下，
+   宽度由父级决定、与内容无关，inline-size 容器安全）。
+   右面板停靠/拖宽改变的是中央区宽度而非视口——视口媒体查询永远不触发，
+   首页断点必须随容器（container-name: home）收缩，面板开/关/拖宽都实时正确。 */
+.welcome {
+  container-type: inline-size;
+  container-name: home;
+}
+
+/* 首页卡片区独立页宽：hero/composer 留在 .welcome-inner（--composer-max 输入宽度不变），
+   双栏栅格（主列 + 340px 侧列）由 welcome.js 挂到外层 .home-lane，对齐全站 .view-pad 的
+   --page-max 页宽——否则 768px 上限会把两列栅格压进 ~400px 主列（四列体裁卡挤爆的另一半根因）。 */
+.home-lane {
+  width: 100%;
+  max-width: var(--page-max);
+  margin-top: 26px; /* 对齐 .welcome-inner 的 26px 纵向节奏 */
+}
+
+/* 体裁快捷卡（.quick-grid 本体在 chat.css，固定四列；本文件按需加载、位次在其后，覆盖生效）：
+   改自适应列——主列 ≥624px 时四列，更窄自动并列，任何容器宽度下都不溢出。 */
+.quick-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+/* 卡内长文本防撑破：允许换行（min-width:0 兜 grid 收缩），行数过多裁切省略。 */
+.quick-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.quick-card .qc-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
 .home-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 340px);
@@ -706,7 +749,8 @@
 
 .ht-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* v5.4.x：固定四列改自适应列（工具卡 minmax(160px,1fr)），窄容器自动并列不溢出。 */
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
   margin-top: 12px;
 }
@@ -723,6 +767,8 @@
   color: var(--ink-primary);
   font-size: 12px;
   cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
   transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
@@ -827,8 +873,13 @@
   color: var(--accent);
 }
 
-/* ≤875px：单列重排（进度卡 / 灵感卡提到最前），display:contents 让子卡参与排序 */
-@media (max-width: 875px) {
+/* v5.4.x 响应式改容器查询：右面板停靠时中央区变窄而视口不变，视口媒体查询永远不触发。
+   首页断点全部随 .welcome 容器（container-name: home）收缩，随面板开/关/拖宽实时重排。 */
+
+/* 容器 <1000px（如 2000px 视口开右面板 → 中央区 ~1000px → 容器 ~950px）：
+   340px 右列并入单列；order 语义保持——码字进度/灵感速记提到最前，体裁/最近/工具随后，
+   .home-col 以 display:contents 让子卡直接参与排序。 */
+@container home (max-width: 1000px) {
   .home-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
@@ -857,15 +908,37 @@
   .home-sec-tools {
     order: 5;
   }
+}
 
-  .ht-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
+/* 容器 <875px：最近作品横卡并单列（体裁/工具卡已由 auto-fit 自适应，无需再固定列数）。 */
+@container home (max-width: 875px) {
   .home-recent-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
 
+/* 统计页窄容器断点（容器锚点 .stats-view 见文件顶部）：右面板跨路由保持停靠时
+   中央区同样变窄——.stats-top 等随容器收缩并单列。 */
+@container stats (max-width: 875px) {
+  .stats-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stats-cal-cell {
+    min-height: 44px;
+    padding: 3px 4px;
+  }
+
+  .stats-ring {
+    width: 92px;
+    height: 92px;
+  }
+}
+
+/* ≤875px 视口回退：小窗口（无右面板参与的窄视口）继续由媒体查询兜底，
+   也兜住不支持容器查询的旧内核；规则与 @container stats 相同，
+   两者命中条件不同，同时命中时规则一致、无冲突。首页规则不在此块（已全部容器化）。 */
+@media (max-width: 875px) {
   .stats-top {
     grid-template-columns: minmax(0, 1fr);
   }

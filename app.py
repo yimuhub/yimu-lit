@@ -158,14 +158,21 @@ def _get_project(key):
     if not isinstance(key, str) or not key:
         return None   # 缺 key / 非 str → 交调用方 404，不再 500（os.path.join(dir, None) 会 TypeError）
     # v4.15.13：改书名后目录随之改名——旧 key 按别名映射跳新 key（否则旧标签页全部「项目不存在」）
+    # v5.5：别名改为「先解析、且不再以旧目录存在为前提」。旧实现只有旧目录消失才跳新 key，
+    # 而在途规划线程写盘会把旧目录原样复活——复活出来的幻影被当成事实源，会话绑着它
+    # 读到 0 章空书，总编辑回答《未命名》（实测开书断层根因）。现在只要 rename_map
+    # 有新家且新家在磁盘上，旧 key 一律落到新家；PROJECT_INDEX 也按 canonical key 建。
     if key not in PROJECT_INDEX:
         try:
-            _exists = os.path.isdir(writer._project_dir(key))
-        except Exception:
-            _exists = False   # 非法路径 key（如 ../secrets）按原逻辑 404，不因别名检查抛 500
-        if not _exists:
             _rk = writer.resolve_key(key)
-            if _rk != key:
+        except Exception:
+            _rk = key
+        if _rk and _rk != key:
+            try:
+                _rk_exists = os.path.isdir(writer._project_dir(_rk))
+            except Exception:
+                _rk_exists = False
+            if _rk_exists:
                 key = _rk
     if key not in PROJECT_INDEX:
         try:
@@ -215,8 +222,12 @@ def chat(session_id, message, key=None, digest=None):
     # 当成新主题走 extract_config → 起一本全新小说。v2 每条消息带 key：
     # idle + key 有效 → 直接绑定本书（attached），绝不进新主题分支；
     # options/planning/title 等新建流程中途 → 保持原流程不动。
+    # v5.5：绑定即规范化——旧 key 命中 rename 别名时直接绑 canonical key
+    # （磁盘目录名），否则整个会话的 journal/事件/写作注册表都查旧 key。
     if key and s.get("state") == "idle" and _get_project(str(key)):
-        s["project"] = str(key)
+        _bproj = _get_project(str(key))
+        _bkey = os.path.basename(_bproj.path) if _bproj is not None else str(key)
+        s["project"] = _bkey or str(key)
         s["state"] = "attached"
 
     # ---- v2.4.0：文体自动分流 + NLU 意图理解（统一入口）----
@@ -550,9 +561,11 @@ def _apply_title(key, title):
     # 后台线程规划完还会把 awaiting_title 状态盖回来。改置 meta.title_picked，
     # 由后台线程规划完自动开写（app.py _bg 收尾已配合同款分支）。
     started = False
+    _was_awaiting = False
     try:
         _med2, _fp2, _plan2 = writer._plan_of(target)
         if _plan2 and (_plan2.get("meta") or {}).get("awaiting_title"):
+            _was_awaiting = True
             _meta2 = _plan2.setdefault("meta", {})
             _meta2["awaiting_title"] = False
             # v4.34.1：在途判据用 livejob（/api/create _bg 规划线程 begin/finish 登记）
@@ -575,7 +588,169 @@ def _apply_title(key, title):
                     pass
     except Exception:
         pass
+    # v5.5：交接语——换 key 之后新会话（或被跟随过来的旧会话）的第一份落盘上下文
+    # 必须带全：书名 / 真实进度 / 下一步动作。总编辑读 chat_log 接「继续」全靠它，
+    # 没有它就会出现《未命名》空书回答（实测开书断层）。规划仍在途（title_picked）
+    # 与立即开写两条路径都要落这条交接。
+    if _was_awaiting:
+        try:
+            from bot.v2api import _save_chat_msg
+            _hp = writer._plan_of(target)[2] or {}
+            _hc = _hp.get("chapters") or []
+            _hd = writer.done_chapters(_hp, target) if _hc else 0
+            _ht = len(_hc) or int(_hp.get("totalChapters") or 0)
+            _hn = next((int(c.get("chapterNumber") or 0) for c in _hc
+                        if str(c.get("status")) != "completed"), 0)
+            _hnext = f"接下来从第 {_hn} 章接着写" if _hn else "规划就绪后立即开写第 1 章"
+            _save_chat_msg(proj, "assistant",
+                           f"📌 书名已确定为《{title}》，创作已在新会话继续。"
+                           f"当前进度 {_hd}/{_ht} 章；{_hnext}。"
+                           f"说「继续」我就按这个进度推进。",
+                           {"type": "note", "handoff": True, "key": new_key})
+        except Exception:
+            pass
     return {"ok": True, "key": new_key, "name": title, "started": bool(started)}
+
+
+def _retry_planning_bg(key: str) -> bool:
+    """v5.5：规划中断自愈——同一目录重跑规划线程（不另起书、不换 key）。
+
+    向导开书是「先落 0 章骨架、后台线程再补规划」；规划线程被 LLM 524/超时打断后，
+    书会停在 failed / 空章卡。作者此时说「继续」绝不能再被当成空书处理：
+    这里重启规划（gen_titles + create_project 写回同一 pdir），完成后按书名状态收口
+    ——已选名/极速 → 直接开写；未选名 → awaiting_title 等选名。
+    返回 True=已启动重跑线程。"""
+    proj = _get_project(key)
+    if not proj:
+        return False
+    plan = proj.plan() or {}
+    if plan.get("chapters"):
+        return False   # 已有章卡：不是规划中断，走正常写作路由
+    cfg = dict(plan.get("config") or {})
+    if not cfg:
+        return False
+    meta = plan.get("meta") or {}
+    if meta.get("planning_running"):
+        try:
+            if livejob.is_active(os.path.basename(proj.path)):
+                return False   # 真有规划在跑：不并发重建（与 _ensure_writable_plan 同一纪律）
+        except Exception:
+            return False
+    bkey = os.path.basename(proj.path)
+    name = _clean_book_title(plan.get("novelName") or proj.name) or "未命名"
+    meta = plan.setdefault("meta", {})
+    meta["planning_running"] = True
+    meta.pop("error", None)
+    plan["status"] = "planning"
+    proj.save_plan(plan)
+    proj.log("🔁 规划中断自愈：重新启动规划（同一本书，不换目录）")
+
+    def _bg():
+        livejob.begin(bkey, kind="planning", worker_label="规划师",
+                      detail="重跑被中断的规划…")
+        try:
+            cfg2 = workflow.fill_defaults(cfg)
+            titles = plan.get("titles") or [{"title": name, "technique": "恢复", "why": ""}]
+            try:
+                cands = workflow.gen_titles(cfg2, n=8)
+                if cands:
+                    titles = cands
+            except Exception:
+                pass
+            writer.create_project(cfg2, titles, pdir=proj.path, name=name)
+            p2 = proj.plan() or {}
+            m2 = p2.setdefault("meta", {})
+            m2["planning_running"] = False
+            picked = m2.get("title_picked") or m2.get("selected_title")
+            if picked:
+                m2["awaiting_title"] = False
+                p2["status"] = "in_progress"
+                proj.save_plan(p2)
+                proj.log("✅ 规划重跑完成（书名已定），自动开始创作")
+                writer.start_writing(proj, batch_size=(p2.get("config") or {}).get("batch_size"))
+            else:
+                m2["awaiting_title"] = True
+                m2["title_candidates"] = titles
+                p2["status"] = "awaiting_title"
+                proj.save_plan(p2)
+                proj.log("✅ 规划重跑完成，等待作者选书名")
+        except Exception as e:
+            print(f"[retry-planning] 重跑失败: {e}", flush=True)
+            try:
+                p2 = proj.plan() or {}
+                p2["status"] = "failed"
+                m2 = p2.setdefault("meta", {})
+                m2["planning_running"] = False
+                m2["error"] = str(e)[:200]
+                proj.save_plan(p2)
+            except Exception:
+                pass
+        finally:
+            try:
+                livejob.finish(bkey, ok=True, detail="重规划线程结束")
+            except Exception:
+                pass
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return True
+
+
+def _planning_interrupted(proj) -> bool:
+    """v5.5：判断一本书是否停在「规划被打断」状态（需要自愈而不是照常路由）。
+
+    三种形态：
+    · 账面 failed / meta.error（LLM 失败，/api/create _bg 的 except 落盘）；
+    · status=planning/awaiting_title 但既没有 livejob 也没有 planning_running
+      （规划线程没跑起来就死了）；
+    · planning_running=True 但 livejob 已不在且计划文件 90 秒没动过
+      （服务重启把规划线程杀掉，标志残留）。"""
+    try:
+        plan = proj.plan() or {}
+        if plan.get("chapters"):
+            return False
+        meta = plan.get("meta") or {}
+        status = str(plan.get("status") or "")
+        if status == "failed" or meta.get("error"):
+            return True
+        live = False
+        try:
+            live = bool(livejob.is_active(os.path.basename(proj.path)))
+        except Exception:
+            live = False
+        if status in ("planning", "awaiting_title"):
+            if not meta.get("planning_running") and not live:
+                return True
+            if meta.get("planning_running") and not live:
+                try:
+                    fp = os.path.join(proj.path, "02-写作计划.json")
+                    mt = os.path.getmtime(fp) if os.path.exists(fp) else 0
+                    if time.time() - mt > 90:
+                        return True
+                except Exception:
+                    pass
+        return False
+    except Exception:
+        return False
+
+
+def _title_progress_line(key) -> str:
+    """v5.5：书名确认回复的进度交接尾巴（书已有章卡时给出真实进度与下一步）。"""
+    try:
+        p = _get_project(key) if key else None
+        if p is None:
+            return ""
+        pl = p.plan() or {}
+        chs = pl.get("chapters") or []
+        if not chs:
+            return "\n（规划就绪后自动开写第 1 章，说「继续」可随时推进。）"
+        d = writer.done_chapters(pl, p.path)
+        n = next((int(c.get("chapterNumber") or 0) for c in chs
+                  if str(c.get("status")) != "completed"), 0)
+        return f"\n（当前进度 {d}/{len(chs)} 章；说「继续」就从第 {n} 章接着写。）" if n \
+            else f"\n（当前进度 {d}/{len(chs)} 章。）"
+    except Exception:
+        return ""
+
 
 def _read_title_items(key):
     """读 05-标题候选.json 的 items（无文件返回 []）。"""
@@ -1015,6 +1190,17 @@ def _chat_attached(s, proj, msg):
     """attached 分支路由：待选书名/数字采纳 → @Agent → 总编辑理解并派活；
     总编辑不可用时回退标题规则/规划器/NLU/即时队列。"""
     key = s["project"]
+    # v5.5：key 规范化——proj 可能已按 rename 别名落到新家（选书名 os.rename /
+    # 极速自动定名）。磁盘目录名才是 canonical key；旧 key 仅作别名存续。
+    # 不规范化的话，任务档案/创作事件/livejob/写作注册表全都查旧 key，
+    # 总编辑把新书看成《未命名》空书（实测开书断层）。
+    try:
+        _ckey = os.path.basename(proj.path or "") if proj is not None else ""
+    except Exception:
+        _ckey = ""
+    if _ckey and _ckey != key:
+        key = _ckey
+        s["project"] = _ckey
     plan = proj.plan() or {}
     st = proj.status()
     if st.get("state") in ("missing", "", None):
@@ -1051,7 +1237,7 @@ def _chat_attached(s, proj, msg):
             res = _apply_title(key, m_rename.group(1).strip())
             if res.get("ok"):
                 return (f"✅ 已收到，将以《{res.get('name')}》进行创作，现在马上安排创作——"
-                        f"总编辑已接手，进度在本对话全程汇报。")
+                        f"总编辑已接手，进度在本对话全程汇报。{_title_progress_line(res.get('key'))}")
             return f"⚠️ 书名应用失败：{res.get('error')}"
         if m_pick:
             titles = plan.get("titles") or []
@@ -1062,12 +1248,29 @@ def _chat_attached(s, proj, msg):
                     res = _apply_title(key, t)
                     if res.get("ok"):
                         return (f"✅ 已收到，将以《{t}》进行创作，现在马上安排创作——"
-                                f"总编辑已接手，规划师/作家/审稿人各就各位，进度在本对话全程汇报。")
+                                f"总编辑已接手，规划师/作家/审稿人各就各位，进度在本对话全程汇报。"
+                                f"{_title_progress_line(res.get('key'))}")
                     return f"⚠️ 书名应用失败：{res.get('error')}"
             return f"该书名序号不存在，请回复 1-{len(titles) or 5}，或直接说「改名为你想用的书名」。"
 
     # v4.22.0：意图分发抽成嵌套函数 _run —— 供「LLM 规划器」逐步调用（多步任务/任意表述）
     def _run(intent, params, brief_data=None):
+        nonlocal key, proj, plan, st, name, running
+        # v5.5：每步动作执行前重取当前绑定——书名确认（set_title/_apply_title）
+        # 与「继续写作」常在同一次总编辑决策里（actions=[set_title, write]），
+        # 改名换 key 后后续步骤必须落到新书：状态查询/继续/写作一律不得再看到
+        # 旧 key 的空书或《未命名》。
+        _cur_key = str(s.get("project") or "") or key
+        if _cur_key and _cur_key != key:
+            _p2 = _get_project(_cur_key)
+            if _p2 is not None:
+                key = os.path.basename(_p2.path) or _cur_key
+                s["project"] = key
+                proj = _p2
+                plan = proj.plan() or plan
+                st = proj.status()
+                name = st.get("name") or plan.get("novelName") or key
+                running = bool(st.get("running"))
         params = params or {}
         # v4.37.0：总编辑动作名与旧 planner/NLU 的 intent 名并存，先做等价映射
         if intent == "discuss":
@@ -1306,6 +1509,16 @@ def _chat_attached(s, proj, msg):
         # set_title → 标题命令
         if intent == "set_title":
             _t = params.get("title")
+            if not _t and (plan.get("meta") or {}).get("awaiting_title"):
+                # v5.5：「作者没挑书名直接说继续」的兜底——总编辑拍板定名时若没给出
+                # 具体书名（params.title 为空），用首个候选顶上，绝不让流程卡在
+                # awaiting_title 空转（set_title 空参旧实现只会回一句标题引导话术）。
+                _cands = plan.get("titles") or (plan.get("meta") or {}).get("title_candidates") or []
+                for _c in _cands:
+                    _ct = str((_c or {}).get("title") or "").strip()
+                    if _ct:
+                        _t = _ct
+                        break
             return _chat_title_cmd(s, key, msg if not _t else f"改名叫{_t}")
 
         # rewrite_chapter → 局部重写通道
@@ -1609,6 +1822,17 @@ def _chat_attached(s, proj, msg):
         if not outs:
             return reply
         return (reply + "\n\n" if reply else "") + "\n\n".join(outs)
+
+    # ══════════ v5.5：规划中断自愈（awaiting_title / failed 状态机收口）══════════
+    # 向导开书后规划线程被 LLM 524/超时打断 → 书停在 failed/空章卡。作者说「继续」
+    # 必须重跑规划，而不是被总编辑当成《未命名》空书回答「没有可恢复的任务」。
+    # 只拦短消息里的继续/重试类表达；书已有章卡时不拦（走正常写作路由）。
+    if not (plan.get("chapters") or []) and _planning_interrupted(proj) \
+            and len(msg.strip()) <= 24 and re.search(r"继续|接着|重试|retry", msg or "", re.I):
+        if _retry_planning_bg(key):
+            return ("⏳ 上一次规划被中断了（模型超时或失败），我已经重新启动规划师在同一本书上重跑规划，"
+                    "书名与设定都不会丢。\n规划完成后会自动给出书名候选或直接开写；"
+                    "稍等片刻再说「进度」即可查看。")
 
     # ══════════ v4.41.4：「继续」不再自动把低分章全部重写 ══════════
     # 作者实拍：全书已 100/100，点「继续」后系统自作主张按「<80 分」重写 81 章。
@@ -2417,6 +2641,13 @@ def api_create(payload: dict):
         except Exception as e:
             print(f"[bg] 小说创建失败: {e}", flush=True)
             try:
+                # v5.5：失败落盘也要跟随改名——规划中途用户选完书名 os.rename 走了，
+                # 原样写 pdir 会把旧目录复活成幻影（v4.34.1 一直在治的病根）。
+                try:
+                    plan_path = os.path.join(writer._project_dir(base), "02-写作计划.json")
+                except Exception:
+                    pass
+                os.makedirs(os.path.dirname(plan_path), exist_ok=True)
                 pl = json.load(open(plan_path, encoding="utf-8"))
                 pl["status"] = "failed"; pl.setdefault("meta", {})["planning_running"] = False
                 pl["meta"]["error"] = str(e)[:200]
@@ -4436,6 +4667,12 @@ def api_pick_title(payload: dict):
         return JSONResponse({"error": "项目或书名无效"}, status_code=400)
     newbase = writer.pick_title(key, title)
     PROJECT_INDEX.pop(key, None)
+    # v5.5：换 key 必须换会话——所有绑着旧 key 的会话立即重绑到新 key，
+    # 否则用户选完书名还在旧会话里说话（writer.pick_title 只改磁盘不动会话）。
+    if newbase and newbase != key:
+        for _sess in SESSIONS.values():
+            if _sess.get("project") == key:
+                _sess["project"] = newbase
     return {"ok": True, "key": newbase, "title": title}
 
 _RELEASE_RUNNING = {}
@@ -4909,6 +5146,21 @@ def api_feedback_list_compat(key: str = "", medium: str = "", stage: str = "", l
 
 @app.get("/api/status")
 def api_status(key: str):
+    _req_key = key
+    # v5.5：改名别名跳转——选书名后旧 key 的请求解析到 canonical key，
+    # 并随返回体带回 followed_from。注释里写了多年的「前端旧请求自动跳转」
+    # 此前只做了一半（_get_project 兜底），前端从未接到跳转信号；
+    # 现在这两个字段（key=canonical + followed_from=请求 key）就是跳转依据。
+    try:
+        _rk = writer.resolve_key(_req_key or "")
+    except Exception:
+        _rk = _req_key
+    if _rk and _rk != _req_key:
+        try:
+            if os.path.isdir(writer._project_dir(_rk)):
+                key = _rk
+        except Exception:
+            pass
     proj = _get_project(key)
     if not proj:
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
@@ -4922,6 +5174,9 @@ def api_status(key: str):
     # 以前 key 只来自 library 条目，于是「刷新页面」时 /api/status 比 /api/library 先回
     # （单本快、聚合慢），work 就缺 key → 创作状态按钮（继续/暂停）整颗不渲染。
     st["key"] = key
+    # v5.5：旧 key 请求命中别名时把跳转信息一并带回（canonical key 已在上面）。
+    if key != _req_key:
+        st["followed_from"] = _req_key
     if st.get("state") in ("missing", "", None):
         # 剧本/诗词/散文没有 02-写作计划.json，Project.status 会误报 missing；
         # 工作台 refreshWork 对当前作品调的就是本接口，必须回退到全文体元数据，

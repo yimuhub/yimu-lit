@@ -212,6 +212,42 @@ check('单列重排断点 ≤875px（容器 order 重排）',
   statsCss.includes('@media (max-width: 875px)') && statsCss.includes('display: contents')
   && statsCss.includes('order:'));
 
+/* v5.4.x 容器查询回归：右面板停靠时中央区变窄而视口不变，首页断点必须随容器收缩。 */
+check('首页容器查询锚点：.welcome 声明 container-type: inline-size + container-name: home',
+  /\.welcome\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*home;/.test(statsCss));
+check('首页单列并入断点随容器收缩（@container home <1000px 并单列，右面板开也生效）',
+  /@container home \(max-width: 1000px\)\s*\{[\s\S]*?\.home-col\s*\{[^}]*display:\s*contents/.test(statsCss)
+  && /@container home \(max-width: 1000px\)\s*\{[\s\S]*?order: 1/.test(statsCss));
+check('体裁卡/工具卡自适应列（auto-fit minmax，任何容器宽度不溢出）',
+  statsCss.includes('repeat(auto-fit, minmax(150px, 1fr))')
+  && statsCss.includes('repeat(auto-fit, minmax(160px, 1fr))'));
+check('卡内长文本防撑破（min-width:0 + overflow + 行数裁切省略）',
+  /\.quick-card\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden/.test(statsCss)
+  && /\.qc-desc\s*\{[^}]*-webkit-line-clamp:\s*2/.test(statsCss)
+  && /\.ht-item\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden/.test(statsCss));
+check('首页卡片区独立页宽容器 home-lane（hero/composer 保持输入宽度）',
+  welcomeSrc.includes("class: 'home-lane'") && statsCss.includes('.home-lane'));
+
+/* 视口媒体查询只保留 stats 页小窗回退，不再承载首页规则（首页断点全部容器化）。 */
+const mqStart = statsCss.indexOf('@media (max-width: 875px)');
+let mqBlock = '';
+if (mqStart >= 0) {
+  let depth = 0;
+  for (let i = statsCss.indexOf('{', mqStart); i < statsCss.length; i += 1) {
+    if (statsCss[i] === '{') depth += 1;
+    else if (statsCss[i] === '}') {
+      depth -= 1;
+      if (!depth) { mqBlock = statsCss.slice(mqStart, i + 1); break; }
+    }
+  }
+}
+check('视口媒体查询不再承载首页规则（仅 stats 页小窗回退）',
+  mqBlock.includes('.stats-top') && !mqBlock.includes('.home-')
+  && !mqBlock.includes('.ht-grid') && !mqBlock.includes('.quick-grid'));
+check('统计页窄容器断点容器化（@container stats + .stats-view 锚点）',
+  /\.stats-view\s*\{[^}]*container-name:\s*stats;/.test(statsCss)
+  && statsCss.includes('@container stats (max-width: 875px)'));
+
 /* ---------------------------------------------------------------- 8. 路由契约对齐 */
 
 const webstatsPy = read('bot/webstats.py');

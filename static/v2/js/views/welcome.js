@@ -119,7 +119,11 @@ export function renderWelcome(container, ctx) {
   loadCss('/v2/css/stats.css');
   const welcome = h('div', { class: 'welcome' });
   const inner = h('div', { class: 'welcome-inner' });
-  welcome.append(inner);
+  /* v5.4.x 结构调整（仅挂载位置，交互逻辑不变）：双栏栅格放 .home-lane（welcome-inner 的
+     --composer-max 输入宽度会挤压 主列+340px 布局，hero/composer 保持原宽度不变）；
+     首页响应式断点以 .welcome 为容器查询锚点（见 stats.css @container home）。 */
+  const homeLane = h('div', { class: 'home-lane' });
+  welcome.append(inner, homeLane);
 
   /* ---------------------------------------------- hero：品牌 + 时段问候 + 随机诗句 */
   const hero = h(
@@ -170,7 +174,7 @@ export function renderWelcome(container, ctx) {
   const colMain = h('div', { class: 'home-col home-col-main' });
   const colSide = h('div', { class: 'home-col home-col-side' });
   homeGrid.append(colMain, colSide);
-  inner.append(homeGrid);
+  homeLane.append(homeGrid);
 
   /* ---------------------------------------------- 文体快捷入口（保留） */
   const quickSection = h('div', { class: 'welcome-section home-sec-quick' });

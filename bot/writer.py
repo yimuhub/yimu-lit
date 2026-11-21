@@ -126,6 +126,19 @@ def reconcile_completed_chapters(plan, pdir):
 
 class Project:
     def __init__(self, path, name):
+        # v5.5：构造即落新家——传入路径已消失且 rename_map 有新家时直接绑定新目录，
+        # 首次 plan()/log() 不必再等 _follow_rename 兜底（选完书名换 key 的瞬间，
+        # 任何拿旧 key 新建 Project 的调用方都要立刻读到新家的真实规划与聊天上下文）。
+        try:
+            if path and not os.path.isdir(path):
+                _bk = os.path.basename(path)
+                _nk = resolve_key(_bk)
+                if _nk and _nk != _bk:
+                    _np = os.path.join(PROJECTS_DIR, _nk)
+                    if os.path.isdir(_np):
+                        path = _np
+        except Exception:
+            pass
         self.path = path
         self.name = name
         self.events = []
@@ -513,13 +526,28 @@ def create_project(cfg, titles, pdir=None, name=None):
         pdir = os.path.join(PROJECTS_DIR, f"{ts}-{name}")
     os.makedirs(pdir, exist_ok=True)
     proj = Project(pdir, name)
-    llm.book(os.path.basename(pdir), "planning")     # v0.3.x：规划阶段 token 归集到该书
+
+    def _sync_home():
+        """v5.5：规划途中被改名（选书名 os.rename / 极速自动定名）→ 跟随到新家落盘。
+
+        Project._follow_rename 只重定向 proj 自身；本函数里大量直写 pdir 的文件
+        （00/01/03/09/10/12/13/15…）也必须换到新路径，否则旧目录被在途写盘原样
+        复活，同一本书出现两份目录——聊天与规划劈成两半（实测开书断层根因之一）。
+        每次调用返回当前事件 key，调用方顺手把 _ek 一并刷新。"""
+        nonlocal pdir, _ek
+        if proj.path != pdir and os.path.isdir(proj.path):
+            pdir = proj.path
+            _ek = os.path.basename(pdir)
+        return _ek
+
     _ek = os.path.basename(pdir)                     # v4.21.0：创作事件埋点用书 key
+    llm.book(os.path.basename(pdir), "planning")     # v0.3.x：规划阶段 token 归集到该书
     _t0 = time.perf_counter()
     _evt(_ek, "planner", phase="start", title="生成人物档案",
          thinking="从配置提炼主角/反派/配角：性格核心、致命缺陷、说话风格、背景故事，细到可直接指导写作")
     proj.log("📐 阶段2：生成人物档案…")
     characters = workflow.gen_characters(cfg)
+    _sync_home()
     open(os.path.join(pdir, "00-人物档案.md"), "w", encoding="utf-8").write(
         f"# {name} 人物档案\n\n" + characters)
     _evt(_ek, "planner", phase="done", title="生成人物档案",
@@ -549,6 +577,7 @@ def create_project(cfg, titles, pdir=None, name=None):
         outline = workflow.gen_outline(cfg_outline, characters=characters)
     else:   # 兼容旧签名/测试桩
         outline = workflow.gen_outline(cfg_outline)
+    _sync_home()
     open(os.path.join(pdir, "01-大纲.md"), "w", encoding="utf-8").write(
         f"# {name} 大纲\n\n" + outline)
     _evt(_ek, "planner", phase="done", title="生成全书大纲",
@@ -560,6 +589,7 @@ def create_project(cfg, titles, pdir=None, name=None):
          thinking="定文风指纹与基准段落，列 AI 腔负面清单，供全书按同一语感书写")
     proj.log("📐 阶段2：生成文风基准…")
     style = workflow.gen_style(cfg)
+    _sync_home()
     open(os.path.join(pdir, "03-文风基准.md"), "w", encoding="utf-8").write(style)
     _evt(_ek, "planner", phase="done", title="生成文风基准",
          output=f"文风基准 {len(style or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
@@ -569,6 +599,7 @@ def create_project(cfg, titles, pdir=None, name=None):
            "perspective": cfg.get("perspective", ""), "style": cfg.get("style") or {},
            "platform": cfg.get("platform", ""), "platform_note": cfg.get("platform_note", ""),
            "sells": cfg.get("sells") or []}
+    _sync_home()
     atomic_write_json(os.path.join(pdir, "style.json"), _sk)
 
     # ---------- 连续性结构（加法，单个失败不阻断规划） ----------
@@ -579,6 +610,7 @@ def create_project(cfg, titles, pdir=None, name=None):
              thinking="建立全书唯一事实来源：故事引擎/世界规则/主线结局/设定词典")
         try:
             _sb = workflow.gen_story_bible(cfg)
+            _sync_home()
             _write_cfg_text(pdir, "09-故事圣经.md", "# 故事圣经\n\n" + _sb)
             try:
                 from bot import canon as _canon
@@ -594,6 +626,7 @@ def create_project(cfg, titles, pdir=None, name=None):
              thinking="从大纲提取服务主线的悬念/伏笔，登记为带真实答案与兑现计划的线索表")
         try:
             _cltxt = workflow.gen_clue_ledger(cfg, outline)
+            _sync_home()
             _write_cfg_text(pdir, "10-线索账本.md", "# 线索账本\n\n" + _cltxt)
             _evt(_ek, "planner", phase="done", title="生成线索账本",
                  output=f"线索账本 {len(_cltxt or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
@@ -604,6 +637,7 @@ def create_project(cfg, titles, pdir=None, name=None):
              thinking="建全书事件时间线与连续性核对清单，每章写前核对前后一致")
         try:
             _tltxt = workflow.gen_timeline(cfg, outline)
+            _sync_home()
             _write_cfg_text(pdir, "12-时间线与连续性.md", "# 时间线与连续性\n\n" + _tltxt)
             _evt(_ek, "planner", phase="done", title="生成时间线与连续性",
                  output=f"时间线 {len(_tltxt or '')} 字", ms=int((time.perf_counter() - _t0) * 1000))
@@ -632,6 +666,7 @@ def create_project(cfg, titles, pdir=None, name=None):
                     "1. 任何写作 Agent 在开写前必须先读：02b-总架构.json + 13-一致性纲领.md + 12-时间线与连续性.md + 最近3章正文。\n"
                     "2. 写完一章后必须更新 11-章节摘要.jsonl 和 12-时间线与连续性.md。\n"
                     "3. 如果发现与已写内容冲突，必须停下来对齐，而不是硬写下去。")
+        _sync_home()
         _write_cfg_text(pdir, "13-一致性纲领.md", covenant)
         _write_cfg_text(pdir, "11-章节摘要.md",
                         "# 章节摘要\n\n> 每章写后更新：发生了什么 / 选择与代价 / 线索状态 / 时间线 / 未解决连贯性问题。\n")
@@ -639,6 +674,7 @@ def create_project(cfg, titles, pdir=None, name=None):
     if _cfg_defaults().get("p5_pipeline", True):
         try:
             from . import graph as _graph
+            _sync_home()
             _graph.build_graph(pdir, total_chapters=total)
             proj.log("🕸️ 已构建故事图谱（15）")
         except Exception as e:
@@ -802,13 +838,25 @@ def start_writing(proj: Project, batch_size=None) -> bool:
 
 # ---------- v4.15.13：改书名后的 key 别名映射（旧 key → 新 key） ----------
 RENAME_MAP_FILE = os.path.join(ROOT, "data", "rename_map.json")
+# v5.5：mtime 缓存——_project_dir 变成高频路径（写作循环/每次读盘都过这里），
+# 每次调用都读 JSON 会拖慢写作；文件一变（record_rename/手工改）缓存即失效。
+_RENAME_MAP_CACHE = {"mtime": None, "map": {}}
 
 def _load_rename_map() -> dict:
     try:
+        mt = os.path.getmtime(RENAME_MAP_FILE)
+    except OSError:
+        mt = None
+    c = _RENAME_MAP_CACHE
+    if c.get("mtime") == mt and isinstance(c.get("map"), dict):
+        return c["map"]
+    try:
         d = json.load(open(RENAME_MAP_FILE, encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
+        m = d if isinstance(d, dict) else {}
     except Exception:
-        return {}
+        m = {}
+    c["mtime"], c["map"] = mt, m
+    return m
 
 def record_rename(old_key: str, new_key: str):
     """目录改名后记录别名；旧 key 的所有请求自动跳到新 key（避免「项目不存在」与幽灵重建）。"""
@@ -822,6 +870,61 @@ def resolve_key(key: str) -> str:
     """解析别名（一层跳转即可——改名链会写成直达）。解析不到返回原 key。"""
     m = _load_rename_map()
     return m.get(key, key)
+
+
+def _row_sig(d) -> str:
+    """聊天/事件行的去重签名（完全一致才算重复，宁多留不误删）。"""
+    try:
+        return json.dumps(d, ensure_ascii=False, sort_keys=True)[:400]
+    except Exception:
+        return repr(d)[:400]
+
+
+def _merge_ghost_history(old_dir: str, new_dir: str) -> list:
+    """v5.5：把幻影目录里的对话/事件历史并进真书目录，再清扫。
+
+    改名（选书名）发生在途规划/对话期间时，/api/chat/stream 与创作事件在改名
+    瞬间之后仍按旧 key 落盘，旧目录被部分复活——聊天记录从此劈成两半（实测：
+    新家有前 4 条、旧目录有改名后的「继续」问答）。别名读保证今后一切读写落新家；
+    这里负责把历史损伤里散落在旧目录的那部分按 (整行 JSON) 去重后追加回新家，
+    避免 sweep_rename_zombies rmtree 时把用户的聊天记录一起删掉。
+    只动 chat_log.jsonl 与 创作事件.jsonl 两个上下文文件，绝不碰正文与规划文件。
+    返回发生合并的文件名列表。"""
+    merged = []
+    if not old_dir or not new_dir or os.path.realpath(old_dir) == os.path.realpath(new_dir):
+        return merged
+    for fn in ("chat_log.jsonl", "创作事件.jsonl"):
+        src = os.path.join(old_dir, fn)
+        if not os.path.exists(src):
+            continue
+        try:
+            with open(src, encoding="utf-8") as f:
+                src_rows = [json.loads(x) for x in f.read().splitlines() if x.strip()]
+        except Exception:
+            continue
+        if not src_rows:
+            continue
+        dst = os.path.join(new_dir, fn)
+        dst_rows = []
+        if os.path.exists(dst):
+            try:
+                with open(dst, encoding="utf-8") as f:
+                    dst_rows = [json.loads(x) for x in f.read().splitlines() if x.strip()]
+            except Exception:
+                dst_rows = []
+        seen = {_row_sig(x) for x in dst_rows}
+        add = [x for x in src_rows if _row_sig(x) not in seen]
+        if not add:
+            merged.append(fn)
+            continue
+        try:
+            with open(dst, "a", encoding="utf-8") as f:
+                for x in add:
+                    f.write(json.dumps(x, ensure_ascii=False) + "\n")
+            merged.append(fn)
+        except Exception:
+            continue
+    return merged
 
 
 def sweep_rename_zombies() -> list:
@@ -862,6 +965,13 @@ def sweep_rename_zombies() -> list:
                 if fp and os.path.exists(os.path.join(old_dir, fp)):
                     done += 1
             if done == 0:
+                # v5.5：清扫前先把幻影目录里残留的聊天/事件历史并进真书目录——
+                # 别名读保证今后读写落新家，但改名瞬间后写进旧路径的那段历史
+                # 只在这里有机会回家，直接 rmtree 会把它一起删掉。
+                try:
+                    _merge_ghost_history(old_dir, new_dir)
+                except Exception:
+                    pass
                 _shutil.rmtree(old_dir, ignore_errors=True)
                 removed.append(old_key)
             else:
@@ -884,7 +994,25 @@ def sweep_rename_zombies() -> list:
 
 
 def _project_dir(key):
-    return safe_join(PROJECTS_DIR, key, label="作品 key")
+    """作品 key → 磁盘目录。
+
+    v5.5：别名优先解析——选书名（用户手选 / 总编辑定名 / 极速自动定名）会把目录
+    os.rename 走并 record_rename 记别名。此后旧 key 的一切请求（读计划、读聊天
+    历史、续写、状态查询）都必须落到新家：os.rename 已经把目录连同 chat_log.jsonl、
+    创作事件.jsonl、任务档案.json 整体迁移，所以这里选择「别名读」而不是「迁移/
+    双写」——聊天上下文天然就在新目录里，旧路径若因在途线程写盘被复活也只是幻影，
+    绝不能再当事实源（实测开书断层根因：会话与 /api/chat/stream 都绑着旧 key，
+    总编辑读到被复活的空目录，回答《未命名》空书）。"""
+    p = safe_join(PROJECTS_DIR, key, label="作品 key")
+    try:
+        nk = resolve_key(str(key or ""))
+        if nk and nk != key:
+            np = safe_join(PROJECTS_DIR, nk, label="作品 key")
+            if os.path.isdir(np):
+                return np
+    except Exception:
+        pass
+    return p
 
 def is_paused(proj):
     return bool((proj.plan() or {}).get("meta", {}).get("paused"))
@@ -4315,9 +4443,12 @@ def rename_book(key, new_name):
     return result
 
 def delete_book(key, hard=False):
-    """v0.3.3：删除。soft（默认）=归档进回收站可恢复；hard=彻底删除（删目录+清 schedules，不可逆）。"""
+    """v0.3.3：删除。soft（默认）=归档进回收站可恢复；hard=彻底删除（删目录+清 schedules，不可逆）。
+
+    v5.5：删除按调用方看到的目录来——_project_dir 现在会按别名解析到新家，
+    而删除旧 key（幻影残留/API 直调）应当删旧目录本身，绝不能顺着别名把真书删掉。"""
     try:
-        pdir = _project_dir(key)
+        pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
         return {"ok": False, "note": "作品 key 非法"}
     if not os.path.isdir(pdir):
@@ -5440,6 +5571,24 @@ def pick_title(key, title):
     proj.save_plan({**plan, "meta": meta, "novelName": title, "projectPath": proj.path})
     # v4.15.2：尊重批量写作设置
     start_writing(proj, batch_size=((plan.get("config") or {}).get("batch_size")))
+    # v5.5：交接语——选名换 key 后，新会话的聊天历史里必须有完整上下文
+    # （书名/进度/下一步动作）。总编辑读 chat_log 接「继续」全靠这一段，
+    # 没有它就会把新书当《未命名》空书（实测开书断层）。
+    try:
+        from .v2api import _save_chat_msg
+        _pnow = proj.plan() or {}
+        _hc = _pnow.get("chapters") or []
+        _hd = done_chapters({"chapters": _hc}, proj.path)
+        _ht = len(_hc) or int(_pnow.get("totalChapters") or 0)
+        _hn = next((int(c.get("chapterNumber") or 0) for c in _hc
+                    if str(c.get("status")) != "completed"), 0)
+        _save_chat_msg(proj, "assistant",
+                       f"📌 书名已确定为《{title}》，创作已在新会话继续。当前进度 {_hd}/{_ht} 章；"
+                       + (f"接下来从第 {_hn} 章接着写。" if _hn else "规划就绪后立即开写第 1 章。")
+                       + "说「继续」我就按这个进度推进。",
+                       {"type": "note", "handoff": True, "key": os.path.basename(proj.path)})
+    except Exception:
+        pass
     return os.path.basename(proj.path)
 
 def _safe_dir_name(title):

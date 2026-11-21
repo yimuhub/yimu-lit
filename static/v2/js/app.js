@@ -169,6 +169,30 @@ const ctx = {
   rememberMedium(key, medium) {
     if (key) mediumCache.set(key, medium || 'novel');
   },
+  /* v5.5：改名跳转——书名确认（手选/总编辑定名/极速自动定名）后目录 key 变了，
+     服务端 /api/status 会给旧 key 的请求带回 canonical key（followed_from 指向旧 key）。
+     此前这条链路只存在于后端注释里（"前端旧请求自动跳转"），实测从未接通：
+     前端拿着旧 key 渲染空书、会话与路由停在旧 key，总编辑看到《未命名》。
+     这里把侧栏/作品库条目、当前会话与路由整体跟到新 key。 */
+  followRenamedWork(fromKey, toKey, status) {
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    const s = store.get();
+    const old = (s.library.items || []).find((i) => i.key === fromKey);
+    const name = (status && (status.name || status.novelName)) || (old && old.name) || '';
+    ctx.rememberMedium(toKey, (old && old.medium) || s.workMedium || 'novel');
+    if (old) {
+      /* 侧栏/作品库条目原位换 key：改名瞬间书还在规划/创作中，占位项不能变成残影 */
+      patch('library', {
+        items: [
+          { ...old, key: toKey, name: name || old.name, pending: false, failed: false },
+          ...s.library.items.filter((i) => i.key !== fromKey && i.key !== toKey)
+        ]
+      });
+    }
+    ctx.refreshLibrary();
+    toast(name ? `书名已确定：已切换到《${name}》` : '书名已确定，已切换到新作品', { duration: 2600 });
+    navigate(`/work/${encodeURIComponent(toKey)}`);
+  },
   /* 向导模块按需加载（views/wizard.js 不属于首屏闭包）。打开中的窗口直接复用；
      await 之后再查一次 wizardModal，双击/连点不会开出两个。 */
   async openWizard(preset = {}) {
@@ -358,6 +382,14 @@ const ctx = {
     await guardedRefresh('work', key, {
       loader: () => api.status(key),
       onOk: (status) => {
+        /* v5.5：改名跟随——旧 key 的 /api/status 带回 canonical key + followed_from。
+           触发一次整体跳转（路由/侧栏/会话全部跟到新 key）后直接返回，
+           不再拿旧 key 的状态覆盖 work。 */
+        const canonical = status && status.key;
+        if (canonical && canonical !== key && store.get().currentKey === key && ctx.followRenamedWork) {
+          ctx.followRenamedWork(key, canonical, status);
+          return;
+        }
         /* status 只带进度；侧栏条目带收藏/标签/字数——两者合并成一份 work。
            v4.24.12：key 以本次请求的 key 为准（status 自带 key，library 条目也带 key，
            两边一致；这里显式落一次，避免任一侧缺失时 work.key 变 undefined，
