@@ -7,7 +7,31 @@ import { h, icon } from '../core/dom.js';
 import { store, patch, patchUi } from '../core/state.js';
 import { api, errorText } from '../core/api.js';
 import { toast, confirmDialog, openModal, popoverMenu } from '../core/ui.js';
-import { setTheme, themeLabel } from '../core/theme.js';
+import {
+  setTheme,
+  themeLabel,
+  switchTheme,
+  THEMES,
+  setSkin,
+  getSkin,
+  skinBaseFromImage,
+  SKINS
+} from '../core/theme.js';
+import {
+  getState as getSoundState,
+  setEnabled as setSoundEnabled,
+  setKind as setSoundKind,
+  setVolume as setSoundVolume,
+  playKey as playSoundKey,
+  SOUND_KINDS
+} from '../core/typingsound.js';
+import {
+  getState as getFxState,
+  setEnabled as setFxEnabled,
+  setKind as setFxKind,
+  trigger as triggerFx,
+  FX_KINDS
+} from '../core/typingfx.js';
 import { setPref } from '../core/prefs.js';
 import { SKILL_TITLES, loadSkillCatalog } from '../core/skillCatalog.js';
 
@@ -15,12 +39,6 @@ const QUALITY_MODES = [
   { value: 'off', label: '关', desc: '不做质量门禁，速度最快' },
   { value: 'report', label: '出报告', desc: '写完给评分与问题清单，不自动改' },
   { value: 'auto', label: '自动修订', desc: '低于及格线自动重写一次' }
-];
-
-const THEME_OPTIONS = [
-  { value: 'light', icon: 'sun' },
-  { value: 'dark', icon: 'moon' },
-  { value: 'system', icon: 'monitor' }
 ];
 
 /* 分组定义：key 同时是深链（ui.settingsTab）与导航高亮的依据。 */
@@ -141,39 +159,293 @@ export function renderSettings(container, ctx) {
   }
 
   /* ----------------------------------------------------------- 外观 */
+  /* v5.3.0 主题与个性化：四主题选卡 + 背景皮肤 + 打字音效 + 光标特效。
+     只扩展本外观分组，其他分组的结构与语义一律不动。 */
 
-  const themeBody = h('div', { class: 'theme-options' });
+  /* 主题四选卡（缩略色板预览） + 跟随系统小胶囊 + 皮肤 / 音效 / 特效三行 */
+  const themeBody = h('div', { class: 'theme-cards' });
+  const themeSysBody = h('div', { class: 'theme-options' });
+  const skinBody = h('div', {});
+  const soundBody = h('div', {});
+  const fxBody = h('div', {});
   panes.appearance.append(
     h('div', { class: 'set-row' },
       h('div', { class: 'set-row-copy' },
         h('div', { class: 'set-row-title', text: '界面主题' }),
-        h('div', { class: 'set-row-desc', text: '跟随系统会自动在浅色 / 深色之间切换。' })
+        h('div', { class: 'set-row-desc', text: '四套配色随时切换；暗夜水墨属于暗色，其余为亮色纸面。' })
       ),
       h('div', { class: 'set-control' }, themeBody)
-    )
+    ),
+    h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '跟随系统' }),
+        h('div', { class: 'set-row-desc', text: '不固定选一套：白天自动用宣纸白，入夜自动换暗夜水墨。' })
+      ),
+      h('div', { class: 'set-control' }, themeSysBody)
+    ),
+    skinRow(),
+    soundRow(),
+    fxRow()
   );
 
   function paintTheme() {
-    themeBody.textContent = '';
     const current = store.get().theme;
-    for (const opt of THEME_OPTIONS) {
-      const btn = h(
+    themeBody.textContent = '';
+    for (const t of THEMES) {
+      const card = h(
         'button',
         {
-          class: 'theme-opt',
+          class: 'theme-card',
           type: 'button',
-          'aria-pressed': current === opt.value ? 'true' : 'false',
-          dataset: { value: opt.value }
+          'aria-pressed': current === t.id ? 'true' : 'false',
+          dataset: { value: t.id },
+          title: t.desc
         },
-        h('span', { html: icon(opt.icon, 15) }),
-        h('span', { text: themeLabel(opt.value) })
+        h('span', { class: 'theme-card-swatch', 'aria-hidden': 'true' },
+          (t.swatch || []).map((c) => h('i', { style: `background:${c}` }))),
+        h('span', { class: 'theme-card-name' },
+          h('span', { text: t.name }),
+          h('span', { class: 'theme-card-check', html: icon('check', 13) })),
+        h('span', { class: 'theme-card-desc', text: t.desc })
       );
-      btn.addEventListener('click', () => {
-        setTheme(opt.value);
+      card.addEventListener('click', () => {
+        switchTheme(t.id);
         paintTheme();
       });
-      themeBody.append(btn);
+      themeBody.append(card);
     }
+    /* 「跟随系统」保留旧的胶囊样式：themeLabel('system') 永远是「跟随系统」。 */
+    themeSysBody.textContent = '';
+    const sysBtn = h(
+      'button',
+      {
+        class: 'theme-opt',
+        type: 'button',
+        'aria-pressed': current === 'system' ? 'true' : 'false',
+        dataset: { value: 'system' }
+      },
+      h('span', { html: icon('monitor', 15) }),
+      h('span', { text: themeLabel('system') })
+    );
+    sysBtn.addEventListener('click', () => {
+      setTheme('system');
+      paintTheme();
+    });
+    themeSysBody.append(sysBtn);
+  }
+
+  /* ---------------- 背景皮肤（与主题解耦；内置 SVG 或自定义上传） ---------------- */
+
+  function skinRow() {
+    return h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '背景皮肤' }),
+        h('div', { class: 'set-row-desc', text: '纸纹、山水、稿格内置 8 张，与主题解耦存放；滤镜和透明度随主题自动调（暗夜水墨会压暗去色），也可上传自己的图片（10MB 内）。' })
+      ),
+      h('div', { class: 'set-control' }, skinBody)
+    );
+  }
+
+  function paintSkin() {
+    skinBody.textContent = '';
+    const cur = getSkin();
+    const grid = h('div', { class: 'skin-grid' });
+
+    const make = (kind, value, name, thumbStyle, pressed) => {
+      const card = h('button', {
+        class: 'skin-card',
+        type: 'button',
+        'aria-pressed': pressed ? 'true' : 'false',
+        title: name
+      },
+        h('span', { class: 'skin-card-thumb', style: thumbStyle, 'aria-hidden': 'true' }),
+        h('span', { class: 'skin-card-name', text: name }));
+      card.addEventListener('click', () => {
+        if (kind === 'none') setSkin('none');
+        else if (kind === 'builtin') {
+          const s = SKINS.find((x) => x.id === value);
+          setSkin('builtin', value, s ? s.base : '');
+        }
+        paintSkin();
+      });
+      return card;
+    };
+
+    grid.append(make('none', '', '无皮肤', 'background:var(--bg-chip)', cur.kind === 'none'));
+    for (const s of SKINS) {
+      grid.append(make('builtin', s.id, s.name,
+        `background-color:${s.base};background-image:url("/v2/img/skins/${s.id}.svg");background-size:cover;background-position:center`,
+        cur.kind === 'builtin' && cur.value === s.id));
+    }
+    if (cur.kind === 'custom' && cur.value) {
+      grid.append(make('custom', cur.value, '我的图片',
+        `background-image:url("${cur.value}");background-size:cover;background-position:center`, true));
+    }
+
+    /* 上传入口：隐藏文件框 + 一张「上传…」卡片，选完转 dataURL 存本机 */
+    const file = h('input', { type: 'file', accept: 'image/*', style: 'display:none', 'aria-label': '上传皮肤图片' });
+    file.addEventListener('change', () => {
+      const f = file.files && file.files[0];
+      file.value = '';
+      if (!f) return;
+      if (f.size > 10 * 1024 * 1024) {
+        toast('图片超过 10MB，请压缩后再试', { tone: 'danger' });
+        return;
+      }
+      const reader = new FileReader();
+      reader.onerror = () => toast('图片读取失败', { tone: 'danger' });
+      reader.onload = async () => {
+        try {
+          const dataUrl = String(reader.result || '');
+          const base = await skinBaseFromImage(dataUrl);
+          setSkin('custom', dataUrl, base);
+          paintSkin();
+          toast('自定义皮肤已应用', { tone: 'success', duration: 1800 });
+        } catch (err) {
+          console.warn('[皮肤] 自定义皮肤处理失败', err);
+          toast('自定义皮肤处理失败', { tone: 'danger' });
+        }
+      };
+      reader.readAsDataURL(f);
+    });
+    const upload = h('button', {
+      class: 'skin-card',
+      type: 'button',
+      title: '上传自定义图片（10MB 内）',
+      on: { click: () => file.click() }
+    },
+      h('span', { class: 'skin-card-thumb', style: 'display:grid;place-items:center;background:var(--bg-chip);color:var(--ink-tertiary)', html: icon('upload', 15) }),
+      h('span', { class: 'skin-card-name', text: '上传…' }));
+    grid.append(upload, file);
+    skinBody.append(grid);
+  }
+
+  /* ---------------- 打字音效（青轴 / 茶轴 / 打字机） ---------------- */
+
+  function soundRow() {
+    return h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '打字音效' }),
+        h('div', { class: 'set-row-desc', text: 'WebAudio 现场合成的机械键盘手感，每次击键都有细微随机变化；只在本机发声，听书播放时自动静音。' })
+      ),
+      h('div', { class: 'set-control' }, soundBody)
+    );
+  }
+
+  function paintSound() {
+    const st = getSoundState();
+
+    /* 开关（tokens.css 的 .switch 原语） */
+    const sw = h('button', {
+      class: 'switch',
+      type: 'button',
+      role: 'switch',
+      'aria-checked': st.enabled ? 'true' : 'false',
+      'aria-label': '打字音效开关',
+      on: {
+        click: () => {
+          setSoundEnabled(!getSoundState().enabled);
+          paintSound();
+        }
+      }
+    });
+
+    /* 三款音色 segmented */
+    const seg = h('div', { class: 'segmented', role: 'group', 'aria-label': '打字音色' });
+    for (const k of SOUND_KINDS) {
+      seg.append(h('button', {
+        class: 'seg-btn',
+        type: 'button',
+        'aria-pressed': st.kind === k.id ? 'true' : 'false',
+        title: k.desc,
+        text: k.name,
+        on: { click: () => { setSoundKind(k.id); paintSound(); playSoundKey(k.id); } }
+      }));
+    }
+
+    /* 音量滑杆 0-100 */
+    const vol = h('input', {
+      class: 'volume-range',
+      type: 'range',
+      min: '0',
+      max: '100',
+      step: '5',
+      value: String(Math.round(st.volume * 100)),
+      'aria-label': '打字音效音量',
+      on: {
+        input: () => setSoundVolume(Number(vol.value) / 100),
+        change: () => playSoundKey()
+      }
+    });
+
+    soundBody.textContent = '';
+    soundBody.append(
+      h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
+        sw, seg,
+        h('label', { style: 'display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-tertiary)' },
+          h('span', { html: icon('volume', 13) }), vol)
+      )
+    );
+  }
+
+  /* ---------------- 光标特效（挥毫溅墨 / 墨纹涟漪 / 文字鼓励 / 烈焰） ---------------- */
+
+  function fxRow() {
+    return h('div', { class: 'set-row' },
+      h('div', { class: 'set-row-copy' },
+        h('div', { class: 'set-row-title', text: '光标特效' }),
+        h('div', { class: 'set-row-desc', text: '每次落键在光标处放一个小特效，图个写作的好彩头；想安静写作时随时关掉。' })
+      ),
+      h('div', { class: 'set-control' }, fxBody)
+    );
+  }
+
+  function paintFx() {
+    const st = getFxState();
+    fxBody.textContent = '';
+
+    const sw = h('button', {
+      class: 'switch',
+      type: 'button',
+      role: 'switch',
+      'aria-checked': st.enabled ? 'true' : 'false',
+      'aria-label': '光标特效开关',
+      on: {
+        click: () => {
+          setFxEnabled(!getFxState().enabled);
+          paintFx();
+        }
+      }
+    });
+
+    const cards = h('div', { class: 'fx-cards', role: 'group', 'aria-label': '光标特效种类' });
+    for (const k of FX_KINDS) {
+      const card = h('button', {
+        class: 'fx-card',
+        type: 'button',
+        'aria-pressed': st.kind === k.id ? 'true' : 'false',
+        title: k.desc,
+        text: k.name,
+        on: {
+          click: (event) => {
+            setFxKind(k.id);
+            paintFx();
+            /* 就地试一试：特效直接打在所选卡片上 */
+            try {
+              const r = event.currentTarget.getBoundingClientRect();
+              triggerFx(r.left + r.width / 2, r.top, k.id);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      });
+      cards.append(card);
+    }
+
+    fxBody.append(
+      h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, sw, cards)
+    );
   }
 
   /* ------------------------------------------------------- 创作质量 */
@@ -1972,6 +2244,9 @@ export function renderSettings(container, ctx) {
   /* ----------------------------------------------------------- start */
 
   paintTheme();
+  paintSkin();
+  paintSound();
+  paintFx();
   paintAdvanced();
   loadSettings();
   loadProviders();
@@ -1995,6 +2270,9 @@ export function renderSettings(container, ctx) {
     el: view,
     refresh() {
       paintTheme();
+      paintSkin();
+      paintSound();
+      paintFx();
       loadSettings();
       loadProviders();
       loadAgents();

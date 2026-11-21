@@ -6472,6 +6472,12 @@ def api_chapter_save(payload: dict):
         words = _apply_chapter_text(proj, payload.get("n"), text)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
+    # v5.1.0 边写边存的节流快照：距上次自动快照 ≥5 分钟或字数变化 ≥200 才落
+    # （首版 ≥50 字、auto 类每章上限 20 版）。失败不影响保存主链路（降级不静默分叉）。
+    try:
+        versions.throttled_snapshot(proj.path, int(payload.get("n")), text, label="自动保存")
+    except Exception:
+        pass
     return {"ok": True, "chapter": int(payload.get("n")), "words": words,
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S")}
 
@@ -6533,6 +6539,136 @@ def api_chapter_restore(payload: dict):
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
     return {"ok": True, "chapter": int(n), "words": words}
+
+
+# ---------- v5.1.0 写作台编辑器内核：新端点全部增量，不改既有路由语义 ----------
+
+def _chapter_versions_restore_impl(payload: dict):
+    """v5.1.0 恢复历史版本（新路径，与旧 /api/chapter/restore 并存）：
+    恢复前先把当前稿存为 label=恢复前 的快照（versions.restore_version），
+    再写盘目标版本；写盘仍走 _apply_chapter_text 的统一门禁（校验→快照→落盘→字数）。
+    PUT/POST 双方法注册：前端按语义用 PUT，脚本/兼容习惯用 POST。"""
+    proj = _get_project(payload.get("key"))
+    if not proj:
+        return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    n = payload.get("n")
+    ch, _ = _chapter_entry(proj, n)
+    if ch is None:
+        return JSONResponse({"error": "章节不存在"}, status_code=404)
+    fp = _chapter_path(proj, ch)
+    cur = open(fp, encoding="utf-8").read() if fp and os.path.exists(fp) else ""
+    try:
+        text = versions.restore_version(proj.path, n, payload.get("id"), cur)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    try:
+        words = _apply_chapter_text(proj, n, text, label="恢复前")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return {"ok": True, "chapter": int(n), "words": words,
+            "snapshot_before": "恢复前"}
+
+
+@app.put("/api/chapter/versions/restore")
+def api_chapter_versions_restore_put(payload: dict):
+    return _chapter_versions_restore_impl(payload)
+
+
+@app.post("/api/chapter/versions/restore")
+def api_chapter_versions_restore_post(payload: dict):
+    return _chapter_versions_restore_impl(payload)
+
+
+@app.get("/api/selection-ai/actions")
+def api_selection_ai_actions():
+    """划词 AI 动作元信息（label/温度/选区上限）——前端气泡按它渲染，不硬编码。"""
+    try:
+        from bot import selection_ai
+        return {"ok": True, "actions": selection_ai.selection_ai_meta()}
+    except Exception as e:
+        return JSONResponse({"error": f"动作表读取失败：{e}"}, status_code=500)
+
+
+@app.post("/api/chapter/selection-ai")
+async def api_chapter_selection_ai(request: Request):
+    """v5.1.0 划词 AI（SSE 流式）。
+
+    入参：{action, selection, before?, after?, title?, summary?, instruction?,
+           persona?, key?, n?}——选区与前后文由前端从编辑器现算后传来，
+    后端再按 220 字窗口钳制。出参（SSE）：start → delta*(增量) → done{text}；
+    失败：error 帧 + done{ok:false}。**不落稿**：替换由前端在校验原选区未变后执行。
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "请求体必须是 JSON"}, status_code=400)
+    payload = payload or {}
+    from bot import selection_ai
+    action = str(payload.get("action") or "")
+    if action not in selection_ai.ACTIONS:
+        return JSONResponse(
+            {"error": f"未知动作：{action}（可用：{'/'.join(selection_ai.ACTIONS)}）"},
+            status_code=400)
+    selection = str(payload.get("selection") or "")
+    if not selection.strip():
+        return JSONResponse({"error": "选区为空，请先在正文里选中一段文字"}, status_code=400)
+    key = str(payload.get("key") or "")
+    n = payload.get("n")
+    ctx = {
+        "before": str(payload.get("before") or ""),
+        "after": str(payload.get("after") or ""),
+        "title": str(payload.get("title") or ""),
+        "summary": str(payload.get("summary") or ""),
+        "instruction": str(payload.get("instruction") or ""),
+        "persona": str(payload.get("persona") or ""),
+        "key": key,
+        "chapter_no": n if isinstance(n, int) else None,
+    }
+
+    import asyncio as _asyncio
+    import queue as _queue
+
+    async def gen():
+        t0 = time.time()
+        yield _sse("start", {"action": action, "ts": int(t0)})
+        q: _queue.Queue = _queue.Queue()
+        box: list = []
+
+        def _work():
+            try:
+                text = selection_ai.run_stream(
+                    action, selection, on_delta=lambda piece: q.put(("delta", piece)), **ctx)
+                box.append((True, text))
+                q.put(("done", None))
+            except BaseException as e:   # LLMError/入参错误都进 error 帧，绝不 500 中断流
+                box.append((False, str(e)))
+                q.put(("error", None))
+
+        threading.Thread(target=_work, daemon=True).start()
+        # 逐帧转发：线程队列 → SSE（delta 实时、done 带全文与耗时）
+        while True:
+            kind, _val = await _asyncio.to_thread(q.get)
+            if kind == "delta":
+                yield _sse("delta", {"text": _val})
+            elif kind == "done":
+                ok, text = box[0] if box else (False, "划词结果为空")
+                if ok:
+                    yield _sse("done", {"ok": True, "text": text, "action": action,
+                                        "elapsed": round(time.time() - t0, 2)})
+                else:
+                    yield _sse("error", {"error": text})
+                    yield _sse("done", {"ok": False, "error": text,
+                                        "elapsed": round(time.time() - t0, 2)})
+                return
+            else:  # error
+                err = box[0][1] if box else "划词调用失败"
+                yield _sse("error", {"error": err})
+                yield _sse("done", {"ok": False, "error": err,
+                                    "elapsed": round(time.time() - t0, 2)})
+                return
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 def _preview_pass_line(plan):
     try:

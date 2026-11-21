@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- 墨浪：深蓝墨浪暗纹（v5.3.0 内置皮肤，纯矢量自绘） -->
+  <defs>
+    <linearGradient id="deepsea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#171b23"/>
+      <stop offset="1" stop-color="#20262f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#deepsea)"/>
+  <g fill="none" stroke="#8fa5c0" stroke-linecap="round">
+    <g opacity="0.12" stroke-width="3">
+      <path d="M-40 180 Q120 140 300 180 T640 180 T980 180 T1320 180 T1660 180"/>
+      <path d="M-40 340 Q120 300 300 340 T640 340 T980 340 T1320 340 T1660 340"/>
+      <path d="M-40 520 Q120 480 300 520 T640 520 T980 520 T1320 520 T1660 520"/>
+      <path d="M-40 700 Q120 660 300 700 T640 700 T980 700 T1320 700 T1660 700"/>
+    </g>
+    <g opacity="0.08" stroke-width="6">
+      <path d="M-40 260 Q180 210 420 260 T900 260 T1380 260 T1660 260"/>
+      <path d="M-40 440 Q180 390 420 440 T900 440 T1380 440 T1660 440"/>
+      <path d="M-40 620 Q180 570 420 620 T900 620 T1380 620 T1660 620"/>
+      <path d="M-40 800 Q180 750 420 800 T900 800 T1380 800 T1660 800"/>
+    </g>
+  </g>
+  <circle cx="1340" cy="140" r="60" fill="none" stroke="#8fa5c0" stroke-width="2.5" opacity="0.14"/>
+</svg>

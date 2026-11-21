@@ -83,6 +83,47 @@
   --danger-soft: #fdf0ef;
   --info-soft: #eef4fe;
 
+  /* v5.3.0 增补（只加不改）：状态色四件套补齐「深字/描边」，info 补本色 */
+  --success-ink: #187a4b;
+  --success-line: rgba(34, 168, 100, 0.35);
+  --warn-line: rgba(217, 144, 34, 0.4);
+  --danger-line: rgba(216, 67, 59, 0.38);
+  --info: #4176e6;
+  --info-ink: #2c5fc9;
+  --info-line: rgba(65, 118, 230, 0.35);
+
+  /* v5.3.0 增补：面层两档（内容浮层/次级面层，皮肤开启时承担半透明分层） */
+  --surface-1: #ffffff;
+  --surface-2: #f9fafb;
+
+  /* v5.3.0 增补：按钮 / 输入框 / 面板 / 导航独立变量（主题可整组换肤） */
+  --btn-bg: #ffffff;
+  --btn-bg-hover: #f1f3f5;
+  --btn-border: rgba(15, 17, 21, 0.12);
+  --btn-ink: #0f1115;
+  --btn-primary-bg: #4176e6;
+  --btn-primary-bg-hover: #3568d6;
+  --btn-primary-ink: #ffffff;
+  --input-bg: #ffffff;
+  --input-border: rgba(15, 17, 21, 0.12);
+  --input-ink: #0f1115;
+  --input-placeholder: #a9aeb6;
+  --input-ring: rgba(65, 118, 230, 0.32);
+  --panel-bg: #ffffff;
+  --panel-border: rgba(15, 17, 21, 0.09);
+  --nav-bg: #f9fafb;
+  --nav-ink: #0f1115;
+  --nav-ink-muted: #61666b;
+  --nav-ink-active: #2c5fc9;
+  --nav-item-hover-bg: rgba(38, 49, 72, 0.06);
+
+  /* v5.3.0 增补：背景皮肤层。--skin-base/--skin-image 由启动脚本与 theme.js 覆写，
+     滤镜/透明度随主题走（古韵 sepia(0.6) opacity .15、暗夜 grayscale+brightness .2）。 */
+  --skin-base: #ffffff;
+  --skin-image: none;
+  --skin-opacity: 0.45;
+  --skin-filter: none;
+
   /* content surfaces */
   --bubble-fill: #f2f6fe;
   --bubble-ink: #1a2230;
@@ -179,6 +220,382 @@
 
   --scrollbar-thumb: #3d3f44;
   --scrollbar-thumb-hover: #4c4e54;
+}
+
+/* v5.3.0 四主题：宣纸白（light 增补）/ 古韵信笺 / 森系护眼 / 暗夜水墨（dark 增补）。
+ * 约定：既有变量名与语义全部保留，这里只做增补与同义重述；
+ * 每个块自包含关键语义变量，data-theme 直接切整块生效。 */
+
+/* 宣纸白 —— 现浅色主题的增补版（默认纸面） */
+:root[data-theme="paper"] {
+  color-scheme: light;
+
+  --bg-base: #ffffff;
+  --bg-sidebar: #f9fafb;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #f6f8fa;
+  --bg-chip: #f1f3f5;
+  --bg-skeleton: rgba(15, 17, 21, 0.05);
+  --bg-mask: rgba(20, 24, 32, 0.32);
+  --bg-selection: rgba(65, 118, 230, 0.18);
+
+  --ink-primary: #0f1115;
+  --ink-secondary: #61666b;
+  --ink-tertiary: #81858c;
+  --ink-caption: #a9aeb6;
+  --ink-dimmed: #c8ccd2;
+  --ink-inverse: #ffffff;
+
+  --line-1: rgba(15, 17, 21, 0.045);
+  --line-2: rgba(15, 17, 21, 0.09);
+  --line-3: rgba(15, 17, 21, 0.12);
+  --line-4: rgba(15, 17, 21, 0.16);
+
+  --hover: rgba(38, 49, 72, 0.06);
+  --hover-strong: rgba(38, 49, 72, 0.1);
+  --active: rgba(38, 49, 72, 0.12);
+  --hover-solid: #f1f3f5;
+
+  --accent: #4176e6;
+  --accent-hover: #3568d6;
+  --accent-ink: #2c5fc9;
+  --accent-soft: #edf3fe;
+  --accent-soft-2: #e3edfd;
+  --accent-ring: rgba(65, 118, 230, 0.32);
+  --accent-contrast: #ffffff;
+
+  --success: #22a864;
+  --success-soft: #e7f8ef;
+  --success-ink: #187a4b;
+  --success-line: rgba(34, 168, 100, 0.35);
+  --warn: #d99022;
+  --warn-label: #b97713;
+  --warn-soft: #fdf4e3;
+  --warn-line: rgba(217, 144, 34, 0.4);
+  --danger: #d8433b;
+  --danger-ink: #b93830;
+  --danger-soft: #fdf0ef;
+  --danger-line: rgba(216, 67, 59, 0.38);
+  --info: #4176e6;
+  --info-ink: #2c5fc9;
+  --info-soft: #eef4fe;
+  --info-line: rgba(65, 118, 230, 0.35);
+
+  --surface-1: #ffffff;
+  --surface-2: #f9fafb;
+
+  --btn-bg: #ffffff;
+  --btn-bg-hover: #f1f3f5;
+  --btn-border: rgba(15, 17, 21, 0.12);
+  --btn-ink: #0f1115;
+  --btn-primary-bg: #4176e6;
+  --btn-primary-bg-hover: #3568d6;
+  --btn-primary-ink: #ffffff;
+  --input-bg: #ffffff;
+  --input-border: rgba(15, 17, 21, 0.12);
+  --input-ink: #0f1115;
+  --input-placeholder: #a9aeb6;
+  --input-ring: rgba(65, 118, 230, 0.32);
+  --panel-bg: #ffffff;
+  --panel-border: rgba(15, 17, 21, 0.09);
+  --nav-bg: #f9fafb;
+  --nav-ink: #0f1115;
+  --nav-ink-muted: #61666b;
+  --nav-ink-active: #2c5fc9;
+  --nav-item-hover-bg: rgba(38, 49, 72, 0.06);
+
+  --bubble-fill: #f2f6fe;
+  --bubble-ink: #1a2230;
+  --code-fill: #f6f7f9;
+  --mark-fill: #f4f6f9;
+  --user-gutter: #eef3fd;
+
+  --scrollbar-thumb: #d8dce2;
+  --scrollbar-thumb-hover: #c3c8d0;
+
+  --skin-base: #f2f4f7;
+  --skin-image: none;
+  --skin-opacity: 0.45;
+  --skin-filter: none;
+}
+
+/* 古韵信笺 —— 米黄信笺底 + 赭红点缀，写古风更对味 */
+:root[data-theme="scroll"] {
+  color-scheme: light;
+
+  --bg-base: #f8f1e0;
+  --bg-sidebar: #f2e9d3;
+  --bg-elevated: #fcf7ea;
+  --bg-sunken: #efe5cd;
+  --bg-chip: #eaddc0;
+  --bg-skeleton: rgba(61, 50, 38, 0.06);
+  --bg-mask: rgba(58, 44, 28, 0.38);
+  --bg-selection: rgba(180, 85, 45, 0.16);
+
+  --ink-primary: #3d3226;
+  --ink-secondary: #6e6250;
+  --ink-tertiary: #8d8068;
+  --ink-caption: #a9997d;
+  --ink-dimmed: #c5b697;
+  --ink-inverse: #fcf7ea;
+
+  --line-1: rgba(61, 50, 38, 0.06);
+  --line-2: rgba(61, 50, 38, 0.11);
+  --line-3: rgba(61, 50, 38, 0.15);
+  --line-4: rgba(61, 50, 38, 0.19);
+
+  --hover: rgba(93, 72, 45, 0.07);
+  --hover-strong: rgba(93, 72, 45, 0.11);
+  --active: rgba(93, 72, 45, 0.14);
+  --hover-solid: #eaddc0;
+
+  --accent: #b4552d;
+  --accent-hover: #a04a25;
+  --accent-ink: #96431f;
+  --accent-soft: rgba(180, 85, 45, 0.12);
+  --accent-soft-2: rgba(180, 85, 45, 0.19);
+  --accent-ring: rgba(180, 85, 45, 0.32);
+  --accent-contrast: #fff8ec;
+
+  --success: #4f8a5b;
+  --success-soft: rgba(79, 138, 91, 0.14);
+  --success-ink: #35693f;
+  --success-line: rgba(79, 138, 91, 0.36);
+  --warn: #b07c2a;
+  --warn-label: #96691f;
+  --warn-soft: rgba(176, 124, 42, 0.14);
+  --warn-line: rgba(176, 124, 42, 0.4);
+  --danger: #b04a3c;
+  --danger-ink: #8f3a2e;
+  --danger-soft: rgba(176, 74, 60, 0.13);
+  --danger-line: rgba(176, 74, 60, 0.38);
+  --info: #4a6d8a;
+  --info-ink: #3a5a74;
+  --info-soft: rgba(74, 109, 138, 0.12);
+  --info-line: rgba(74, 109, 138, 0.36);
+
+  --surface-1: #fcf7ea;
+  --surface-2: #f2e9d3;
+
+  --btn-bg: #fcf7ea;
+  --btn-bg-hover: #efe5cd;
+  --btn-border: rgba(61, 50, 38, 0.15);
+  --btn-ink: #3d3226;
+  --btn-primary-bg: #b4552d;
+  --btn-primary-bg-hover: #a04a25;
+  --btn-primary-ink: #fff8ec;
+  --input-bg: #fcf7ea;
+  --input-border: rgba(61, 50, 38, 0.15);
+  --input-ink: #3d3226;
+  --input-placeholder: #a9997d;
+  --input-ring: rgba(180, 85, 45, 0.32);
+  --panel-bg: #fcf7ea;
+  --panel-border: rgba(61, 50, 38, 0.11);
+  --nav-bg: #f2e9d3;
+  --nav-ink: #3d3226;
+  --nav-ink-muted: #6e6250;
+  --nav-ink-active: #96431f;
+  --nav-item-hover-bg: rgba(93, 72, 45, 0.07);
+
+  --bubble-fill: #f4ecd9;
+  --bubble-ink: #33291d;
+  --code-fill: #f1e8d4;
+  --mark-fill: #f3ead6;
+  --user-gutter: #efe3c9;
+
+  --scrollbar-thumb: #d5c8aa;
+  --scrollbar-thumb-hover: #c4b48f;
+
+  --skin-base: #f8f1e0;
+  --skin-image: none;
+  --skin-opacity: 0.15;
+  --skin-filter: sepia(0.6);
+}
+
+/* 森系护眼 —— 豆绿底色，长时间码字更柔和 */
+:root[data-theme="forest"] {
+  color-scheme: light;
+
+  --bg-base: #d9e4cb;
+  --bg-sidebar: #cfdbbf;
+  --bg-elevated: #e3ecd6;
+  --bg-sunken: #cfdbbf;
+  --bg-chip: #c7d5b4;
+  --bg-skeleton: rgba(38, 48, 31, 0.07);
+  --bg-mask: rgba(34, 44, 30, 0.36);
+  --bg-selection: rgba(62, 125, 84, 0.16);
+
+  --ink-primary: #26301f;
+  --ink-secondary: #4f5d45;
+  --ink-tertiary: #68765b;
+  --ink-caption: #869478;
+  --ink-dimmed: #a4b194;
+  --ink-inverse: #eef3e5;
+
+  --line-1: rgba(38, 48, 31, 0.07);
+  --line-2: rgba(38, 48, 31, 0.12);
+  --line-3: rgba(38, 48, 31, 0.16);
+  --line-4: rgba(38, 48, 31, 0.21);
+
+  --hover: rgba(52, 70, 40, 0.08);
+  --hover-strong: rgba(52, 70, 40, 0.12);
+  --active: rgba(52, 70, 40, 0.15);
+  --hover-solid: #c7d5b4;
+
+  --accent: #3e7d54;
+  --accent-hover: #356d48;
+  --accent-ink: #2f6242;
+  --accent-soft: rgba(62, 125, 84, 0.15);
+  --accent-soft-2: rgba(62, 125, 84, 0.22);
+  --accent-ring: rgba(62, 125, 84, 0.34);
+  --accent-contrast: #f2f7ea;
+
+  --success: #2e7d4f;
+  --success-soft: rgba(46, 125, 79, 0.15);
+  --success-ink: #245f3d;
+  --success-line: rgba(46, 125, 79, 0.36);
+  --warn: #a8781f;
+  --warn-label: #8a6119;
+  --warn-soft: rgba(168, 120, 31, 0.15);
+  --warn-line: rgba(168, 120, 31, 0.4);
+  --danger: #a84838;
+  --danger-ink: #863629;
+  --danger-soft: rgba(168, 72, 56, 0.14);
+  --danger-line: rgba(168, 72, 56, 0.38);
+  --info: #3d6a8a;
+  --info-ink: #315570;
+  --info-soft: rgba(61, 106, 138, 0.13);
+  --info-line: rgba(61, 106, 138, 0.36);
+
+  --surface-1: #e3ecd6;
+  --surface-2: #cfdbbf;
+
+  --btn-bg: #e3ecd6;
+  --btn-bg-hover: #cfdbbf;
+  --btn-border: rgba(38, 48, 31, 0.16);
+  --btn-ink: #26301f;
+  --btn-primary-bg: #3e7d54;
+  --btn-primary-bg-hover: #356d48;
+  --btn-primary-ink: #f2f7ea;
+  --input-bg: #e3ecd6;
+  --input-border: rgba(38, 48, 31, 0.16);
+  --input-ink: #26301f;
+  --input-placeholder: #869478;
+  --input-ring: rgba(62, 125, 84, 0.34);
+  --panel-bg: #e3ecd6;
+  --panel-border: rgba(38, 48, 31, 0.12);
+  --nav-bg: #cfdbbf;
+  --nav-ink: #26301f;
+  --nav-ink-muted: #4f5d45;
+  --nav-ink-active: #2f6242;
+  --nav-item-hover-bg: rgba(52, 70, 40, 0.08);
+
+  --bubble-fill: #e7efdb;
+  --bubble-ink: #222b1c;
+  --code-fill: #d5e0c4;
+  --mark-fill: #d7e1c6;
+  --user-gutter: #d2dfc0;
+
+  --scrollbar-thumb: #b3c19c;
+  --scrollbar-thumb-hover: #a1b188;
+
+  --skin-base: #d9e4cb;
+  --skin-image: none;
+  --skin-opacity: 0.25;
+  --skin-filter: none;
+}
+
+/* 暗夜水墨 —— 现深色主题的增补版（夜写底色） */
+:root[data-theme="ink"] {
+  color-scheme: dark;
+
+  --bg-base: #151517;
+  --bg-sidebar: #1b1b1c;
+  --bg-elevated: #232324;
+  --bg-sunken: #1b1b1d;
+  --bg-chip: #2c2c2e;
+  --bg-skeleton: rgba(255, 255, 255, 0.07);
+  --bg-mask: rgba(0, 0, 0, 0.56);
+  --bg-selection: rgba(122, 170, 255, 0.22);
+
+  --ink-primary: #f3f5f7;
+  --ink-secondary: #c5c9cf;
+  --ink-tertiary: #a2a8b0;
+  --ink-caption: #7d838c;
+  --ink-dimmed: #575c64;
+  --ink-inverse: #151517;
+
+  --line-1: rgba(255, 255, 255, 0.055);
+  --line-2: rgba(255, 255, 255, 0.1);
+  --line-3: rgba(255, 255, 255, 0.14);
+  --line-4: rgba(255, 255, 255, 0.19);
+
+  --hover: rgba(255, 255, 255, 0.07);
+  --hover-strong: rgba(255, 255, 255, 0.12);
+  --active: rgba(255, 255, 255, 0.15);
+  --hover-solid: #2b2b2d;
+
+  --accent: #7aaaff;
+  --accent-hover: #94baff;
+  --accent-ink: #9cc1ff;
+  --accent-soft: rgba(122, 170, 255, 0.13);
+  --accent-soft-2: rgba(122, 170, 255, 0.2);
+  --accent-ring: rgba(122, 170, 255, 0.34);
+  --accent-contrast: #10141b;
+
+  --success: #4ecb8a;
+  --success-soft: rgba(78, 203, 138, 0.14);
+  --success-ink: #7cd9a4;
+  --success-line: rgba(78, 203, 138, 0.4);
+  --warn: #f0b23f;
+  --warn-label: #f0b23f;
+  --warn-soft: rgba(240, 178, 63, 0.13);
+  --warn-line: rgba(240, 178, 63, 0.42);
+  --danger: #f2726a;
+  --danger-ink: #ff8b83;
+  --danger-soft: rgba(242, 114, 106, 0.14);
+  --danger-line: rgba(242, 114, 106, 0.4);
+  --info: #7aaaff;
+  --info-ink: #9cc1ff;
+  --info-soft: rgba(122, 170, 255, 0.12);
+  --info-line: rgba(122, 170, 255, 0.38);
+
+  --surface-1: #232324;
+  --surface-2: #1b1b1c;
+
+  --btn-bg: #232324;
+  --btn-bg-hover: #2b2b2d;
+  --btn-border: rgba(255, 255, 255, 0.14);
+  --btn-ink: #f3f5f7;
+  --btn-primary-bg: #7aaaff;
+  --btn-primary-bg-hover: #94baff;
+  --btn-primary-ink: #10141b;
+  --input-bg: #202024;
+  --input-border: rgba(255, 255, 255, 0.14);
+  --input-ink: #f3f5f7;
+  --input-placeholder: #7d838c;
+  --input-ring: rgba(122, 170, 255, 0.34);
+  --panel-bg: #1b1b1c;
+  --panel-border: rgba(255, 255, 255, 0.1);
+  --nav-bg: #1b1b1c;
+  --nav-ink: #f3f5f7;
+  --nav-ink-muted: #a2a8b0;
+  --nav-ink-active: #9cc1ff;
+  --nav-item-hover-bg: rgba(255, 255, 255, 0.07);
+
+  --bubble-fill: #26282c;
+  --bubble-ink: #eef1f5;
+  --code-fill: #202024;
+  --mark-fill: #222326;
+  --user-gutter: #222427;
+
+  --scrollbar-thumb: #3d3f44;
+  --scrollbar-thumb-hover: #4c4e54;
+
+  --skin-base: #141416;
+  --skin-image: none;
+  --skin-opacity: 0.2;
+  --skin-filter: grayscale(1) brightness(0.6);
 }
 
 /* Base reset */

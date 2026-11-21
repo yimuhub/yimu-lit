@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- 远山晨雾：青灰远山，淡雾开场（v5.3.0 内置皮肤，纯矢量自绘） -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eef3f6"/>
+      <stop offset="0.55" stop-color="#e3ecef"/>
+      <stop offset="1" stop-color="#dde8ea"/>
+    </linearGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f2f6f8" stop-opacity="0"/>
+      <stop offset="1" stop-color="#f2f6f8" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#sky)"/>
+  <g fill="#b9c9cf" opacity="0.5">
+    <path d="M-40 560 Q220 400 470 540 T960 520 T1500 560 L1600 900 L-40 900 Z"/>
+  </g>
+  <g fill="#a7bac2" opacity="0.55">
+    <path d="M-40 640 Q260 470 560 610 T1080 600 T1660 640 L1660 900 L-40 900 Z"/>
+  </g>
+  <g fill="#8fa9b3" opacity="0.5">
+    <path d="M-40 720 Q330 560 700 690 T1200 680 T1660 730 L1660 900 L-40 900 Z"/>
+  </g>
+  <g fill="#7c99a4" opacity="0.45">
+    <path d="M-40 800 Q420 680 820 780 T1660 800 L1660 900 L-40 900 Z"/>
+  </g>
+  <rect y="470" width="1600" height="430" fill="url(#mist)"/>
+  <ellipse cx="1230" cy="200" rx="90" ry="26" fill="#ffffff" opacity="0.5"/>
+  <ellipse cx="1330" cy="230" rx="120" ry="30" fill="#ffffff" opacity="0.4"/>
+</svg>

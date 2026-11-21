@@ -3340,3 +3340,14 @@
 .evo-dim-delta.up { color: var(--success); }
 .evo-dim-delta.down { color: var(--danger); }
 @media (max-width: 720px) { .evo-big-grid { grid-template-columns: 1fr; } }
+
+/* v5.3.0 主题对编辑器的专属微调：幽灵字（v5.1 段落编辑器的灰字建议）随主题降不透明度，
+   暗色/纸色主题下压低存在感。.ghost-text 尚未落地的主题不受影响（空类名无样式）。 */
+.ghost-text {
+  opacity: 0.5;
+  transition: opacity var(--dur) var(--ease);
+}
+
+:root[data-theme="scroll"] .ghost-text { opacity: 0.42; }
+:root[data-theme="forest"] .ghost-text { opacity: 0.42; }
+:root[data-theme="ink"] .ghost-text { opacity: 0.38; }

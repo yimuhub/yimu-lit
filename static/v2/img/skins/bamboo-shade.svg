@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- 竹影：竹叶浅影护眼底（v5.3.0 内置皮肤，纯矢量自绘） -->
+  <defs>
+    <linearGradient id="leafbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9f0dc"/>
+      <stop offset="1" stop-color="#dde7cb"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#leafbg)"/>
+  <g stroke="#7f9a6a" stroke-width="14" opacity="0.22" fill="none" stroke-linecap="round">
+    <path d="M180 -20 Q200 300 160 920"/>
+    <path d="M330 -20 Q350 360 320 920"/>
+    <path d="M1430 -20 Q1450 320 1410 920"/>
+    <path d="M1560 -20 Q1580 380 1540 920"/>
+  </g>
+  <g fill="#6c8a58" opacity="0.2">
+    <path d="M300 240 q70 -34 140 -10 q-66 40 -140 10 Z"/>
+    <path d="M340 420 q70 -30 150 -6 q-70 40 -150 6 Z"/>
+    <path d="M180 520 q64 -30 132 -6 q-62 38 -132 6 Z"/>
+    <path d="M1360 260 q70 -34 140 -10 q-66 40 -140 10 Z"/>
+    <path d="M1400 470 q70 -30 150 -6 q-70 40 -150 6 Z"/>
+    <path d="M1300 600 q64 -28 130 -6 q-62 36 -130 6 Z"/>
+  </g>
+  <g fill="#59754a" opacity="0.14">
+    <path d="M520 130 q76 -30 158 -8 q-76 40 -158 8 Z"/>
+    <path d="M1080 180 q80 -32 164 -8 q-78 42 -164 8 Z"/>
+    <path d="M900 700 q70 -28 148 -6 q-70 38 -148 6 Z"/>
+  </g>
+</svg>

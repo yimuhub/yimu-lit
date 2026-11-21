@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- 梅雾：淡梅粉雾面（v5.3.0 内置皮肤，纯矢量自绘） -->
+  <defs>
+    <linearGradient id="fog" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6ecee"/>
+      <stop offset="1" stop-color="#eedce0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#fog)"/>
+  <ellipse cx="380" cy="260" rx="520" ry="220" fill="#fbf3f4" opacity="0.55"/>
+  <ellipse cx="1220" cy="640" rx="560" ry="240" fill="#fbf3f4" opacity="0.45"/>
+  <g stroke="#a88a80" stroke-width="6" opacity="0.24" fill="none" stroke-linecap="round">
+    <path d="M-20 760 Q340 700 620 780"/>
+    <path d="M420 740 Q560 640 700 560 Q760 520 790 470"/>
+  </g>
+  <g fill="#c76e7c">
+    <g opacity="0.3">
+      <circle cx="700" cy="560" r="14"/><circle cx="726" cy="544" r="10"/><circle cx="678" cy="540" r="9"/>
+      <circle cx="712" cy="522" r="8"/>
+    </g>
+    <g opacity="0.22">
+      <circle cx="470" cy="700" r="12"/><circle cx="494" cy="684" r="8"/><circle cx="450" cy="680" r="7"/>
+    </g>
+    <g opacity="0.18">
+      <circle cx="980" cy="330" r="12"/><circle cx="1004" cy="316" r="8"/><circle cx="960" cy="312" r="7"/>
+    </g>
+  </g>
+</svg>

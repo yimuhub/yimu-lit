@@ -1277,3 +1277,214 @@
 .exp-fmts { display: flex; flex-direction: column; gap: 6px; }
 .exp-fmt { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .exp-form { display: flex; flex-direction: column; }
+
+/* ------------------------------------------------------------------ */
+/* v5.3.0 主题与个性化                                                  */
+/* ------------------------------------------------------------------ */
+
+/* 背景皮肤层：body 第一个子元素（index.html），主题与皮肤解耦。
+   图片/底色由启动脚本与 core/theme.js 经 --skin-image / --skin-base 写入根节点，
+   滤镜与透明度读各主题块的 --skin-filter / --skin-opacity（随主题走）。 */
+.bg-skin {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: none;
+  pointer-events: none;
+  background-color: var(--skin-base, transparent);
+  background-image: var(--skin-image, none);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+  opacity: var(--skin-opacity, 1);
+  filter: var(--skin-filter, none);
+}
+
+html[data-skin="on"] .bg-skin {
+  display: block;
+}
+
+/* 皮肤开启时：底色先换成皮肤底（防图片加载闪烁），主面层降为半透明让皮肤透出来。
+   只动背景不动布局；卡片/气泡等局部面层保持不透明，保证可读性。 */
+html[data-skin="on"] body {
+  background: var(--skin-base, var(--bg-base));
+}
+
+html[data-skin="on"] .app {
+  background: color-mix(in srgb, var(--bg-base) 88%, transparent);
+}
+
+html[data-skin="on"] .sidebar-col {
+  background: color-mix(in srgb, var(--bg-sidebar) 84%, transparent);
+}
+
+html[data-skin="on"] .center-main {
+  background: transparent;
+}
+
+/* 设置页 · 主题四选卡（缩略色板预览） */
+.theme-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 260px;
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  text-align: left;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.theme-card:hover {
+  border-color: var(--line-4);
+}
+
+.theme-card[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.theme-card-swatch {
+  display: flex;
+  height: 26px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  border: 0.5px solid var(--line-2);
+}
+
+.theme-card-swatch i {
+  flex: 1;
+}
+
+.theme-card-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--ink-primary);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.theme-card-name .theme-card-check {
+  color: var(--accent);
+  opacity: 0;
+}
+
+.theme-card[aria-pressed="true"] .theme-card-check {
+  opacity: 1;
+}
+
+.theme-card-desc {
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* 设置页 · 皮肤缩略图网格 */
+.skin-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 320px;
+}
+
+.skin-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 64px;
+  padding: 4px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.skin-card:hover {
+  border-color: var(--line-4);
+}
+
+.skin-card[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.skin-card-thumb {
+  width: 100%;
+  height: 38px;
+  border-radius: var(--radius-xs);
+  border: 0.5px solid var(--line-2);
+  background-size: cover;
+  background-position: center;
+}
+
+.skin-card-name {
+  color: var(--ink-secondary);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* 设置页 · 打字音效 / 光标特效的小型四选卡（复用主题卡骨架的紧凑版） */
+.fx-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 320px;
+}
+
+.fx-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0.5px solid var(--line-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-base);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.fx-card:hover {
+  border-color: var(--line-4);
+  color: var(--ink-primary);
+}
+
+.fx-card[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* 音量滑杆：走系统原生控件，颜色跟主题 */
+.volume-range {
+  width: 120px;
+  accent-color: var(--accent);
+}
+
+/* 光标特效粒子容器（typingfx.js 动态创建）：fixed 全屏、不拦事件 */
+.typing-fx-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.typing-fx-layer > * {
+  position: absolute;
+  will-change: transform, opacity;
+}

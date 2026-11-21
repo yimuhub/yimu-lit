@@ -1,0 +1,409 @@
+/* v5.1.0 写作台编辑器内核样式（bench-editor.css）。
+ *
+ * 挂载方式：bench.js 经 core/loadcss.js 按需注入（静态资源走 no-store 中间件，无需版本参数）。
+ * 排版可调的 CSS 变量挂在 .bench-paper（纸面容器）上，由 bench.js 从
+ * localStorage `ew-bench-typography` 读写后统一赋值：
+ *   --editor-font-family   字体系统栈（霞鹜文楷在栈内自动降级到系统字体）
+ *   --editor-font-size     12–28px
+ *   --editor-line-height   1.4–3.0
+ *   --editor-width         行宽 30–100%
+ *   --editor-para-gap      段间空行（0 / 0.6em）
+ *   --editor-indent        首行缩进（0 / 2em）
+ *   --ruler-step           网格线行距（= 字号 × 行高，随排版联动）
+ *   --ruler-style          网格线样式（none / solid / dashed）
+ */
+
+/* ---------------------------------------------------------- 编辑器主体 */
+
+.bench-editor-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scroll-behavior: auto;
+}
+
+/* 段落容器：本体重定向到内部滚动容器，纸面卡片只负责排版 */
+.bench-ed {
+  width: var(--editor-width, 92%);
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 34px clamp(16px, 4vw, 64px) 24px;
+  min-height: 100%;
+  outline: none;
+  cursor: text;
+}
+
+.bench-ed[data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-caption);
+  pointer-events: none;
+  display: block;
+}
+
+.bench-ed .edp {
+  min-height: 1em;
+  margin: 0 0 var(--editor-para-gap, 0);
+  font-family: var(--editor-font-family, var(--font-reading));
+  font-size: var(--editor-font-size, 17px);
+  line-height: var(--editor-line-height, 1.9);
+  color: var(--ink-primary);
+  text-indent: var(--editor-indent, 0);
+  letter-spacing: 0.01em;
+  caret-color: var(--accent);
+  outline: none;
+  transition: opacity 0.18s var(--ease);
+}
+
+.bench-ed .edp:focus {
+  opacity: 1;
+}
+
+/* 空章首段占位提示 */
+.bench-ed .edp:first-child:empty::before {
+  content: '这一章还没有正文，直接开始写。';
+  color: var(--ink-caption);
+  pointer-events: none;
+}
+
+/* 段落聚焦模式：光标所在段正常，其余段变淡（开关可关） */
+.bench-ed[data-focus-on] .edp.ed-dim {
+  opacity: 0.28;
+}
+
+/* 网格线：repeating-linear-gradient 按 --ruler-step 铺行线（变量/开关挂 .bench-paper） */
+.bench-paper[data-ruler="solid"] .bench-ed,
+.bench-paper[data-ruler="dashed"] .bench-ed {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--line-1) 0,
+    var(--line-1) 0.5px,
+    transparent 0.5px,
+    transparent var(--ruler-step, 30px)
+  );
+  background-attachment: local;
+}
+
+.bench-paper[data-ruler="dashed"] .bench-ed {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--line-2) 0,
+    var(--line-2) 0.5px,
+    transparent 0.5px,
+    transparent var(--ruler-step, 30px)
+  );
+}
+
+/* 章末补空白：打字机模式下让末行也能推到基准线（编辑区高度一半）；
+   非打字机模式只留少量余量，避免无谓的滚动空间。 */
+.bench-ed .ed-spacer {
+  height: 10vh;
+  pointer-events: none;
+}
+
+.ed-typewriter .bench-ed .ed-spacer {
+  height: 42vh;
+}
+
+/* ---------------------------------------------------------- 排版弹层 / 手机预览 */
+
+.bench-typo {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 250px;
+  font-size: 12px;
+}
+
+.bench-typo .bt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bench-typo .bt-label {
+  flex: none;
+  width: 58px;
+  color: var(--ink-secondary);
+}
+
+.bench-typo .bt-val {
+  flex: none;
+  width: 46px;
+  text-align: right;
+  color: var(--ink-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.bench-typo input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.bench-typo .bt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bench-typo .bt-chip {
+  appearance: none;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--ink-secondary);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+
+.bench-typo .bt-chip:hover { color: var(--ink-primary); }
+
+.bench-typo .bt-chip.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.bench-typo .bt-seg {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+/* 手机阅读预览抽屉 */
+.bench-phone {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 92vw;
+  background: var(--bg-elevated);
+  box-shadow: -12px 0 40px rgba(9, 12, 20, 0.18);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  gap: 10px;
+}
+
+.bench-phone .bp-frame {
+  flex: 1;
+  min-height: 0;
+  margin: 0 auto;
+  width: var(--phone-width, 375px);
+  max-width: 100%;
+  border: 1px solid var(--line-3);
+  border-radius: 26px;
+  overflow-y: auto;
+  background: var(--bg-base);
+  padding: 26px 22px 60px;
+}
+
+.bench-phone .bp-frame .bp-para {
+  font-family: var(--editor-font-family, var(--font-reading));
+  font-size: calc(var(--editor-font-size, 17px) * 0.9);
+  line-height: var(--editor-line-height, 1.9);
+  color: var(--ink-primary);
+  text-indent: var(--editor-indent, 0);
+  margin: 0 0 0.8em;
+}
+
+.bench-phone .bp-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+.bench-phone input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+/* ---------------------------------------------------------- 划词气泡与结果面板 */
+
+.sb-wrap {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 120;
+}
+
+.sb-wrap[hidden] { display: none; }
+
+.sb-bubble {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-3);
+  box-shadow: 0 6px 24px rgba(9, 12, 20, 0.16);
+  pointer-events: auto;
+}
+
+.sb-bubble .sb-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+
+.sb-bubble .sb-btn:hover {
+  background: var(--hover);
+  color: var(--accent-ink);
+}
+
+.sb-bubble .sb-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line-2);
+  margin: 0 2px;
+}
+
+.sb-panel {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-3);
+  box-shadow: 0 16px 48px rgba(9, 12, 20, 0.2);
+  pointer-events: auto;
+  max-height: min(420px, 60vh);
+  overflow: hidden;
+}
+
+.sb-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sb-panel-head .sb-title {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sb-orig {
+  font-size: 12px;
+  color: var(--ink-tertiary);
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  max-height: 3.4em;
+  overflow: hidden;
+  line-height: 1.6;
+}
+
+.sb-extra {
+  width: 100%;
+  border: 1px solid var(--btn-border);
+  border-radius: var(--radius-sm);
+  background: var(--btn-bg);
+  color: var(--ink-primary);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 9px;
+  outline: none;
+}
+
+.sb-extra:focus {
+  border-color: var(--accent);
+}
+
+.sb-result {
+  flex: 1;
+  min-height: 72px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--ink-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 2px 0;
+}
+
+.sb-status {
+  font-size: 11.5px;
+  min-height: 1.4em;
+}
+
+.sb-panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 行内字符级 diff 标记（版本对比视图） */
+.diff-view mark.di-del {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger-ink);
+  border-radius: 2px;
+}
+
+.diff-view mark.di-add {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success-ink);
+  border-radius: 2px;
+}
+
+/* 流式生成中的光标闪烁 */
+.sb-result[data-streaming="1"]::after {
+  content: '▍';
+  color: var(--accent);
+  animation: sb-blink 0.9s steps(2) infinite;
+}
+
+@keyframes sb-blink {
+  50% { opacity: 0; }
+}
+
+/* ---------------------------------------------------------- 保存状态图标（bench 底部） */
+
+.bench-save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-caption);
+  font-size: 11px;
+}
+
+.bench-save-state[data-state="saved"] { color: var(--success); }
+.bench-save-state[data-state="pending"] { color: var(--warn-label); }
+.bench-save-state[data-state="saving"] { color: var(--ink-tertiary); }
+.bench-save-state[data-state="error"] { color: var(--danger-ink); }
+
+/* ---------------------------------------------------------- 窄屏 */
+
+@media (max-width: 900px) {
+  .bench-ed {
+    padding: 20px 16px 16px;
+  }
+  .bench-phone {
+    max-width: 100vw;
+  }
+}

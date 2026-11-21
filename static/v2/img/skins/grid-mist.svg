@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- 雾青稿格：青灰方格像稿纸（v5.3.0 内置皮肤，纯矢量自绘） -->
+  <defs>
+    <linearGradient id="mistbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef1f2"/>
+      <stop offset="1" stop-color="#e3e9eb"/>
+    </linearGradient>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M56 0 H0 V56" fill="none" stroke="#a9b8bd" stroke-width="1.2"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="900" fill="url(#mistbg)"/>
+  <rect width="1600" height="900" fill="url(#grid)" opacity="0.34"/>
+  <ellipse cx="400" cy="220" rx="420" ry="180" fill="#ffffff" opacity="0.35"/>
+  <ellipse cx="1250" cy="680" rx="480" ry="200" fill="#ffffff" opacity="0.28"/>
+</svg>

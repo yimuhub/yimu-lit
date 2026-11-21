@@ -122,6 +122,12 @@
 :root[data-theme="dark"] .quick-card[data-medium="poetry"] .qc-icon { background: rgba(164,143,244,.14); color: #b3a2f6; }
 :root[data-theme="dark"] .quick-card[data-medium="prose"] .qc-icon { background: rgba(78,203,138,.13); color: #6fd3a0; }
 
+/* v5.3.0 主题钩子：暗夜水墨（ink）沿用暗色快卡配色 */
+:root[data-theme="ink"] .quick-card[data-medium="novel"] .qc-icon { background: rgba(122,170,255,.14); color: #8db4ff; }
+:root[data-theme="ink"] .quick-card[data-medium="script"] .qc-icon { background: rgba(240,178,63,.13); color: #f0b23f; }
+:root[data-theme="ink"] .quick-card[data-medium="poetry"] .qc-icon { background: rgba(164,143,244,.14); color: #b3a2f6; }
+:root[data-theme="ink"] .quick-card[data-medium="prose"] .qc-icon { background: rgba(78,203,138,.13); color: #6fd3a0; }
+
 .quick-card .qc-name {
   font-size: var(--fs-ui);
   font-weight: 500;
@@ -412,7 +418,6 @@
   height: 100%;
   object-fit: cover;
   display: block;
-}
 }
 
 .msg-main {

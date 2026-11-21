@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <!-- 旧信笺：米黄信笺横纹（v5.3.0 内置皮肤，纯矢量自绘） -->
+  <defs>
+    <linearGradient id="cream" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6ecd6"/>
+      <stop offset="1" stop-color="#efe2c6"/>
+    </linearGradient>
+    <filter id="age" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.015 0.02" numOctaves="3" seed="11" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0.62  0 0 0 0 0.5  0 0 0 0 0.3  0 0 0 0.07 0"/>
+    </filter>
+  </defs>
+  <rect width="1600" height="900" fill="url(#cream)"/>
+  <rect width="1600" height="900" filter="url(#age)"/>
+  <g stroke="#c9a86a" stroke-width="1.4" opacity="0.28">
+    <path d="M120 150 H1480 M120 240 H1480 M120 330 H1480 M120 420 H1480 M120 510 H1480 M120 600 H1480 M120 690 H1480 M120 780 H1480"/>
+  </g>
+  <path d="M120 100 H1480" stroke="#b4552d" stroke-width="3" opacity="0.22" fill="none"/>
+  <circle cx="1400" cy="760" r="46" fill="none" stroke="#b4552d" stroke-width="3" opacity="0.14"/>
+</svg>
