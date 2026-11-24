@@ -16,11 +16,9 @@ import datetime
 import json
 import os
 import re
-import threading
-
 from . import llm, poetry_checker, skillkit, express
 from . import writer as novel_writer
-from bot.safeio import atomic_write_json, atomic_write_text, safe_join
+from bot.safeio import ProjectPath, RenameAwareProject, atomic_write_json, atomic_write_text, path_lock, safe_join
 
 ROOT = novel_writer.ROOT
 PROJECTS_DIR = novel_writer.PROJECTS_DIR
@@ -53,7 +51,7 @@ def _pipeline_running_for(path: str) -> bool:
         return False
 
 
-class PoetryProject:
+class PoetryProject(RenameAwareProject):
     """诗词项目。字段与小说 / 剧本 Project 对齐。"""
 
     def __init__(self, path: str, name: str):
@@ -61,7 +59,7 @@ class PoetryProject:
         self.name = name
         self.events: list[str] = []
         self.running = False
-        self.lock = threading.RLock()
+        self.lock = path_lock(self.path)
 
     def log(self, msg: str) -> None:
         with self.lock:
@@ -355,6 +353,7 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
         "meta": {"stage": "I", "rounds": 0},
     }
     proj.save_plan(plan)
+    pdir = ProjectPath(proj)
 
     proj.log("🖋 阶段 I：释读…")
     note = gen_note(cfg)
@@ -384,7 +383,7 @@ def create_project(cfg: dict, base_key: str = "") -> PoetryProject:
 
 def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str, text: str) -> None:
     """K→R 循环 + F 定稿 + 附产（create_project 与断点恢复共用）。"""
-    pdir = proj.path
+    pdir = ProjectPath(proj)
     name = plan.get("poemName") or proj.name
     if not text.strip():
         raise ValueError("诗稿正文为空，停止定稿")
@@ -483,6 +482,7 @@ def _check_and_finalize(proj: "PoetryProject", plan: dict, cfg: dict, form: str,
 def resume_project(key: str) -> PoetryProject | None:
     """断点恢复：服务重启/线程中断后，从盘上产物继续（题记/规划/初稿缺哪段补哪段）。
     同步执行（调用方放后台线程）。"""
+    key = PoetryProject.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
@@ -500,6 +500,7 @@ def resume_project(key: str) -> PoetryProject | None:
     form = normalize_form(cfg.get("form", "modern"))
     name = plan.get("poemName") or key
     proj = PoetryProject(pdir, name)
+    pdir = ProjectPath(proj)
     proj.running = True   # v3.1.0
     llm.book(key, "writing")
     plan.setdefault("meta", {})
@@ -552,6 +553,7 @@ def resume_project(key: str) -> PoetryProject | None:
 # ---------------------------------------------------------------- 查询
 
 def get_project(key: str) -> PoetryProject | None:
+    key = PoetryProject.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:

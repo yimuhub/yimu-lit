@@ -578,6 +578,8 @@ def write_chapter(ctx, book_key="", chapter_no=0):
 def score_model_cfg(cfg):
     """v4.18.0：评分专用模型路由——config.defaults.score_provider_id / score_model
     配置了就用独立评分模型（未配置回落创作模型）。返回供 llm 调用的 cfg 或 None。"""
+    if (cfg or {}).get("_model_bound"):
+        return None
     d = (cfg or {}).get("defaults") or {}
     sp = str(d.get("score_provider_id") or "").strip()
     sm = str(d.get("score_model") or "").strip()

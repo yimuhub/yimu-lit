@@ -498,7 +498,7 @@ def test_express_pick_title_chain_regression(sandbox, client, monkeypatch):
     monkeypatch.setattr(chief_mod, "deliberate", lambda msg, ctx: None)
     import bot.nlu as nlu_mod
     monkeypatch.setattr(nlu_mod, "parse_intent",
-                        lambda msg, project_status=None: {
+                        lambda msg, project_status=None, cfg=None: {
                             "intent": "query_status", "params": {},
                             "confidence": 1.0, "source": "test"})
     monkeypatch.setattr(steps_mod, "emit", lambda *a, **k: None)

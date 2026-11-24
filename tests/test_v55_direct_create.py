@@ -343,6 +343,8 @@ def test_create_book_reuses_api_create_chain_semantics(sandbox, monkeypatch):
         return real_api_create(payload)
 
     monkeypatch.setattr(appmod, "api_create", _spy)
+    monkeypatch.setattr(appmod, "_provider_and_model_checked",
+                        lambda pid, model: ({"id": pid, "name": "测试供应商"}, model or "model-9"))
     started = _stub_planning_chain(monkeypatch)
     monkeypatch.setattr(chief_mod, "deliberate", lambda msg, ctx: dict(_CREATE_DECISION))
     monkeypatch.setattr(steps_mod, "emit", lambda *a, **k: None)
@@ -455,7 +457,6 @@ def test_rename_during_planning_survives_auto_title(sandbox, monkeypatch):
     s_key = "sid-dc-rename"
     reply = appmod.chat(s_key, IDEA_MSG, None)
     assert "已建书" in reply
-    base = appmod.SESSIONS[s_key]["project"]
 
     assert _wait_for(lambda: bool(started))
     new_key = started[-1]
@@ -464,6 +465,9 @@ def test_rename_during_planning_survives_auto_title(sandbox, monkeypatch):
     assert plan["novelName"] == "作者中途定名"        # 没有被「引擎候选一」覆盖
     assert len(plan["meta"].get("title_candidates") or []) == 2   # 候选仍落盘备选
     assert plan["meta"]["awaiting_title"] is False
-    # 作者在规划在途时的改名已把会话换绑到新 key；旧占位 key 仍是别名
+    # 后台线程可能已抢先换绑会话；从别名表反查占位 key，避免读取时序竞态。
+    rename_map = writer._load_rename_map()
+    base = next((old for old, new in rename_map.items() if new == new_key), "")
+    assert base.endswith("夜班出租车司机")
+    assert rename_map[base] == new_key
     assert appmod.SESSIONS[s_key]["project"] == new_key
-    assert writer._load_rename_map().get(base) == new_key

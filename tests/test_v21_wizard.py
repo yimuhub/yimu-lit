@@ -233,6 +233,9 @@ def captured_cfg(monkeypatch):
     monkeypatch.setattr(script_writer, "create_project", _stub(script_writer, "script"))
     monkeypatch.setattr(poetry_writer, "create_project", _stub(poetry_writer, "poetry"))
     monkeypatch.setattr(prose_writer, "create_project", _stub(prose_writer, "prose"))
+    monkeypatch.setattr(
+        appmod, "_provider_and_model_checked",
+        lambda provider_id, model: ({"id": provider_id, "name": "测试供应商"}, model))
     return box
 
 

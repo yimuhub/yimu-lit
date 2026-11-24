@@ -98,7 +98,9 @@ export function localPlaceholderDataUrl(title) {
 
 /* ---------------------------------------------------------------- 弹窗（状态机挂载） */
 
-const NO_CONFIG_HINT = '还没有配置图像模型：请先到「设置 → 模型与供应商 → 图像模型（封面生成）」填写接口地址与模型名。';
+/* v5.9.0：图像供应商并入供应商列表（kind=image 条目）——引导指向设置→模型与供应商，
+   新建供应商时类型选「图像」；文案仍保留「图像模型（封面生成）」关键词供旧文档/检索。 */
+const NO_CONFIG_HINT = '还没有配置图像模型：请先到「设置 → 模型与供应商」点「添加供应商」并选类型「图像」（图像模型（封面生成）），填写接口地址与图像模型名。';
 
 export async function openAiCoverDialog({ item, onApplied } = {}) {
   const it = item || {};

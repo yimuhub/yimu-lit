@@ -12,6 +12,7 @@ import { openModal, toast, popoverMenu } from '../core/ui.js';
 import { GENRE_OPTIONS, SCALE_OPTIONS, WRITING_MODES, USAGE_MODES, MEDIUM_FALLBACK, mediumIcon } from '../core/constants.js';
 import { api, errorText } from '../core/api.js';
 import { openDistillModal } from '../components/distill.js';
+import { resolveModelChoice } from '../core/prefs.js';
 
 /* /api/onboarding 是向导的唯一词表源（题材/基调/视角/卖点/风格预设 + 平台 + 引擎词表）。
    只在第一次打开向导时取一次，失败则回落到本地最小 schema，不阻塞创建。 */
@@ -1367,9 +1368,11 @@ export function openWizard(ctx, preset = {}, { onClosed } = {}) {
     if (model.styleId) payload.style_id = model.styleId;
     const resolved = resolvedStyle();
     if (resolved) payload.style = resolved;
-    const ui = store.get().ui;
-    if (ui.providerId) payload.provider_id = ui.providerId;
-    if (ui.model) payload.model = ui.model;
+    const choice = resolveModelChoice();
+    if (choice.providerId && choice.model) {
+      payload.provider_id = choice.providerId;
+      payload.model = choice.model;
+    }
     return payload;
   }
 

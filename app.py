@@ -250,7 +250,8 @@ def chat(session_id, message, key=None, digest=None):
         # 如果检测到非小说文体，先尝试 NLU 识别是否有明确创作意图
         if med in ("poetry", "prose", "script") and len(msg) >= 6:
             from bot.nlu import parse_intent as _nlu_pi
-            _idle_nlu = _nlu_pi(msg, project_status={"state": "idle"})
+            _idle_nlu = _nlu_pi(msg, project_status={"state": "idle"},
+                                cfg=s.get("prov") or s.get("cfg") or {})
             _idle_intent = _idle_nlu["intent"]
             # 如果是创作类意图，自动进入对应文体的创作流程（而非只返回提示）
             if _idle_intent in ("start_writing", "start_writing_all", "resume_writing"):
@@ -628,12 +629,15 @@ def _rename_project(proj, new_name):
     except ValueError:
         return
     if target != proj.path and not os.path.exists(target):
-        os.rename(proj.path, target)
-        proj.path = target
-        proj.name = new_name
-        plan = proj.plan() or {}
-        plan["novelName"] = new_name
-        proj.save_plan(plan)
+        with proj.lock:
+            if os.path.exists(target):
+                return
+            os.rename(proj.path, target)
+            proj.path = target
+            proj.name = new_name
+            plan = proj.plan() or {}
+            plan["novelName"] = new_name
+            proj.save_plan(plan)
 
 # ---------- v2.3.0：attached 会话（对话绑定本书）与标题体系 ----------
 
@@ -704,46 +708,47 @@ def _apply_title(key, title):
         target = safe_join(writer.PROJECTS_DIR, prefix + title, label="目录名")
     except ValueError:
         return {"ok": False, "error": "书名不合法"}
-    if target != proj.path and os.path.exists(target):
-        return {"ok": False, "error": "已有同名作品，请先处理冲突"}
-    if target != proj.path:
-        os.rename(proj.path, target)
-    new_key = os.path.basename(target)
-    # v4.24.16 修复：目录改名后必须持久化别名——此前只更新内存 PROJECT_INDEX/SESSIONS，
-    # 服务重启后所有持旧 key 的标签页/书签全部 404「项目不存在」
-    # （writer.pick_title 的改名路径早就调 record_rename，这里补齐同款）。
-    try:
-        writer.record_rename(key, new_key)
-    except Exception:
-        pass
-    proj.path = target
-    proj.name = title
-    # 计划文件改名：v3.3.0 修复——此前硬编码写 02-写作计划.json 的 novelName，
-    # 剧本/诗词/散文改名完全无效。改走 writer._plan_of 按文体写各自的 *Name 字段。
-    _med, _plan_fp, _plan_data = writer._plan_of(target)
-    if _med and _plan_fp and isinstance(_plan_data, dict):
-        _name_key = dict(getattr(writer, "_NAME_KEY", {})).get(_med, "novelName")
-        _plan_data[_name_key] = title
-        _plan_data["projectPath"] = target
-        atomic_write_json(_plan_fp, _plan_data)
-    else:
-        plan = proj.plan() or {}
-        plan["novelName"] = title
-        plan["projectPath"] = target
-        proj.save_plan(plan)
-    # 02c-总规划.json：仅当已有 novelName/name 字段时同步
-    cplan = os.path.join(target, "02c-总规划.json")
-    if os.path.exists(cplan):
+    with proj.lock:
+        if target != proj.path and os.path.exists(target):
+            return {"ok": False, "error": "已有同名作品，请先处理冲突"}
+        if target != proj.path:
+            os.rename(proj.path, target)
+        new_key = os.path.basename(target)
+        # v4.24.16 修复：目录改名后必须持久化别名——此前只更新内存 PROJECT_INDEX/SESSIONS，
+        # 服务重启后所有持旧 key 的标签页/书签全部 404「项目不存在」
+        # （writer.pick_title 的改名路径早就调 record_rename，这里补齐同款）。
         try:
-            d = json.load(open(cplan, encoding="utf-8"))
-            if isinstance(d, dict):
-                if "novelName" in d:
-                    d["novelName"] = title
-                if "name" in d:
-                    d["name"] = title
-                atomic_write_json(cplan, d)
+            writer.record_rename(key, new_key)
         except Exception:
             pass
+        proj.path = target
+        proj.name = title
+        # 计划文件改名：v3.3.0 修复——此前硬编码写 02-写作计划.json 的 novelName，
+        # 剧本/诗词/散文改名完全无效。改走 writer._plan_of 按文体写各自的 *Name 字段。
+        _med, _plan_fp, _plan_data = writer._plan_of(target)
+        if _med and _plan_fp and isinstance(_plan_data, dict):
+            _name_key = dict(getattr(writer, "_NAME_KEY", {})).get(_med, "novelName")
+            _plan_data[_name_key] = title
+            _plan_data["projectPath"] = target
+            atomic_write_json(_plan_fp, _plan_data)
+        else:
+            plan = proj.plan() or {}
+            plan["novelName"] = title
+            plan["projectPath"] = target
+            proj.save_plan(plan)
+        # 02c-总规划.json：仅当已有 novelName/name 字段时同步
+        cplan = os.path.join(target, "02c-总规划.json")
+        if os.path.exists(cplan):
+            try:
+                d = json.load(open(cplan, encoding="utf-8"))
+                if isinstance(d, dict):
+                    if "novelName" in d:
+                        d["novelName"] = title
+                    if "name" in d:
+                        d["name"] = title
+                    atomic_write_json(cplan, d)
+            except Exception:
+                pass
     # 内存索引 + 所有引用旧 key 的会话
     PROJECT_INDEX.pop(key, None)
     PROJECT_INDEX[new_key] = proj
@@ -1096,7 +1101,8 @@ def _chat_group(s, proj, msg, plan, st, name):
                 ctx_block += f"\n\n【用户问题】\n{question}\n"
             context = ctx_block
             # 跳到统一的 LLM 调用段（下方小说上下文构建逻辑不适用）
-            return _chat_group_llm(s, context, question, at_names, name)
+            return _chat_group_llm(s, context, question, at_names, name,
+                                   cfg=(plan if isinstance(plan, dict) else {}).get("config") or {})
         except Exception:
             pass
     chs = plan.get("chapters") or []
@@ -1133,10 +1139,11 @@ def _chat_group(s, proj, msg, plan, st, name):
 
     if s.get("digest"):
         context += f"\n对话进度摘要（自动压缩）：\n{s['digest'][:1500]}\n"
-    return _chat_group_llm(s, context, question, at_names, name)
+    return _chat_group_llm(s, context, question, at_names, name,
+                           cfg=(plan if isinstance(plan, dict) else {}).get("config") or {})
 
 
-def _chat_group_llm(s, context, question, at_names, name):
+def _chat_group_llm(s, context, question, at_names, name, cfg=None):
     """@Agent 群聊的统一 LLM 调用段（v3.2.0：小说/剧本/诗词/散文共用）。"""
     # 构建 Agent 角色映射
     try:
@@ -1184,7 +1191,7 @@ def _chat_group_llm(s, context, question, at_names, name):
             resp = llm.chat([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question}
-            ], cfg={})   # v4.17.4 修复：_chat_group_llm 无 plan 上下文，此前引用未定义的 plan → @Agent 群聊偶发 NameError
+            ], cfg=cfg or {})
             text = resp.strip() if isinstance(resp, str) else str(resp).strip()
             if text:
                 replies.append(f"【{label}】{text}")
@@ -1404,6 +1411,8 @@ def _chat_attached(s, proj, msg):
     if _ckey and _ckey != key:
         key = _ckey
         s["project"] = _ckey
+    _, _, plan = _book_plan_of(proj)
+    plan = plan or {}
     if st.get("state") in ("missing", "", None):
         # 剧本/诗词/散文没有 02-写作计划.json：用全文体元数据补齐，
         # 否则「进度」会按小说口径回「第 0/0 章」这种死胡同回复。
@@ -1468,7 +1477,8 @@ def _chat_attached(s, proj, msg):
                 key = os.path.basename(_p2.path) or _cur_key
                 s["project"] = key
                 proj = _p2
-                plan = proj.plan() or plan
+                _, _, _book_plan = _book_plan_of(proj)
+                plan = _book_plan or plan
                 st = proj.status()
                 name = st.get("name") or plan.get("novelName") or key
                 running = bool(st.get("running"))
@@ -2184,7 +2194,9 @@ def _chat_attached(s, proj, msg):
                  "total": st.get("total") or 0, "pass_line": writer._pass_line()}
     _planobj = None
     try:
-        _planobj = plan_actions(msg, _pctx)
+        _planobj = plan_actions(msg, _pctx, cfg=(plan or {}).get("config") or {})
+    except providers.ProviderError:
+        raise
     except Exception:
         _planobj = None
     _steps = (_planobj or {}).get("steps") or []
@@ -2226,7 +2238,10 @@ def _chat_attached(s, proj, msg):
     else:
         # ── 回退：传统单意图理解（规则 + LLM 分类）──
         from bot.nlu import parse_intent
-        _nlu = parse_intent(msg, project_status={"state": st.get("state", "unknown")})
+        _, _, _nlu_plan = _book_plan_of(proj)
+        _nlu_cfg = (_nlu_plan or plan or {}).get("config") or {}
+        _nlu = parse_intent(msg, project_status={"state": st.get("state", "unknown")},
+                            cfg=_nlu_cfg)
         _intent = _nlu["intent"]
         try:
             _trace("nlu", sid=s.get("session", ""), intent=_intent,
@@ -2275,6 +2290,27 @@ def index(request: Request):
                     httponly=True, samesite="strict", path="/")
     return resp
 
+def _remember_session_model(sid, provider_id="", model=""):
+    provider_id = str(provider_id or "").strip()
+    model = str(model or "").strip()
+    if not provider_id and not model:
+        return
+    old = (SESSIONS.get(sid) or {}).get("prov") or {}
+    old_provider = str(old.get("_provider_id") or "").strip()
+    old_model = str(old.get("_model") or "").strip()
+    next_provider = provider_id or old_provider
+    next_model = model or ("" if provider_id and provider_id != old_provider else old_model)
+    _, checked_model = _provider_and_model_checked(next_provider, next_model)
+    s = SESSIONS.setdefault(sid, {"id": sid, "state": "idle", "cfg": None,
+                                  "project": None, "titles": None, "busy": False})
+    prov = s.setdefault("prov", {})
+    prov["_provider_id"] = next_provider
+    prov["_model"] = checked_model
+    prov["_model_bound"] = True
+    _sess_touch(s)
+    _sess_prune()
+
+
 @app.post("/api/chat")
 def api_chat(payload: dict):
     sid = payload.get("session_id") or str(uuid.uuid4())
@@ -2282,22 +2318,20 @@ def api_chat(payload: dict):
     if not message:
         return JSONResponse({"session_id": sid, "reply": "说个主题，我帮你写小说。"})
     # 记录本次选择的供应商/模型到 session（供新作品 / 调整 LLM 调用使用）
-    prov = {}
-    if payload.get("provider_id"):
-        prov["_provider_id"] = str(payload["provider_id"])
-    if payload.get("model"):
-        prov["_model"] = str(payload["model"])
-    if prov:
-        SESSIONS.setdefault(sid, {"id": sid, "state": "idle", "cfg": None,
-                                   "project": None, "titles": None, "busy": False})["prov"] = prov
-        _sess_touch(SESSIONS[sid]); _sess_prune()
-    # 重试指令
-    if message.strip() in ("重试", "retry") and SESSIONS.get(sid, {}).get("state") == "options":
-        s = SESSIONS[sid]
-        s["state"] = "options"
-        r = _do_planning(s)
-        return {"session_id": sid, "reply": r, "project": s.get("project")}
-    reply = chat(sid, message, str(payload.get("key") or "") or None)
+    try:
+        _remember_session_model(sid, payload.get("provider_id"), payload.get("model"))
+    except providers.ProviderError as e:
+        return JSONResponse({"session_id": sid, "error": str(e)}, status_code=400)
+    try:
+        # 重试指令
+        if message.strip() in ("重试", "retry") and SESSIONS.get(sid, {}).get("state") == "options":
+            s = SESSIONS[sid]
+            s["state"] = "options"
+            r = _do_planning(s)
+            return {"session_id": sid, "reply": r, "project": s.get("project")}
+        reply = chat(sid, message, str(payload.get("key") or "") or None)
+    except providers.ProviderError as e:
+        return JSONResponse({"session_id": sid, "error": str(e)}, status_code=400)
     return {"session_id": sid, "reply": reply, "project": SESSIONS[sid].get("project")}
 
 # ---------- 模型供应商管理（多供应商绑定 / 按任务选模型） ----------
@@ -2339,7 +2373,9 @@ def api_provider_fetch_models(pid: str):
 @app.get("/api/model_options")
 def api_model_options():
     """给创作选择器的 供应商->模型 树（只列 active 供应商）。"""
-    return {"default_provider": providers.load_data().get("default_provider"),
+    data = providers.load_data()
+    return {"default_provider": data.get("default_provider"),
+            "default_image_provider": data.get("default_image_provider") or "",
             "options": providers.active_model_options()}
 
 @app.post("/api/providers")
@@ -2379,8 +2415,11 @@ def api_provider_delete(pid: str):
 def api_provider_set_default(pid: str):
     try:
         r = providers.set_default(pid)
+        kind = next((p.get("kind") for p in providers.load_data()["providers"] if p.get("id") == pid), "text")
         syslog_mod.log_event("provider", "设为默认", {"id": pid}, f"把「{pid}」设为默认供应商")
-        return {"ok": True, "default_provider": r}
+        return {"ok": True, "provider_id": r, "kind": kind,
+                "default_provider": r if kind == "text" else "",
+                "default_image_provider": r if kind == "image" else ""}
     except providers.ProviderError as e:
         return _prov_err(e)
 
@@ -2467,10 +2506,18 @@ def _link_references(key, ref_ids):
 # ---------- v2.1 B：按文体建项目（/api/create 分发与 /api/<medium>/create 共用同一套 cfg 组装） ----------
 
 def _provider_into(cfg: dict, payload: dict) -> dict:
+    """创建时的供应商/模型选择写进创作 cfg。
+    v5.9.0 死规律修正：此前只写 cfg.defaults.provider_id/model——providers.resolve()
+    从不消费这对键（它读 config._provider_id/_model），向导里选的模型从未真正生效，
+    创作总是回落全局默认。现在补写 resolve 的活键 _provider_id/_model，
+    与 /api/book-model 的书级绑定同一约定；defaults 旧键保留作兼容。"""
     if payload.get("provider_id"):
         cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
+        cfg["_provider_id"] = str(payload["provider_id"])
+        cfg["_model_bound"] = True
     if payload.get("model"):
         cfg.setdefault("defaults", {})["model"] = payload["model"]
+        cfg["_model"] = str(payload["model"])
     return cfg
 
 
@@ -2663,10 +2710,7 @@ def _spawn_simple_writer(medium: str, mod, payload: dict) -> dict:
     for k, v in payload.items():
         if k not in ("medium", "cfg_overrides", "reference_ids", "provider_id", "model"):
             cfg[k] = v
-    if payload.get("provider_id"):
-        cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
-    if payload.get("model"):
-        cfg.setdefault("defaults", {})["model"] = payload["model"]
+    _provider_into(cfg, payload)
 
     prefix = {"children": "c_", "news": "n_", "copy": "k_", "other": "o_"}[medium]
     # v5.2：极速模式隐藏标题时用短占位标题，不再把整段 idea 当目录名。
@@ -2716,8 +2760,28 @@ _MEDIUM_CREATORS = {
 }
 
 
+def _validate_creation_model(payload: dict) -> None:
+    provider_id = str(payload.get("provider_id") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    if not provider_id and not model:
+        return
+    if not provider_id:
+        raise providers.ProviderError("已选择模型但未指定文本供应商，请重新选择")
+    if not model:
+        raise providers.ProviderError("已选择供应商但未指定模型，请重新选择")
+    _provider_and_model_checked(provider_id, model)
+
+
 @app.post("/api/create")
 def api_create(payload: dict):
+    try:
+        _validate_creation_model(payload)
+        return _api_create(payload)
+    except providers.ProviderError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+def _api_create(payload: dict):
     """REST 直接开书；payload.medium 决定进哪条流水线（novel/script/poetry/prose）。
 
     小说：{title?, genre?, tone?, sells?, perspective?, idea?, total_chapters?, provider_id?, model?, cfg_overrides?}。
@@ -2787,10 +2851,7 @@ def api_create(payload: dict):
         cfg["theme"] = idea
     elif title:
         cfg["theme"] = title
-    if payload.get("provider_id"):
-        cfg.setdefault("defaults", {})["provider_id"] = payload["provider_id"]
-    if payload.get("model"):
-        cfg.setdefault("defaults", {})["model"] = payload["model"]
+    _provider_into(cfg, payload)
     total = int(payload.get("total_chapters") or cfg.get("chapters") or (cfg.get("defaults") or {}).get("total_chapters") or 10)
     cfg["chapters"] = total
     # v2：长篇规模 / 写作模式 / 参考资料。字符串规模（1m/3m/5m）折算为章数目标。
@@ -5062,12 +5123,17 @@ def _nonnovel_set_paused(key, paused: bool) -> bool:
         return False
     if not pl:
         return False
-    pl.setdefault("meta", {})["paused"] = bool(paused)
+    meta = pl.setdefault("meta", {})
+    meta["paused"] = bool(paused)
     if paused:
+        meta["pausedReason"] = "pause_requested"
         if pl.get("status") in ("in_progress", "writing", "planning"):
             pl["status"] = "paused"
-    elif pl.get("status") == "paused":
-        pl["status"] = "in_progress"
+    else:
+        if meta.get("pausedReason") == "pause_requested":
+            meta.pop("pausedReason", None)
+        if pl.get("status") == "paused":
+            pl["status"] = "in_progress"
     try:
         proj.save_plan(pl)
         return True
@@ -5558,25 +5624,38 @@ def api_status(key: str):
     st["events"] = proj.events[-15:]
     st["path"] = proj.path
     st["has_book"] = os.path.exists(os.path.join(proj.path, f"成书-{st.get('name', key)}.md"))
+    # v5.9.0：本书当前创作模型（书级绑定优先，未绑定回落全局默认）——前端顶栏芯片、
+    # 右栏与对话载荷的显示口径事实源。绑定失效（供应商被删/停用）时在此清除并带
+    # model_fallback 标记，前端 toast 一次「已回落全局默认」。
+    try:
+        st.update(_book_model_display(proj))
+    except Exception:
+        pass
     # v4.38.0：把任务档案的「此刻在做什么」随 status 一起下发——切书回来第一帧
     # 就有真实的「正在写第 N 章 / 全书终审中 / 已暂停」，不用等 book-live 轮询。
+    _, _, _status_plan = _book_plan_of(proj)
+    _status_meta = (_status_plan or {}).get("meta") or {}
     _jv = _journal_view(proj.path)
     if _jv:
         st.update(_jv)
-        _act = _jv.get("activity") or {}
-        # v4.38.0：任务档案是「此刻」的最终事实——档案已暂停时，不再让陈旧的
-        # running 位/livejob 把界面顶成「创作中」（文案与按钮必须同源）。
-        if _act.get("status") == "paused":
-            st["running"] = False
-            st["paused"] = True
-        elif _act.get("status") == "running":
-            st["running"] = True
-            st["paused"] = False
-        if _act.get("current"):
-            try:
-                st["current_chapter"] = int(_act["current"])
-            except (TypeError, ValueError):
-                pass
+    _act = (_jv.get("activity") or {}) if _jv else {}
+    # 显式暂停优先于任务档案：暂停请求到线程真正退出之间，档案仍可能显示 running。
+    if _status_meta.get("paused"):
+        st["running"] = False
+        st["paused"] = True
+        if _status_meta.get("pausedReason"):
+            st["pausedReason"] = _status_meta["pausedReason"]
+    elif _act.get("status") == "paused":
+        st["running"] = False
+        st["paused"] = True
+    elif _act.get("status") == "running":
+        st["running"] = True
+        st["paused"] = False
+    if _act.get("current"):
+        try:
+            st["current_chapter"] = int(_act["current"])
+        except (TypeError, ValueError):
+            pass
     return st
 
 # ---------- v4.24.12：未完成章节直接用极速模式续写 ----------
@@ -5821,7 +5900,11 @@ def api_continue(payload: dict):
         # pipeline_running 守卫，唯独这里没有；双击「继续」会起两条恢复流水线
         # 并发写同一本书的场次/阶段文件。
         if writer.pipeline_running(key):
-            # v4.33.1：已经在跑也要刷新登记，前端才能显示「已在进行中」而不是无反应
+            _nonnovel_set_paused(key, False)
+            _job_start(key, kind="resume", detail="创作线程继续运行，进度见运行日志…")
+            return _job_payload(key, {"ok": True, "msg": "创作线程继续运行，进度见工作台运行日志。",
+                    "running": True, "paused": False, "state": "in_progress"}, started=False)
+        if not writer.claim_pipeline(key):
             _job_start(key, kind="resume", detail="创作线程正在运行，进度见运行日志…")
             return _job_payload(key, {"ok": True, "msg": "该书正在创作中，进度见工作台运行日志。",
                     "running": True, "paused": False, "state": "in_progress"}, started=False)
@@ -5829,7 +5912,6 @@ def api_continue(payload: dict):
         # v4.33.1：起线程前先登记 + 写日志——接口返回的同一秒，界面就能说「谁在工作」
         _job_start(key, kind="resume", detail="正在恢复创作，准备本批次内容…")
         def _bg():
-            writer.mark_pipeline(key, True)   # v3.1.0：恢复期间「创作中」可见
             try:
                 fn(key)
             except Exception as e:
@@ -5856,17 +5938,46 @@ def api_continue(payload: dict):
         return JSONResponse({"error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
     st = proj.status()
     if st.get("running"):
-        _job_start(key, kind="resume", detail="小说引擎正在写作，进度见运行日志…",
+        cancelled = writer.cancel_pause(key) if st.get("paused") else False
+        waiting = bool(st.get("paused") and not cancelled)
+        _job_start(key, kind="resume", detail=("已撤销暂停，当前创作继续" if cancelled
+                                              else "当前章节正在收尾，完成后可继续采用" if waiting
+                                              else "小说引擎正在写作，进度见运行日志…"),
                    total=int(st.get("total") or 0), done=int(st.get("done") or 0))
-        return _job_payload(key, {"ok": True, "msg": f"《{proj.name}》正在创作中，请稍候。",
-                                  "running": True, "paused": False, "state": st.get("state")},
+        return _job_payload(key, {"ok": True,
+                                  "msg": ("已撤销暂停，当前创作继续。" if cancelled else
+                                          "当前章节正在收尾，完成后请再点「继续」采用。" if waiting else
+                                          f"《{proj.name}》正在创作中，请稍候。"),
+                                  "running": True, "paused": waiting,
+                                  "state": "paused" if waiting else "in_progress"},
                             started=False)
+    awaiting = writer.await_collab_no(st.get("pausedReason")) if st.get("paused") else 0
+    if awaiting:
+        if extra > 0:
+            writer.append_chapters(proj, extra)
+        _batch = (proj.plan().get("config") or {}).get("batch_size")
+        _job_start(key, kind="resume", detail=f"第 {awaiting} 章已确认，继续第 {awaiting + 1} 章…")
+        started = writer.resume_book(key, batch_size=_batch)
+        return _job_payload(key, {"ok": True,
+                "msg": (f"第 {awaiting} 章已按你确认采用，继续第 {awaiting + 1} 章…" if started
+                        else "暂时无法继续，请检查作品状态后再试。"),
+                "running": bool(started), "paused": not started,
+                "state": "in_progress" if started else "paused"}, started=started)
     if extra > 0:
         # 续写：追加 extra 章（对已完成/未完成都适用），复用作品的默认供应商/模型
         writer.append_chapters(proj, extra)
         _job_start(key, kind="append", detail=f"正在续写 {extra} 章…",
                    total=int(st.get("total") or 0) + extra, done=int(st.get("done") or 0))
-        writer.start_writing(proj, batch_size=extra)
+        started = writer.start_writing(proj, batch_size=extra)
+        if not started:
+            now = proj.status()
+            if not now.get("running"):
+                _job_fail(key, "暂时无法启动续写，请检查作品状态后再试")
+            return _job_payload(key, {"ok": False,
+                    "msg": ("创作线程已在运行，无需重复启动。" if now.get("running")
+                            else "暂时无法启动续写，请检查作品状态后再试。"),
+                    "running": bool(now.get("running")), "paused": bool(now.get("paused")),
+                    "state": now.get("state") or st.get("state")}, started=False)
         return _job_payload(key, {"ok": True,
                 "msg": f"《{proj.name}》续写 {extra} 章中…（已完成 {st.get('done')}/{st.get('total')} 章）",
                 "running": True, "paused": False, "state": "in_progress"}, started=True)
@@ -5879,7 +5990,16 @@ def api_continue(payload: dict):
     _batch = (proj.plan().get("config") or {}).get("batch_size")
     _job_start(key, kind="resume", detail=f"正在继续写作《{proj.name}》…",
                total=int(st.get("total") or 0), done=int(st.get("done") or 0))
-    writer.start_writing(proj, batch_size=_batch)
+    started = writer.start_writing(proj, batch_size=_batch)
+    if not started:
+        now = proj.status()
+        if not now.get("running"):
+            _job_fail(key, "暂时无法继续写作，请检查作品状态后再试")
+        return _job_payload(key, {"ok": False,
+                "msg": ("创作线程已在运行，无需重复启动。" if now.get("running")
+                        else "暂时无法继续写作，请检查作品状态后再试。"),
+                "running": bool(now.get("running")), "paused": bool(now.get("paused")),
+                "state": now.get("state") or st.get("state")}, started=False)
     return _job_payload(key, {"ok": True,
             "msg": f"继续写作《{proj.name}》…（本批 {_batch or '全部'} 章，写完自动暂停）",
             "running": True, "paused": False, "state": "in_progress"}, started=True)
@@ -6840,6 +6960,226 @@ def api_global_model_set(payload: dict):
                          f"全局默认模型设为 {_g.get('provider_id') or '—'} · {_g.get('model') or '—'}")
     return {"ok": True, **_g}
 
+# ---------- v5.9.0：每本书单独绑定创作大模型（死规律） ----------
+# 作者铁律：每一本书/每一篇内容都可以单独选择一个大模型来创作；选择后即自动绑定，
+# 创作全程（规划/写章/审校/重写/并行改写/章名/评分）一律用这个模型，不能随意更改回落。
+# 实现：绑定写入 <书>/02-写作计划.json 的 config._provider_id / config._model——
+# bot/providers.py::resolve(cfg) 的第一优先级就是这对键，而引擎（writer/longform/
+# workflow/各文体 writer）所有 LLM 调用都传 plan.config 作 cfg，因此写入即全链生效；
+# 顶栏在「有打开的书」时选择模型 → 调 POST /api/book-model 落本书绑定（死规律），
+# 「无书（首页/全局态）」时才走 /api/global-model 设全局默认。
+
+def _book_binding_of(plan) -> dict:
+    """读 plan.config 里的书级绑定 {provider_id, model, bound}。计划缺失/无绑定 → bound=False。"""
+    cfg = plan.get("config") if isinstance(plan, dict) and isinstance(plan.get("config"), dict) else {}
+    pid = str((cfg or {}).get("_provider_id") or "").strip()
+    mid = str((cfg or {}).get("_model") or "").strip()
+    return {"provider_id": pid, "model": mid, "bound": bool(pid or mid),
+            "strict": bool((cfg or {}).get("_model_bound"))}
+
+
+def _book_plan_of(proj):
+    """(文体, 计划文件路径, plan)。全书体通用：小说读 02-写作计划.json，剧本读
+    剧本计划.json……与 writer._plan_of / 各文体引擎同一事实源——
+    死规律覆盖「每一篇小说、每一篇内容」，不限于小说。"""
+    try:
+        return writer._plan_of(proj.path)
+    except Exception:
+        return "", "", {}
+
+
+def _provider_and_model_checked(provider_id, model):
+    """绑定校验（死规律的闸门）：供应商必须存在且 active，model 必须在其 models 列表。
+    model 留空取该供应商 default_model。返回 (provider, model)；非法抛 providers.ProviderError（400 中文报错）。"""
+    data = providers.load_data()
+    pid = str(provider_id or "").strip()
+    p = next((x for x in (data.get("providers") or []) if x.get("id") == pid), None)
+    if not p:
+        raise providers.ProviderError("供应商不存在：%s（请先在「设置 → 模型与供应商」添加）" % pid)
+    if p.get("kind") == "image":
+        raise providers.ProviderError("图像供应商不能用于文本创作，请选择文本供应商")
+    if not p.get("active"):
+        raise providers.ProviderError("供应商「%s」已停用，不能绑定为本书创作模型" % (p.get("name") or pid))
+    models = p.get("models") or []
+    m = str(model or "").strip()
+    if not m:
+        m = p.get("default_model") or (models or [""])[0]
+    if not m:
+        raise providers.ProviderError("供应商「%s」没有可选模型，请先在供应商里添加模型" % (p.get("name") or pid))
+    if m not in models:
+        raise providers.ProviderError("模型 %s 不在供应商「%s」的模型列表里" % (m, p.get("name") or pid))
+    return p, m
+
+
+def _save_book_plan(proj, med, plan_path, plan) -> None:
+    """书级绑定写盘：小说走 proj.save_plan（含交付规格章），其余文体按各自计划文件原子写。
+    统一在调用方的 proj.lock 临界区里执行，与写作线程串行化。"""
+    if med == "novel" and plan_path.endswith("02-写作计划.json"):
+        proj.save_plan(plan)
+        return
+    plan["updatedAt"] = __import__("datetime").datetime.now().isoformat()
+    atomic_write_json(plan_path, plan)
+
+
+def _book_model_display(proj) -> dict:
+    """/api/status 用：严格绑定失效时保留原绑定并明确标记不可用，绝不伪装成全局回落。"""
+    _med, _ppath, plan = _book_plan_of(proj)
+    b = _book_binding_of(plan)
+    g = providers.global_model()
+    if not b["bound"]:
+        return {"model": g.get("model") or "", "model_provider_id": g.get("provider_id") or "",
+                "model_provider_name": _provider_name_of(g.get("provider_id")),
+                "model_bound": False, "model_source": "global"}
+    p = next((x for x in (providers.load_data().get("providers") or [])
+              if x.get("id") == b["provider_id"]), None)
+    ok = bool(p) and p.get("kind") != "image" and bool(p.get("active")) \
+        and bool(b["model"]) and b["model"] in (p.get("models") or [])
+    if not ok:
+        if b["strict"]:
+            return {"model": b["model"], "model_provider_id": b["provider_id"],
+                    "model_provider_name": (p or {}).get("name") or b["provider_id"],
+                    "model_bound": True, "model_source": "book", "model_unavailable": True,
+                    "model_note": f"本书绑定模型不可用（{b['provider_id']} · {b['model'] or '—'}），请更换绑定模型"}
+        try:
+            with proj.lock:
+                _m2, pp2, pl2 = _book_plan_of(proj)
+                if isinstance(pl2, dict) and pl2:
+                    cfg = pl2.get("config")
+                    if isinstance(cfg, dict) and ("_provider_id" in cfg or "_model" in cfg):
+                        cfg.pop("_provider_id", None)
+                        cfg.pop("_model", None)
+                        _save_book_plan(proj, _m2, pp2, pl2)
+        except Exception:
+            pass
+        return {"model": g.get("model") or "", "model_provider_id": g.get("provider_id") or "",
+                "model_provider_name": _provider_name_of(g.get("provider_id")),
+                "model_bound": False, "model_source": "global",
+                "model_fallback": True,
+                "model_note": f"本书旧绑定的供应商/模型已不可用（{b['provider_id']} · {b['model'] or '—'}），已回落全局默认"}
+    return {"model": b["model"], "model_provider_id": b["provider_id"],
+            "model_provider_name": p.get("name") or b["provider_id"],
+            "model_bound": True, "model_source": "book"}
+
+
+def _provider_name_of(pid) -> str:
+    if not pid:
+        return ""
+    try:
+        p = next((x for x in (providers.load_data().get("providers") or []) if x.get("id") == pid), None)
+        return (p or {}).get("name") or pid
+    except Exception:
+        return pid or ""
+
+
+@app.get("/api/book-model")
+def api_book_model_get(key: str):
+    """v5.9.0：读某本书/某篇内容的创作模型绑定（全书体通用）。
+    source=book 表示已绑定（创作全程用该模型）；source=global 表示未绑定。
+    严格绑定失效时保留 source=book 并带 model_unavailable=true。"""
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"ok": False, "error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    bkey = os.path.basename(proj.path)
+    _med, _ppath, plan = _book_plan_of(proj)
+    b = _book_binding_of(plan if isinstance(plan, dict) else {})
+    g = providers.global_model()
+    if b["bound"]:
+        try:
+            p = next((x for x in (providers.load_data().get("providers") or [])
+                      if x.get("id") == b["provider_id"]), None)
+        except Exception:
+            p = None
+        if p and p.get("active") and p.get("kind") != "image" \
+                and b["model"] and b["model"] in (p.get("models") or []):
+            return {"ok": True, "key": bkey, "bound": True, "source": "book",
+                    "provider_id": b["provider_id"], "model": b["model"],
+                    "provider_name": p.get("name") or b["provider_id"], "global": g}
+        if b["strict"]:
+            return {"ok": True, "key": bkey, "bound": True, "source": "book",
+                    "provider_id": b["provider_id"], "model": b["model"],
+                    "provider_name": (p or {}).get("name") or b["provider_id"], "global": g,
+                    "model_unavailable": True,
+                    "note": f"本书绑定模型不可用（{b['provider_id']} · {b['model'] or '—'}），请更换绑定模型"}
+    return {"ok": True, "key": bkey, "bound": False, "source": "global",
+            "provider_id": "", "model": "", "global": g,
+            **({"fallback": True, "stale_provider_id": b["provider_id"], "stale_model": b["model"],
+                "note": "本书绑定的供应商/模型已不可用，已回落全局默认"}
+               if b["bound"] else {})}
+
+
+@app.post("/api/book-model")
+def api_book_model_set(payload: dict):
+    """v5.9.0（死规律）：给一本书/一篇内容绑定创作大模型（全书体通用）。
+    POST {key, provider_id, model} → 写该书计划 config._provider_id/_model（resolve 第一优先级，
+    整条创作链下一章/下一阶段起生效）。provider_id 传空 = 清除本书绑定，创作回落全局默认。
+    校验失败 400 中文报错，绝不写入半绑状态。"""
+    key = str(payload.get("key") or "")
+    proj = _get_project(key)
+    if not proj:
+        return JSONResponse({"ok": False, "error": "项目不存在或未加载，请刷新作品库"}, status_code=404)
+    bkey = os.path.basename(proj.path)
+    pid = str(payload.get("provider_id") or "").strip()
+    mid = str(payload.get("model") or "").strip()
+
+    def _plan_name(pl):
+        for k in ("novelName", "scriptName", "bookName", "newsName", "copyName",
+                  "proseName", "poemName", "thesisName", "otherName"):
+            if isinstance(pl, dict) and pl.get(k):
+                return str(pl[k])
+        return bkey
+
+    if not pid:
+        # 清除绑定：回落全局默认（响应里说明）
+        cleared = False
+        _name0 = bkey
+        try:
+            with proj.lock:
+                _m0, pp0, pl0 = _book_plan_of(proj)
+                if isinstance(pl0, dict) and pl0:
+                    _name0 = _plan_name(pl0)
+                    cfg = pl0.get("config")
+                    if isinstance(cfg, dict) and ("_provider_id" in cfg or "_model" in cfg or "_model_bound" in cfg):
+                        cfg.pop("_provider_id", None)
+                        cfg.pop("_model", None)
+                        cfg.pop("_model_bound", None)
+                        _save_book_plan(proj, _m0, pp0, pl0)
+                        cleared = True
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"清除绑定失败：{e}"}, status_code=500)
+        syslog_mod.log_event("provider", "解除本书模型绑定", {"key": bkey},
+                             f"《{_name0}》已解除书级模型绑定，创作回落全局默认模型")
+        return {"ok": True, "key": bkey, "bound": False, "source": "global", "cleared": cleared,
+                "global": providers.global_model(),
+                "msg": "已解除本书绑定，创作回落全局默认模型"}
+    try:
+        p, m = _provider_and_model_checked(pid, mid)
+    except providers.ProviderError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    with proj.lock:   # 临界区：与写作线程的 save_plan 串行化，绑定绝不丢写
+        med, ppath, plan = _book_plan_of(proj)
+        if not isinstance(plan, dict) or not plan:
+            return JSONResponse({"ok": False,
+                                 "error": "写作计划缺失，无法绑定（本书尚未完成规划，稍后再试）"},
+                                status_code=400)
+        cfg = plan.get("config")
+        if not isinstance(cfg, dict):
+            cfg = {}
+            plan["config"] = cfg
+        cfg["_provider_id"] = p.get("id")
+        cfg["_model"] = m
+        cfg["_model_bound"] = True
+        _save_book_plan(proj, med, ppath, plan)
+    pname = p.get("name") or p.get("id")
+    syslog_mod.log_event("provider", "绑定本书创作模型",
+                         {"key": bkey, "provider_id": p.get("id"), "model": m},
+                         f"《{_plan_name(plan)}》已绑定 {pname} · {m}，创作全程使用（死规律）")
+    return {"ok": True, "key": bkey, "bound": True, "source": "book",
+            "provider_id": p.get("id"), "provider_name": pname, "model": m,
+            "msg": f"本书已绑定 {pname} · {m}，创作全程使用"}
+
+
 # ---------- v0.6 B：并行章节创作（单本书内 N 个 Agent 分章齐写 + 总架构对齐） ----------
 _PARALLEL_RUNNING = {}
 # v4.24.16：运行标志注册表的检查-置位互斥（_PARALLEL_RUNNING/_REWRITING/_ONESHOT_RUNNING 共用）
@@ -7248,6 +7588,10 @@ async def api_chapter_selection_ai(request: Request):
         "key": key,
         "chapter_no": n if isinstance(n, int) else None,
     }
+    try:
+        ctx["cfg"] = (_get_project(key).plan() or {}).get("config") or {}
+    except Exception:
+        ctx["cfg"] = None
 
     import asyncio as _asyncio
     import queue as _queue
@@ -7484,7 +7828,7 @@ async def api_script_projects():
 @app.post("/api/script/create")
 async def api_script_create(payload: dict):
     """建剧本项目（与 /api/create + medium=script 同一条路径）。"""
-    return _create_script_project(payload)
+    return api_create({**payload, "medium": "script"})
 
 
 @app.get("/api/script/status")
@@ -8324,6 +8668,9 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
     novel_name = str(src_plan.get("novelName") or src_key)
     source_nos = [int(c.get("chapterNumber")) for c in chapters
                   if str(c.get("chapterNumber") or "").isdigit()]
+    bound_cfg = ((disk_plan if resume else src_plan) or {}).get("config") or {}
+    llm_cfg = {k: bound_cfg[k] for k in ("_provider_id", "_model", "_model_bound")
+               if k in bound_cfg}
     sp.log(f"🎬 全书改编《{novel_name}》：{len(source_nos)} 章 → {len(outline)} 集"
            f"（每集约 {cfg['chapters_per_episode']} 章）")
 
@@ -8334,7 +8681,7 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
         livejob.update(new_key_base, phase="bible",
                        detail="正在提炼全书创作圣经（约 1-2 分钟，只需一次）…")
         sp.log("📖 正在提炼全书创作圣经（人物/世界观/全书弧线，约 1-2 分钟）…")
-        bible = da.build_bible(_llm, material, novel_name, form_label, log=sp.log)
+        bible = da.build_bible(_llm, material, novel_name, form_label, log=sp.log, cfg=llm_cfg)
         script_writer._write(bible_fp, bible)
         sp.log("📖 创作圣经已就绪，后续每集都按同一份设定写")
     script_writer._write(os.path.join(pdir, script_writer.F_SEASON),
@@ -8345,7 +8692,7 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
         "form": form, "formLabel": form_label,
         "entryPath": "adapt", "targetPages": 30,
         "createdAt": _dt.now().isoformat(), "stages": {"S0": {"done": True}},
-        "config": {"form": form, "title": name,
+        "config": {"form": form, "title": name, **llm_cfg,
                    "idea": f"由小说《{novel_name}》全书改编"},
     }
     plan_doc["adaptedFrom"] = {"key": src_key, "chapters": source_nos,
@@ -8361,7 +8708,7 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
     # v4.33.9：改编保真清单——关键设定/名场面/人物结局/主线承诺，写完全集后逐项验收
     if not (prev or {}).get("adaptation", {}).get("fidelity"):
         try:
-            _fid = da.build_fidelity(_llm, material, novel_name, log=sp.log)
+            _fid = da.build_fidelity(_llm, material, novel_name, log=sp.log, cfg=llm_cfg)
             plan_doc["adaptation"]["fidelity"] = _fid
             sp.log(f"📜 改编保真清单就绪：{len(_fid)} 项必须保留的要素")
         except Exception as _e:
@@ -8447,7 +8794,7 @@ def _novel_to_drama_impl(src_key, form, chapters, new_key_base, src_plan,
                 prev_tail=prev_tail, form_label=form_label, novel_name=novel_name,
                 **limits)
             body, why, tries = da.generate_episode(
-                _llm, messages, max_attempts=cfg["max_attempts"], **limits)
+                _llm, messages, max_attempts=cfg["max_attempts"], cfg=llm_cfg, **limits)
             if body:
                 os.makedirs(os.path.dirname(fp), exist_ok=True)
                 script_writer._write(fp, body)
@@ -9029,7 +9376,7 @@ async def api_poetry_projects():
 @app.post("/api/poetry/create")
 async def api_poetry_create(payload: dict):
     """建诗词项目（与 /api/create + medium=poetry 同一条路径）。"""
-    return _create_poetry_project(payload)
+    return api_create({**payload, "medium": "poetry"})
 
 
 @app.get("/api/poetry/status")
@@ -9075,7 +9422,7 @@ async def api_prose_projects():
 @app.post("/api/prose/create")
 async def api_prose_create(payload: dict):
     """建散文项目（与 /api/create + medium=prose 同一条路径）。"""
-    return _create_prose_project(payload)
+    return api_create({**payload, "medium": "prose"})
 
 
 @app.get("/api/prose/status")
@@ -9188,5 +9535,6 @@ def api_export_post(payload: dict):
 from bot.v2api import register_v2_routes  # noqa: E402  (需在 _get_project/chat 定义后注册)
 
 register_v2_routes(app, _get_project, chat,
-                   session_project=lambda sid: (SESSIONS.get(sid) or {}).get("project"))
+                   session_project=lambda sid: (SESSIONS.get(sid) or {}).get("project"),
+                   remember_session_model=_remember_session_model)
 

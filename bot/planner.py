@@ -18,6 +18,8 @@
 """
 import json
 
+from .providers import ProviderError
+
 # ── 动作注册表：名称与 app.py `_run(intent, params)` 的分支一一对应 ─────────────
 ACTIONS = {
     "resume_task":        {"desc": "接着上次没做完的事继续（「继续」「接着写」「别停」「继续刚才那个」）",
@@ -191,7 +193,7 @@ def _ctx_text(ctx: dict) -> str:
     return "\n".join(lines)
 
 
-def plan_actions(text: str, ctx: dict | None = None):
+def plan_actions(text: str, ctx: dict | None = None, cfg: dict | None = None):
     """理解 + 规划。返回 {"understanding": str, "steps": [...]} 或 None（不可用/解析失败）。"""
     text = (text or "").strip()
     if not text:
@@ -207,10 +209,12 @@ def plan_actions(text: str, ctx: dict | None = None):
         res = None
         for _attempt in range(2):      # 限流/瞬时失败重试一次（规划器是主链路，宁可多等）
             try:
-                res = llm.chat_json(msgs, cfg=None, stage="planning",
+                res = llm.chat_json(msgs, cfg=cfg, stage="planning",
                                     agent="planner", temperature=0.2)
                 if isinstance(res, dict) and isinstance(res.get("steps"), list):
                     break
+            except ProviderError:
+                raise
             except Exception as _e:
                 if _attempt == 0:
                     import time as _t
@@ -240,5 +244,7 @@ def plan_actions(text: str, ctx: dict | None = None):
         if not clean:
             return None
         return {"understanding": str(res.get("understanding") or "")[:200], "steps": clean[:5]}
+    except ProviderError:
+        raise
     except Exception:
         return None

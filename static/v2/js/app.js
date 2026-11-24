@@ -7,9 +7,9 @@ import {
   resetChat
 } from './core/state.js';
 import { initTheme, setTheme, toggleTheme } from './core/theme.js';
-import { loadPrefs, persistLayout } from './core/prefs.js';
+import { clearModelChoice, loadPrefs, persistLayout, persistModelChoice } from './core/prefs.js';
 import { startRouter, navigate, routePath } from './core/router.js';
-import { api, errorText } from './core/api.js';
+import { api, errorText, request } from './core/api.js';
 import { installHotkeys } from './core/hotkeys.js';
 import { createLiveWatcher, pollBookLive } from './core/sse.js';
 import { toast, closeTopOverlay, closePopover } from './core/ui.js';
@@ -22,14 +22,14 @@ import { renderRightPanel } from './components/rightpanel.js';
 /* 命令面板（Cmd+K）按需加载；视图模块在 renderView 里按路由动态 import，
    首屏只保留 welcome/session（对话主界面）及其组件链。 */
 import { renderWelcome } from './views/welcome.js';
-import { renderSession } from './views/session.js';
+import { renderSession, workStatusSig } from './views/session.js';
 import './core/writestats-client.js'; /* v5.2.0：码字统计监听（自安装副作用模块） */
 
 /* 路由级 CSS 与 JS 共用同一份版本号，必须与 index.html 里所有 `?v=` 相同。
    **改了 static/v2/css/*.css 就要把这个数字 +1**，否则老用户浏览器拿的是
    缓存里的旧样式（HTML 里的 ?v= 变了、懒加载的 CSS 没变，会出现半新半旧）。
    tests/test_v4232_assets.py 会检查它与 index.html 是否一致。 */
-const CSS_V = '340';
+const CSS_V = '341';
 
 const els = {
   app: document.getElementById('app'),
@@ -272,9 +272,67 @@ const ctx = {
     setTheme(pref);
     syncShell(store.get(), true);
   },
-  setModel(providerId, model) {
-    patchUi({ providerId: providerId || null, model: model || null });
+  /* v5.9.0（死规律）：顶栏选择创作模型的唯一入口。
+     · 有打开的书（currentKey）→ POST /api/book-model 把选择写进本书
+       plan.config._provider_id/_model——规划/写章/审校/重写全链从下一章起用该模型，
+       绑定持久在书里，刷新/重启都不丢；失败 toast 中文错误且不改变当前选中态。
+     · 无书（welcome/全局态）→ 走既有 /api/global-model 设全局默认（新作品默认用它）。
+     · 无论哪条路，选择都同步进 localStorage（persistModelChoice），刷新后恢复。 */
+  async setModel(providerId, model) {
+    const key = store.get().currentKey;
+    const pid = providerId || '';
+    const mid = model || '';
+    if (key) {
+      try {
+        const res = await request('/api/book-model', {
+          method: 'POST',
+          body: { key, provider_id: pid, model: mid }
+        });
+        patchUi({ providerId: pid || null, model: mid || null });
+        persistModelChoice(pid, mid);
+        toast((res && res.msg) || `本书已绑定 ${pid} · ${mid}，创作全程使用`,
+              { tone: 'success', duration: 3200 });
+        if (ctx.refreshWork) ctx.refreshWork();   // work.model 绑定值刷新顶栏/右栏显示
+      } catch (err) {
+        toast(errorText(err, '本书模型绑定失败'), { tone: 'danger', duration: 4600 });
+        syncShell(store.get(), true);   // 选中态保持原样：失败绝不偷改 UI
+        return;
+      }
+    } else {
+      try {
+        await api.globalModelSet({ provider_id: pid, model: mid });
+        patchUi({ providerId: pid || null, model: mid || null });
+        persistModelChoice(pid, mid);
+        toast(`全局默认模型已设为 ${pid} · ${mid}，新作品将用它创作`,
+              { tone: 'success', duration: 2600 });
+      } catch (err) {
+        toast(errorText(err, '全局默认模型设置失败'), { tone: 'danger', duration: 4600 });
+        syncShell(store.get(), true);
+        return;
+      }
+    }
     syncShell(store.get(), true);
+  },
+  /* v5.9.0：解除当前书的模型绑定（顶栏菜单「解除本书绑定」）——创作回落全局默认。 */
+  async unbindBookModel() {
+    const key = store.get().currentKey;
+    if (!key) return false;
+    try {
+      const res = await request('/api/book-model', {
+        method: 'POST',
+        body: { key, provider_id: '', model: '' }
+      });
+      clearModelChoice();
+      toast((res && res.msg) || '已解除本书绑定，创作回落全局默认模型',
+            { tone: 'success', duration: 3200 });
+      if (ctx.refreshWork) ctx.refreshWork();
+      syncShell(store.get(), true);
+      return true;
+    } catch (err) {
+      toast(errorText(err, '解除本书绑定失败'), { tone: 'danger', duration: 4600 });
+      syncShell(store.get(), true);
+      return false;
+    }
   },
   /* v4.30.0：模型选项/全局默认变更后刷新 store——此前 state.models 只在启动时
      拉一次，设置里切默认模型后作品右上角永远显示旧模型。
@@ -410,6 +468,20 @@ const ctx = {
         };
         patch('work', merged);
         patch('workError', null);
+        /* v5.9.0（死规律兜底）：书级绑定失效（供应商被删/停用/模型下架）→ 后端已清除
+           绑定并回落全局默认；这里每个 key 只 toast 一次，把回落说清楚。 */
+        if (status && status.model_fallback) {
+          const flag = `shenbi_bm_fallback_${key}`;
+          let seen = false;
+          try {
+            seen = Boolean(sessionStorage.getItem(flag));
+            if (!seen) sessionStorage.setItem(flag, '1');
+          } catch { /* 存储不可用时每次都提示 */ }
+          if (!seen) {
+            toast(status.model_note || '本书绑定的供应商/模型已不可用，已回落全局默认模型',
+                  { tone: 'warning', duration: 5200 });
+          }
+        }
       },
       errorKey: 'workError',
       errorFallback: '作品状态加载失败'
@@ -694,6 +766,9 @@ function syncShell(state, force = false) {
     state.work ? [state.work.name, state.work.running, state.work.done, state.work.total, state.work.status_label].join('~') : '',
     state.ui.model,
     state.ui.providerId,
+    /* v5.9.0：书级绑定值进签名——绑定/解除绑定后顶栏芯片立即重绘（显示绑定值与「本书绑定」标记） */
+    (state.work && state.work.model) || '',
+    state.work && state.work.model_bound ? 1 : 0,
     state.ui.rightOpen,
     state.resolvedTheme,
     state.models.default_provider,
@@ -715,6 +790,7 @@ function syncShell(state, force = false) {
     (state.ui.chapterArchive && state.ui.chapterArchive.ts) || 0,
     JSON.stringify(state.features),
     state.work ? [state.work.running, state.work.done, state.work.total, state.work.state].join('~') : '',
+    workStatusSig(state.work),
     /* v4.24.12：key 进签名——刷新后 key 晚到（work 先无 key、后有 key）时要重绘右栏，
        否则「继续/暂停」按钮会一直缺席到下一次状态变化。 */
     (state.work && state.work.key) || '',
@@ -1203,13 +1279,12 @@ function onRoute(route) {
   const prev = store.get();
   const key = route.name === 'work' || route.name === 'bench' ? route.key : '';
 
-  /* v4.34.0：回到首页意味着开始新一轮创作——解除「本轮使用的模型」覆盖。
-     否则顶栏芯片的一次选择会静默污染之后所有新书的创建请求与模型显示，
-     设置里改了全局默认也不生效。 */
-  if (route.name === 'welcome' && (prev.ui.model || prev.ui.providerId)) {
-    patchUi({ model: null, providerId: null });
-    syncShell(store.get(), true);
-  }
+  /* v4.34.0 曾在回首页时清除「本轮使用的模型」覆盖（防止一次点选静默污染所有新书）。
+     v5.9.0（死规律）后该污染源不存在了：顶栏选择已被分流——有书 → 写进本书绑定
+     （POST /api/book-model，只影响这一本）；无书（首页）→ 直接设全局默认
+     （POST /api/global-model，本来就是显式的）。首页选择即全局默认，随后新建的
+     作品按用户最近一次选择绑定模型——这正是「选择持久、选择即绑定」要求的语义，
+     因此不再清除 ui.providerId/ui.model（选择同时持久在 localStorage，刷新后恢复）。 */
 
   if (key !== prev.currentKey) {
     loadedKey = '';

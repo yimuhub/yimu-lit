@@ -2,7 +2,12 @@
 
 import { h, icon } from '../core/dom.js';
 import { store } from '../core/state.js';
-import { popoverMenu, toast } from '../core/ui.js';
+import { popoverMenu } from '../core/ui.js';
+import {
+  clearModelChoice,
+  globalTextModel,
+  selectableTextProviders
+} from '../core/prefs.js';
 
 function currentTitle(state) {
   if (state.route.name === 'welcome') return '新会话';
@@ -28,7 +33,9 @@ function workChipSig(work) {
     work.done,
     work.total,
     work.state || '',
-    work.status_label || ''
+    work.status_label || '',
+    work.pausedReason || '',
+    work.model_unavailable ? 1 : 0
   ].join('~');
 }
 
@@ -69,6 +76,37 @@ function ensureChipSubscription() {
     if (sig === chipSig) return;
     chipSig = sig;
     chipPainter();
+  });
+}
+
+/* app.js 的整栏签名覆盖绑定值/全局默认，但 model_unavailable 是严格的书级
+   错误态，必须在同一本书内单独刷新芯片，不能等下一次路由或整栏重绘。 */
+let modelPainter = null;
+let modelSig = '';
+let modelUnsub = null;
+
+function modelChipSig(state) {
+  const work = state.work || {};
+  const global = globalTextModel(state);
+  return [
+    state.currentKey || '',
+    work.model_bound ? 1 : 0,
+    work.model || '',
+    work.model_provider_id || '',
+    work.model_unavailable ? 1 : 0,
+    global.providerId,
+    global.model
+  ].join('~');
+}
+
+function ensureModelSubscription() {
+  if (modelUnsub) return;
+  modelUnsub = store.subscribe((state) => {
+    if (!modelPainter) return;
+    const sig = modelChipSig(state);
+    if (sig === modelSig) return;
+    modelSig = sig;
+    modelPainter();
   });
 }
 
@@ -152,52 +190,126 @@ export function renderTopbar(container, ctx) {
   }
 
   // model chip
-  const modelName = state.ui.model || defaultModel(state);
+  // v5.9.0（死规律）：只有书级 model_bound=true 才显示 work.model；未绑定明确显示
+  // 全局文本默认，绝不把最近选择或图像默认冒充当前全局模型。
+  const bookBound = Boolean(state.currentKey && state.work && state.work.model_bound);
+  const modelUnavailable = Boolean(bookBound && state.work.model_unavailable);
+  const globalChoice = globalTextModel(state);
+  const modelName = modelUnavailable
+    ? '绑定模型不可用，请更换'
+    : (bookBound
+      ? (state.work.model || '绑定模型')
+      : `全局默认 · ${globalChoice.model || '未配置'}`);
+  const modelLabel = h('span', { class: 'tb-label mono', text: modelName });
+  const modelBadge = h('span', {
+    style: {
+      fontSize: '10px', lineHeight: '1', padding: '3px 6px', borderRadius: '999px',
+      border: '1px solid var(--accent)', color: 'var(--accent)', whiteSpace: 'nowrap'
+    },
+    text: bookBound ? '本书绑定' : '全局默认'
+  });
   const modelChip = h(
     'button',
     {
       class: 'tb-chip',
       type: 'button',
       'aria-haspopup': 'menu',
-      title: `当前模型：${modelName}`,
+      title: modelUnavailable
+        ? (state.work.model_note || '绑定模型不可用，请更换')
+        : (bookBound
+          ? `本书绑定：${state.work.model_provider_name || state.work.model_provider_id || ''} · ${state.work.model}（创作全程使用）`
+          : `全局默认模型：${globalChoice.providerId || '未配置'} · ${globalChoice.model || '未配置'}`),
       on: {
         click: (event) => {
-          const options = (state.models.options || []).filter((o) => o.models && o.models.length);
+          // 局部订阅只更新芯片文本时不会重建按钮；菜单必须现场读 store，
+          // 尤其 model_unavailable 不能被渲染时的旧闭包吞掉。
+          const state = store.get();
+          const bookBound = Boolean(state.currentKey && state.work && state.work.model_bound);
+          const modelUnavailable = Boolean(bookBound && state.work.model_unavailable);
+          const globalChoice = globalTextModel(state);
+          const options = selectableTextProviders(state.models.options)
+            .filter((o) => o.models && o.models.length);
+          // 生效口径：已绑书 → 书级绑定；未绑定 → 全局文本默认。
+          const effPid = bookBound
+            ? (state.work.model_provider_id || '')
+            : globalChoice.providerId;
+          const effModel = bookBound ? (state.work.model || '') : globalChoice.model;
           const items = [];
+          if (modelUnavailable) {
+            items.push({ label: '绑定模型不可用，请更换', icon: 'alert', disabled: true });
+          }
           for (const provider of options) {
             items.push({ label: provider.name, icon: 'cpu', disabled: true });
             for (const m of provider.models) {
+              const isBoundRow = bookBound
+                && provider.id === state.work.model_provider_id && m === state.work.model;
               items.push({
                 label: m,
+                sub: isBoundRow ? '本书绑定' : '',
                 icon: 'dot',
-                checked: m === modelName,
+                checked: provider.id === effPid && m === effModel,
                 onSelect: () => {
+                  // v5.9.0：分流在 ctx.setModel 里做（有书→本书绑定端点；无书→全局默认），
+                  // 成功/失败 toast 也由它负责——这里的乐观 toast 会把失败说成成功，已删。
                   ctx.setModel(provider.id, m);
-                  toast(`已切换到 ${provider.name} · ${m}`, { tone: 'success', duration: 1800 });
                 }
               });
             }
           }
-          if (!items.length) {
+          if (!options.length) {
             items.push({
               label: '还没有可用模型',
               icon: 'plug',
               onSelect: () => ctx.openSettings('providers')
             });
           }
+          items.push({ separator: true });
+          if (bookBound) {
+            items.push({
+              label: '解除本书绑定（回落全局默认）',
+              icon: 'x',
+              onSelect: async () => {
+                await ctx.unbindBookModel?.();
+                /* app.js 解绑成功后异步刷新 work；若已同步落地则立即清，否则由
+                   prefs 的 model_bound true→false 订阅在 status 到达时清。 */
+                const work = store.get().work;
+                if (work && !work.model_bound) clearModelChoice();
+              }
+            });
+          }
           items.push(
-            { separator: true },
             { label: '管理模型与密钥…', icon: 'settings', onSelect: () => ctx.openSettings('providers') }
           );
-          popoverMenu(event.currentTarget, items, { label: '本轮使用的模型' });
+          popoverMenu(event.currentTarget, items, {
+            label: bookBound ? '本书创作模型（绑定后全程使用）' : '全局默认模型（新作品默认使用）'
+          });
         }
       }
     },
     h('span', { html: icon('cpu', 14) }),
-    h('span', { class: 'tb-label mono', text: modelName }),
+    modelLabel,
+    modelBadge,
     h('span', { class: 'chev', html: icon('chevron-down', 12) })
   );
+  modelSig = modelChipSig(state);
+  modelPainter = () => {
+    const current = store.get();
+    const bound = Boolean(current.currentKey && current.work && current.work.model_bound);
+    const unavailable = Boolean(bound && current.work.model_unavailable);
+    const global = globalTextModel(current);
+    modelLabel.textContent = unavailable
+      ? '绑定模型不可用，请更换'
+      : (bound ? (current.work.model || '绑定模型') : `全局默认 · ${global.model || '未配置'}`);
+    modelBadge.textContent = bound ? '本书绑定' : '全局默认';
+    modelChip.title = unavailable
+      ? (current.work.model_note || '绑定模型不可用，请更换')
+      : (bound
+        ? `本书绑定：${current.work.model_provider_name || current.work.model_provider_id || ''} · ${current.work.model}（创作全程使用）`
+        : `全局默认模型：${global.providerId || '未配置'} · ${global.model || '未配置'}`);
+    modelSig = modelChipSig(current);
+  };
   right.append(modelChip);
+  ensureModelSubscription();
 
   right.append(h('div', { class: 'divider-v' }));
 
@@ -233,13 +345,6 @@ export function renderTopbar(container, ctx) {
   right.append(settingsBtn);
 
   container.append(left, right);
-}
-
-function defaultModel(state) {
-  const options = state.models.options || [];
-  const provider =
-    options.find((o) => o.id === state.models.default_provider) || options[0] || null;
-  return (provider && (provider.default_model || (provider.models || [])[0])) || '默认模型';
 }
 
 /* v4.14.0：顶栏章节标签按文体定制，不用「第 N 章」糊弄所有体裁 */

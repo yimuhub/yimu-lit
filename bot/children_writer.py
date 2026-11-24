@@ -9,7 +9,7 @@ import os
 from .paths import DATA_ROOT
 import re
 
-from bot.safeio import atomic_write_text, safe_join
+from bot.safeio import ProjectPath, atomic_write_text, safe_join
 
 from . import llm
 from . import purity
@@ -56,13 +56,14 @@ def create_project(cfg: dict):
     proj.running = True
     llm.book(os.path.basename(pdir), "planning")
     try:
-        _pipeline(proj, pdir, cfg)
+        _pipeline(proj, ProjectPath(proj), cfg)
     finally:
         proj.running = False
     return proj
 
 
 def resume_project(key: str):
+    key = ChildrenProject.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
@@ -84,7 +85,7 @@ def resume_project(key: str):
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
         llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账失活
-        _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
+        _pipeline(proj, ProjectPath(proj), plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
     return proj
@@ -177,6 +178,7 @@ def _stage_write(proj, pdir, cfg, plan, age, ctype):
                 cfg=cfg, stage="writing", max_tokens=2500) or "")
             if _wg.cn_len(_cont) >= 80:
                 body = body.rstrip() + "\n\n" + _cont
+        fp = os.path.join(proj.path, F_BODY_DIR, f"{i:02d}-{_safe(sec)}.md")
         atomic_write_text(fp, f"## {sec}\n\n{body}\n")
         all_text.append(body)
     meta = plan.setdefault("meta", {})

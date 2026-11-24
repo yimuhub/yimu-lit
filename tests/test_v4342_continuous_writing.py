@@ -70,7 +70,7 @@ def _force_plan(monkeypatch, action):
     """让规划器只吐一步指定动作——绕开模型，专测「听懂之后有没有照做」。"""
     monkeypatch.setattr(
         planner, "plan_actions",
-        lambda msg, ctx: {"understanding": "测试", "steps": [
+        lambda msg, ctx, cfg=None: {"understanding": "测试", "steps": [
             {"action": action, "title": action, "params": {}, "why": "测试"}]})
 
 

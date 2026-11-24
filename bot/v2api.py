@@ -19,6 +19,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -116,6 +117,9 @@ def _read_jsonl(path: str, limit: int = 5000) -> list:
 
 def _chat_log_path(proj) -> str:
     """小说聊天历史 JSONL 文件路径。"""
+    follow = getattr(proj, "_follow_rename", None)
+    if callable(follow):
+        follow()
     return os.path.join(proj.path, "chat_log.jsonl")
 
 
@@ -126,8 +130,9 @@ def _save_chat_msg(proj, role: str, content: str, extra: dict | None = None):
         rec = {"role": role, "content": content, "ts": int(_t.time())}
         if extra and isinstance(extra, dict):
             rec.update(extra)
-        with open(_chat_log_path(proj), "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with getattr(proj, "lock", None) or nullcontext():
+            with open(_chat_log_path(proj), "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -693,7 +698,8 @@ def _medium_stages(med: str) -> list[tuple[str, str]]:
     return [(c, n) for c, n, _ in _medium_mod.stages(med)]
 
 
-def register_v2_routes(app, get_project, chat_func=None, session_project=None):
+def register_v2_routes(app, get_project, chat_func=None, session_project=None,
+                       remember_session_model=None):
     from bot import chatsum
     from bot.writer import _clean_chapter_text
     """在 app 上注册 v2 接口。由 app.py 在 `_get_project` 定义后调用。
@@ -701,6 +707,8 @@ def register_v2_routes(app, get_project, chat_func=None, session_project=None):
     session_project：可选回调 sid -> 项目 key（app.py 的 SESSIONS 绑定表）。v5.5.2
     「直接开聊」建书后请求仍无 key，但服务端会话已绑定新书——done 帧据此带
     project_key 供前端整体跳转（views/session.js done 事件消费）。
+    remember_session_model：可选回调 (sid, provider_id, model)，把本轮模型选择并回会话，
+    供无 key 的直接开聊建书继承；不改变 chat_func 签名，旧测试桩无需适配。
     """
 
     # ------------------------------------------------------------ 能力探测
@@ -1489,6 +1497,12 @@ def register_v2_routes(app, get_project, chat_func=None, session_project=None):
         sid = str(payload.get("session_id") or uuid.uuid4().hex)
         # v2.3.0：key 随消息透传给会话状态机（idle + 有效 key → 绑定本书，绝不误起新书）
         key = str(payload.get("key") or "") or None
+        if remember_session_model and (payload.get("provider_id") or payload.get("model")):
+            from bot import providers
+            try:
+                remember_session_model(sid, payload.get("provider_id"), payload.get("model"))
+            except providers.ProviderError as e:
+                return _bad(str(e))
 
         # v2.6.0：持久化用户消息到聊天历史
         _chat_proj = get_project(key) if key else None
@@ -1503,7 +1517,9 @@ def register_v2_routes(app, get_project, chat_func=None, session_project=None):
             if _chat_proj:
                 try:
                     _hist = _load_chat_log(_chat_proj, limit=5000)
-                    _cres = chatsum.maybe_compress(_chat_proj.path, _hist) if _hist else None
+                    _cres = chatsum.maybe_compress(
+                        _chat_proj.path, _hist,
+                        cfg=(_chat_proj.plan() or {}).get("config") or {}) if _hist else None
                     if _cres and _cres.get("compressed"):
                         _digest = _cres["summary"]
                         yield _sse("compressed", {"count": _cres["count"],

@@ -74,7 +74,7 @@ def _llm_available():
         return None
 
 
-def maybe_compress(pdir: str, history: list) -> dict:
+def maybe_compress(pdir: str, history: list, cfg: dict | None = None) -> dict:
     """超窗则压缩早期消息。返回 {compressed, count, summary, history}。
 
     history: [{"role","content",...}]（时间正序）。已压缩过的消息数记录在
@@ -115,7 +115,7 @@ def maybe_compress(pdir: str, history: list) -> dict:
     summary = ""
     if llm is not None:
         try:
-            summary = str(llm.chat([{"role": "user", "content": prompt}]) or "").strip()
+            summary = str(llm.chat([{"role": "user", "content": prompt}], cfg=cfg) or "").strip()
         except Exception:
             summary = ""
     if not summary:

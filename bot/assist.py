@@ -995,7 +995,8 @@ def agent_reply(key: str, medium: str, message: str, history_msgs: list | None =
         msgs.extend(_history_msgs(history_msgs))
         msgs.append({"role": "user", "content": question})
         try:
-            rep = llm.chat(msgs, stage="review", max_tokens=2000)
+            rep = llm.chat(msgs, cfg=plan.get("config") or {},
+                           stage="review", max_tokens=2000)
         except Exception as e:
             rep = f"（{label} 调用失败：{e}）"
         out.append(f"**{label}**：{(rep or '').strip()}")

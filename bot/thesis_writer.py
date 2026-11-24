@@ -17,7 +17,7 @@ import os
 from .paths import DATA_ROOT
 import re
 
-from bot.safeio import atomic_write_text, atomic_write_json, safe_join
+from bot.safeio import ProjectPath, RenameAwareProject, atomic_write_text, atomic_write_json, path_lock, safe_join
 
 from . import llm, express
 from .llm import book as llm_book
@@ -30,16 +30,17 @@ F_FINAL = "04-论文定稿.md"
 F_REPORT = "03-查重报告.md"
 
 
-class ThesisProject:
+class ThesisProject(RenameAwareProject):
     def __init__(self, path: str, name: str):
         self.path = path
         self.name = name
         self.running = False
+        self.lock = path_lock(self.path)
 
     def log(self, msg: str):
         line = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}"
         try:
-            with open(os.path.join(self.path, "运行日志.txt"), "a", encoding="utf-8") as f:
+            with self.lock, open(os.path.join(self.path, "运行日志.txt"), "a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except Exception:
             pass
@@ -50,7 +51,8 @@ class ThesisProject:
 
     def save_plan(self, plan):
         plan["updatedAt"] = datetime.datetime.now().isoformat()
-        atomic_write_json(os.path.join(self.path, F_PLAN), plan)
+        with self.lock:
+            atomic_write_json(os.path.join(self.path, F_PLAN), plan)
 
     def status(self) -> dict:
         plan = self.plan() or {}
@@ -82,6 +84,7 @@ def _read(path: str) -> str:
 
 
 def get_project(key: str) -> Optional["ThesisProject"]:
+    key = ThesisProject.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
@@ -307,7 +310,7 @@ def create_project(cfg: dict, base_key: str = "") -> ThesisProject:
     proj.running = True
     llm_book(os.path.basename(pdir), "planning")
     try:
-        _pipeline(proj, pdir, cfg)
+        _pipeline(proj, ProjectPath(proj), cfg)
     except Exception as e:
         proj.log(f"💥 流水线异常：{e}")
         plan = proj.plan() or {}
@@ -321,6 +324,7 @@ def create_project(cfg: dict, base_key: str = "") -> ThesisProject:
 
 def resume_project(key: str) -> Optional["ThesisProject"]:
     """断点恢复（缺哪段补哪段，幂等）。"""
+    key = ThesisProject.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
@@ -342,7 +346,7 @@ def resume_project(key: str) -> Optional["ThesisProject"]:
             return proj
         proj.log("▶ 断点恢复：检查已有产物…")
         llm.book(key, "writing")   # v4.24.16：resume 在新线程跑，不标记则 token 记账与流式接线全部失活
-        _pipeline(proj, pdir, plan.get("config") or {}, plan=plan)
+        _pipeline(proj, ProjectPath(proj), plan.get("config") or {}, plan=plan)
     finally:
         proj.running = False
     return proj
@@ -407,7 +411,7 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
             plan["meta"] = meta
             proj.save_plan(plan)
             continue
-        _write(os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md"), body)
+        _write(os.path.join(proj.path, F_BODY_DIR, f"{no:02d}-{_safe(ch.get('title'))}.md"), body)
         plan.setdefault("chapterStatus", {})[str(no)] = "completed"
         meta["stage"] = "T2"
         plan["meta"] = meta
@@ -440,33 +444,34 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
         proj.log("🧪 T4：已完成（断点恢复，跳过）")
         for ch in chapters:
             no = int(ch.get("no") or 0)
-            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            fp = os.path.join(proj.path, F_BODY_DIR, f"{no:02d}-{_safe(ch.get('title'))}.md")
             if os.path.exists(fp):
                 total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
     elif _expr:
         proj.log("⚡ 极速模式：跳过 T4 降 AIGC 润色（保留引用核查结果）")
         for ch in chapters:
             no = int(ch.get("no") or 0)
-            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            fp = os.path.join(proj.path, F_BODY_DIR, f"{no:02d}-{_safe(ch.get('title'))}.md")
             if os.path.exists(fp):
                 total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
         report_lines.append("- 极速模式：本阶段已跳过，正文为 T2 原始产出\n")
     elif cfg.get("humanize", True) is not False:
         for ch in chapters:
             no = int(ch.get("no") or 0)
-            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            fp = os.path.join(proj.path, F_BODY_DIR, f"{no:02d}-{_safe(ch.get('title'))}.md")
             if not os.path.exists(fp):
                 continue
             body = _read(fp)
             proj.log(f"🧪 T4：第 {no} 章降 AIGC 润色…")
             new_body, note = humanize_chapter(cfg, body, ch.get("title") or "")
+            fp = os.path.join(proj.path, F_BODY_DIR, f"{no:02d}-{_safe(ch.get('title'))}.md")
             _write(fp, new_body)
             total_words += len(re.findall(r"[\u4e00-\u9fff]", new_body))
             report_lines.append(f"- 第 {no} 章「{ch.get('title')}」：{note}\n")
     else:
         for ch in chapters:
             no = int(ch.get("no") or 0)
-            fp = os.path.join(body_dir, f"{no:02d}-{_safe(ch.get('title'))}.md")
+            fp = os.path.join(proj.path, F_BODY_DIR, f"{no:02d}-{_safe(ch.get('title'))}.md")
             if os.path.exists(fp):
                 total_words += len(re.findall(r"[\u4e00-\u9fff]", _read(fp)))
     plan.setdefault("chapterStatus", {})["T4"] = "completed"   # v4.24.16：断点标记
@@ -477,7 +482,7 @@ def _pipeline(proj: ThesisProject, pdir: str, cfg: dict, plan: dict | None = Non
     proj.log("📋 T5：定稿…")
     parts = [f"# {plan.get('thesisName')}\n\n## 摘要\n\n{plan.get('outline', {}).get('abstract')}\n"]
     for ch in sorted(chapters, key=lambda c: int(c.get("no") or 0)):
-        fp = os.path.join(body_dir, f"{int(ch.get('no') or 0):02d}-{_safe(ch.get('title'))}.md")
+        fp = os.path.join(proj.path, F_BODY_DIR, f"{int(ch.get('no') or 0):02d}-{_safe(ch.get('title'))}.md")
         if os.path.exists(fp):
             parts.append(f"\n\n---\n\n# 第 {ch.get('no')} 章 {ch.get('title')}\n\n" + _read(fp))
     parts.append("\n\n---\n\n" + _read(os.path.join(pdir, F_REFS)))

@@ -775,8 +775,27 @@ def _norm_action(raw: dict) -> dict | None:
     return {"action": name, "params": params, "brief": brief}
 
 
+def _book_cfg_from_ctx(ctx) -> dict | None:
+    """总编辑理解层使用当前作品的完整绑定配置。"""
+    pdir = str((ctx or {}).get("pdir") or "")
+    if not pdir:
+        return None
+    try:
+        from .writer import _plan_of
+        plan = _plan_of(pdir)[2]
+    except Exception:
+        return None
+    cfg = plan.get("config") if isinstance(plan, dict) else None
+    if not isinstance(cfg, dict):
+        return None
+    if not (str(cfg.get("_provider_id") or "").strip() or str(cfg.get("_model") or "").strip()):
+        return None
+    return cfg
+
+
 def deliberate(text: str, ctx: dict) -> dict | None:
-    """理解作者的话并给出决策。不可用/解析失败返回 None（调用方回退旧链路）。"""
+    """理解作者的话并给出决策。不可用/解析失败返回 None（调用方回退旧链路）。
+    v5.9.0：本书绑定了创作模型（plan.config._provider_id/_model）时用绑定模型理解。"""
     text = (text or "").strip()
     if not text:
         return None
@@ -785,7 +804,7 @@ def deliberate(text: str, ctx: dict) -> dict | None:
         sys_p = _SYSTEM_PROMPT.format(actions=_actions_text(), context=_context_text(ctx or {}))
         msgs = [{"role": "system", "content": sys_p},
                 {"role": "user", "content": text}]
-        raw = llm.chat_json(msgs, cfg=None, stage="planning", agent="chief",
+        raw = llm.chat_json(msgs, cfg=_book_cfg_from_ctx(ctx), stage="planning", agent="chief",
                             temperature=0.2, use_cache=False)
     except Exception:
         return None

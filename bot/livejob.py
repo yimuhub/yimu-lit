@@ -137,6 +137,21 @@ def get(key) -> dict:
     return out
 
 
+def rename(old_key, new_key) -> dict:
+    """目录改名时迁移作业，保留开始时间、阶段和进度。"""
+    old = _norm(old_key)
+    new = _norm(new_key)
+    if not old or not new or old == new:
+        return {}
+    with _LOCK:
+        row = _ACTIVE.pop(old, None)
+        if row is None:
+            return {}
+        row["key"] = new
+        _ACTIVE[new] = row
+        return dict(row)
+
+
 def clear(key) -> None:
     with _LOCK:
         _ACTIVE.pop(_norm(key), None)

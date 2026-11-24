@@ -28,7 +28,7 @@ import threading
 
 from . import llm, medium, script_checker, skillkit, express, delivery_gate, lexicon_ledger, checkup
 from . import writer as novel_writer
-from bot.safeio import atomic_write_json, atomic_write_text, safe_join
+from bot.safeio import ProjectPath, RenameAwareProject, atomic_write_json, atomic_write_text, path_lock, safe_join
 
 ROOT = novel_writer.ROOT
 PROJECTS_DIR = novel_writer.PROJECTS_DIR
@@ -149,7 +149,7 @@ def _guard_completed(new_plan: dict, disk_plan: dict, body_dir: str) -> int:
     return fixed
 
 
-class ScriptProject:
+class ScriptProject(RenameAwareProject):
     """一个剧本项目。字段与小说 Project 对齐，便于前端统一处理。"""
 
     def __init__(self, path: str, name: str):
@@ -157,7 +157,7 @@ class ScriptProject:
         self.name = name
         self.events: list[str] = []
         self.running = False
-        self.lock = threading.RLock()
+        self.lock = path_lock(self.path)
 
     def log(self, msg: str) -> None:
         with self.lock:
@@ -762,7 +762,8 @@ def gen_storyboard(key: str, only_scene: int | None = None) -> dict:
             f"【场次正文】\n{body[:5000]}"
         )
         try:
-            out = llm.chat_json([{"role": "user", "content": task}], stage="writing")
+            # v5.9.0 死规律：分镜生成同样走本书绑定模型（cfg 来自 plan.config，见 _merge_cfg）
+            out = llm.chat_json([{"role": "user", "content": task}], cfg=cfg, stage="writing")
         except Exception as e:
             # 单场失败不再整单作废：记下来继续下一场，已拆好的照样可用
             failed.append(f"第{no}场")
@@ -826,7 +827,7 @@ def scene_heading(sc: dict) -> str:
 def _run_planning(proj: "ScriptProject", plan: dict, cfg: dict) -> None:
     """S0→S4 规划阶段（create_project 与断点恢复共用）。产物全部落盘，幂等可重跑。"""
     name = plan.get("scriptName") or proj.name
-    pdir = proj.path
+    pdir = ProjectPath(proj)
 
     proj.log("🎬 阶段 S0：生成创作引擎…")
     premise = gen_premise(cfg)
@@ -946,6 +947,7 @@ def create_project(cfg: dict, base_key: str = "") -> ScriptProject:
         "config": {k: v for k, v in cfg.items() if k != "api_key"},
     }
     proj.save_plan(plan)
+    pdir = ProjectPath(proj)
 
     _run_planning(proj, plan, cfg)
     plan = proj.plan() or plan
@@ -979,6 +981,7 @@ def resume_project(key: str, batch_size=None) -> ScriptProject | None:
     连续四次点「继续」一分字都没写，界面却始终显示「创作中」。
     """
     import threading as _th
+    key = novel_writer.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
@@ -1182,9 +1185,7 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
     struct_md = _read(os.path.join(proj.path, F_STRUCT))
     era = _era_of(cfg)
     world = _world_block(cfg)
-    body_dir = proj.body_dir()
     total = len(_p0.get("scenes") or [])
-    os.makedirs(body_dir, exist_ok=True)
 
     from bot import writer as _wr
     _key = os.path.basename(proj.path)
@@ -1248,7 +1249,7 @@ def _write_loop_parallel_scenes(proj: "ScriptProject", n_workers: int = 5, round
                     text = retry
             # v4.33.9：统一交付门禁（S01/S02/S03/S11/N02），命中带指令重生成一次
             text = _scene_delivery_retry(sc, no, text, extra, cfg, proj.log)
-            if not _write_body_guarded(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"),
+            if not _write_body_guarded(os.path.join(proj.body_dir(), sc.get("fileName") or f"第{no:03d}场.md"),
                                        text.strip() + "\n", proj, no):
                 continue        # 保住更长的原稿，且不把它降级成短稿完成态
             with plan_lock:
@@ -1338,7 +1339,6 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
     bible = _read(os.path.join(proj.path, F_BIBLE))
     chars = _read(os.path.join(proj.path, F_CHARS))
     struct_md = _read(os.path.join(proj.path, F_STRUCT))
-    body_dir = proj.body_dir()
     era = _era_of(cfg)
     world = _world_block(cfg)
     total = len(scenes)
@@ -1445,7 +1445,7 @@ def _write_scenes_inner(proj: "ScriptProject", only: list[int] | None = None, ba
             proj.log(f"⚠️ 第 {no} 场仍有时代偏差：{terms}（已保留，待人工修正）")
         else:
             sc.pop("warn", None)
-        if not _write_body_guarded(os.path.join(body_dir, sc.get("fileName") or f"第{no:03d}场.md"),
+        if not _write_body_guarded(os.path.join(proj.body_dir(), sc.get("fileName") or f"第{no:03d}场.md"),
                                    text.strip() + "\n", proj, no):
             continue        # 保住更长的原稿，且不把它降级成短稿完成态
         sc["status"] = "completed"
@@ -1553,7 +1553,10 @@ def run_revision(proj: ScriptProject) -> dict:
 # ---------------------------------------------------------------- 查询
 
 def project_dir(key: str) -> str:
-    return os.path.join(PROJECTS_DIR, key)
+    try:
+        return safe_join(PROJECTS_DIR, novel_writer.resolve_key(key), label="作品 key")
+    except ValueError:
+        return ""
 
 
 def get_project(key: str) -> ScriptProject | None:

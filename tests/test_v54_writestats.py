@@ -232,15 +232,16 @@ def test_api_writestats_report_shape(client, ws_file):
 
 
 def test_api_session_commit_flow(client, ws_file):
-    r = client.post("/api/writestats/session", json={"date": TODAY, "key": "p-x", "session": "s9", "chars": 42})
+    today = datetime.date.today().isoformat()
+    r = client.post("/api/writestats/session", json={"date": today, "key": "p-x", "session": "s9", "chars": 42})
     assert r.status_code == 200 and r.json()["chars"] == 42
-    r2 = client.post("/api/writestats/commit", json={"date": TODAY, "key": "p-x", "session": "s9"})
+    r2 = client.post("/api/writestats/commit", json={"date": today, "key": "p-x", "session": "s9"})
     assert r2.status_code == 200 and r2.json()["moved"] == 42
     # 幂等重放
-    r3 = client.post("/api/writestats/commit", json={"date": TODAY, "key": "p-x", "session": "s9"})
+    r3 = client.post("/api/writestats/commit", json={"date": today, "key": "p-x", "session": "s9"})
     assert r3.json()["moved"] == 0
     d = writestats.load()
-    assert d["days"][TODAY]["p-x"]["manual"] == 42
+    assert d["days"][today]["p-x"]["manual"] == 42
 
 
 def test_api_session_requires_key_and_session(client, ws_file):

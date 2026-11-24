@@ -28,7 +28,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import ghost, llm
+from . import ghost, llm, writer
 from .paths import DATA_ROOT
 from .safeio import atomic_write_text
 
@@ -97,6 +97,17 @@ def _chapter_no_of(payload: dict):
     return n if isinstance(n, int) and n > 0 else None
 
 
+def _book_cfg(key: str) -> dict:
+    if not key:
+        return {}
+    try:
+        plan = writer._plan_of(writer._project_dir(key))[2]
+        cfg = (plan or {}).get("config") or {}
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
 # ---------------------------------------------------------------- 幽灵字（JSON 短补全）
 
 @router.post("/api/ghost")
@@ -115,7 +126,8 @@ def api_ghost(payload: dict):
                       title=str(payload.get("title") or ""),
                       summary=str(payload.get("summary") or ""),
                       mode=payload.get("mode") or None,
-                      chapter_no=_chapter_no_of(payload))
+                      chapter_no=_chapter_no_of(payload),
+                      cfg=_book_cfg(key))
     except llm.LLMError as e:
         return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:   # 幽灵字是附加能力：任何异常都转成可读错误，不 500 中断写作台
@@ -150,7 +162,7 @@ async def api_quickwrite(request: Request):
         def _work():
             try:
                 full = ghost.run_stream(text, key=key, title=title, summary=summary,
-                                        chapter_no=chapter_no,
+                                        chapter_no=chapter_no, cfg=_book_cfg(key),
                                         on_delta=lambda piece: q.put(("delta", piece)))
                 box.append((True, full))
                 q.put(("done", None))

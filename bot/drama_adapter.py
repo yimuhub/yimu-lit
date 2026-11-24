@@ -261,7 +261,7 @@ def outline_brief(outline: list[dict], summaries: dict[int, dict]) -> str:
 
 
 def build_bible(llm, material: dict, novel_name: str, form_label: str,
-                log=None) -> str:
+                log=None, cfg=None) -> str:
     """一次模型调用提炼全书创作圣经；失败时退回已有素材，绝不阻断改编。
 
     这是解决「每集人物/设定对不上」的关键：全书只提炼一次，之后每集都带着
@@ -283,7 +283,7 @@ def build_bible(llm, material: dict, novel_name: str, form_label: str,
             f"【全书素材】\n{raw[:BIBLE_BUDGET + 9000]}"
         )
         try:
-            out = (llm.chat([{"role": "user", "content": prompt}],
+            out = (llm.chat([{"role": "user", "content": prompt}], cfg=cfg,
                             stage="planning", max_tokens=4000, use_cache=False) or "").strip()
             if len(out) > 200:
                 return out[:BIBLE_BUDGET]
@@ -402,7 +402,7 @@ def build_episode_messages(*, bible: str, ep: dict, total: int, source: str,
 
 
 def generate_episode(llm, messages: list[dict], *, max_attempts: int = MAX_ATTEMPTS,
-                     **limits) -> tuple[str | None, str, int]:
+                     cfg=None, **limits) -> tuple[str | None, str, int]:
     """生成单集并过质量门禁；不合格就把原因回灌给模型重写。
 
     返回 (正文 or None, 失败原因, 实际调用次数)。use_cache=False + 每轮追加
@@ -412,7 +412,7 @@ def generate_episode(llm, messages: list[dict], *, max_attempts: int = MAX_ATTEM
     reason = ""
     for attempt in range(1, max(1, max_attempts) + 1):
         try:
-            body = (llm.chat(msgs, stage="writing", max_tokens=8000,
+            body = (llm.chat(msgs, cfg=cfg, stage="writing", max_tokens=8000,
                              use_cache=False) or "").strip()
         except Exception as e:
             reason = f"LLM 调用失败：{type(e).__name__}: {e}"
@@ -431,7 +431,7 @@ def generate_episode(llm, messages: list[dict], *, max_attempts: int = MAX_ATTEM
 FIDELITY_NAME = "25-改编保真清单.json"
 
 
-def build_fidelity(llm, material: dict, novel_name: str, *, log=None) -> list[dict]:
+def build_fidelity(llm, material: dict, novel_name: str, *, log=None, cfg=None) -> list[dict]:
     """改编保真清单：必须原样保留的要素（关键设定/名场面/人物结局/主线承诺）。
     一次模型调用产出 JSON；失败退回确定性兜底（首尾章要点），绝不阻断改编。"""
     raw = "\n\n".join(filter(None, [material.get("bible", ""), material.get("season", ""),
@@ -447,7 +447,7 @@ def build_fidelity(llm, material: dict, novel_name: str, *, log=None) -> list[di
             f"【全书素材】\n{raw[:9000]}"
         )
         try:
-            out = (llm.chat([{"role": "user", "content": prompt}],
+            out = (llm.chat([{"role": "user", "content": prompt}], cfg=cfg,
                             stage="planning", max_tokens=2000, use_cache=False) or "").strip()
             m = re.search(r"\{.*\}", out, re.S)
             if m:

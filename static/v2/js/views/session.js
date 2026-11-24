@@ -16,6 +16,7 @@ import { toast, confirmDialog } from '../core/ui.js';
 import { createComposer } from '../components/composer.js';
 import { createChatView } from '../components/chat.js';
 import { renderPlanBar } from '../components/planbar.js';
+import { resolveModelChoice } from '../core/prefs.js';
 
 const STEPS = [
   { id: 'recall', label: '读取作品记忆与规划' },
@@ -31,7 +32,56 @@ function shownChars(text) {
   return Array.from(String(text || '')).length;
 }
 
+function currentAttachments(list = []) {
+  return (Array.isArray(list) ? list : [])
+    .filter((att) => att && att.id)
+    .map((att) => ({
+      id: att.id,
+      title: att.title || '附件',
+      usage_mode: att.usage_mode || 'facts'
+    }));
+}
+
+/* 右栏/状态刷新签名：暂停原因、status 与严格绑定不可用都必须能被上层 rightSig
+   复用；否则 book-live 只改 paused 时，协作条/绑定错误提示会旧到下一次整栏重绘。 */
+export function workStatusSig(work) {
+  if (!work) return '';
+  return [
+    work.paused ? 1 : 0,
+    work.pausedReason || '',
+    work.status || '',
+    work.status_label || '',
+    work.model_unavailable ? 1 : 0
+  ].join('~');
+}
+
+/* 对话/直接开聊载荷的唯一构造入口（导出供回归直测）。 */
+export function buildStreamPayload(payload, state = store.get()) {
+  const attachments = currentAttachments(payload.attachments);
+  const text = String(payload.text || '').trim() || (attachments.length ? '请参考我附上的资料继续。' : '');
+  // 全部文体统一带 key；无绑定 directChat 不带 key/project_key。
+  const medium = payload.medium || state.workMedium || (state.ui && state.ui.medium) || 'novel';
+  const withWork = Boolean(state.currentKey);
+  // 已绑书不传显示值，后端从 plan.config 读严格绑定；未绑定则最近有效选择 →
+  // 全局文本默认，保证创建/对话请求拿到完整 provider_id + model 对。
+  const bookBound = Boolean(state.work && state.work.model_bound);
+  const choice = bookBound ? { providerId: '', model: '' } : resolveModelChoice(state);
+  const hasChoice = Boolean(choice.providerId && choice.model);
+  return {
+    message: text,
+    ...(withWork ? { key: state.currentKey, project_key: state.currentKey } : {}),
+    session_id: (state.chat && state.chat.sessionId) || undefined,
+    ...(hasChoice ? { provider_id: choice.providerId, model: choice.model } : {}),
+    mode: payload.mode || 'draft',
+    medium,
+    genre: payload.genre || '',
+    attachments
+  };
+}
+
 function modelName(state) {
+  /* v5.9.0（死规律）：本书绑定了创作模型时，过程卡显示绑定值——创作确实全程用它。 */
+  if (state.work && state.work.model_bound && state.work.model) return state.work.model;
   const chosen = state.ui.model;
   if (chosen) return chosen;
   /* v4.34.0：修复回退链——active_model_options 返回的字段是
@@ -338,6 +388,10 @@ export function renderSession(container, ctx = {}, opts = {}) {
       wk: work && work.key,
       r: work && work.running,
       p: work && work.paused,
+      pr: work && work.pausedReason,
+      st: work && work.status,
+      sl: work && work.status_label,
+      mu: work && work.model_unavailable,
       s: work && work.state,
       d: work && work.done,
       t: work && work.total,
@@ -381,6 +435,10 @@ export function renderSession(container, ctx = {}, opts = {}) {
       e: state.workError || '',
       r: running,
       p: paused,
+      pr: work && work.pausedReason,
+      st: work && work.status,
+      sl: work && work.status_label,
+      mu: work && work.model_unavailable,
       ph: phase,
       a: act && act.text,
       c: work && work.current_chapter,
@@ -460,16 +518,6 @@ export function renderSession(container, ctx = {}, opts = {}) {
     bannerSlot.append(row);
   }
 
-  function currentAttachments(list = []) {
-    return list
-      .filter((att) => att && att.id)
-      .map((att) => ({
-        id: att.id,
-        title: att.title || '附件',
-        usage_mode: att.usage_mode || 'facts'
-      }));
-  }
-
   function deriveApproval() {
     const state = store.get();
     const chatState = state.chat;
@@ -536,28 +584,6 @@ export function renderSession(container, ctx = {}, opts = {}) {
     const next = queue[0];
     patchChat({ queue: queue.slice(1) });
     runTurn(next, { appendUser: true, fromQueue: true });
-  }
-
-  function buildStreamPayload(payload) {
-    const state = store.get();
-    const attachments = currentAttachments(payload.attachments);
-    const text = String(payload.text || '').trim() || (attachments.length ? '请参考我附上的资料继续。' : '');
-    // v4.15.6 重大修复：此前仅小说携带 key——其他 8 个文体的对话请求不带 key，
-    // 后端当成无绑定新会话 → 散文页问「汇报进度」回复的却是小说开书引导。
-    // v4.12.1 起全部文体统一走 session 对话视图（后端 _chat_attached 全文体支持），一律携带 key。
-    const medium = payload.medium || state.workMedium || state.ui.medium || 'novel';
-    const withWork = Boolean(state.currentKey);
-    return {
-      message: text,
-      ...(withWork ? { key: state.currentKey, project_key: state.currentKey } : {}),
-      session_id: state.chat.sessionId || undefined,
-      provider_id: state.ui.providerId || (state.models && state.models.default_provider) || undefined,
-      model: state.ui.model || (state.work && state.work.model) || undefined,
-      mode: payload.mode || 'draft',
-      medium,
-      genre: payload.genre || '',
-      attachments
-    };
   }
 
   function runTurn(payload, { appendUser = true, fromQueue = false, retry = false } = {}) {
@@ -809,6 +835,9 @@ export function renderSession(container, ctx = {}, opts = {}) {
         }
       }
       turn = null;
+      // done 帧可能早于服务端写盘/协作暂停落库；延迟再拉一次完整 work，
+      // 让 pausedReason、status 和严格绑定不可用状态及时收敛。
+      scheduleWorkRefresh();
     };
 
     const fallback = async () => {
@@ -819,12 +848,9 @@ export function renderSession(container, ctx = {}, opts = {}) {
         phase: phaseLabel(),
         status: '流式接口不可用，正在用兼容模式生成…'
       }));
-      const res = await api.chat({
-        message: streamPayload.message,
-        session_id: streamPayload.session_id,
-        provider_id: streamPayload.provider_id,
-        model: streamPayload.model
-      });
+      // 兼容接口必须拿到与 SSE 完全相同的作品、附件和模型绑定语义；
+      // 旧实现只转四个字段，直接开聊会退化成无作品、无附件的普通问答。
+      const res = await api.chat(streamPayload);
       if (myEpoch !== epoch) return;
       const text = String((res && (res.reply || res.message || res.content)) || '');
       if (!text) throw new ApiError('兼容接口没有返回内容，请稍后重试');
@@ -899,6 +925,7 @@ export function renderSession(container, ctx = {}, opts = {}) {
         closeOpenChapters();
         toast(message, { tone: 'danger' });
         turn = null;
+        scheduleWorkRefresh();
       });
   }
 
@@ -936,6 +963,7 @@ export function renderSession(container, ctx = {}, opts = {}) {
     toast('已停止生成，保留已输出内容', { duration: 2200 });
     closeOpenChapters();
     turn = null;
+    scheduleWorkRefresh();
   }
 
   // ---------- 追章渲染（v2.2.2）----------
@@ -1356,8 +1384,38 @@ export function renderSession(container, ctx = {}, opts = {}) {
     }
   }
 
+  let workRefreshTimer = 0;
+  let lastWorkRunning = Boolean(store.get().work && store.get().work.running);
+  let lastWorkStatus = workStatusSig(store.get().work);
+
+  function scheduleWorkRefresh(delay = 180) {
+    if (disposed || !store.get().currentKey || typeof ctx.refreshWork !== 'function') return;
+    if (workRefreshTimer) clearTimeout(workRefreshTimer);
+    workRefreshTimer = setTimeout(() => {
+      workRefreshTimer = 0;
+      if (disposed || store.get().currentKey !== mountKey) return;
+      try {
+        Promise.resolve(ctx.refreshWork()).catch(() => {
+          /* 状态收尾刷新失败不覆盖本轮已经完成的对话 */
+        });
+      } catch {
+        /* 同上，兼容同步抛出错误的上下文实现 */
+      }
+    }, delay);
+  }
+
   const unsubscribe = store.subscribe((state) => {
     if (disposed || state.currentKey !== mountKey) return;
+    const work = state.work || null;
+    const running = Boolean(work && work.running);
+    const statusSig = workStatusSig(work);
+    const becameStable = lastWorkRunning && !running;
+    const settledStatusChanged = !running && statusSig !== lastWorkStatus;
+    lastWorkRunning = running;
+    lastWorkStatus = statusSig;
+    // book-live 的轻量补丁只带 running/paused；从运行转停稳后必须拉完整
+    // status，才能拿到暂停原因和 model_unavailable，而不是继续显示旧状态。
+    if (becameStable || settledStatusChanged) scheduleWorkRefresh();
     paintPlan();
     paintBanner();
     paintBind();
@@ -1421,6 +1479,10 @@ export function renderSession(container, ctx = {}, opts = {}) {
         }
       }
       if (queueTimer) clearTimeout(queueTimer);
+      if (workRefreshTimer) {
+        clearTimeout(workRefreshTimer);
+        workRefreshTimer = 0;
+      }
       document.removeEventListener('keydown', onKeydown);
       unsubscribe();
       if (store.get().chat.streaming) {

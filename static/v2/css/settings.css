@@ -1651,3 +1651,48 @@
   .al-item-head { grid-template-columns: 128px 84px 1fr 52px 64px 64px; }
   .al-detail { grid-template-columns: 1fr; }
 }
+
+/* ============================================================ v5.9.0 模型供应商文本/图像双区
+   供应商条目类型徽标（kind=text/image）+ 编辑弹窗类型选择。零硬编码色，全部 tokens。 */
+
+.prov-kind {
+  flex: none;
+  font-size: 10px;
+  height: 16px;
+  padding: 0 5px;
+}
+
+.prov-kind[data-kind='image'] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.prov-kind[data-kind='text'] {
+  background: var(--bg-chip);
+  color: var(--ink-tertiary);
+}
+
+/* 编辑弹窗：类型选择行（文本模型 / 图像模型 二选一，编辑态禁用固定） */
+.pe-kind-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pe-kind-btn.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.pe-kind-btn:disabled {
+  opacity: 0.9;
+  cursor: default;
+}
+
+.pe-kind-row .hint-text {
+  flex: 1 1 160px;
+  min-width: 0;
+  font-size: 11px;
+}

@@ -313,12 +313,12 @@ def _parse_items(raw) -> list[dict]:
     return out
 
 
-def expand_items(text: str, kind: str, count: int) -> list[dict]:
+def expand_items(text: str, kind: str, count: int, cfg: dict | None = None) -> list[dict]:
     """调 LLM 生成子想法；失败向上抛（api_expand 翻成中文 HTTP 错误）。"""
     raw = llm.chat(
         [{"role": "system", "content": _EXPAND_SYSTEM},
          {"role": "user", "content": _expand_user_prompt(text, kind, count)}],
-        json_mode=True, temperature=0.6, max_tokens=1500,
+        cfg=cfg, json_mode=True, temperature=0.6, max_tokens=1500,
         scene=_EXPAND_SCENE,
     )
     return _parse_items(raw)[:count]
@@ -360,8 +360,15 @@ def api_flow_expand(payload: dict):
     except (TypeError, ValueError):
         count = EXPAND_COUNT_DEFAULT
     count = max(EXPAND_COUNT_MIN, min(EXPAND_COUNT_MAX, count))
+    cfg = {}
+    if p.get("key"):
+        try:
+            _plan = writer._plan_of(_project_dir(str(p.get("key"))))[2]
+            cfg = (_plan or {}).get("config") or {}
+        except Exception:
+            cfg = {}
     try:
-        items = expand_items(text, kind, count)
+        items = expand_items(text, kind, count, cfg=cfg)
     except HTTPException:
         raise
     except Exception as err:

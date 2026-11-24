@@ -9,10 +9,10 @@ import os
 import re
 
 from bot.paths import DATA_ROOT
-from bot.safeio import atomic_write_json, safe_join
+from bot.safeio import RenameAwareProject, atomic_write_json, path_lock, safe_join
 
 
-class MiniWriterProject:
+class MiniWriterProject(RenameAwareProject):
     PLAN_FILE = "计划.json"
     NAME_KEY = "name"
     FORM_KEY = "form"
@@ -24,6 +24,7 @@ class MiniWriterProject:
         self.path = path
         self.name = name
         self.running = False
+        self.lock = path_lock(self.path)
 
     def log(self, msg: str):
         line = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}"
@@ -53,7 +54,8 @@ class MiniWriterProject:
                 os.path.join(self.path, self.PLAN_FILE)), existing=self.plan())
         except Exception:
             pass
-        atomic_write_json(os.path.join(self.path, self.PLAN_FILE), plan)
+        with self.lock:
+            atomic_write_json(os.path.join(self.path, self.PLAN_FILE), plan)
 
     def status(self) -> dict:
         plan = self.plan() or {}
@@ -98,6 +100,9 @@ class MiniWriterProject:
             "form": plan.get(self.FORM_KEY, ""),
             "stage": meta.get("stage", ""),
             "running": running,
+            "paused": bool(meta.get("paused")),
+            "pausedReason": str(meta.get("pausedReason") or ""),
+            "key": os.path.basename(self.path),
         }
 
     MEDIUM = ""
@@ -113,6 +118,7 @@ def _read(path: str) -> str:
 
 def make_get_project(cls):
     def get_project(key: str):
+        key = cls.resolve_key(key)
         try:
             pdir = safe_join(cls.PROJECTS_DIR, key, label="作品 key")
         except ValueError:
@@ -142,7 +148,6 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
     from . import steps as _steps
     from . import express as _express
     import time as _time
-    _bk = os.path.basename(proj.path)
     # v4.24.0：极速模式——按文体跳过评审/打磨阶段（express._SKIP_STAGES 是唯一口径）
     _expr = _express.on(cfg)
     _medium = str(getattr(proj, "MEDIUM", "") or "")
@@ -150,6 +155,7 @@ def run_pipeline(proj, cfg: dict, stages: list, plan: dict | None = None,
     for stage in stages:
         code, label, fn = stage[0], stage[1], stage[2]
         optional = bool(stage[3]) if len(stage) > 3 else False
+        _bk = os.path.basename(proj.path)
         if _expr and _express.skip_stage(_medium, code):
             plan["chapterStatus"][code] = "skipped"
             proj.log(f"⚡ 极速模式：跳过 {code} {label}")

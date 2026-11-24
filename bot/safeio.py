@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 
 
@@ -119,3 +120,79 @@ def atomic_write_json(path: str, data, **kwargs) -> None:
     kwargs.setdefault("ensure_ascii", False)
     kwargs.setdefault("indent", 2)
     atomic_write_text(path, json.dumps(data, **kwargs))
+
+
+_PATH_LOCKS: dict[object, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def path_lock(path: str) -> threading.RLock:
+    """返回同一目录共享的可重入锁；改名后 inode 不变，新旧 Project 仍串行写盘。"""
+    try:
+        st = os.stat(path)
+        key = (st.st_dev, st.st_ino)
+    except OSError:
+        key = os.path.realpath(os.path.abspath(path))
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(key, threading.RLock())
+
+
+class ProjectPath(os.PathLike):
+    """把已捕获的项目路径延迟到每次文件操作时解析，避免在途改名后写回旧目录。"""
+
+    def __init__(self, project):
+        self.project = project
+
+    def __fspath__(self) -> str:
+        return self.project.path
+
+    def __str__(self) -> str:
+        return self.project.path
+
+
+class RenameAwareProject:
+    @staticmethod
+    def resolve_key(key: str) -> str:
+        from .writer import resolve_key
+        return resolve_key(key)
+
+    @property
+    def path(self) -> str:
+        self._follow_rename()
+        return self._path
+
+    @path.setter
+    def path(self, value) -> None:
+        self._path = os.fspath(value)
+
+    def __fspath__(self) -> str:
+        return self.path
+
+    def _follow_rename(self) -> None:
+        lock = getattr(self, "lock", None)
+        if lock is None:
+            self._follow_rename_unlocked()
+            return
+        with lock:
+            self._follow_rename_unlocked()
+
+    def _follow_rename_unlocked(self) -> None:
+        old_path = getattr(self, "_path", "")
+        if old_path and os.path.isdir(old_path):
+            return
+        old_key = os.path.basename(old_path or "")
+        if not old_key:
+            return
+        try:
+            new_key = self.resolve_key(old_key)
+            if new_key == old_key:
+                return
+            root = os.path.dirname(os.path.abspath(old_path))
+            new_path = safe_join(root, new_key, label="作品 key")
+            if not os.path.isdir(new_path):
+                return
+            self._path = new_path
+            self.name = new_key.split("-", 2)[-1] if "-" in new_key else new_key
+            self.lock = path_lock(new_path)
+        except Exception:
+            pass

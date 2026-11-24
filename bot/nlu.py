@@ -9,7 +9,7 @@
 
 调用入口：
   from bot.nlu import parse_intent
-  result = parse_intent(text, project_status=None)
+  result = parse_intent(text, project_status=None, cfg=book_plan.config)
   # result = {"intent": "start_writing", "confidence": 0.95, "params": {...}, "source": "llm"|"rule", "raw": text}
 """
 
@@ -368,13 +368,14 @@ def _rule_parse(text):
 
 # ── LLM 意图理解 ──────────────────────────────────────────
 
-def _llm_parse(text):
+def _llm_parse(text, cfg=None):
     """用 LLM 做自然语言意图理解。返回 (intent, params, confidence) 或 None。"""
     try:
-        from . import llm
+        from . import llm, providers
     except ImportError:
         try:
             import bot.llm as llm
+            import bot.providers as providers
         except ImportError:
             return None
 
@@ -385,11 +386,14 @@ def _llm_parse(text):
     try:
         raw = llm.chat_json(
             messages,
+            cfg=cfg,
             temperature=0.1,
             stage="nlu",
             agent="nlu_parser",
             use_cache=True,
         )
+    except providers.ProviderError:
+        raise
     except Exception:
         return None
 
@@ -449,7 +453,7 @@ def _llm_parse(text):
 
 # ── 公开接口 ──────────────────────────────────────────────
 
-def parse_intent(text, project_status=None):
+def parse_intent(text, project_status=None, cfg=None):
     """
     解析用户输入的自然语言，返回结构化意图。
 
@@ -457,6 +461,7 @@ def parse_intent(text, project_status=None):
         text: 用户原始输入文本
         project_status: 可选，当前作品状态 dict（如 {"state": "in_progress", "medium": "novel"}）
                        用于上下文消歧（例如"继续"在 idle 时可能意图是 start_writing）
+        cfg: 可选，当前作品完整模型配置；已绑定作品必须传入，避免绕过书级模型
 
     返回：
         {
@@ -472,7 +477,7 @@ def parse_intent(text, project_status=None):
         return {"intent": "unknown", "confidence": 0.0, "params": {}, "source": "rule", "raw": text}
 
     # 优先 LLM
-    llm_result = _llm_parse(text)
+    llm_result = _llm_parse(text, cfg=cfg)
     if llm_result and llm_result[2] >= 0.6:
         intent, params, conf = llm_result
         # v4.15.7：LLM 解析 batch_writing 时常不给数量参数（实测「再写3章」→{}），

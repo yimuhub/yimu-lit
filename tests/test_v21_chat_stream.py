@@ -75,6 +75,19 @@ def patch_chat():
 @pytest.fixture(autouse=True)
 def _no_auth(monkeypatch):
     monkeypatch.setattr(security, "AUTH_ENABLED", False)
+    monkeypatch.setattr(providers, "load_data", lambda: {
+        "default_provider": "prov-a",
+        "providers": [
+            {"id": "prov-a", "name": "文本A", "kind": "text", "active": True,
+             "models": ["model-a1", "model-a2"], "default_model": "model-a1"},
+            {"id": "prov-b", "name": "文本B", "kind": "text", "active": True,
+             "models": ["model-b1"], "default_model": "model-b1"},
+            {"id": "prov-off", "name": "停用文本", "kind": "text", "active": False,
+             "models": ["model-off"], "default_model": "model-off"},
+            {"id": "prov-img", "name": "图像", "kind": "image", "active": True,
+             "models": ["image-xl"], "default_model": "image-xl"},
+        ],
+    })
 
 
 def test_heartbeat_while_waiting(patch_chat, monkeypatch):
@@ -105,6 +118,50 @@ def test_heartbeat_while_waiting(patch_chat, monkeypatch):
     assert done["session_id"] == "s-hb" and "elapsed" in done
     assert "".join(d["text"] for e, d in frames if e == "delta") == "心跳测试正文"
     assert seen == [("s-hb", "写个开头", None)]
+
+
+def test_stream_remembers_selected_model(patch_chat, monkeypatch):
+    monkeypatch.setattr(providers, "usable", lambda: True)
+    patch_chat(lambda sid, message, key=None: "收到")
+    r = client.post(URL, json={"message": "你好", "session_id": "s-model",
+                               "provider_id": "prov-b", "model": "model-b1"})
+    assert r.status_code == 200
+    assert appmod.SESSIONS["s-model"]["prov"] == {
+        "_provider_id": "prov-b", "_model": "model-b1", "_model_bound": True}
+
+
+def test_stream_model_selection_merges_partial_values(patch_chat, monkeypatch):
+    monkeypatch.setattr(providers, "usable", lambda: True)
+    appmod.SESSIONS["s-partial"] = {"prov": {"_provider_id": "prov-a", "_model": "model-a1"}}
+    patch_chat(lambda sid, message, key=None: "收到")
+    r = client.post(URL, json={"message": "你好", "session_id": "s-partial", "model": "model-a2"})
+    assert r.status_code == 200
+    assert appmod.SESSIONS["s-partial"]["prov"] == {
+        "_provider_id": "prov-a", "_model": "model-a2", "_model_bound": True}
+
+
+@pytest.mark.parametrize("provider_id,model,word", [
+    ("prov-off", "model-off", "停用"),
+    ("prov-img", "image-xl", "图像"),
+    ("prov-b", "not-listed", "模型列表"),
+])
+def test_stream_rejects_invalid_model_before_chat(provider_id, model, word):
+    r = client.post(URL, json={"message": "你好", "session_id": "s-invalid-stream",
+                               "provider_id": provider_id, "model": model})
+    assert r.status_code == 400
+    assert word in r.json()["error"]
+    assert "s-invalid-stream" not in appmod.SESSIONS
+
+
+def test_rest_rejects_invalid_model_before_chat(monkeypatch):
+    called = []
+    monkeypatch.setattr(appmod, "chat", lambda *a, **k: called.append(a) or "不该调用")
+    r = client.post("/api/chat", json={"message": "你好", "session_id": "s-invalid-rest",
+                                       "provider_id": "prov-off", "model": "model-off"})
+    assert r.status_code == 400
+    assert "停用" in r.json()["error"]
+    assert called == []
+    assert "s-invalid-rest" not in appmod.SESSIONS
 
 
 def test_no_provider_returns_friendly_fallback(patch_chat, monkeypatch):
@@ -159,6 +216,16 @@ def test_legacy_chat_says_missing_model_instead_of_generic_failure(monkeypatch):
     reply = r.json()["reply"]
     assert reply.startswith(FALLBACK)
     assert "理解主题失败" not in reply
+
+
+def test_legacy_chat_model_selection_merges_partial_values(monkeypatch):
+    appmod.SESSIONS["s-rest-partial"] = {"prov": {"_provider_id": "prov-a", "_model": "model-a1"}}
+    monkeypatch.setattr(appmod, "chat", lambda sid, message, key=None: "收到")
+    r = client.post("/api/chat", json={"session_id": "s-rest-partial", "message": "你好",
+                                       "model": "model-a2"})
+    assert r.status_code == 200
+    assert appmod.SESSIONS["s-rest-partial"]["prov"] == {
+        "_provider_id": "prov-a", "_model": "model-a2", "_model_bound": True}
 
 
 def test_no_model_copy_is_shared_by_both_entries():

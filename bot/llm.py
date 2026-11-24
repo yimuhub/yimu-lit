@@ -515,7 +515,8 @@ def chat(messages, json_mode=False, temperature=None, max_tokens=None, retries=3
                 _wait = max(_ra, _backoff * (2 ** i)) + random.uniform(0.2, 1.0)
                 _wait = min(float(_wait), 90.0)
                 last_err = LLMError(f"429 限流: {r.text[:200]}")
-                if i >= retries - 1 and not (cfg or {}).get("_fallback_used"):
+                if (i >= retries - 1 and not (cfg or {}).get("_fallback_used")
+                        and not (cfg or {}).get("_model_bound")):
                     _fb = providers.fallback_config(cfg, exclude_provider=prov.get("id") or "",
                                                      exclude_model=model)
                     if _fb:

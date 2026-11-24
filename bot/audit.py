@@ -95,7 +95,7 @@ def _recent_summaries(pdir, upto, n=3) -> str:
         return ""
 
 
-def _llm_arbitrate(key, proj, findings, pits, current_chapter, engine=None) -> dict | None:
+def _llm_arbitrate(key, proj, findings, pits, current_chapter, engine=None, cfg=None) -> dict | None:
     """LLM 仲裁（审稿人岗）：把确定性扫描结果 + 超期坑分类成 修复计划。"""
     try:
         from bot import llm
@@ -134,7 +134,7 @@ def _llm_arbitrate(key, proj, findings, pits, current_chapter, engine=None) -> d
                   f"【最近章节摘要】\\n{summaries}")
         res = llm.chat_json([{"role": "system", "content": sys_p},
                              {"role": "user", "content": user_p}],
-                            cfg=None, stage="review", agent="reviewer", temperature=0.2)
+                            cfg=cfg, stage="review", agent="reviewer", temperature=0.2)
         if isinstance(res, dict):
             return {"must_fix": res.get("must_fix") or [],
                     "fill_plan": res.get("fill_plan") or [],
@@ -210,7 +210,8 @@ def run_audit(key, trigger="manual"):
             engine = {}
 
         # ③ LLM 仲裁
-        verdict = _llm_arbitrate(key, proj, findings, pits, current, engine) or {}
+        verdict = _llm_arbitrate(key, proj, findings, pits, current, engine,
+                                 cfg=plan.get("config") or {}) or {}
         must_fix = verdict.get("must_fix") or []
         fill_plan = verdict.get("fill_plan") or []
         watch = verdict.get("watch") or []

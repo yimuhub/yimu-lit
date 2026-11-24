@@ -32,7 +32,7 @@ import {
   trigger as triggerFx,
   FX_KINDS
 } from '../core/typingfx.js';
-import { setPref } from '../core/prefs.js';
+import { clearModelChoice, providerDefaultModel, setPref } from '../core/prefs.js';
 import { SKILL_TITLES, loadSkillCatalog } from '../core/skillCatalog.js';
 
 const QUALITY_MODES = [
@@ -688,6 +688,7 @@ export function renderSettings(container, ctx) {
 
   const provBody = h('div', { class: 'provider-list' });
   const globalModelBody = h('div', {});
+  const imageDefaultBody = h('div', {});
   panes.providers.append(
     h('div', { class: 'set-actions set-actions-top' },
       h('button', {
@@ -698,14 +699,17 @@ export function renderSettings(container, ctx) {
       })
     ),
     globalModelBody,
+    imageDefaultBody,
     provBody
   );
 
-  /* v4.20：全局默认模型（default_provider + 其 default_model），供应商列表加载后重绘。 */
+  /* v4.20：全局默认模型（default_provider + 其 default_model），供应商列表加载后重绘。
+     v5.9.0：只从 active 文本类供应商解析候选——图像条目归「图像默认模型」槽。 */
   function paintGlobalModel() {
     globalModelBody.textContent = '';
     if (model.providerError || !model.providers) return;
-    const provs = (model.providers.providers || []).filter((p) => p.active !== false);
+    const provs = (model.providers.providers || [])
+      .filter((p) => p.active !== false && (!p.kind || p.kind === 'text'));
     const options = [];
     for (const p of provs) {
       for (const m of (p.models || [])) {
@@ -715,7 +719,9 @@ export function renderSettings(container, ctx) {
     if (!options.length) return;
     const dp = model.providers.default_provider;
     const dpRow = provs.find((p) => p.id === dp);
-    const curModel = dpRow ? (dpRow.default_model || (dpRow.models || [])[0]) : '';
+    // 与 prefs 的全局文本默认一致：default_model 不在列表时取首个可选模型，
+    // 不把空值/已下架模型留在下拉框当前值里。
+    const curModel = dpRow ? providerDefaultModel(dpRow) : '';
     const curValue = dp && curModel ? `${dp}::${curModel}` : '';
     const sel = h('select', { class: 'input', 'aria-label': '全局默认模型' },
       options.map((o) => h('option', { value: o.value, text: o.label, selected: o.value === curValue })));
@@ -725,7 +731,7 @@ export function renderSettings(container, ctx) {
         h('div', { class: 'set-row-copy' },
           h('div', { class: 'set-row-title' }, h('span', { text: '全局默认模型' }),
             h('span', { class: 'badge badge-accent', text: '默认' })),
-          h('div', { class: 'set-row-desc', text: '所有创作岗位默认使用该模型；岗位在「创作岗位」里单独绑定模型时以绑定为准。' })
+          h('div', { class: 'set-row-desc', text: '文本创作岗位默认使用该模型；岗位在「创作岗位」里单独绑定模型时以绑定为准。' })
         ),
         h('div', { class: 'set-control' },
           sel,
@@ -738,6 +744,99 @@ export function renderSettings(container, ctx) {
         )
       )
     );
+  }
+
+  function effectiveImageProvider() {
+    const providers = model.providers && Array.isArray(model.providers.providers)
+      ? model.providers.providers : [];
+    const active = providers.filter((p) => p.kind === 'image' && p.active !== false);
+    const configured = String((model.providers && model.providers.default_image_provider) || '');
+    return active.find((p) => p.id === configured) || active[0] || null;
+  }
+
+  /* v5.9.0：图像默认模型（default_image_provider + 其生效模型），与文本默认槽互不干扰。
+     保存走 /api/library/cover/ai/config POST {provider_id, model}（webcover.py 兼容入口，
+     显式 provider_id = 保存到该条目并设为图像默认）。 */
+  function paintImageDefault() {
+    imageDefaultBody.textContent = '';
+    if (model.providerError || !model.providers) return;
+    const imgProvs = (model.providers.providers || [])
+      .filter((p) => p.kind === 'image' && p.active !== false);
+    const options = [];
+    for (const p of imgProvs) {
+      for (const m of (p.models || [])) {
+        options.push({ value: `${p.id}::${m}`, label: `${p.name || p.id} · ${m}` });
+      }
+    }
+    // image_resolve()：有效 default_image_provider → 第一条 active 图像供应商。
+    // 默认槽失效时下拉框必须显示后端实际会用的那一个，而不是空白或文本默认。
+    const dipRow = effectiveImageProvider();
+    const curModel = dipRow ? (dipRow.default_model || (dipRow.models || [])[0]) : '';
+    const curValue = dipRow && curModel ? `${dipRow.id}::${curModel}` : '';
+    if (!options.length) {
+      imageDefaultBody.append(
+        h('div', { class: 'set-row' },
+          h('div', { class: 'set-row-copy' },
+            h('div', { class: 'set-row-title' }, h('span', { text: '图像默认模型' }),
+              h('span', { class: 'badge prov-kind', dataset: { kind: 'image' }, text: '图像' })),
+            h('div', {
+              class: 'set-row-desc',
+              text: '还没有图像供应商：点上方「添加供应商」并选类型「图像」（兼容 OpenAI images/generations 协议），用于 AI 生成封面。'
+            })
+          )
+        )
+      );
+      return;
+    }
+    const sel = h('select', { class: 'input', 'aria-label': '图像默认模型' },
+      options.map((o) => h('option', { value: o.value, text: o.label, selected: o.value === curValue })));
+    if (curValue) sel.value = curValue;
+    imageDefaultBody.append(
+      h('div', { class: 'set-row' },
+        h('div', { class: 'set-row-copy' },
+          h('div', { class: 'set-row-title' }, h('span', { text: '图像默认模型' }),
+            h('span', { class: 'badge prov-kind', dataset: { kind: 'image' }, text: '图像' })),
+          h('div', { class: 'set-row-desc', text: '图像模型（封面生成）等图像场景使用该模型；作品库卡片「⋯ → AI 生成封面」画竖版封面时取这里的供应商与出图尺寸。' })
+        ),
+        h('div', { class: 'set-control' },
+          sel,
+          h('button', {
+            class: 'btn btn-primary btn-sm',
+            type: 'button',
+            text: '保存',
+            on: { click: (event) => saveImageDefault(event.currentTarget, sel) }
+          })
+        )
+      )
+    );
+  }
+
+  async function saveImageDefault(btn, sel) {
+    const v = String(sel.value || '');
+    const idx = v.indexOf('::');
+    const providerId = idx >= 0 ? v.slice(0, idx) : '';
+    const m = idx >= 0 ? v.slice(idx + 2) : '';
+    if (!providerId || !m) {
+      toast('请先选择图像默认模型', { tone: 'danger' });
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+      /* webcover.py 兼容入口：显式 provider_id = 保存模型到该条目并设为图像默认 */
+      await request('/api/library/cover/ai/config', {
+        method: 'POST',
+        body: { provider_id: providerId, model: m }
+      });
+      await loadProviders();
+      // 图像默认槽独立：不刷新文本 model_options，也不清除 ui/localStorage 的文本选择。
+      const opt = sel.options[sel.selectedIndex];
+      toast(`图像默认模型已设为 ${opt ? opt.textContent : `${providerId} · ${m}`}`, { tone: 'success', duration: 2200 });
+    } catch (err) {
+      toast(errorText(err, '保存失败'), { tone: 'danger' });
+    }
+    btn.disabled = false;
+    btn.textContent = '保存';
   }
 
   async function saveGlobalModel(btn, sel) {
@@ -758,7 +857,7 @@ export function renderSettings(container, ctx) {
          ui.model 覆盖——此前「本轮选择」一旦点过就永久优先，改全局默认后
          创作页右上角永远显示旧模型。 */
       await ctx.refreshModels?.();
-      patchUi({ model: null, providerId: null });
+      clearModelChoice();
       const opt = sel.options[sel.selectedIndex];
       toast(`全局默认模型已设为 ${opt ? opt.textContent : `${providerId} · ${m}`}`, { tone: 'success', duration: 2200 });
     } catch (err) {
@@ -771,6 +870,7 @@ export function renderSettings(container, ctx) {
   function paintProviders() {
     provBody.textContent = '';
     paintGlobalModel();
+    paintImageDefault();
     if (model.providerError) {
       provBody.append(errorRow(model.providerError, loadProviders));
       return;
@@ -787,14 +887,35 @@ export function renderSettings(container, ctx) {
           { class: 'empty-state set-empty' },
           h('div', { class: 'empty-icon', html: icon('plug', 18) }),
           h('h3', { text: '还没有模型供应商' }),
-          h('p', { text: '添加 OpenAI 兼容接口（DeepSeek / Kimi / 本地 Ollama 都可以），一幕·YIMU 神笔才能开始写作。' }),
+          h('p', { text: '添加 OpenAI 兼容接口：类型「文本」驱动写作（DeepSeek / Kimi / 本地 Ollama 都可以），类型「图像」驱动 AI 生成封面。' }),
           h('button', { class: 'btn btn-sm', type: 'button', text: '添加供应商', on: { click: () => providerDialog(null) } })
         )
       );
       return;
     }
-    for (const p of providers) {
-      provBody.append(providerRow(p));
+    for (const kind of ['text', 'image']) {
+      const rows = providers.filter((p) => (p.kind === 'image' ? 'image' : 'text') === kind);
+      if (!rows.length) continue;
+      const part = h('div', {
+        class: 'provider-part',
+        dataset: { kind },
+        'aria-label': kind === 'image' ? '图像供应商' : '文本供应商'
+      });
+      part.append(
+        h('div', { class: 'set-row provider-part-head' },
+          h('div', { class: 'set-row-copy' },
+            h('div', { class: 'set-row-title', text: kind === 'image' ? '图像供应商' : '文本供应商' }),
+            h('div', {
+              class: 'set-row-desc',
+              text: kind === 'image'
+                ? '仅用于 AI 生成封面等图像场景，不参与文本创作。'
+                : '用于创作、对话和规划；只有启用中的文本模型可以成为最近选择。'
+            })
+          )
+        )
+      );
+      for (const p of rows) part.append(providerRow(p));
+      provBody.append(part);
     }
     if (!model.providers.key_ok) {
       provBody.append(
@@ -804,8 +925,14 @@ export function renderSettings(container, ctx) {
   }
 
   function providerRow(p) {
-    const isDefault = model.providers.default_provider === p.id;
-    const row = h('div', { class: 'provider-row', dataset: { id: p.id } });
+    /* v5.9.0：单值 kind（text/image）——每条显示类型徽标；同一 base_url 可建两条
+       不同 kind 的条目（如「硅基流动-文本 / 硅基流动-图像」），各自归各自的默认槽。 */
+    const isImage = p.kind === 'image';
+    const effectiveImage = isImage ? effectiveImageProvider() : null;
+    const isDefault = isImage
+      ? Boolean(effectiveImage && effectiveImage.id === p.id)
+      : model.providers.default_provider === p.id;
+    const row = h('div', { class: 'provider-row', dataset: { id: p.id, kind: isImage ? 'image' : 'text' } });
     row.append(
       h(
         'div',
@@ -813,6 +940,7 @@ export function renderSettings(container, ctx) {
         h(
           'div',
           { class: 'prov-name' },
+          h('span', { class: 'badge prov-kind', dataset: { kind: isImage ? 'image' : 'text' }, text: isImage ? '图像' : '文本' }),
           h('span', { text: p.name || p.id }),
           isDefault ? h('span', { class: 'badge badge-accent', text: '默认' }) : null,
           p.active === false ? h('span', { class: 'badge', dataset: { tone: 'muted' }, text: '停用' }) : null,
@@ -823,7 +951,9 @@ export function renderSettings(container, ctx) {
           { class: 'prov-meta' },
           h('span', { class: 'mono', text: p.base_url || '—' }),
           h('span', { class: 'sep' }),
-          h('span', { text: `${(p.models || []).length} 个模型` }),
+          isImage
+            ? h('span', { text: `模型 ${p.default_model || p.model || '未设'} · 尺寸 ${p.size || '1024x1536'}` })
+            : h('span', { text: `${(p.models || []).length} 个模型` }),
           h('span', { class: 'sep' }),
           h('span', { text: p.has_key ? `密钥 ${p.key_display || '已配置'}` : '未配置密钥' })
         )
@@ -835,7 +965,7 @@ export function renderSettings(container, ctx) {
           ? h('button', {
               class: 'btn btn-sm',
               type: 'button',
-              text: '设为默认',
+              text: isImage ? '设为图像默认' : '设为默认',
               on: { click: () => setDefault(p) }
             })
           : null,
@@ -845,7 +975,9 @@ export function renderSettings(container, ctx) {
           text: p.active === false ? '启用' : '停用',
           on: { click: () => toggleActive(p) }
         }),
-        h('button', { class: 'btn btn-sm', type: 'button', text: '测连接', on: { click: (e) => testProvider(e, p) } }),
+        isImage
+          ? h('button', { class: 'btn btn-sm', type: 'button', text: '测出图', on: { click: (e) => testImageEntry(e, p) } })
+          : h('button', { class: 'btn btn-sm', type: 'button', text: '测连接', on: { click: (e) => testProvider(e, p) } }),
         h('button', {
           class: 'icon-btn icon-btn-sm',
           type: 'button',
@@ -877,23 +1009,51 @@ export function renderSettings(container, ctx) {
   }
 
   async function setDefault(p) {
+    /* v5.9.0：后端按条目 kind 归槽——文本条目进 default_provider，图像条目进
+       default_image_provider；两个默认槽互不干扰。 */
     try {
       await api.setDefaultProvider(p.id);
       await loadProviders();
-      /* v4.34.0：默认供应商变化会联动全局默认模型——刷新 store 并解除本轮覆盖 */
+      if (p.kind === 'image') {
+        // 图像默认只写 default_image_provider；不得刷新/改写文本默认或最近选择。
+        toast(`已把 ${p.name} 设为图像默认`, { tone: 'success', duration: 1800 });
+        return;
+      }
+      /* 文本默认变化会联动全局默认模型——刷新 store，并同时清掉最近选择与
+         localStorage，避免旧供应商/模型继续冒充新的全局默认。 */
       await ctx.refreshModels?.();
-      patchUi({ model: null, providerId: null });
+      clearModelChoice();
       toast(`已把 ${p.name} 设为默认`, { tone: 'success', duration: 1800 });
     } catch (err) {
       toast(errorText(err, '设置默认失败'), { tone: 'danger' });
     }
   }
 
+  /* v5.9.0：图像条目逐条探活（请求一张 512x512 测试图，webcover.py /ai/test）。 */
+  async function testImageEntry(event, p) {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    btn.textContent = '测试中…';
+    try {
+      const res = await request('/api/library/cover/ai/test', {
+        method: 'POST',
+        body: { provider_id: p.id },
+        timeout: 45000
+      });
+      if (res && res.ok) toast(`测试成功：${res.detail || '已连通'}`, { tone: 'success', duration: 3200 });
+      else toast(`测试失败：${(res && res.detail) || '请检查接口地址与密钥'}`, { tone: 'danger', duration: 5000 });
+    } catch (err) {
+      toast(errorText(err, '测试失败，请检查地址与密钥'), { tone: 'danger' });
+    }
+    btn.disabled = false;
+    btn.textContent = '测出图';
+  }
+
   async function toggleActive(p) {
     try {
       await api.setProviderActive(p.id, p.active === false);
       await loadProviders();
-      await ctx.refreshModels?.();   // v4.34.0：active 集合变化影响 model_options
+      if (p.kind !== 'image') await ctx.refreshModels?.();   // 只有文本 active 集合影响创作选择
     } catch (err) {
       toast(errorText(err, '操作失败'), { tone: 'danger' });
     }
@@ -924,140 +1084,25 @@ export function renderSettings(container, ctx) {
     try {
       await api.removeProvider(p.id);
       await loadProviders();
-      await ctx.refreshModels?.();   // v4.34.0：供应商被删后全局默认可能变更
+      if (p.kind !== 'image') await ctx.refreshModels?.();   // 删除文本供应商后全局默认可能变更
       toast('已删除', { duration: 1600 });
     } catch (err) {
       toast(errorText(err, '删除失败'), { tone: 'danger' });
     }
   }
 
-  /* ---------------------------------------------------- 图像模型（封面生成）（v5.7.0）
-     供应商区尾部的独立小节：providers.json 顶层 image_provider 小节（bot/providers.py
-     save_image_provider），读写/测试走 bot/webcover.py 的 /api/library/cover/ai/config|test
-     端点（AI 封面子系统自带配置面，不动 /api/providers/* 文本路由）。密钥不回显：
-     输入框留空 = 保留已保存值。后端未挂载 webcover（旧版本服务）时整节隐藏。 */
-
-  const imageProvBody = h('div', {});
-  panes.providers.append(imageProvBody);
-
-  function paintImageProvider(cfg) {
-    imageProvBody.textContent = '';
-    cfg = cfg || {};
-    const baseUrl = h('input', {
-      class: 'input', type: 'url', placeholder: 'https://api.example.com/v1',
-      value: cfg.base_url || '', 'aria-label': '图像接口地址'
-    });
-    const apiKey = h('input', {
-      class: 'input', type: 'password', autocomplete: 'new-password',
-      placeholder: cfg.has_key ? '已保存（留空则不修改）' : 'sk-…（本地免鉴权接口可留空）',
-      'aria-label': '图像接口密钥'
-    });
-    const model = h('input', {
-      class: 'input', placeholder: '如 dall-e-3 / fooocus-xl / gemini-image',
-      value: cfg.model || '', 'aria-label': '图像模型名'
-    });
-    const size = h('input', {
-      class: 'input', placeholder: '1024x1536',
-      value: cfg.size || '1024x1536', 'aria-label': '出图尺寸'
-    });
-    const stateRow = h('div', {
-      class: 'key-state',
-      dataset: { ok: cfg.configured ? 'true' : 'false' }
-    },
-      h('span', { html: icon(cfg.configured ? 'check' : 'alert', 13) }),
-      h('span', {
-        text: cfg.configured
-          ? `已配置：${cfg.model} · ${cfg.size || '1024x1536'} · 密钥${cfg.has_key ? ' ' + (cfg.key_display || '已保存') : '未设置（本地接口可留空）'}`
-          : '未配置：作品库「⋯ → AI 生成封面」需要 OpenAI 兼容的 images/generations 接口。'
-      }));
-    const saveBtn = h('button', {
-      class: 'btn btn-primary btn-sm', type: 'button', text: '保存',
-      on: { click: () => saveImageProvider(saveBtn) }
-    });
-    const testBtn = h('button', {
-      class: 'btn btn-sm', type: 'button', text: '测试',
-      on: { click: () => testImageProvider(testBtn) }
-    });
-    imageProvBody.append(
-      h('div', { class: 'set-row' },
-        h('div', { class: 'set-row-copy' },
-          h('div', { class: 'set-row-title' },
-            h('span', { text: '图像模型（封面生成）' }),
-            h('span', { class: 'badge', dataset: { tone: 'muted' }, text: 'AI 封面' })),
-          h('div', {
-            class: 'set-row-desc',
-            text: '在作品库卡片「⋯ → AI 生成封面」用图像模型画竖版封面。兼容 OpenAI images/generations 协议；密钥只存本机 providers.json，不外发。'
-          })),
-        h('div', { class: 'set-control' }, saveBtn, testBtn)),
-      stateRow,
-      fieldRow('接口地址（base_url）', baseUrl, '', '以 /v1 结尾的 OpenAI 兼容地址'),
-      fieldRow('图像模型', model, '', '支持 images/generations 的模型名'),
-      fieldRow('API Key', apiKey, '', '只存本机；修改时才填写'),
-      fieldRow('出图尺寸', size, '', '封面竖版默认 1024x1536')
-    );
-  }
-
-  async function reloadImageProvider() {
-    imageProvBody.textContent = '';
-    imageProvBody.append(h('div', { class: 'set-loading' }, h('span', { class: 'skeleton skeleton-line w-50' })));
-    try {
-      const cfg = await request('/api/library/cover/ai/config');
-      paintImageProvider(cfg);
-    } catch (err) {
-      imageProvBody.textContent = '';
-      if (err && err.isMissing) return;   // 旧版本后端没有该端点：整节隐藏，不报错
-      imageProvBody.append(errorRow(errorText(err, '图像模型配置加载失败'), reloadImageProvider));
-    }
-  }
-
-  async function saveImageProvider(btn) {
-    const baseUrl = imageProvBody.querySelector('input[aria-label="图像接口地址"]');
-    const apiKey = imageProvBody.querySelector('input[aria-label="图像接口密钥"]');
-    const model = imageProvBody.querySelector('input[aria-label="图像模型名"]');
-    const size = imageProvBody.querySelector('input[aria-label="出图尺寸"]');
-    const body = {
-      base_url: String(baseUrl?.value || '').trim(),
-      model: String(model?.value || '').trim(),
-      size: String(size?.value || '').trim(),
-      api_key: String(apiKey?.value || '').trim()   // 留空 = 保留已存值（后端口径）
-    };
-    if (!body.base_url || !body.model) {
-      toast('请填写接口地址与图像模型名', { tone: 'danger' });
-      return;
-    }
-    btn.disabled = true;
-    btn.textContent = '保存中…';
-    try {
-      await request('/api/library/cover/ai/config', { method: 'POST', body });
-      toast('图像模型配置已保存', { tone: 'success', duration: 1800 });
-      await reloadImageProvider();
-    } catch (err) {
-      toast(errorText(err, '保存失败'), { tone: 'danger' });
-    }
-    btn.disabled = false;
-    btn.textContent = '保存';
-  }
-
-  async function testImageProvider(btn) {
-    btn.disabled = true;
-    btn.textContent = '测试中…';
-    try {
-      const res = await request('/api/library/cover/ai/test', { method: 'POST', body: {}, timeout: 45000 });
-      if (res && res.ok) toast(`测试成功：${res.detail || '已连通'}`, { tone: 'success', duration: 3200 });
-      else toast(`测试失败：${(res && res.detail) || '请检查接口地址与密钥'}`, { tone: 'danger', duration: 5000 });
-    } catch (err) {
-      toast(errorText(err, '测试失败，请检查地址与密钥'), { tone: 'danger' });
-    }
-    btn.disabled = false;
-    btn.textContent = '测试';
-  }
-
-  reloadImageProvider();
+  /* v5.9.0：v5.7.0 文件尾部的独立「图像模型（封面生成）」小节已移除——图像能力并入
+     供应商列表（kind=image 条目，类型徽标 + 类型化编辑弹窗 + 图像默认模型槽）。
+     旧配置由后端 _migrate_v59 自动迁成一条图像供应商条目，配置不丢。 */
 
   /* v4.19.0：供应商编辑重构——填完地址与密钥一键拉取全部模型，复选框勾选，
      取代旧的「下拉逐个追加」。勾选顺序即优先级，第一个为默认模型；
      /models 拉不到时保留手动输入兜底。 */
   function providerDialog(existing) {
+    /* v5.9.0：类型决定字段——单值 kind（"text" | "image"）。新建时选类型；编辑时
+       类型固定不可改（同一供应商要服务两类 = 复制出两条不同 kind 的条目）。 */
+    const editingKind = existing ? (existing.kind === 'image' ? 'image' : 'text') : null;
+    let kind = editingKind || 'text';
     const name = h('input', { class: 'input', value: existing ? existing.name : '', placeholder: '例如 DeepSeek', 'aria-label': '名称' });
     const baseUrl = h('input', {
       class: 'input mono',
@@ -1069,10 +1114,41 @@ export function renderSettings(container, ctx) {
       class: 'input mono',
       type: 'password',
       value: '',
-      placeholder: existing && existing.has_key ? '已配置，留空保持不变' : 'sk-…',
+      placeholder: existing && existing.has_key ? '已保存（留空则不修改）' : 'sk-…',
       'aria-label': 'API 密钥',
       autocomplete: 'off'
     });
+    /* 图像条目字段：图像模型名（单值）+ 出图尺寸（宽x高） */
+    const imgModel = h('input', {
+      class: 'input mono',
+      value: existing && existing.kind === 'image' ? (existing.default_model || existing.model || '') : '',
+      placeholder: '如 dall-e-3 / Kwai-Kolors / gemini-image',
+      'aria-label': '图像模型名'
+    });
+    const imgSize = h('input', {
+      class: 'input mono',
+      value: existing && existing.kind === 'image' ? (existing.size || '1024x1536') : '1024x1536',
+      placeholder: '1024x1536',
+      'aria-label': '出图尺寸'
+    });
+
+    /* ---------------- 类型选择（新建时可选；编辑时固定） ---------------- */
+    const kindTextBtn = h('button', { class: 'btn btn-sm pe-kind-btn', type: 'button', dataset: { kind: 'text' }, text: '文本模型' });
+    const kindImageBtn = h('button', { class: 'btn btn-sm pe-kind-btn', type: 'button', dataset: { kind: 'image' }, text: '图像模型' });
+    const kindHint = h('span', { class: 'hint-text' });
+    function paintKind() {
+      kindTextBtn.classList.toggle('is-active', kind === 'text');
+      kindImageBtn.classList.toggle('is-active', kind === 'image');
+      kindTextBtn.disabled = !!editingKind;
+      kindImageBtn.disabled = !!editingKind;
+      kindHint.textContent = kind === 'image'
+        ? '图像条目：兼容 OpenAI images/generations 协议，用于 AI 生成封面等图像场景；不参与文本写作。'
+        : '文本条目：驱动所有创作岗位的对话模型。';
+      textSection.hidden = kind !== 'text';
+      imageSection.hidden = kind !== 'image';
+    }
+    kindTextBtn.addEventListener('click', () => { if (!editingKind) { kind = 'text'; paintKind(); } });
+    kindImageBtn.addEventListener('click', () => { if (!editingKind) { kind = 'image'; paintKind(); } });
 
     /* ---------------- 模型选择器状态 ---------------- */
     let selected = ((existing && existing.models) || []).map((m) => String(m).trim()).filter(Boolean); // 顺序即优先级
@@ -1209,9 +1285,36 @@ export function renderSettings(container, ctx) {
     const keyHint = existing && existing.has_key
       ? `当前已保存的密钥：${existing.key_display || '已设置'}（出于安全不回显明文）。留空表示不修改；拉取模型与实际调用都会继续使用它。`
       : '';
+    const textSection = h('div', { class: 'pe-section' },
+      h('div', { class: 'pe-sec-title', text: '模型选择' }),
+      h('div', { class: 'pe-sec-hint', text: '第 ① 步填好地址与密钥 → 第 ② 步一键拉取 → 第 ③ 步勾选需要的模型。勾选顺序即优先级，第一个为默认模型。' }),
+      h('div', { class: 'pe-fetch-row' }, fetchBtn, fetchState),
+      h('div', { class: 'mp-picked' },
+        h('div', { class: 'mp-picked-head' }, h('span', { class: 'mp-picked-title', text: '已选模型' }), pickedCount),
+        chipsEl
+      ),
+      pickerEl,
+      h('div', { class: 'pe-manual-row' }, manualIn,
+        h('button', { class: 'btn btn-sm', type: 'button', text: '添加', on: { click: addManual } }))
+    );
+
+    /* v5.9.0：图像条目字段区（base_url/key 在上方基础信息区共用） */
+    const imageSection = h('div', { class: 'pe-section' },
+      h('div', { class: 'pe-sec-title', text: '图像模型' }),
+      h('div', { class: 'pe-sec-hint', text: '兼容 OpenAI images/generations 协议：填一个图像模型名与出图尺寸；「AI 生成封面」按竖版出图。' }),
+      h('div', { class: 'wiz-grid' },
+        fieldRow('图像模型（单值）', imgModel, 'span-2', '支持 images/generations 的模型名'),
+        fieldRow('出图尺寸（宽x高）', imgSize, '', '封面竖版默认 1024x1536')
+      )
+    );
+
     const body = h(
       'div',
       { class: 'prov-editor' },
+      h('div', { class: 'pe-section' },
+        h('div', { class: 'pe-sec-title', text: '类型' }),
+        h('div', { class: 'pe-kind-row' }, kindTextBtn, kindImageBtn, kindHint)
+      ),
       h('div', { class: 'pe-section' },
         h('div', { class: 'pe-sec-title', text: '基础信息' }),
         h('div', { class: 'wiz-grid' },
@@ -1220,19 +1323,10 @@ export function renderSettings(container, ctx) {
           fieldRow('API 密钥', apiKey, 'span-2', keyHint)
         )
       ),
-      h('div', { class: 'pe-section' },
-        h('div', { class: 'pe-sec-title', text: '模型选择' }),
-        h('div', { class: 'pe-sec-hint', text: '第 ① 步填好地址与密钥 → 第 ② 步一键拉取 → 第 ③ 步勾选需要的模型。勾选顺序即优先级，第一个为默认模型。' }),
-        h('div', { class: 'pe-fetch-row' }, fetchBtn, fetchState),
-        h('div', { class: 'mp-picked' },
-          h('div', { class: 'mp-picked-head' }, h('span', { class: 'mp-picked-title', text: '已选模型' }), pickedCount),
-          chipsEl
-        ),
-        pickerEl,
-        h('div', { class: 'pe-manual-row' }, manualIn,
-          h('button', { class: 'btn btn-sm', type: 'button', text: '添加', on: { click: addManual } }))
-      )
+      textSection,
+      imageSection
     );
+    paintKind();
 
     const footer = h(
       'div',
@@ -1244,29 +1338,45 @@ export function renderSettings(container, ctx) {
         text: existing ? '保存' : '添加',
         on: {
           click: async () => {
-            const payload = {
-              name: name.value.trim(),
-              base_url: baseUrl.value.trim(),
-              models: selected.slice()
-            };
+            const payload = { name: name.value.trim(), base_url: baseUrl.value.trim() };
             if (!payload.name) {
               toast('请填写供应商名称', { tone: 'danger' });
               return;
             }
-            if (!payload.models.length) {
-              toast('请至少选择 1 个模型（拉取或手动添加）', { tone: 'danger' });
+            if (!payload.base_url) {
+              toast('请填写接口地址', { tone: 'danger' });
               return;
             }
             if (apiKey.value.trim()) payload.api_key = apiKey.value.trim();
+            if (kind === 'image') {
+              /* 图像条目：单值模型 + 出图尺寸；不进文本创作选择器 */
+              const model = imgModel.value.trim();
+              if (!model) {
+                toast('请填写图像模型名', { tone: 'danger' });
+                return;
+              }
+              payload.kind = 'image';
+              payload.models = [model];
+              payload.default_model = model;
+              payload.size = imgSize.value.trim() || '1024x1536';
+            } else {
+              payload.kind = editingKind || 'text';
+              payload.models = selected.slice();
+              if (!payload.models.length) {
+                toast('请至少选择 1 个模型（拉取或手动添加）', { tone: 'danger' });
+                return;
+              }
+            }
             try {
               if (existing) await api.updateProvider(existing.id, payload);
               else await api.addProvider(payload);
               modal.close();
               await loadProviders();
-              /* v4.34.0：模型列表改动可能触发后端重置 default_model（旧默认不在新列表时
-                 取 models[0]）——刷新 store，创作页右上角才不会显示旧模型 */
-              await ctx.refreshModels?.();
-              toast(existing ? '已保存' : '已添加供应商', { tone: 'success', duration: 1800 });
+              /* 文本模型列表改动可能触发 default_model 重置；图像条目不刷新文本
+                 model_options，避免无关 store 变更干扰文本最近选择。 */
+              if (kind !== 'image') await ctx.refreshModels?.();
+              toast(existing ? '已保存' : (kind === 'image' ? '已添加图像供应商' : '已添加供应商'),
+                { tone: 'success', duration: 1800 });
             } catch (err) {
               toast(errorText(err, '保存失败'), { tone: 'danger' });
             }
@@ -1274,10 +1384,16 @@ export function renderSettings(container, ctx) {
         }
       })
     );
-    const modal = openModal({ title: existing ? `编辑 ${existing.name}` : '添加模型供应商', body, footer, size: 'lg' });
-    /* v4.22.2：编辑已有供应商时自动拉取模型列表（用已存密钥）——
-       已选模型立即勾选呈现，不再需要手动点「拉取」才能看到清单。 */
-    if (existing) {
+    const modal = openModal({
+      title: existing
+        ? `编辑 ${existing.name}${editingKind === 'image' ? '（图像）' : ''}`
+        : '添加模型供应商',
+      body, footer, size: 'lg'
+    });
+    /* v4.22.2：编辑已有文本供应商时自动拉取模型列表（用已存密钥）——
+       已选模型立即勾选呈现，不再需要手动点「拉取」才能看到清单。
+       v5.9.0：图像条目不拉 /models（单值模型手填），跳过。 */
+    if (existing && editingKind !== 'image') {
       setTimeout(() => { try { doFetch(); } catch { /* ignore */ } }, 150);
     }
   }

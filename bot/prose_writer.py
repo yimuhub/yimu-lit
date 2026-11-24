@@ -19,13 +19,11 @@ import datetime
 import json
 import os
 import re
-import threading
-
 from . import llm, skillkit, express
 from . import purity
 from . import slop_checker
 from . import writer as novel_writer
-from bot.safeio import atomic_write_json, atomic_write_text, safe_join
+from bot.safeio import ProjectPath, RenameAwareProject, atomic_write_json, atomic_write_text, path_lock, safe_join
 
 ROOT = novel_writer.ROOT
 PROJECTS_DIR = novel_writer.PROJECTS_DIR
@@ -64,7 +62,7 @@ def _pipeline_running_for(path: str) -> bool:
         return False
 
 
-class ProseProject:
+class ProseProject(RenameAwareProject):
     """散文项目。字段与小说 / 剧本 / 诗词 Project 对齐。"""
 
     def __init__(self, path: str, name: str):
@@ -72,7 +70,7 @@ class ProseProject:
         self.name = name
         self.events: list[str] = []
         self.running = False
-        self.lock = threading.RLock()
+        self.lock = path_lock(self.path)
 
     def log(self, msg: str) -> None:
         with self.lock:
@@ -400,6 +398,7 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
         "meta": {"stage": "B", "stageIdx": 0},
     }
     proj.save_plan(plan)
+    pdir = ProjectPath(proj)
 
     proj.log("📋 阶段 B：创作简报…")
     brief = gen_brief(cfg)
@@ -503,6 +502,7 @@ def create_project(cfg: dict, base_key: str = "") -> ProseProject:
 def resume_project(key: str) -> ProseProject | None:
     """断点恢复：服务重启/线程中断后，从盘上产物继续（简报/素材/初稿缺哪段补哪段）。
     同步执行（调用方放后台线程）。"""
+    key = ProseProject.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:
@@ -520,6 +520,7 @@ def resume_project(key: str) -> ProseProject | None:
     op = normalize_op(plan.get("operation") or cfg.get("operation", "write"))
     name = plan.get("proseName") or key
     proj = ProseProject(pdir, name)
+    pdir = ProjectPath(proj)
     plan.setdefault("meta", {})
     if plan.get("status") == "completed":
         proj.log("✅ 该作品已定稿，无需恢复")
@@ -624,6 +625,7 @@ def resume_project(key: str) -> ProseProject | None:
 # ---------------------------------------------------------------- 查询
 
 def get_project(key: str) -> ProseProject | None:
+    key = ProseProject.resolve_key(key)
     try:
         pdir = safe_join(PROJECTS_DIR, key, label="作品 key")
     except ValueError:

@@ -4,7 +4,7 @@ import hashlib, json, os, re, datetime, threading, queue, time, inspect
 from . import (workflow, skill, continuity, llm, versions, steps, purity, journal,
                express, delivery_gate, lexicon_ledger, checkup, final_review, book_health,
                chapter_identity, prompts_store)
-from .safeio import atomic_write_json, atomic_write_text, safe_join
+from .safeio import atomic_write_json, atomic_write_text, path_lock, safe_join
 
 from .paths import DATA_ROOT as ROOT, DATA_ROOT as DATA_ROOT_N
 PROJECTS_DIR = os.path.join(ROOT, "projects")
@@ -197,7 +197,7 @@ class Project:
         self.name = name
         self.events = []
         self.running = False
-        self.lock = threading.RLock()   # v0.6 B：并行写作下保护 02-写作计划.json 读改写
+        self.lock = path_lock(self.path)
 
     def _follow_rename(self):
         """v4.34.1：跟随目录改名（幻影双书根治的核心一环）。
@@ -222,6 +222,7 @@ class Project:
             if os.path.isdir(new_path):
                 self.path = new_path
                 self.name = new_key.split("-", 2)[-1] if "-" in new_key else new_key
+                self.lock = path_lock(new_path)
         except Exception:
             pass   # 重定向失败按旧路径继续（与既有行为一致）
 
@@ -267,16 +268,16 @@ class Project:
         return data if isinstance(data, dict) else None
 
     def save_plan(self, plan):
-        self._follow_rename()   # v4.34.1：改名后写盘跟随到新家，绝不复活旧目录
         plan["updatedAt"] = datetime.datetime.now().isoformat()
-        # v4.33.7：新建作品盖章交付规格；已有作品只在首次写盘时盖章，不追溯。
-        try:
-            from . import delivery_spec as _ds
-            _ds.stamp_plan(plan, "novel", plan_exists=os.path.exists(
-                os.path.join(self.path, "02-写作计划.json")), existing=self.plan())
-        except Exception:
-            pass
         with self.lock:   # v0.6 B：并行写作串行化 02-写作计划.json 写盘（RLock，可被读改写临界区复用）
+            self._follow_rename()
+            # v4.33.7：新建作品盖章交付规格；已有作品只在首次写盘时盖章，不追溯。
+            try:
+                from . import delivery_spec as _ds
+                _ds.stamp_plan(plan, "novel", plan_exists=os.path.exists(
+                    os.path.join(self.path, "02-写作计划.json")), existing=self.plan())
+            except Exception:
+                pass
             atomic_write_json(os.path.join(self.path, "02-写作计划.json"), plan)
 
     def status(self):
@@ -286,7 +287,8 @@ class Project:
         # 两者不是一回事，混用会让前端把 work 对到错误的作品上。
         bkey = os.path.basename(self.path)
         if not plan:
-            return {"state": "missing", "done": 0, "total": 0, "words": 0, "key": bkey}
+            return {"state": "missing", "done": 0, "total": 0, "words": 0,
+                    "running": False, "paused": False, "pausedReason": "", "key": bkey}
         chs = plan.get("chapters") or []
         # v4.32.2：status 会被质量看护打回，磁盘正文才是完成度的事实源。
         done = done_chapters(plan, self.path)
@@ -915,30 +917,39 @@ RENAME_MAP_FILE = os.path.join(ROOT, "data", "rename_map.json")
 # v5.5：mtime 缓存——_project_dir 变成高频路径（写作循环/每次读盘都过这里），
 # 每次调用都读 JSON 会拖慢写作；文件一变（record_rename/手工改）缓存即失效。
 _RENAME_MAP_CACHE = {"mtime": None, "map": {}}
+_RENAME_MAP_LOCK = threading.RLock()
 
 def _load_rename_map() -> dict:
-    try:
-        mt = os.path.getmtime(RENAME_MAP_FILE)
-    except OSError:
-        mt = None
-    c = _RENAME_MAP_CACHE
-    if c.get("mtime") == mt and isinstance(c.get("map"), dict):
-        return c["map"]
-    try:
-        d = json.load(open(RENAME_MAP_FILE, encoding="utf-8"))
-        m = d if isinstance(d, dict) else {}
-    except Exception:
-        m = {}
-    c["mtime"], c["map"] = mt, m
-    return m
+    with _RENAME_MAP_LOCK:
+        try:
+            mt = os.path.getmtime(RENAME_MAP_FILE)
+        except OSError:
+            mt = None
+        c = _RENAME_MAP_CACHE
+        if c.get("mtime") == mt and isinstance(c.get("map"), dict):
+            return c["map"]
+        try:
+            d = json.load(open(RENAME_MAP_FILE, encoding="utf-8"))
+            m = d if isinstance(d, dict) else {}
+        except Exception:
+            m = {}
+        c["mtime"], c["map"] = mt, m
+        return m
 
 def record_rename(old_key: str, new_key: str):
     """目录改名后记录别名；旧 key 的所有请求自动跳到新 key（避免「项目不存在」与幽灵重建）。"""
     if not old_key or not new_key or old_key == new_key:
         return
-    m = _load_rename_map()
-    m[old_key] = new_key
-    atomic_write_json(RENAME_MAP_FILE, m)
+    with _RENAME_MAP_LOCK:
+        m = _load_rename_map()
+        m[old_key] = new_key
+        atomic_write_json(RENAME_MAP_FILE, m)
+    rename_pipeline(old_key, new_key)
+    try:
+        from . import livejob as _lj
+        _lj.rename(old_key, new_key)
+    except Exception:
+        pass
 
 def resolve_key(key: str) -> str:
     """解析别名（一层跳转即可——改名链会写成直达）。解析不到返回原 key。"""
@@ -1094,12 +1105,15 @@ def is_paused(proj):
 def pause_book(key):
     """置暂停位：写线程在下一检查点停，status=paused。"""
     p = Project(_project_dir(key), key)
-    plan = p.plan()
-    if not plan:
-        return False
-    plan.setdefault("meta", {})["paused"] = True
-    plan["status"] = "paused"
-    p.save_plan(plan)
+    with p.lock:
+        p._follow_rename()
+        plan = p.plan()
+        if not plan:
+            return False
+        plan.setdefault("meta", {})["paused"] = True
+        plan["meta"]["pausedReason"] = "pause_requested"
+        plan["status"] = "paused"
+        p.save_plan(plan)
     # 任务档案同步标暂停：即使写线程当时不在检查点上，「继续」也知道上次干到哪儿了
     journal.update(p.path, status="paused", note="已请求暂停")
     p.log("⏸ 已请求暂停（在下一检查点停，停在当前进度，可点「▶继续」恢复）")
@@ -1339,6 +1353,33 @@ def _resume_text(key) -> str:
     return "从当前进度接着写"
 
 
+def cancel_pause(key) -> bool:
+    """仅撤销人工暂停请求；协作检查点必须等作者明确采用，不能在收尾时误清。"""
+    try:
+        p = Project(_project_dir(key), key)
+        with p.lock:
+            plan = p.plan() or {}
+            if not plan:
+                return False
+            meta = plan.setdefault("meta", {})
+            if not meta.get("paused"):
+                return True
+            reason = str(meta.get("pausedReason") or "")
+            if reason and reason != "pause_requested":
+                return False
+            meta["paused"] = False
+            meta.pop("pausedReason", None)
+            for flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
+                meta.pop(flag, None)
+            if plan.get("status") == "paused":
+                plan["status"] = "in_progress"
+            p.save_plan(plan)
+        journal.update(p.path, status="running")
+        return True
+    except Exception:
+        return False
+
+
 def resume_book(key, batch_size=None) -> bool:
     """清暂停位 + 续写剩余章节。batch_size 从 plan.config 取（未传参时）。
     返回 True=已启动新写作线程；False=无法启动（无计划/已完成/已有线程在写）。
@@ -1354,46 +1395,73 @@ def resume_book(key, batch_size=None) -> bool:
             p.log("🧹 停摆自检：上次写作线程已死亡但登记残留，已清理注册表/实时作业后重启")
     except Exception:
         pass
-    plan = p.plan()
-    if not plan:
-        return False
-    if plan.get("status") == "completed":
-        p.log("ℹ️ 该作品已完成，无需继续（想加章请用「续写」）")
-        return False
-    # v4.34.0 状态规则：正文已齐就绝不启动写作线程——哪怕账面状态还没归位。
-    # 「继续」只在存在明确待写章节时有意义；顺手把账面归位成 completed，
-    # 消除「100% 已完成却显示创作中」的账面残留。
-    try:
-        _done = done_chapters(plan, p.path)
-    except Exception:
-        _done = 0
-    _total = len(plan.get("chapters") or [])
-    if _total and _done >= _total:
-        plan["status"] = "completed"
+    with p.lock:
+        p._follow_rename()
+        plan = p.plan()
+        if not plan:
+            return False
+        if plan.get("status") == "completed":
+            p.log("ℹ️ 该作品已完成，无需继续（想加章请用「续写」）")
+            return False
+        # v4.34.0 状态规则：正文已齐就绝不启动写作线程——哪怕账面状态还没归位。
+        # 「继续」只在存在明确待写章节时有意义；顺手把账面归位成 completed，
+        # 消除「100% 已完成却显示创作中」的账面残留。
+        try:
+            _done = done_chapters(plan, p.path)
+        except Exception:
+            _done = 0
+        _total = len(plan.get("chapters") or [])
+        if _total and _done >= _total:
+            plan["status"] = "completed"
+            plan.setdefault("meta", {})["paused"] = False
+            plan["meta"].pop("pausedReason", None)
+            p.save_plan(plan)
+            p.log(f"✅ 全书正文已齐（{_done}/{_total}），账面归位为已完成，不重复启动创作")
+            return False
+        # v5.8.0：协作模式待确认章的「继续」= 采用该章。先记下章号（下面要清 pausedReason），
+        # 断点恢复语义：重启后书仍停在待确认章，「继续/采用继续」落在同一章的确认位上。
+        _ac = collab_awaiting_key(key)
+        _missing = object()
+        _prev_status = plan.get("status", _missing)
+        _prev_meta = plan.get("meta", _missing)
+        if isinstance(_prev_meta, dict):
+            _prev_meta = dict(_prev_meta)
         plan.setdefault("meta", {})["paused"] = False
+        # v5.8.0：继续是明确指令——待确认/暂停原因一并清掉（协作检查点会在下一章重新落位）
         plan["meta"].pop("pausedReason", None)
+        # v4.34.1：清掉各种「系统停」标记——继续是明确指令，上一轮的停机原因不再生效
+        for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
+            plan["meta"].pop(_flag, None)
+        plan["status"] = "in_progress"
         p.save_plan(plan)
-        p.log(f"✅ 全书正文已齐（{_done}/{_total}），账面归位为已完成，不重复启动创作")
-        return False
-    # v5.8.0：协作模式待确认章的「继续」= 采用该章。先记下章号（下面要清 pausedReason），
-    # 断点恢复语义：重启后书仍停在待确认章，「继续/采用继续」落在同一章的确认位上。
-    _ac = collab_awaiting_key(key)
-    plan.setdefault("meta", {})["paused"] = False
-    # v5.8.0：继续是明确指令——待确认/暂停原因一并清掉（协作检查点会在下一章重新落位）
-    plan["meta"].pop("pausedReason", None)
-    # v4.34.1：清掉各种「系统停」标记——继续是明确指令，上一轮的停机原因不再生效
-    for _flag in ("batch_stopped", "plan_blocked", "budget_stopped"):
-        plan["meta"].pop(_flag, None)
-    plan["status"] = "in_progress"
-    p.save_plan(plan)
-    # v4.15.0：batch_size 从 cfg 取
-    if batch_size is None:
-        cfg = plan.get("config") or {}
-        batch_size = cfg.get("batch_size", "1")
-    _where = _resume_text(key)
-    if _ac:
-        _where = f"第 {_ac} 章已按你确认采用，继续第 {_ac + 1} 章"
-    if not start_writing(p, batch_size=batch_size):
+        # v4.15.0：batch_size 从 cfg 取
+        if batch_size is None:
+            cfg = plan.get("config") or {}
+            batch_size = cfg.get("batch_size", "1")
+        _where = _resume_text(key)
+        if _ac:
+            _where = f"第 {_ac} 章已按你确认采用，继续第 {_ac + 1} 章"
+        started = False
+        try:
+            started = start_writing(p, batch_size=batch_size)
+        finally:
+            if not started:
+                current = p.plan() or plan
+                if _prev_status is _missing:
+                    current.pop("status", None)
+                else:
+                    current["status"] = _prev_status
+                if _prev_meta is _missing:
+                    current.pop("meta", None)
+                else:
+                    meta = current.setdefault("meta", {})
+                    for _field in ("paused", "pausedReason"):
+                        if _field in _prev_meta:
+                            meta[_field] = _prev_meta[_field]
+                        else:
+                            meta.pop(_field, None)
+                p.save_plan(current)
+    if not started:
         p.log("ℹ️ 收到「继续」请求，但该作品已在创作中，无需重复启动")
         return False
     p.log(f"▶ 继续写作：{_where}")
@@ -1523,6 +1591,23 @@ _PIPELINE_LOCK = threading.Lock()
 _PIPELINE_COUNT: dict[str, int] = {}
 
 
+def _pipeline_key(key) -> str:
+    k = os.path.basename(str(key or ""))
+    return resolve_key(k) if k else ""
+
+
+def rename_pipeline(old_key: str, new_key: str) -> None:
+    """把运行占用从旧目录键迁移到新键，旧线程的 finally 仍能正确收口。"""
+    old = os.path.basename(str(old_key or ""))
+    new = os.path.basename(str(new_key or ""))
+    if not old or not new or old == new:
+        return
+    with _PIPELINE_LOCK:
+        previous = _PIPELINE_COUNT.pop(old, 0)
+        if previous:
+            _PIPELINE_COUNT[new] = max(previous, _PIPELINE_COUNT.get(new, 0))
+
+
 def mark_pipeline(key, on=True):
     """按作品 key 增/减流水线运行计数（线程启动 +1，结束 -1）。
 
@@ -1534,7 +1619,7 @@ def mark_pipeline(key, on=True):
       还往剧本目录写 18-状态库 / 19-伏笔账本 / 22-规划体检；
     * 同步维护 livejob：上车写「创作线程已启动」，下车收口，前端据此结束等待动画。
     """
-    k = os.path.basename(str(key or ""))
+    k = _pipeline_key(key)
     if not k:
         return
     with _PIPELINE_LOCK:
@@ -1568,8 +1653,25 @@ def mark_pipeline(key, on=True):
         pass
 
 
+def claim_pipeline(key) -> bool:
+    """原子占用作品运行位，防止双击恢复启动多条线程。"""
+    k = _pipeline_key(key)
+    if not k:
+        return False
+    with _PIPELINE_LOCK:
+        if _PIPELINE_COUNT.get(k, 0) > 0:
+            return False
+        _PIPELINE_COUNT[k] = 1
+    try:
+        from . import livejob as _lj
+        _lj.update(k, phase="running")
+    except Exception:
+        pass
+    return True
+
+
 def pipeline_running(key) -> bool:
-    return _PIPELINE_COUNT.get(os.path.basename(str(key or "")), 0) > 0
+    return _PIPELINE_COUNT.get(_pipeline_key(key), 0) > 0
 
 
 def _chapter_has_content(proj, c, min_words):
@@ -3027,11 +3129,13 @@ def _name_chapter(proj, no, digest):
         ch = next((c for c in (plan.get("chapters") or []) if c.get("chapterNumber") == no), None)
         if not ch or not _is_default_title(ch.get("title")):
             return
+        # v5.9.0 死规律：章名生成也必须用本书绑定模型——cfg 传 plan.config（含 _provider_id/_model）
         out = llm.chat_json(
             [{"role": "system",
               "content": "给小说章节起名。根据本章摘要输出 4-8 字章名，像实体书目录那样有信息量与悬念，"
                          "不剧透结局，不要出现“第X章”字样或书名号。只输出 JSON：{\"title\": \"...\"}"},
              {"role": "user", "content": str(digest)[:600]}],
+            cfg=plan.get("config") if isinstance(plan.get("config"), dict) else None,
             stage="naming")
         t = str((out or {}).get("title") or "").strip()
         if t and _set_chapter_title(proj, no, t):
@@ -3067,6 +3171,7 @@ def _backfill_chapter_names(proj, limit=10):
               "content": "给下列小说章节各起一个 4-8 字章名，像实体书目录那样有信息量与悬念，不剧透结局。"
                          '只输出 JSON：{"names":[{"no":1,"title":"..."},...]}，no 必须与输入一致。'},
              {"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
+            cfg=(plan.get("config") or {}) if isinstance(plan.get("config"), dict) else None,
             stage="naming")
         n = 0
         for it in (out or {}).get("names") or []:
@@ -5028,7 +5133,7 @@ _PLAN_BY_MEDIUM = (("novel", "02-写作计划.json"), ("script", "剧本计划.j
 _NAME_KEY = {"novel": "novelName", "script": "scriptName", "poetry": "poemName", "prose": "proseName", "thesis": "thesisName", "children": "bookName", "news": "newsName", "copy": "copyName", "other": "otherName"}
 _FORM_LABEL_KEY = {"novel": "", "script": "formLabel", "poetry": "formLabel", "prose": "genreLabel", "thesis": "degreeLabel", "children": "typeLabel", "news": "typeLabel", "copy": "platformLabel", "other": "templateLabel"}
 _OTHER_LABEL = {"completed": "已完成", "planning": "规划中", "writing": "写作中",
-                "in_progress": "创作中", "failed": "失败", "unknown": "草稿"}
+                "in_progress": "创作中", "paused": "待继续", "failed": "失败", "unknown": "草稿"}
 # v4.33.6：状态徽章只描述「用户该做什么」，不描述计划文件里那个静态字段。
 # 实测：一部 48/50 的短剧，引擎早就不在跑，作品库却写「创作中」——因为
 # plan.status 还停在 in_progress。人在那儿看半天，以为机器在写，其实在等他点继续。
@@ -6489,25 +6594,26 @@ def pick_title(key, title):
     """选定书名：改名（同步 02.meta.name + 成书文件名）并开写。用于 awaiting_title 项目。"""
     try:
         proj = Project(_project_dir(key), key)
+        with proj.lock:
+            plan = proj.plan()
+            if not plan:
+                return None
+            meta = plan.get("meta") or {}; meta["awaiting_title"] = False; meta["selected_title"] = title
+            newdir = _safe_dir_name(title)
+            base = os.path.basename(proj.path)
+            _parts = base.split("-", 2); prefix = "-".join(_parts[:2]) + "-" if len(_parts) >= 2 else base + "-"
+            try:
+                target = safe_join(PROJECTS_DIR, prefix + newdir, label="目录名")
+            except ValueError:
+                target = proj.path
+            if target != proj.path and not os.path.exists(target):
+                os.rename(proj.path, target); proj.path = target
+                record_rename(base, os.path.basename(target))   # v4.15.13：旧 key 别名，旧请求自动跳新 key
+            plan["novelName"] = title
+            plan["projectPath"] = proj.path
+            proj.save_plan({**plan, "meta": meta, "novelName": title, "projectPath": proj.path})
     except ValueError:
         return None
-    plan = proj.plan()
-    if not plan:
-        return None
-    meta = plan.get("meta") or {}; meta["awaiting_title"] = False; meta["selected_title"] = title
-    newdir = _safe_dir_name(title)
-    base = os.path.basename(proj.path)
-    _parts = base.split("-", 2); prefix = "-".join(_parts[:2]) + "-" if len(_parts) >= 2 else base + "-"
-    try:
-        target = safe_join(PROJECTS_DIR, prefix + newdir, label="目录名")
-    except ValueError:
-        target = proj.path
-    if target != proj.path and not os.path.exists(target):
-        os.rename(proj.path, target); proj.path = target
-        record_rename(base, os.path.basename(target))   # v4.15.13：旧 key 别名，旧请求自动跳新 key
-    plan["novelName"] = title
-    plan["projectPath"] = proj.path
-    proj.save_plan({**plan, "meta": meta, "novelName": title, "projectPath": proj.path})
     # v4.15.2：尊重批量写作设置
     start_writing(proj, batch_size=((plan.get("config") or {}).get("batch_size")))
     # v5.5：交接语——选名换 key 后，新会话的聊天历史里必须有完整上下文

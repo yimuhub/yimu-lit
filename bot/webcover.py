@@ -10,9 +10,17 @@ FastAPI APIRouter 收口，不改 app.py / weblib.py —— 主会话在 app.py 
 接口契约（与 static/v2/js/core/aicover.js、views/settings.js 对齐）：
   POST /api/library/cover/ai          {key, prompt?, style?, mock?} 生成并落盘
                                       → {ok, cover, url, mtime, mock}
-  GET  /api/library/cover/ai/config   图像供应商配置（key 打码）→ {ok, configured, base_url, model, size, has_key, key_display}
-  POST /api/library/cover/ai/config   保存配置 {base_url, api_key?, model, size?}（api_key 留空=保留旧值）
-  POST /api/library/cover/ai/test     探活：请求一张 512x512 测试图 → {ok, detail}（detail 全中文）
+  GET  /api/library/cover/ai/config   图像供应商配置（key 打码）。v5.9.0 起图像能力并入
+                                      providers[] 的 kind=image 条目，返回 = v5.7.0 兼容字段
+                                      {ok, configured, base_url, model, size, has_key,
+                                      key_display}（取自默认图像条目，封面弹窗只看 configured）
+                                      + {default_image_provider, providers:[图像条目列表]}。
+  POST /api/library/cover/ai/config   保存图像配置 {provider_id?, name?, base_url?, api_key?,
+                                      model?, size?}：显式 provider_id → 保存到该条目并设为
+                                      图像默认；否则默认图像条目 / 唯一图像条目 / 新建。
+                                      api_key 留空=保留旧值（密钥不回显）。
+  POST /api/library/cover/ai/test     探活：{provider_id?} 按条目（缺省=当前默认）请求一张
+                                      512x512 测试图 → {ok, detail}（detail 全中文）
 
 设计要点：
   · 提示词组装走 prompts/ 开放体系（组 cover-art，system+user 两槽，可用户覆盖）：
@@ -25,7 +33,8 @@ FastAPI APIRouter 收口，不改 app.py / weblib.py —— 主会话在 app.py 
   · mock 模式：body mock=true（或 ?mock=1）不穿透——用代码内置的 1x1 占位 PNG
     走同一条校验落盘链路（pytest 验证 mock 生成→落盘→旧封面清理）；
     前端 ?mock=1（IS_MOCK）则在本地画渐变占位，根本不发请求（aicover.js）。
-  · 无图像供应商 → 400「请先在设置→供应商配置图像模型」。
+  · 无图像供应商 → 400「请先在设置→供应商配置图像模型」（v5.9.0：图像供应商 =
+    供应商列表里 kind=image 的条目，在设置→模型与供应商添加，类型选「图像」）。
   · key 别名解析复用 writer._project_dir（与 webcanvas._project 同款，改名后的旧 key 可用）。
 """
 from __future__ import annotations
@@ -151,9 +160,9 @@ def _fetch_image_bytes(url: str, timeout: int) -> bytes:
     try:
         r = httpx.get(url, timeout=timeout, follow_redirects=True)
     except httpx.TimeoutException:
-        raise ImageAPIError("下载生成图片超时，请稍后重试")
+        raise ImageAPIError("下载生成图片超时，请稍后重试") from None
     except httpx.HTTPError as e:
-        raise ImageAPIError("下载生成图片失败：%s" % str(e)[:160])
+        raise ImageAPIError("下载生成图片失败：%s" % str(e)[:160]) from e
     if r.status_code != 200 or not r.content:
         raise ImageAPIError("下载生成图片失败（HTTP %d）" % r.status_code)
     return r.content
@@ -170,14 +179,14 @@ def generate_image(rt: dict, prompt: str, timeout: int = IMAGE_TIMEOUT) -> bytes
         r = httpx.post(base + "/images/generations", headers=_auth_headers(rt.get("api_key") or ""),
                        json=body, timeout=timeout)
     except httpx.TimeoutException:
-        raise ImageAPIError("图像接口连接超时（%d 秒），请稍后重试或换更快的模型" % timeout)
+        raise ImageAPIError("图像接口连接超时（%d 秒），请稍后重试或换更快的模型" % timeout) from None
     except httpx.HTTPError as e:
-        raise ImageAPIError("无法连接图像接口，请检查 base_url：%s" % str(e)[:160])
+        raise ImageAPIError("无法连接图像接口，请检查 base_url：%s" % str(e)[:160]) from e
     _raise_for_status(r, model)
     try:
         j = r.json()
-    except Exception:
-        raise ImageAPIError("图像接口返回了无法解析的内容，请确认该端点是 OpenAI 兼容 images 接口")
+    except Exception as e:
+        raise ImageAPIError("图像接口返回了无法解析的内容，请确认该端点是 OpenAI 兼容 images 接口") from e
     items = j.get("data") or []
     if not items or not isinstance(items[0], dict):
         raise ImageAPIError("图像接口没有返回图片，请稍后重试")
@@ -186,8 +195,8 @@ def generate_image(rt: dict, prompt: str, timeout: int = IMAGE_TIMEOUT) -> bytes
     if b64:
         try:
             return base64.b64decode(str(b64))
-        except Exception:
-            raise ImageAPIError("图片数据（b64_json）解码失败，请重试")
+        except Exception as e:
+            raise ImageAPIError("图片数据（b64_json）解码失败，请重试") from e
     img_url = str(item.get("url") or "").strip()
     if img_url:
         return _fetch_image_bytes(img_url, timeout)
@@ -241,8 +250,8 @@ def generate_and_save(key: str, prompt: str = "", style: str = "",
         rt = providers.image_provider_runtime()
         if not rt["configured"]:
             return {"ok": False, "status": 400,
-                    "message": "请先在设置→供应商配置图像模型（模型与供应商→图像模型（封面生成），"
-                               "填 OpenAI 兼容的 images 接口地址与模型名）"}
+                    "message": "请先在设置→供应商配置图像模型（模型与供应商→添加供应商，"
+                               "类型选「图像」，填 OpenAI 兼容的 images 接口地址与模型名）"}
         cfg = (plan.get("config") or {}) if isinstance(plan, dict) else {}
         prompt_text = build_cover_prompt(
             title=str((plan or {}).get("novelName") or (cfg.get("novelName") or "") or key),
@@ -294,16 +303,25 @@ async def api_cover_ai(request: Request):
 
 @router.get("/api/library/cover/ai/config")
 def api_cover_ai_config_get():
-    """图像供应商配置（key 打码；设置页小节与封面弹窗的无配置判断共用）。"""
-    cfg = providers.image_provider()
-    return {"ok": True, **cfg}
+    """图像供应商配置（key 打码；设置页图像默认槽与封面弹窗的无配置判断共用）。
+    v5.9.0：图像能力并入 providers[] 的 kind=image 条目——返回 v5.7.0 兼容字段
+    （取自默认图像条目）+ default_image_provider + 图像条目列表。"""
+    try:
+        return providers.image_config_view()
+    except Exception:
+        return {"ok": True, "configured": False, "base_url": "", "model": "",
+                "size": providers.DEFAULT_IMAGE_SIZE, "has_key": False,
+                "key_display": "未设置（可留空：本地免鉴权接口）",
+                "default_image_provider": "", "providers": []}
 
 
 @router.post("/api/library/cover/ai/config")
 def api_cover_ai_config_post(payload: dict = None):
-    """保存图像供应商配置。api_key 留空 = 保留已保存值（密钥不回显）。"""
+    """保存图像供应商配置（写 providers[] 的 kind=image 条目，兼容 v5.7.0 字段口径）。
+    provider_id 显式给出时保存到该条目并设为图像默认；api_key 留空 = 保留已保存值。"""
+    p = payload if isinstance(payload, dict) else {}
     try:
-        cfg = providers.save_image_provider(payload or {})
+        cfg = providers.save_image_provider(p)
     except providers.ProviderError as e:
         return _bad(str(e))
     return {"ok": True, **cfg}
@@ -311,11 +329,13 @@ def api_cover_ai_config_post(payload: dict = None):
 
 @router.post("/api/library/cover/ai/test")
 def api_cover_ai_test(payload: dict = None):
-    """探活：请求一张 512x512 测试图。HTTP 恒 200，结果看 ok/detail（全中文）。"""
+    """探活：{provider_id?} 按条目请求一张 512x512 测试图（缺省=当前默认图像供应商）。
+    HTTP 恒 200，结果看 ok/detail（全中文）。"""
     p = payload if isinstance(payload, dict) else {}
     try:
         size = str(p.get("size") or "512x512")
-        r = providers.test_image_provider(size=size, timeout=int(p.get("timeout") or 30))
+        r = providers.test_image_provider(provider_id=str(p.get("provider_id") or ""),
+                                          size=size, timeout=int(p.get("timeout") or 30))
     except Exception as e:
         r = {"ok": False, "detail": "测试失败：%s" % str(e)[:160]}
     return r
